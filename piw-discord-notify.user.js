@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      2.0.1
+// @version      2.0.2
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon específico (ou shiny) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -164,7 +164,9 @@
         }
 
         const name = normalize(info.name);
-        const inWatchList = cfg.watchList.map(normalize).includes(name);
+        // lista vazia = notificar qualquer captura
+        const inWatchList = cfg.watchList.length === 0 ||
+            cfg.watchList.map(normalize).includes(name);
         const shouldNotify =
             cfg.notifyEveryCapture ||
             inWatchList ||
@@ -249,8 +251,8 @@
             <div style="margin-top:8px">URL do webhook:
                 <input id="pg-dn-hook" type="password" placeholder="https://discord.com/api/webhooks/..."
                     style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
-            <div style="margin-top:6px">Pokémon (separados por vírgula):
-                <input id="pg-dn-list" type="text" placeholder="dratini, larvitar, beldum"
+            <div style="margin-top:6px">Pokémon (separados por vírgula; vazio = avisar TODAS as capturas):
+                <input id="pg-dn-list" type="text" placeholder="dratini, larvitar (vazio = todas)"
                     style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
             <label style="display:block;margin-top:6px"><input id="pg-dn-shiny" type="checkbox"> Avisar todo shiny</label>
             <label style="display:block"><input id="pg-dn-all" type="checkbox"> Avisar TODA captura</label>
@@ -308,6 +310,6 @@
 
     buildUI();
 
-    console.log(TAG, 'v2.0.1 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v2.0.2 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny);
 })();
