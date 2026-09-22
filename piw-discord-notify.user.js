@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      2.0.0
+// @version      2.0.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon específico (ou shiny) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -50,7 +50,8 @@
     }
 
     function playerName() {
-        try { return (document.querySelector('.phud-name')?.textContent || '').trim(); }
+        // mesmo caminho que o PokeGrid usa para nomear as abas
+        try { return (window.__poke?.api?.['/api/characters/me']?.character?.name || '').trim(); }
         catch { return ''; }
     }
 
@@ -307,6 +308,6 @@
 
     buildUI();
 
-    console.log(TAG, 'v2.0.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v2.0.1 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny);
 })();
