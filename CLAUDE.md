@@ -29,15 +29,32 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
 - Cada painel do PokeGrid é um `<webview>` com partição própria (`persist:conta1..4`) —
   `localStorage` é **por painel**; a config do usuário não é compartilhada entre painéis.
 
-## Fatos sobre o jogo (deduzidos do PIW-QOL, não confirmados 100%)
+## Fatos sobre o jogo (confirmados via piwdex e poke-standalone-scripts, set/2026)
 
-- Comunicação por WebSocket com mensagens JSON `{type, ...}`.
-- Captura chega como `type: 'catch-result'`. O shape exato do payload NÃO foi confirmado —
-  `extractPokemonInfo()` tenta vários caminhos (`pokemon.name`, `poke.name`, `slug`, etc.) e
-  `captureSucceeded()` assume sucesso se não houver flag explícita. Se o usuário reportar o
-  payload real (via modo Debug), simplifique essas funções para o formato confirmado.
+- Comunicação por WebSocket (URL contém `/ws`) com mensagens JSON puras `{type, ...}` — não é
+  socket.io, não há prefixo numérico.
+- `pending` → `{ type:'pending', list:[{ id, pokeId, name, level, shiny, at }] }`. Fila de Pokémon
+  capturáveis, chega a cada abate e SUBSTITUI a anterior. `pokeId` é a espécie; `id` é o pendingId.
+- `catch-result` → `{ type:'catch-result', success, speciesName, shiny, ballName, pendingId?, auto? }`.
+  Não traz nível — o script cruza com a última fila `pending`. `auto: true` = autocatch VIP
+  (também conta como captura). Falha vem com `success: false`; cooldown vem como `catch-cooldown`.
+- No sucesso também chega `poke-delta` com `poke.speciesId` e `poke.xp === 0` (não usado).
+- Cliente envia `{ type:'catch', pendingId, ballId }` para capturar.
+- Referências: https://github.com/edulanzarin/piwdex (`src/lib/robo/motor/sessao.ts`, cases
+  `catch-result`/`pending`) e https://github.com/luishferreira/poke-standalone-scripts (`AGENTS.md`).
 - Nome do personagem: `window.__poke.api['/api/characters/me'].character.name` (mesmo caminho
   que o PokeGrid usa para nomear abas). NÃO usar `.phud-name` — é o Pokémon ativo, não a conta.
+
+## Diagnóstico sem console
+
+- O script guarda os últimos 40 eventos em `localStorage.pgDiscordNotifyLog` (socket rastreado,
+  `catch-result` recebidos, decisão dos filtros, cooldown, resposta do webhook). O botão
+  **Copiar log** do painel copia esse JSON.
+- O localStorage de cada painel do PokeGrid fica em disco em
+  `%APPDATA%\pokegrid\Partitions\conta{1..4}\Local Storage\leveldb\*.log|*.ldb` (LevelDB;
+  valores em Latin-1 ou UTF-16LE). Dá para ler `pgDiscordNotifyCfg` e `pgDiscordNotifyLog` de lá
+  com um script Python simples, sem abrir o PokeGrid. Ao fazer isso, NUNCA copiar a URL do webhook
+  para a conversa ou para arquivos do repo.
 
 ## Regras do projeto
 

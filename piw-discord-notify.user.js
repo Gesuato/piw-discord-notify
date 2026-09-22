@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      2.0.2
+// @version      2.1.0
 // @author       Gesuato
-// @description  Notifica um webhook do Discord quando você captura um Pokémon específico (ou shiny) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
+// @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
 // @grant        none
 // ==/UserScript==
@@ -55,51 +55,60 @@
         catch { return ''; }
     }
 
-    // O payload exato pode variar entre versões do jogo, então procuramos
-    // o nome/flags em vários caminhos comuns.
+    // ---- Formato das mensagens do jogo (confirmado) ------------------
+    //
+    //   pending      -> { type:'pending', list:[{ id, pokeId, name, level, shiny, at }] }
+    //                   fila de Pokémon capturáveis; chega a cada abate.
+    //   catch-result -> { type:'catch-result', success, speciesName, shiny, ballName,
+    //                     pendingId?, auto? }   (auto:true = autocatch VIP)
+    //
+    // O catch-result NÃO traz o nível; por isso guardamos a última fila
+    // `pending` e cruzamos pelo pendingId (ou pelo nome) para completar.
+
+    const pendingById = new Map();   // pendingId -> { name, level, shiny }
+    const pendingByName = new Map(); // nome normalizado -> { name, level, shiny }
+
+    function rememberPending(list) {
+        pendingById.clear();
+        pendingByName.clear();
+        for (const p of list) {
+            if (!p || typeof p !== 'object') continue;
+            const entry = { name: p.name, level: p.level ?? null, shiny: Boolean(p.shiny) };
+            if (p.id != null) pendingById.set(String(p.id), entry);
+            if (p.name) pendingByName.set(normalize(p.name), entry);
+        }
+    }
+
     function extractPokemonInfo(message) {
-        const candidates = [
-            message?.pokemon,
-            message?.poke,
-            message?.data?.pokemon,
-            message?.data?.poke,
-            message?.data,
-            message?.result,
-            message,
-        ];
-        for (const obj of candidates) {
-            if (!obj || typeof obj !== 'object') continue;
-            const name = obj.name || obj.pokemonName || obj.slug || obj.species;
-            if (name && typeof name === 'string') {
-                return {
-                    name,
-                    shiny: Boolean(obj.shiny || obj.isShiny || message?.shiny),
-                    level: obj.level ?? obj.lvl ?? null,
-                };
-            }
-        }
-        return null;
+        const name = message.speciesName || message.name || message.pokemon?.name || message.poke?.name;
+        if (!name || typeof name !== 'string') return null;
+        const fromPending =
+            (message.pendingId != null && pendingById.get(String(message.pendingId))) ||
+            pendingByName.get(normalize(name)) || null;
+        return {
+            name,
+            shiny: Boolean(message.shiny || fromPending?.shiny),
+            level: message.level ?? fromPending?.level ?? null,
+            ball: message.ballName || null,
+            auto: message.auto === true,
+        };
     }
 
-    function looksLikeCaptureMessage(message) {
-        const type = normalize(message?.type);
-        if (!type) return false;
-        // 'catch-result' é o tipo conhecido; os demais padrões cobrem variações.
-        return /catch|capture|caught/.test(type);
-    }
+    // ---- Log persistente (para diagnóstico sem abrir o console) --------
+    // Guarda os últimos eventos relevantes em localStorage[LOG_KEY]; o botão
+    // "Copiar log" do painel copia tudo como JSON.
 
-    // Se o payload tiver um campo indicando sucesso/falha, respeitamos.
-    function captureSucceeded(message) {
-        const flags = [
-            message?.success, message?.caught, message?.captured,
-            message?.data?.success, message?.data?.caught,
-            message?.result?.success, message?.result?.caught,
-        ];
-        for (const f of flags) {
-            if (f === false) return false;
-            if (f === true) return true;
-        }
-        return true; // sem campo explícito, assume sucesso
+    const LOG_KEY = 'pgDiscordNotifyLog';
+    const LOG_MAX = 40;
+
+    function logEvent(kind, data) {
+        if (cfg.debug) console.log(TAG, kind, data);
+        try {
+            const arr = JSON.parse(localStorage.getItem(LOG_KEY) || '[]');
+            arr.push({ t: new Date().toISOString(), kind, data });
+            while (arr.length > LOG_MAX) arr.shift();
+            localStorage.setItem(LOG_KEY, JSON.stringify(arr));
+        } catch { /* localStorage indisponível: ignora */ }
     }
 
     // ---- Discord ----------------------------------------------------
@@ -115,7 +124,7 @@
             const key = normalize(info.name) + (info.shiny ? ':shiny' : '');
             const now = Date.now();
             if (now - (lastNotifyAt.get(key) || 0) < cfg.cooldownSeconds * 1000) {
-                if (cfg.debug) console.log(TAG, 'Cooldown ativo, aviso suprimido:', key);
+                logEvent('cooldown', { key });
                 return;
             }
             lastNotifyAt.set(key, now);
@@ -124,6 +133,8 @@
         const mention = cfg.mentionUserId ? `<@${cfg.mentionUserId}> ` : '';
         const shinyTag = info.shiny ? ' ✨ SHINY ✨' : '';
         const levelTxt = info.level != null ? ` (nível ${info.level})` : '';
+        const ballTxt = info.ball ? `\nBola: ${info.ball}` : '';
+        const autoTxt = info.auto ? '\nCaptura automática (VIP)' : '';
         const who = playerName();
 
         const payload = {
@@ -131,7 +142,7 @@
             username: 'Poke Idle World',
             embeds: [{
                 title: `${isTest ? 'Teste: ' : 'Captura: '}${info.name}${shinyTag}`,
-                description: (who ? `Conta: ${who}\n` : '') + `Em ${new Date().toLocaleString('pt-BR')}`,
+                description: (who ? `Conta: ${who}\n` : '') + `Em ${new Date().toLocaleString('pt-BR')}` + ballTxt + autoTxt,
                 color: info.shiny ? 0xffd700 : 0x57f287,
             }],
         };
@@ -141,9 +152,9 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
         }).then(res => {
-            if (!res.ok) console.warn(TAG, 'Discord respondeu com erro:', res.status);
-            else if (cfg.debug || isTest) console.log(TAG, 'Notificação enviada:', info.name);
-        }).catch(err => console.warn(TAG, 'Falha ao enviar webhook:', err));
+            if (!res.ok) { console.warn(TAG, 'Discord respondeu com erro:', res.status); logEvent('webhook-erro', { status: res.status, name: info.name }); }
+            else logEvent('webhook-ok', { name: info.name, test: Boolean(isTest) });
+        }).catch(err => { console.warn(TAG, 'Falha ao enviar webhook:', err); logEvent('webhook-falha', { erro: String(err), name: info.name }); });
     }
 
     // ---- Lógica principal -------------------------------------------
@@ -152,14 +163,22 @@
         let message;
         try { message = JSON.parse(rawData); }
         catch { return; }
-        if (!looksLikeCaptureMessage(message)) return;
+        if (!message || typeof message !== 'object') return;
 
-        if (cfg.debug) console.log(TAG, 'Mensagem de captura detectada:', message);
-        if (!captureSucceeded(message)) return;
+        if (message.type === 'pending' && Array.isArray(message.list)) {
+            rememberPending(message.list);
+            if (cfg.debug) console.log(TAG, 'Fila pending:', message.list);
+            return;
+        }
+
+        if (message.type !== 'catch-result') return;
+
+        logEvent('catch-result', message);
+        if (message.success !== true) return;
 
         const info = extractPokemonInfo(message);
         if (!info) {
-            if (cfg.debug) console.warn(TAG, 'Não consegui extrair o nome do pokémon:', message);
+            logEvent('sem-nome', message);
             return;
         }
 
@@ -172,6 +191,7 @@
             inWatchList ||
             (cfg.notifyShiny && info.shiny);
 
+        logEvent('decisao', { name: info.name, shiny: info.shiny, level: info.level, notificar: shouldNotify });
         if (shouldNotify) sendDiscordNotification(info, false);
     }
 
@@ -195,7 +215,7 @@
                 console.warn(TAG, 'Erro ao processar mensagem:', err);
             }
         });
-        if (cfg.debug) console.log(TAG, 'Socket do jogo rastreado:', ws.url);
+        logEvent('socket', { url: ws.url });
     }
 
     const NativeWebSocket = window.WebSocket;
@@ -263,6 +283,7 @@
             <div style="margin-top:10px;display:flex;gap:6px">
                 <button id="pg-dn-save" style="flex:1;background:#5865f2;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Salvar</button>
                 <button id="pg-dn-test" style="flex:1;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Testar</button>
+                <button id="pg-dn-log" title="Copia os últimos eventos (para diagnóstico)" style="flex:1;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Copiar log</button>
             </div>
             <div id="pg-dn-msg" style="margin-top:6px;color:#8f9;min-height:16px"></div>`;
 
@@ -304,12 +325,20 @@
             setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 4000);
         };
 
+        $('#pg-dn-log').onclick = () => {
+            const txt = localStorage.getItem(LOG_KEY) || '[]';
+            const done = () => { $('#pg-dn-msg').textContent = '📋 Log copiado (cole para quem for diagnosticar).'; };
+            const fail = () => { console.log(TAG, 'LOG:', txt); $('#pg-dn-msg').textContent = '⚠ Não copiou; o log foi impresso no console.'; };
+            (navigator.clipboard?.writeText(txt) || Promise.reject()).then(done, fail);
+            setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 4000);
+        };
+
         // sem webhook configurado ainda: chama atenção pro botão
         if (!cfg.webhookUrl) flashButton();
     }
 
     buildUI();
 
-    console.log(TAG, 'v2.0.2 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v2.1.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny);
 })();

@@ -52,8 +52,14 @@ tráfego (mesma técnica do [PIW-QOL](https://github.com/JulianoCLI/PIW-QOL)) em
 2. **Patch no `WebSocket.prototype.send`** — descobre a conexão que **já estava aberta** quando o
    script foi injetado (o PokeGrid injeta userscripts no `dom-ready`, depois do jogo conectar).
 
-Quando chega uma mensagem de captura (`catch-result`), o script extrai o nome/nível/shiny do
-Pokémon, aplica os filtros configurados e faz um `POST` no webhook do Discord.
+O jogo manda duas mensagens relevantes:
+
+- `pending` — a fila de Pokémon capturáveis (`list[]` com `id`, `name`, `level`, `shiny`), a cada abate;
+- `catch-result` — o resultado da captura (`success`, `speciesName`, `shiny`, `ballName`, `pendingId`;
+  `auto: true` quando foi o autocatch VIP).
+
+O script guarda a última fila `pending`, e quando chega um `catch-result` com `success: true` cruza o
+`pendingId` para descobrir o nível, aplica os filtros configurados e faz um `POST` no webhook do Discord.
 
 ## Segurança
 
@@ -68,7 +74,7 @@ Pokémon, aplica os filtros configurados e faz um `POST` no webhook do Discord.
 | Problema | O que fazer |
 |---|---|
 | Botão 🔔 não aparece | Confirme que o script está ligado em Scripts/Extras e recarregue o painel |
-| Teste funciona, captura real não | Marque **Debug** no painel 🔔, capture algo e veja o console — o payload logado mostra o formato real da mensagem |
+| Teste funciona, captura real não | Capture algo e clique em **Copiar log** no painel 🔔: ele copia os últimos eventos (mensagens `catch-result`, decisão dos filtros, resposta do webhook). Marque **Debug** para ver o mesmo no console |
 | Notificação sem nome da conta | O jogo ainda não carregou `/api/characters/me`; aparece na próxima |
 | Webhook parou de funcionar | Ele pode ter vazado e sido desativado — crie outro no Discord |
 
