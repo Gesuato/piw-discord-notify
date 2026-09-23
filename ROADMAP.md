@@ -69,7 +69,8 @@ no disco se o jogo também o emite sozinho; se sim, dá para reduzir os pedidos.
 limite e `autoBuy` está ligado, `autoBuyBalls` compra via REST (`GET /api/game/shop` para gold/preço,
 `POST /api/game/shop/buy { ballId, qty }` em lotes de 1000, token de `sessionStorage['pokeweb:tokens']`
 com refresh em 401) e avisa o resultado no canal de alertas. Uma tentativa por episódio; rearma quando o
-estoque volta acima do limite ou ao Salvar.
+estoque volta acima do limite ou ao Salvar. **v3.1.1:** com `autoBuy` ligado e `ballsMin` 0, o limite efetivo
+vira 1 (`effectiveBallsMin`) — antes essa combinação desligava a checagem e a conta ficava sem bola sem aviso.
 
 ---
 

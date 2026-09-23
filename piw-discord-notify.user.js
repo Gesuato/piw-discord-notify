@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.1.0
+// @version      3.1.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -247,7 +247,9 @@
     //                então pedimos: ao rastrear o socket, logo após cada captura e
     //                a cada BALLS_POLL_MS.
     // Avisa UMA vez quando a quantidade cruza para baixo de cfg.ballsMin e rearma
-    // quando volta a ficar >= (compra/refil). Tudo desligado se ballsMin = 0.
+    // quando volta a ficar >= (compra/refil). ballsMin = 0 desliga o alerta, MAS se a
+    // compra automática estiver ligada o limite efetivo vira 1 (compra quando acabar):
+    // antes da v3.1.1 essa combinação desligava tudo em silêncio e a conta ficava sem bola.
 
     const BALL_NAMES = { 1: 'Poke Ball', 2: 'Great Ball', 3: 'Super Ball', 4: 'Ultra Ball', 6: 'Idle Ball' };
     const BALLS_POLL_MS = 5 * 60 * 1000;
@@ -260,7 +262,13 @@
     let ballsRequestTimer = null;
 
     function ballName(id) { return BALL_NAMES[id] || `Ball ${id}`; }
-    function ballsEnabled() { return (Number(cfg.ballsMin) || 0) > 0; }
+    // Limite efetivo: o configurado, ou 1 quando só a compra automática está ligada.
+    function effectiveBallsMin() {
+        const min = Number(cfg.ballsMin) || 0;
+        if (min > 0) return min;
+        return cfg.autoBuy ? 1 : 0;
+    }
+    function ballsEnabled() { return effectiveBallsMin() > 0; }
 
     function watchedBallId() {
         if (cfg.ballsWatch && cfg.ballsWatch !== 'auto') return Number(cfg.ballsWatch) || null;
@@ -284,7 +292,7 @@
         }
         ballCounts = counts;
         const id = watchedBallId();
-        logEvent('balls', { counts, monitorando: id, limite: cfg.ballsMin || 0 });
+        logEvent('balls', { counts, monitorando: id, limite: effectiveBallsMin(), autoBuy: Boolean(cfg.autoBuy) });
         checkBallStock();
     }
 
@@ -616,7 +624,7 @@
         if (id == null) return;                 // ainda não sabemos qual bola o autocatch usa
         const qty = ballCounts[id];
         if (qty == null) return;                // o jogo não listou essa bola
-        const min = Number(cfg.ballsMin) || 0;
+        const min = effectiveBallsMin();
         if (qty >= min) { ballAlerted[id] = false; autoBuyAttempted[id] = false; return; }
         if (cfg.autoBuy) {
             if (autoBuyAttempted[id]) return;   // uma tentativa por episódio
@@ -897,7 +905,7 @@
                         <option value="auto">Automática (a do último catch)</option>
                         ${Object.entries(BALL_NAMES).map(([id, n]) => `<option value="${id}">${n}</option>`).join('')}
                     </select></div>
-                <div style="margin-top:4px">Avisar quando restarem menos de (0 = desligado):
+                <div style="margin-top:4px">Avisar quando restarem menos de (0 = desligado; com compra automática, 0 = comprar quando acabar):
                     <input id="pg-dn-ballsmin" type="number" min="0" step="1"
                         style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
                 <div style="margin-top:4px;color:#aaa;font-size:12px">Avisa uma vez ao ficar abaixo do limite e de novo só depois de repor. O estoque é checado após cada captura e a cada 5 min.</div>
@@ -1036,6 +1044,7 @@
             cfg.autoBuy = $('#pg-dn-autobuy').checked;
             cfg.autoBuyQty = Math.min(BUY_MAX_QTY, Math.max(1, parseInt($('#pg-dn-autobuy-qty').value, 10) || 100));
             cfg.autoBuyGoldReserve = Math.max(0, parseInt($('#pg-dn-autobuy-reserve').value, 10) || 0);
+            const avisoCompra = cfg.autoBuy && !cfg.ballsMin ? ' Compra automática com limite 0: compra só quando a bola ACABAR; defina um limite para comprar antes.' : '';
             for (const k of Object.keys(ballAlerted)) delete ballAlerted[k]; // limite mudou: rearma
             for (const k of Object.keys(autoBuyAttempted)) delete autoBuyAttempted[k];
             requestBalls(0);
@@ -1050,8 +1059,8 @@
             cfg.sellItems = readSellList();
             saveHuntProfile();
             saveCfg(cfg);
-            $('#pg-dn-msg').textContent = '✔ Salvo!';
-            setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 2500);
+            $('#pg-dn-msg').textContent = '✔ Salvo!' + avisoCompra;
+            setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, avisoCompra ? 8000 : 2500);
         };
 
         $('#pg-dn-test').onclick = () => {
@@ -1166,10 +1175,10 @@
     setInterval(() => requestBalls(0), BALLS_POLL_MS);
     setInterval(sellTick, SELL_CHECK_MS);
 
-    console.log(TAG, 'v3.1.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v3.1.1 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
         '| raridade mín.:', cfg.minTier || '(nenhuma)', '| poder mín.:', cfg.minIv || 0,
-        '| alerta bolas:', cfg.ballsMin ? `${cfg.ballsWatch} < ${cfg.ballsMin}` : 'desligado',
+        '| alerta bolas:', effectiveBallsMin() ? `${cfg.ballsWatch} < ${effectiveBallsMin()}` : 'desligado',
         '| compra auto:', cfg.autoBuy ? `${cfg.autoBuyQty} un.` : 'não',
         '| venda auto:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens / ${cfg.sellEveryMin}${cfg.sellEveryMaxMin > cfg.sellEveryMin ? `–${cfg.sellEveryMaxMin}` : ''} min` : 'não');
 })();
