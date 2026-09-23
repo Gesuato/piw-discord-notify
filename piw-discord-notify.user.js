@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      2.6.0
+// @version      2.7.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -32,6 +32,9 @@
         autoBuy: false,         // comprar a bola monitorada quando ficar abaixo do limite
         autoBuyQty: 100,        // quantas comprar por vez (1..10000)
         autoBuyGoldReserve: 0,  // nunca deixar o gold abaixo disto
+        sellEnabled: false,     // vender drops marcados da hunt atual periodicamente
+        sellEveryMin: 10,       // intervalo da venda automática (minutos)
+        sellItems: {},          // lista BRANCA: itemId -> { keep: N } (manter pelo menos N)
         mentionUserId: '',      // seu ID de usuário do Discord, opcional
         cooldownSeconds: 0,     // intervalo mínimo (s) entre avisos do mesmo pokémon; 0 = avisar todas
         cfgVersion: 2,
@@ -410,6 +413,152 @@
         requestBalls(1000); // confirma o estoque novo
     }
 
+    // ---- Venda automática de drops da hunt atual ------------------------
+    //   catálogo : GET /game/items.json (público) -> { items:[{ id, name, category, npcPrice, rare }] }
+    //   mochila  : GET /api/game/depot            -> { inventory:[{ id, name, quantity, npcPrice, category }] }
+    //   cadeados : GET /api/game/item/lock        -> { locked:[itemId, ...] }  (o jogo recusa o lote inteiro
+    //                                                 se um item travado entrar nele)
+    //   venda    : POST /api/game/shop/sell { items:[{ itemId, qty }] } -> { ok, soldCount, goldGained, gold }
+    //   hunt     : `enter-hunt { slug }` / `leave-hunt` enviados pelo cliente; `field-kill` traz
+    //              loot:[{ itemId, name, qty }] — é daí que sai a lista "o que cai nesta hunt".
+    // Regras fixas (não configuráveis): só categoria `loot`; nunca `rare: true`, nunca nome com
+    // "Pheromone"/"Stone", nunca preço 0, nunca item com cadeado. Lista BRANCA por item + reserva.
+
+    const ITEMS_CATALOG_URL = '/game/items.json';
+    const DEPOT_URL = '/api/game/depot';
+    const LOCK_URL = '/api/game/item/lock';
+    const SHOP_SELL_URL = '/api/game/shop/sell';
+    const SELL_CHECK_MS = 60 * 1000;
+    const PROTECTED_NAME = /pherom|feromon|stone|pedra/i;
+
+    let huntSlug = null;
+    const huntLoot = new Map();     // itemId -> { name, qty } (acumulado na hunt atual)
+    let itemsCatalog = null;        // Map id -> item do catálogo
+    let sellRunning = false;
+    let lastSellAt = 0;
+    let onHuntLootChange = null;    // callback do painel para redesenhar a lista
+
+    function loadItemsCatalog() {
+        if (itemsCatalog) return Promise.resolve(itemsCatalog);
+        return fetch(ITEMS_CATALOG_URL).then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+            .then(data => {
+                const list = Array.isArray(data) ? data : data?.items;
+                itemsCatalog = new Map((Array.isArray(list) ? list : []).map(i => [Number(i.id), i]));
+                return itemsCatalog;
+            })
+            .catch(err => { logEvent('catalogo-erro', { erro: String(err?.message || err) }); return new Map(); });
+    }
+
+    // Motivo pelo qual um item NÃO pode ser vendido, ou null se pode.
+    function protectedReason(item) {
+        if (!item) return 'desconhecido no catálogo';
+        if (item.category && item.category !== 'loot') return `categoria ${item.category}`;
+        if (item.rare === true) return 'raro';
+        if (PROTECTED_NAME.test(String(item.name || ''))) return 'nome protegido';
+        if (!(Number(item.npcPrice) > 0)) return 'NPC não compra';
+        return null;
+    }
+
+    function setHunt(slug) {
+        const novo = slug ? String(slug) : null;
+        if (novo === huntSlug) return;
+        huntSlug = novo;
+        huntLoot.clear();
+        logEvent('hunt', { slug: huntSlug });
+        if (onHuntLootChange) onHuntLootChange();
+    }
+
+    function handleOutgoing(data) {
+        if (typeof data !== 'string' || data[0] !== '{') return;
+        let m;
+        try { m = JSON.parse(data); } catch { return; }
+        if (m?.type === 'enter-hunt') setHunt(m.slug);
+        else if (m?.type === 'leave-hunt') setHunt(null);
+    }
+
+    function handleFieldKill(message) {
+        if (!Array.isArray(message.loot)) return;
+        let novo = false;
+        for (const l of message.loot) {
+            const id = Number(l?.itemId);
+            if (!Number.isInteger(id) || id <= 0) continue;
+            const cur = huntLoot.get(id);
+            if (cur) cur.qty += Number(l.qty) || 0;
+            else { huntLoot.set(id, { name: String(l.name || `Item ${id}`), qty: Number(l.qty) || 0 }); novo = true; }
+        }
+        if (novo) { loadItemsCatalog(); if (onHuntLootChange) onHuntLootChange(); }
+    }
+
+    // Vende o excedente dos itens marcados que caem na hunt atual. `manual` ignora sellEnabled.
+    async function runSellCycle(manual) {
+        if (sellRunning) return { ok: false, motivo: 'venda já em andamento' };
+        if (!manual && !cfg.sellEnabled) return { ok: false, motivo: 'desligada' };
+        const wanted = Object.keys(cfg.sellItems || {}).map(Number).filter(id => huntLoot.has(id));
+        if (!wanted.length) return { ok: false, motivo: huntSlug ? 'nenhum item marcado caiu nesta hunt' : 'fora de hunt' };
+        sellRunning = true;
+        lastSellAt = Date.now();
+        const who = playerName();
+        const conta = who ? `Conta: ${who}\n` : '';
+        try {
+            const catalog = await loadItemsCatalog();
+            const depot = await gameApi(DEPOT_URL);
+            const inventory = Array.isArray(depot?.inventory) ? depot.inventory : [];
+            let locked = new Set();
+            try { const lk = await gameApi(LOCK_URL); locked = new Set((Array.isArray(lk?.locked) ? lk.locked : []).map(Number)); }
+            catch (err) { logEvent('cadeado-erro', { erro: String(err?.message || err) }); return { ok: false, motivo: 'não consegui ler os cadeados; venda cancelada por segurança' }; }
+
+            const lote = [];
+            for (const inv of inventory) {
+                const id = Number(inv?.id);
+                if (!wanted.includes(id)) continue;
+                if (locked.has(id)) continue;
+                const item = catalog.get(id) || inv;
+                if (protectedReason(item)) continue;
+                const keep = Math.max(0, Number(cfg.sellItems[id]?.keep) || 0);
+                const qty = Math.floor(Number(inv.quantity) || 0) - keep;
+                if (qty <= 0) continue;
+                lote.push({ itemId: id, qty, name: inv.name || item.name || `Item ${id}`, price: Number(inv.npcPrice ?? item.npcPrice) || 0 });
+            }
+            if (!lote.length) { logEvent('venda-nada', { hunt: huntSlug, marcados: wanted }); return { ok: false, motivo: 'nada acima da reserva para vender' }; }
+
+            const r = await gameApi(SHOP_SELL_URL, { method: 'POST', body: JSON.stringify({ items: lote.map(({ itemId, qty }) => ({ itemId, qty })) }) });
+            const ok = r?.ok !== false;
+            const ganho = Number.isFinite(Number(r?.goldGained)) ? Number(r.goldGained) : lote.reduce((a, i) => a + i.qty * i.price, 0);
+            const gold = Number.isFinite(Number(r?.gold)) ? Number(r.gold) : null;
+            const total = lote.reduce((a, i) => a + i.qty, 0);
+            const lista = lote.map(i => `${i.qty}x ${i.name}`).join(', ');
+            logEvent('venda', { hunt: huntSlug, itens: lote.map(i => ({ id: i.itemId, qty: i.qty })), ok, ganho, gold });
+            postWebhook('alert', {
+                content: `💰 ${who ? `**${who}**` : 'Sua conta'} vendeu **${total} ${total === 1 ? 'item' : 'itens'}** por **${ganho.toLocaleString('pt-BR')} gold**`,
+                username: 'Poke Idle World',
+                embeds: [{
+                    title: `Venda automática${huntSlug ? ` (${huntSlug})` : ''}`,
+                    description: conta + lista + (gold != null ? `\nGold agora: ${gold.toLocaleString('pt-BR')}` : '') + `\nEm ${new Date().toLocaleString('pt-BR')}`,
+                    color: ok ? 0x57f287 : 0xfee75c,
+                }],
+            }, { evento: 'venda', total, ganho });
+            return { ok, motivo: ok ? null : 'o jogo não confirmou a venda', total, ganho };
+        } catch (err) {
+            const motivo = String(err?.message || err);
+            logEvent('venda-erro', { hunt: huntSlug, erro: motivo });
+            postWebhook('alert', {
+                content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: a venda automática falhou`,
+                username: 'Poke Idle World',
+                embeds: [{ title: 'Venda falhou', description: conta + `Motivo: ${motivo}\nEm ${new Date().toLocaleString('pt-BR')}`, color: 0xed4245 }],
+            }, { evento: 'venda-falhou' });
+            return { ok: false, motivo };
+        } finally {
+            sellRunning = false;
+        }
+    }
+
+    function sellTick() {
+        if (!cfg.sellEnabled) return;
+        const every = Math.max(1, Number(cfg.sellEveryMin) || 10) * 60 * 1000;
+        if (Date.now() - lastSellAt < every) return;
+        runSellCycle(false);
+    }
+
     function checkBallStock() {
         if (!ballsEnabled()) return;
         const id = watchedBallId();
@@ -547,6 +696,7 @@
         }
 
         if (message.type === 'poke-delta') { handlePokeDelta(message); return; }
+        if (message.type === 'field-kill') { handleFieldKill(message); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
         if (message.type === 'pokes' && Array.isArray(message.list)) { handlePokesList(message.list); return; }
 
@@ -631,6 +781,7 @@
     NativeWebSocket.prototype.send = function (data) {
         trackSocket(this);
         lastSocket = this;
+        try { handleOutgoing(data); } catch (err) { console.warn(TAG, 'Erro ao ler envio:', err); }
         return nativeSend.call(this, data);
     };
 
@@ -710,6 +861,15 @@
                 </div>
                 <div style="margin-top:4px;color:#aaa;font-size:12px">Compra com o gold da conta (mesma loja do NPC). Uma tentativa por vez; se faltar gold ou der erro, avisa e só tenta de novo depois de repor ou salvar.</div>
             </div>
+            <div style="margin-top:8px;padding:8px;border:1px solid #444;border-radius:6px">
+                <b>Venda automática</b> <span style="color:#aaa">(drops da hunt atual → NPC; aviso no webhook de alertas)</span>
+                <label style="display:block;margin-top:4px"><input id="pg-dn-sell" type="checkbox"> Vender automaticamente a cada
+                    <input id="pg-dn-sell-min" type="number" min="1" step="1" style="width:52px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:2px 4px"> min</label>
+                <div id="pg-dn-sell-hunt" style="margin-top:4px;color:#aaa;font-size:12px"></div>
+                <div id="pg-dn-sell-list" style="margin-top:4px;max-height:160px;overflow:auto"></div>
+                <div style="margin-top:4px;color:#aaa;font-size:12px">Marque só o que pode ir embora. Poções, bolas, pedras, feromônios, itens raros e itens com cadeado nunca são vendidos. "Manter" = reserva que fica na mochila.</div>
+                <button id="pg-dn-sell-now" style="margin-top:6px;width:100%;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Vender agora (só os marcados)</button>
+            </div>
             <div style="margin-top:6px">Mencionar (ID do Discord, opcional):
                 <input id="pg-dn-mention" type="text" placeholder="123456789012345678"
                     style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
@@ -728,7 +888,49 @@
         document.body.appendChild(panel);
 
         const $ = (id) => panel.querySelector(id);
+        function renderSellList() {
+            const box = $('#pg-dn-sell-list');
+            const info = $('#pg-dn-sell-hunt');
+            if (!box || !info) return;
+            info.textContent = huntSlug ? `Hunt atual: ${huntSlug}` : 'Fora de hunt — entre numa hunt e cace um pouco; os itens que caírem aparecem aqui.';
+            const ids = [...huntLoot.keys()];
+            if (!ids.length) { box.innerHTML = '<div style="color:#777;font-size:12px">(nenhum drop visto nesta hunt ainda)</div>'; return; }
+            const inp = 'background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:2px 4px';
+            box.innerHTML = ids.map(id => {
+                const loot = huntLoot.get(id);
+                const item = itemsCatalog?.get(id) || null;
+                const motivo = item ? protectedReason(item) : null;
+                const sel = cfg.sellItems?.[id];
+                const price = item ? Number(item.npcPrice) || 0 : null;
+                const esc = (t) => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+                if (motivo) {
+                    return `<div style="display:flex;gap:6px;align-items:center;color:#777;font-size:12px" title="Protegido: ${esc(motivo)}">🔒 ${esc(loot.name)} <span style="margin-left:auto">(${esc(motivo)})</span></div>`;
+                }
+                return `<div data-item-id="${id}" style="display:flex;gap:6px;align-items:center;font-size:12px;margin-top:2px">
+                    <input type="checkbox" class="pg-dn-sell-chk" ${sel ? 'checked' : ''}>
+                    <span style="flex:1">${esc(loot.name)} <span style="color:#aaa">· caiu ${loot.qty}${price != null ? ` · ${price.toLocaleString('pt-BR')} gold` : ''}</span></span>
+                    <span style="color:#aaa">manter</span><input type="number" class="pg-dn-sell-keep" min="0" step="1" value="${sel ? (Number(sel.keep) || 0) : 0}" style="width:56px;${inp}">
+                </div>`;
+            }).join('');
+        }
+        onHuntLootChange = () => { if (panel.style.display !== 'none') renderSellList(); };
+
+        function readSellList() {
+            const out = Object.assign({}, cfg.sellItems || {});
+            for (const row of panel.querySelectorAll('[data-item-id]')) {
+                const id = Number(row.getAttribute('data-item-id'));
+                const checked = row.querySelector('.pg-dn-sell-chk')?.checked;
+                const keep = Math.max(0, parseInt(row.querySelector('.pg-dn-sell-keep')?.value, 10) || 0);
+                if (checked) out[id] = { keep }; else delete out[id];
+            }
+            return out;
+        }
+
         function fill() {
+            $('#pg-dn-sell').checked = Boolean(cfg.sellEnabled);
+            $('#pg-dn-sell-min').value = cfg.sellEveryMin || 10;
+            loadItemsCatalog().then(() => renderSellList());
+            renderSellList();
             $('#pg-dn-hook').value = cfg.webhookUrl;
             $('#pg-dn-hook-shiny').value = cfg.webhookShiny || '';
             $('#pg-dn-hook-alerts').value = cfg.webhookAlerts || '';
@@ -774,6 +976,9 @@
             cfg.cooldownSeconds = Math.max(0, parseInt($('#pg-dn-cooldown').value, 10) || 0);
             cfg.cfgVersion = 2;
             cfg.debug = $('#pg-dn-debug').checked;
+            cfg.sellEnabled = $('#pg-dn-sell').checked;
+            cfg.sellEveryMin = Math.max(1, parseInt($('#pg-dn-sell-min').value, 10) || 10);
+            cfg.sellItems = readSellList();
             saveCfg(cfg);
             $('#pg-dn-msg').textContent = '✔ Salvo!';
             setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 2500);
@@ -827,16 +1032,30 @@
             setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 4000);
         };
 
+        $('#pg-dn-sell-now').onclick = () => {
+            cfg.sellItems = readSellList();
+            saveCfg(cfg);
+            $('#pg-dn-msg').textContent = '⏳ Vendendo...';
+            runSellCycle(true).then(r => {
+                $('#pg-dn-msg').textContent = r.ok
+                    ? `💰 Vendeu ${r.total} itens por ${Number(r.ganho).toLocaleString('pt-BR')} gold.`
+                    : `⚠ Não vendeu: ${r.motivo}`;
+                setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 6000);
+            });
+        };
+
         // sem webhook configurado ainda: chama atenção pro botão
         if (!cfg.webhookUrl) flashButton();
     }
 
     buildUI();
     setInterval(() => requestBalls(0), BALLS_POLL_MS);
+    setInterval(sellTick, SELL_CHECK_MS);
 
-    console.log(TAG, 'v2.6.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v2.7.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
         '| raridade mín.:', cfg.minTier || '(nenhuma)', '| poder mín.:', cfg.minIv || 0,
         '| alerta bolas:', cfg.ballsMin ? `${cfg.ballsWatch} < ${cfg.ballsMin}` : 'desligado',
-        '| compra auto:', cfg.autoBuy ? `${cfg.autoBuyQty} un.` : 'não');
+        '| compra auto:', cfg.autoBuy ? `${cfg.autoBuyQty} un.` : 'não',
+        '| venda auto:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens / ${cfg.sellEveryMin} min` : 'não');
 })();

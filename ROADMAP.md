@@ -73,6 +73,25 @@ estoque volta acima do limite ou ao Salvar.
 
 ---
 
+## ✅ 2b. Venda automática de drops da hunt atual (v2.7.0)
+
+**O que faz:** vende ao NPC, periodicamente, o excedente dos itens que o usuário marcou entre os que
+caem na hunt onde ele está agora.
+
+**Mensagens/REST:** `enter-hunt`/`leave-hunt` (enviados pelo cliente) dão a hunt atual; `field-kill.loot[]`
+dá os itens que caem nela; `GET /game/items.json` (público) traz categoria, `npcPrice` e `rare`;
+`GET /api/game/depot` a mochila; `GET /api/game/item/lock` os cadeados; `POST /api/game/shop/sell
+{ items:[{itemId, qty}] }` vende.
+
+**Regras fixas:** só categoria `loot`; nunca `rare: true`, nome com Pheromone/Stone, preço 0 ou item com
+cadeado. Lista BRANCA (`sellItems: { id: { keep } }`) + reserva por item. Cadeados ilegíveis = venda
+cancelada (o jogo recusa o lote inteiro se um travado entrar).
+
+**Pendências:** o frame `inventory` do WebSocket não é usado (a mochila é lida por REST na hora de
+vender). O shape de `field-kill.loot` veio do piwdex; o script loga `hunt` e `venda` para conferir.
+
+---
+
 ## ⬜ 3. Desconectou / reconectou
 
 **O que faz:** avisa quando o socket do jogo cai e não volta em X minutos, e quando volta.

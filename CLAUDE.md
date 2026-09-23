@@ -64,6 +64,14 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `GET /api/game/shop` → `{ gold, balls:[{id,name,priceGold,catchRate,iconUrl}], items:[...] }`;
   `POST /api/game/shop/buy {ballId, qty}` → `{ ok?, bought, gold }`, máx. 1000 por request.
   NUNCA logar tokens nem gravá-los no `pgDiscordNotifyLog`.
+- Venda: `GET /api/game/depot` → `{ inventory:[{id,name,quantity,npcPrice,category}] }`;
+  `GET /api/game/item/lock` → `{ locked:[id] }`; `POST /api/game/shop/sell {items:[{itemId,qty}]}` →
+  `{ ok, soldCount, goldGained, gold }`. Catálogo público `GET /game/items.json` → `{ items:[{id,name,
+  category,npcPrice,rare,icon}] }` (667 itens; categorias: loot, stone, heal, revive, clan, misc, card,
+  addon, tm, berry, held). `field-kill` → `{ speciesName, shiny, xpGained, level, loot:[{itemId,name,qty}] }`.
+  Cliente envia `enter-hunt {slug}` / `leave-hunt`.
+- Regra de venda (fixa, ver `protectedReason`): só `loot`, nunca `rare`, nunca nome com Pheromone/Stone,
+  nunca preço 0, nunca cadeado. Lista branca por item em `cfg.sellItems`. Não afrouxar sem o usuário pedir.
 - Referências: https://github.com/edulanzarin/piwdex (`src/lib/robo/motor/sessao.ts`, cases
   `catch-result`/`pending`) e https://github.com/luishferreira/poke-standalone-scripts (`AGENTS.md`).
 - Nome do personagem: `window.__poke.api['/api/characters/me'].character.name` (mesmo caminho
