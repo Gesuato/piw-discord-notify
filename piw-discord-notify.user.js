@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      2.1.1
+// @version      2.2.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -99,6 +99,112 @@
         };
     }
 
+    // ---- IV e qualidade do indivíduo capturado -----------------------
+    //
+    // O catch-result não traz IV/qualidade. Esses dados só existem no frame
+    // `pokes` (resposta a `pokes-get`), e o jogo também manda um `poke-delta`
+    // logo depois da captura. Estratégia: ao capturar, esperamos até
+    // DETAILS_TIMEOUT_MS pelo poke-delta; se ele já trouxer ivTotal/quality,
+    // ótimo; senão pedimos `pokes-get` e procuramos o recém-capturado na lista
+    // (pelo id que veio no delta, ou pela espécie com xp 0). Se nada chegar a
+    // tempo, a notificação sai sem esses campos.
+    //
+    // Tabela oficial de faixas (poke.idleworld.online/pokepedia/systems/quality):
+    //   <1.0 Weak · 1.0 Common · 1.1 Uncommon · 1.3 Rare · 1.5 Epic
+    //   1.7 Legendary · 2.0 Mythic · 3.0 Ancient · 4.0 Divine
+
+    const IV_MAX = 192; // 32 por atributo, 6 atributos
+    const DETAILS_TIMEOUT_MS = 4000;
+    const TIERS = [
+        [4.0, 'Divine', 0xf1f5f9], [3.0, 'Ancient', 0xfb923c], [2.0, 'Mythic', 0xe879f9],
+        [1.7, 'Legendary', 0xfbbf24], [1.5, 'Epic', 0xf472b6], [1.3, 'Rare', 0xa78bfa],
+        [1.1, 'Uncommon', 0x38bdf8], [1.0, 'Common', 0x4ade80], [-Infinity, 'Weak', 0x9aa4b2],
+    ];
+    function qualityTier(q) {
+        if (typeof q !== 'number' || !Number.isFinite(q)) return null;
+        const t = TIERS.find(([min]) => q >= min);
+        return { name: t[1], color: t[2] };
+    }
+
+    let lastSocket = null;          // socket mais recente do jogo (para pokes-get)
+    const awaitingDetails = [];     // capturas esperando poke-delta / pokes
+
+    function num(v) { return (typeof v === 'number' && Number.isFinite(v)) ? v : null; }
+
+    function applyPokeDetails(entry, p) {
+        if (!p || typeof p !== 'object') return false;
+        const info = entry.info;
+        if (num(p.ivTotal) != null) info.ivTotal = p.ivTotal;
+        if (num(p.quality) != null) info.quality = p.quality;
+        if (num(p.power) != null) info.power = p.power;
+        if (num(p.level) != null && info.level == null) info.level = p.level;
+        if (p.id != null) entry.pokeId = String(p.id);
+        return info.ivTotal != null || info.quality != null;
+    }
+
+    function finishDetails(entry) {
+        clearTimeout(entry.timer);
+        const i = awaitingDetails.indexOf(entry);
+        if (i >= 0) awaitingDetails.splice(i, 1);
+        entry.resolve(entry.info);
+    }
+
+    function sendGame(obj) {
+        try {
+            if (lastSocket && lastSocket.readyState === 1) {
+                lastSocket.send(JSON.stringify(obj));
+                return true;
+            }
+        } catch (err) { console.warn(TAG, 'Falha ao enviar ao jogo:', err); }
+        return false;
+    }
+
+    function requestPokesOnce(entry) {
+        if (entry.askedPokes) return;
+        entry.askedPokes = true;
+        logEvent('pokes-get', { name: entry.info.name, enviado: sendGame({ type: 'pokes-get' }) });
+    }
+
+    // Devolve uma Promise com `info` completado (ou não) com ivTotal/quality.
+    function withDetails(info) {
+        return new Promise((resolve) => {
+            const entry = { info, resolve, pokeId: null, askedPokes: false, timer: null };
+            entry.timer = setTimeout(() => {
+                logEvent('detalhes-timeout', { name: info.name });
+                finishDetails(entry);
+            }, DETAILS_TIMEOUT_MS);
+            awaitingDetails.push(entry);
+        });
+    }
+
+    function sameSpecies(entry, p) {
+        const n = p?.name || p?.speciesName;
+        return !n || normalize(n) === normalize(entry.info.name);
+    }
+
+    function handlePokeDelta(message) {
+        const poke = message.poke || message;
+        logEvent('poke-delta', message);
+        const entry = awaitingDetails.find(e => sameSpecies(e, poke)) || awaitingDetails[0];
+        if (!entry) return;
+        if (applyPokeDetails(entry, poke)) finishDetails(entry);
+        else requestPokesOnce(entry);
+    }
+
+    function handlePokesList(list) {
+        if (!awaitingDetails.length) return;
+        for (const entry of [...awaitingDetails]) {
+            let match = entry.pokeId != null ? list.find(p => String(p?.id) === entry.pokeId) : null;
+            if (!match) {
+                const same = list.filter(p => p && sameSpecies(entry, p) && p.name);
+                match = same.find(p => p.xp === 0) || same.find(p => p.xp == null) || null;
+            }
+            logEvent('pokes', { name: entry.info.name, total: list.length, achou: match ? { id: match.id, ivTotal: match.ivTotal, quality: match.quality, level: match.level } : null });
+            if (match) applyPokeDetails(entry, match);
+            finishDetails(entry);
+        }
+    }
+
     // ---- Log persistente (para diagnóstico sem abrir o console) --------
     // Guarda os últimos eventos relevantes em localStorage[LOG_KEY]; o botão
     // "Copiar log" do painel copia tudo como JSON.
@@ -140,15 +246,19 @@
         const levelTxt = info.level != null ? ` (nível ${info.level})` : '';
         const ballTxt = info.ball ? `\nBola: ${info.ball}` : '';
         const autoTxt = info.auto ? '\nCaptura automática (VIP)' : '';
+        const tier = qualityTier(info.quality);
+        const ivTxt = info.ivTotal != null ? `\nIV: ${info.ivTotal}/${IV_MAX} (${Math.round(info.ivTotal / IV_MAX * 100)}%)` : '';
+        const qualTxt = info.quality != null ? `\nQualidade: ${info.quality.toFixed(3)}${tier ? ` · ${tier.name}` : ''}` : '';
+        const powerTxt = info.power != null ? `\nPoder: ${info.power}` : '';
         const who = playerName();
 
         const payload = {
             content: `${mention}🎉 ${who ? `**${who}** capturou` : 'Você capturou'} **${info.name}**${levelTxt}!${shinyTag}`,
             username: 'Poke Idle World',
             embeds: [{
-                title: `${isTest ? 'Teste: ' : 'Captura: '}${info.name}${shinyTag}`,
-                description: (who ? `Conta: ${who}\n` : '') + `Em ${new Date().toLocaleString('pt-BR')}` + ballTxt + autoTxt,
-                color: info.shiny ? 0xffd700 : 0x57f287,
+                title: `${isTest ? 'Teste: ' : 'Captura: '}${info.name}${shinyTag}${tier ? ` [${tier.name}]` : ''}`,
+                description: (who ? `Conta: ${who}\n` : '') + `Em ${new Date().toLocaleString('pt-BR')}` + ivTxt + qualTxt + powerTxt + ballTxt + autoTxt,
+                color: info.shiny ? 0xffd700 : (tier ? tier.color : 0x57f287),
             }],
         };
 
@@ -176,6 +286,9 @@
             return;
         }
 
+        if (message.type === 'poke-delta') { handlePokeDelta(message); return; }
+        if (message.type === 'pokes' && Array.isArray(message.list)) { handlePokesList(message.list); return; }
+
         if (message.type !== 'catch-result') return;
 
         logEvent('catch-result', message);
@@ -197,7 +310,7 @@
             (cfg.notifyShiny && info.shiny);
 
         logEvent('decisao', { name: info.name, shiny: info.shiny, level: info.level, notificar: shouldNotify });
-        if (shouldNotify) sendDiscordNotification(info, false);
+        if (shouldNotify) withDetails(info).then(full => sendDiscordNotification(full, false));
     }
 
     // ---- Interceptação do WebSocket (mesmo estilo do PIW-QOL) -------
@@ -220,6 +333,7 @@
                 console.warn(TAG, 'Erro ao processar mensagem:', err);
             }
         });
+        lastSocket = ws;
         logEvent('socket', { url: String(ws.url || '').split('?')[0] });
     }
 
@@ -242,6 +356,7 @@
     const nativeSend = NativeWebSocket.prototype.send;
     NativeWebSocket.prototype.send = function (data) {
         trackSocket(this);
+        lastSocket = this;
         return nativeSend.call(this, data);
     };
 
@@ -331,7 +446,7 @@
 
         $('#pg-dn-test').onclick = () => {
             cfg.webhookUrl = $('#pg-dn-hook').value.trim();
-            sendDiscordNotification({ name: 'Dratini (teste)', shiny: false, level: 5 }, true);
+            sendDiscordNotification({ name: 'Dratini (teste)', shiny: false, level: 5, ivTotal: 150, quality: 1.35, power: 120, ball: 'Ultra Ball' }, true);
             $('#pg-dn-msg').textContent = cfg.webhookUrl ? '📤 Teste enviado, veja o Discord.' : '⚠ Preencha o webhook primeiro.';
             setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 4000);
         };
@@ -363,6 +478,6 @@
 
     buildUI();
 
-    console.log(TAG, 'v2.1.1 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v2.2.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny);
 })();

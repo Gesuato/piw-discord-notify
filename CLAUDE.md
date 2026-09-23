@@ -38,7 +38,16 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
 - `catch-result` → `{ type:'catch-result', success, speciesName, shiny, ballName, pendingId?, auto? }`.
   Não traz nível — o script cruza com a última fila `pending`. `auto: true` = autocatch VIP
   (também conta como captura). Falha vem com `success: false`; cooldown vem como `catch-cooldown`.
-- No sucesso também chega `poke-delta` com `poke.speciesId` e `poke.xp === 0` (não usado).
+- No sucesso também chega `poke-delta` com `poke.{speciesId, xp: 0, ...}` (shape completo ainda não
+  confirmado — o script loga o payload em `pgDiscordNotifyLog`, evento `poke-delta`).
+- IV e qualidade do indivíduo SÓ existem no frame `pokes` (resposta a `{type:'pokes-get'}`):
+  `list[]` com `id, speciesId, name, level, shiny, team, ivTotal (0..192), quality (multiplicador
+  1.0/1.3/1.7...), power, xp, stats{hp,atk,def,spAtk,spDef,speed}`. Faixas oficiais de qualidade:
+  <1.0 Weak, 1.0 Common, 1.1 Uncommon, 1.3 Rare, 1.5 Epic, 1.7 Legendary, 2.0 Mythic, 3.0 Ancient,
+  4.0 Divine (fonte: poke.idleworld.online/pokepedia/systems/quality via piwdex `src/lib/rarity.ts`).
+- Fluxo do script para IV/qualidade: `catch-result` ok → espera até 4s por `poke-delta` → se ele não
+  trouxer `ivTotal`/`quality`, envia `pokes-get` e casa o recém-capturado na lista `pokes` (por `id`
+  do delta ou espécie com `xp === 0`). Sem resposta, notifica sem esses campos.
 - Cliente envia `{ type:'catch', pendingId, ballId }` para capturar.
 - Referências: https://github.com/edulanzarin/piwdex (`src/lib/robo/motor/sessao.ts`, cases
   `catch-result`/`pending`) e https://github.com/luishferreira/poke-standalone-scripts (`AGENTS.md`).
