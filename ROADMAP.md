@@ -183,7 +183,7 @@ Deve continuar funcionando mesmo com o filtro de qualidade ligado (conta tudo, a
 
 ---
 
-## ⬜ 8. Exportar / importar config
+## ✅ 8. Exportar / importar config (v2.9.0)
 
 **O que faz:** copiar a config de um painel e colar em outro (o `localStorage` é por painel).
 
@@ -193,8 +193,9 @@ não suporta) e faz `saveCfg(JSON.parse(texto))` com validação básica.
 
 **Config/UI:** dois botões na linha de Salvar/Testar.
 
-**Pendências:** nenhuma. Atenção: a config exportada contém os webhooks; avisar o usuário para não
-colar em lugar público.
+**Implementado em v2.9.0:** botões Exportar config (copia o JSON de `cfg` com marcador `_piwDiscordNotify`)
+e Importar config (textarea no painel + "Aplicar"; valida JSON e a presença de `webhookUrl`; opção de manter os
+webhooks do painel de destino). A config exportada contém os webhooks — não colar em lugar público.
 
 ---
 

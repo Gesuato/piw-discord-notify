@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      2.8.0
+// @version      2.9.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -927,6 +927,16 @@
                 <button id="pg-dn-test" style="flex:1;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Testar</button>
                 <button id="pg-dn-log" title="Copia os últimos eventos (para diagnóstico)" style="flex:1;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Copiar log</button>
             </div>
+            <div style="margin-top:6px;display:flex;gap:6px">
+                <button id="pg-dn-export" title="Copia toda a configuração deste painel como texto" style="flex:1;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Exportar config</button>
+                <button id="pg-dn-import" title="Cola uma configuração exportada de outro painel" style="flex:1;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Importar config</button>
+            </div>
+            <div id="pg-dn-import-box" style="display:none;margin-top:6px">
+                <textarea id="pg-dn-import-text" rows="4" placeholder="Cole aqui a config exportada"
+                    style="width:100%;box-sizing:border-box;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px;font:12px monospace"></textarea>
+                <label style="display:block;margin-top:2px;font-size:12px"><input id="pg-dn-import-keephooks" type="checkbox"> Manter os webhooks deste painel (importar só o resto)</label>
+                <button id="pg-dn-import-apply" style="margin-top:4px;width:100%;background:#5865f2;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Aplicar config importada</button>
+            </div>
             <div id="pg-dn-msg" style="margin-top:6px;color:#8f9;min-height:16px"></div>`;
 
         document.body.appendChild(btn);
@@ -1062,10 +1072,8 @@
             setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 4000);
         };
 
-        $('#pg-dn-log').onclick = () => {
-            const txt = localStorage.getItem(LOG_KEY) || '[]';
-            const done = () => { $('#pg-dn-msg').textContent = '📋 Log copiado (cole para quem for diagnosticar).'; };
-            const fail = () => { console.log(TAG, 'LOG:', txt); $('#pg-dn-msg').textContent = '⚠ Não copiou; o log foi impresso no console.'; };
+        // Copia texto com fallback (o webview do PokeGrid às vezes nega navigator.clipboard).
+        function copyText(txt) {
             const legacyCopy = () => {
                 try {
                     const ta = document.createElement('textarea');
@@ -1079,8 +1087,53 @@
                 } catch { return false; }
             };
             const clip = navigator.clipboard?.writeText ? navigator.clipboard.writeText(txt) : Promise.reject();
-            clip.then(done, () => (legacyCopy() ? done() : fail()));
-            setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 4000);
+            return clip.then(() => true, () => legacyCopy());
+        }
+        function flash(msg, ms) {
+            $('#pg-dn-msg').textContent = msg;
+            setTimeout(() => { if ($('#pg-dn-msg').textContent === msg) $('#pg-dn-msg').textContent = ''; }, ms || 4000);
+        }
+
+        $('#pg-dn-log').onclick = () => {
+            const txt = localStorage.getItem(LOG_KEY) || '[]';
+            copyText(txt).then(ok => {
+                if (ok) flash('📋 Log copiado (cole para quem for diagnosticar).');
+                else { console.log(TAG, 'LOG:', txt); flash('⚠ Não copiou; o log foi impresso no console.'); }
+            });
+        };
+
+        // ---- Exportar / importar configuração (para copiar entre contas/painéis) ----
+        $('#pg-dn-export').onclick = () => {
+            const txt = JSON.stringify(Object.assign({ _piwDiscordNotify: cfg.cfgVersion || 2 }, cfg));
+            copyText(txt).then(ok => {
+                if (ok) flash('📤 Config copiada. Abra o 🔔 na outra conta, clique em Importar e cole. Atenção: inclui os webhooks.', 7000);
+                else { $('#pg-dn-import-box').style.display = 'block'; $('#pg-dn-import-text').value = txt; flash('⚠ Não copiou; a config apareceu na caixa abaixo — copie de lá.', 7000); }
+            });
+        };
+        $('#pg-dn-import').onclick = () => {
+            const box = $('#pg-dn-import-box');
+            box.style.display = box.style.display === 'none' ? 'block' : 'none';
+            if (box.style.display === 'block') { $('#pg-dn-import-text').value = ''; $('#pg-dn-import-text').focus(); }
+        };
+        $('#pg-dn-import-apply').onclick = () => {
+            let data;
+            try { data = JSON.parse($('#pg-dn-import-text').value.trim()); }
+            catch { flash('⚠ Isso não é uma config válida (JSON inválido).'); return; }
+            if (!data || typeof data !== 'object' || Array.isArray(data) || !('webhookUrl' in data)) { flash('⚠ Isso não parece uma config deste script.'); return; }
+            delete data._piwDiscordNotify;
+            const keepHooks = $('#pg-dn-import-keephooks').checked;
+            const mine = { webhookUrl: cfg.webhookUrl, webhookShiny: cfg.webhookShiny, webhookAlerts: cfg.webhookAlerts };
+            cfg = Object.assign({}, DEFAULTS, data);
+            if (keepHooks) Object.assign(cfg, mine);
+            cfg.cfgVersion = 2;
+            saveCfg(cfg);
+            for (const k of Object.keys(ballAlerted)) delete ballAlerted[k];
+            for (const k of Object.keys(autoBuyAttempted)) delete autoBuyAttempted[k];
+            drawSellDelay();
+            loadHuntProfile();
+            fill();
+            $('#pg-dn-import-box').style.display = 'none';
+            flash('✔ Config importada e salva.');
         };
 
         $('#pg-dn-sell-now').onclick = () => {
@@ -1104,7 +1157,7 @@
     setInterval(() => requestBalls(0), BALLS_POLL_MS);
     setInterval(sellTick, SELL_CHECK_MS);
 
-    console.log(TAG, 'v2.8.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v2.9.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
         '| raridade mín.:', cfg.minTier || '(nenhuma)', '| poder mín.:', cfg.minIv || 0,
         '| alerta bolas:', cfg.ballsMin ? `${cfg.ballsWatch} < ${cfg.ballsMin}` : 'desligado',

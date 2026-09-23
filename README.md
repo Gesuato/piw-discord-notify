@@ -19,6 +19,7 @@ Tampermonkey/Violentmonkey no navegador.
 - ✅ Alerta de **bolas acabando** (limite por bola, checado após cada captura e a cada 5 min)
 - ✅ **Compra automática** de bolas na loja quando o estoque cai (quantidade e reserva de gold configuráveis)
 - ✅ **Venda automática** dos drops da hunt atual que você marcar (lista branca, reserva por item, raros bloqueados)
+- ✅ **Exportar / importar** a configuração entre contas e painéis
 - ✅ Webhooks separados por tipo de evento: capturas, shinys e alertas (cada um pode ir para um canal)
 - ✅ Anti-spam opcional: intervalo mínimo entre avisos do mesmo Pokémon (padrão 0 = avisa todas)
 - ✅ Painel de configurações dentro do jogo (botão 🔔) — nada de editar código
@@ -58,7 +59,9 @@ Tampermonkey/Violentmonkey no navegador.
      **perfil da hunt**: ao voltar para a mesma hunt, o perfil é carregado sozinho.
 5. Clique em **Salvar** e depois em **Testar** — deve chegar uma mensagem no Discord
 
-A configuração fica salva no armazenamento de cada painel — configure em cada painel/conta que for usar.
+A configuração fica salva no armazenamento de cada painel. Para copiar entre contas, use **Exportar config**
+num painel e **Importar config** no outro (a config exportada inclui os webhooks; há uma opção para manter
+os webhooks do painel de destino e importar só o resto).
 Para atualizar o script depois, use o botão **Atualizar** na lista de scripts do PokeGrid.
 
 ### No navegador (Tampermonkey)
