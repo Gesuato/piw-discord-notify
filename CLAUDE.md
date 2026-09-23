@@ -48,7 +48,8 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
 ## Diagnóstico sem console
 
 - O script guarda os últimos 40 eventos em `localStorage.pgDiscordNotifyLog` (socket rastreado,
-  `catch-result` recebidos, decisão dos filtros, cooldown, resposta do webhook). O botão
+  `catch-result` recebidos, decisão dos filtros, cooldown, resposta do webhook). A URL do socket é
+  gravada SEM a query string (ela carrega o JWT da sessão). O botão
   **Copiar log** do painel copia esse JSON.
 - O localStorage de cada painel do PokeGrid fica em disco em
   `%APPDATA%\pokegrid\Partitions\conta{1..4}\Local Storage\leveldb\*.log|*.ldb` (LevelDB;
@@ -62,7 +63,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   público e o Discord desativa webhooks vazados. Toda config do usuário vive no `localStorage`
   (chave `pgDiscordNotifyCfg`), editada pelo painel 🔔 que o próprio script cria.
 - Semântica de filtro: lista de Pokémon VAZIA = notificar toda captura; lista preenchida =
-  só os listados (+ shinys se `notifyShiny`). Cooldown por nome de Pokémon evita spam.
+  só os listados (+ shinys se `notifyShiny`). `cooldownSeconds` (painel) é o intervalo mínimo entre
+  avisos do mesmo Pokémon; padrão 0 = avisar todas. Configs anteriores a `cfgVersion: 2` tinham 30s
+  fixos e são migradas para 0 no `loadCfg()`.
 - Comparações de nome sempre via `normalize()` (minúsculas, sem acento).
 - Idioma: comentários, UI e mensagens em pt-BR (o usuário é brasileiro).
 

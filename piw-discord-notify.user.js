@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      2.1.0
+// @version      2.1.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -24,13 +24,18 @@
         notifyEveryCapture: false,
         notifyShiny: true,
         mentionUserId: '',      // seu ID de usuário do Discord, opcional
-        cooldownSeconds: 30,    // intervalo mínimo entre avisos do mesmo pokémon
+        cooldownSeconds: 0,     // intervalo mínimo (s) entre avisos do mesmo pokémon; 0 = avisar todas
+        cfgVersion: 2,
         debug: false,
     };
 
     function loadCfg() {
-        try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem(LS_KEY) || '{}')); }
-        catch { return Object.assign({}, DEFAULTS); }
+        let saved = {};
+        try { saved = JSON.parse(localStorage.getItem(LS_KEY) || '{}') || {}; } catch { saved = {}; }
+        // Até a v2.1.0 o cooldown era fixo em 30s e não aparecia no painel; ao migrar,
+        // descarta esse valor herdado para valer o novo padrão (0 = avisar todas).
+        if (!saved.cfgVersion || saved.cfgVersion < 2) delete saved.cooldownSeconds;
+        return Object.assign({}, DEFAULTS, saved);
     }
     function saveCfg(cfg) {
         localStorage.setItem(LS_KEY, JSON.stringify(cfg));
@@ -123,7 +128,7 @@
         if (!isTest) {
             const key = normalize(info.name) + (info.shiny ? ':shiny' : '');
             const now = Date.now();
-            if (now - (lastNotifyAt.get(key) || 0) < cfg.cooldownSeconds * 1000) {
+            if (cfg.cooldownSeconds > 0 && now - (lastNotifyAt.get(key) || 0) < cfg.cooldownSeconds * 1000) {
                 logEvent('cooldown', { key });
                 return;
             }
@@ -215,7 +220,7 @@
                 console.warn(TAG, 'Erro ao processar mensagem:', err);
             }
         });
-        logEvent('socket', { url: ws.url });
+        logEvent('socket', { url: String(ws.url || '').split('?')[0] });
     }
 
     const NativeWebSocket = window.WebSocket;
@@ -279,6 +284,9 @@
             <div style="margin-top:6px">Mencionar (ID do Discord, opcional):
                 <input id="pg-dn-mention" type="text" placeholder="123456789012345678"
                     style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
+            <div style="margin-top:6px">Intervalo mínimo entre avisos do mesmo Pokémon (segundos; 0 = avisar todas):
+                <input id="pg-dn-cooldown" type="number" min="0" step="1"
+                    style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
             <label style="display:block;margin-top:6px"><input id="pg-dn-debug" type="checkbox"> Debug (log no console)</label>
             <div style="margin-top:10px;display:flex;gap:6px">
                 <button id="pg-dn-save" style="flex:1;background:#5865f2;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Salvar</button>
@@ -297,6 +305,7 @@
             $('#pg-dn-shiny').checked = cfg.notifyShiny;
             $('#pg-dn-all').checked = cfg.notifyEveryCapture;
             $('#pg-dn-mention').value = cfg.mentionUserId;
+            $('#pg-dn-cooldown').value = cfg.cooldownSeconds;
             $('#pg-dn-debug').checked = cfg.debug;
         }
 
@@ -312,6 +321,8 @@
             cfg.notifyShiny = $('#pg-dn-shiny').checked;
             cfg.notifyEveryCapture = $('#pg-dn-all').checked;
             cfg.mentionUserId = $('#pg-dn-mention').value.trim();
+            cfg.cooldownSeconds = Math.max(0, parseInt($('#pg-dn-cooldown').value, 10) || 0);
+            cfg.cfgVersion = 2;
             cfg.debug = $('#pg-dn-debug').checked;
             saveCfg(cfg);
             $('#pg-dn-msg').textContent = '✔ Salvo!';
@@ -329,7 +340,20 @@
             const txt = localStorage.getItem(LOG_KEY) || '[]';
             const done = () => { $('#pg-dn-msg').textContent = '📋 Log copiado (cole para quem for diagnosticar).'; };
             const fail = () => { console.log(TAG, 'LOG:', txt); $('#pg-dn-msg').textContent = '⚠ Não copiou; o log foi impresso no console.'; };
-            (navigator.clipboard?.writeText(txt) || Promise.reject()).then(done, fail);
+            const legacyCopy = () => {
+                try {
+                    const ta = document.createElement('textarea');
+                    ta.value = txt;
+                    ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    const ok = document.execCommand('copy');
+                    ta.remove();
+                    return ok;
+                } catch { return false; }
+            };
+            const clip = navigator.clipboard?.writeText ? navigator.clipboard.writeText(txt) : Promise.reject();
+            clip.then(done, () => (legacyCopy() ? done() : fail()));
             setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 4000);
         };
 
@@ -339,6 +363,6 @@
 
     buildUI();
 
-    console.log(TAG, 'v2.1.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v2.1.1 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny);
 })();

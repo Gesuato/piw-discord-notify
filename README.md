@@ -14,7 +14,7 @@ Tampermonkey/Violentmonkey no navegador.
 - ✅ Aviso opcional para **qualquer shiny**, mesmo fora da lista
 - ✅ Menção opcional (`@você`) na mensagem do Discord
 - ✅ Mostra qual conta/painel capturou (útil com múltiplos painéis do PokeGrid)
-- ✅ Anti-spam: cooldown de 30s entre avisos do mesmo Pokémon
+- ✅ Anti-spam opcional: intervalo mínimo entre avisos do mesmo Pokémon (padrão 0 = avisa todas)
 - ✅ Painel de configurações dentro do jogo (botão 🔔) — nada de editar código
 - ✅ Somente observa o jogo: não automatiza nada, não envia senha nem dados da conta
 
