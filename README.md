@@ -15,6 +15,7 @@ Tampermonkey/Violentmonkey no navegador.
 - ✅ Menção opcional (`@você`) na mensagem do Discord
 - ✅ Mostra qual conta/painel capturou (útil com múltiplos painéis do PokeGrid)
 - ✅ Poder (X/192) e qualidade (Common, Rare, Epic, Legendary...) do Pokémon capturado, com a cor do embed pela faixa
+- ✅ Filtro por **raridade mínima** (Legendary ou superior, por exemplo) e/ou **poder mínimo**
 - ✅ Anti-spam opcional: intervalo mínimo entre avisos do mesmo Pokémon (padrão 0 = avisa todas)
 - ✅ Painel de configurações dentro do jogo (botão 🔔) — nada de editar código
 - ✅ Somente observa o jogo: não automatiza nada, não envia senha nem dados da conta
@@ -33,6 +34,9 @@ Tampermonkey/Violentmonkey no navegador.
    - **URL do webhook**: crie em Discord → Configurações do canal → Integrações → Webhooks → Novo Webhook → Copiar URL
    - **Pokémon**: nomes separados por vírgula (ex.: `dratini, larvitar`) — ou deixe vazio para avisar toda captura
    - **Avisar todo shiny**: marca para receber aviso de qualquer shiny
+   - **Filtro de qualidade** (opcional): escolha uma **raridade mínima** (ex.: Legendary) e/ou um
+     **poder mínimo** (0–192). Avisa se a raridade for ≥ a escolhida **ou** o poder ≥ o mínimo.
+     Nada marcado = avisa tudo. Shiny sempre avisa se a opção estiver marcada.
 5. Clique em **Salvar** e depois em **Testar** — deve chegar uma mensagem no Discord
 
 A configuração fica salva no armazenamento de cada painel — configure em cada painel/conta que for usar.

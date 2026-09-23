@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      2.2.1
+// @version      2.3.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -23,6 +23,8 @@
         watchList: [],          // nomes em minúsculas, ex.: ['dratini', 'larvitar']
         notifyEveryCapture: false,
         notifyShiny: true,
+        minTier: '',            // raridade mínima ('' = sem filtro): weak, common, ... divine
+        minIv: 0,               // poder mínimo (ivTotal 0..192); 0 = sem filtro
         mentionUserId: '',      // seu ID de usuário do Discord, opcional
         cooldownSeconds: 0,     // intervalo mínimo (s) entre avisos do mesmo pokémon; 0 = avisar todas
         cfgVersion: 2,
@@ -116,15 +118,36 @@
 
     const IV_MAX = 192; // 32 por atributo, 6 atributos
     const DETAILS_TIMEOUT_MS = 4000;
+    // Do mais raro ao mais fraco; `rank` cresce com a raridade.
     const TIERS = [
         [4.0, 'Divine', 0xf1f5f9], [3.0, 'Ancient', 0xfb923c], [2.0, 'Mythic', 0xe879f9],
         [1.7, 'Legendary', 0xfbbf24], [1.5, 'Epic', 0xf472b6], [1.3, 'Rare', 0xa78bfa],
         [1.1, 'Uncommon', 0x38bdf8], [1.0, 'Common', 0x4ade80], [-Infinity, 'Weak', 0x9aa4b2],
-    ];
+    ].map(([min, name, color], i, arr) => ({ min, name, key: name.toLowerCase(), color, rank: arr.length - 1 - i }));
+    const TIERS_ASC = [...TIERS].reverse(); // Weak .. Divine (ordem do <select>)
+
     function qualityTier(q) {
         if (typeof q !== 'number' || !Number.isFinite(q)) return null;
-        const t = TIERS.find(([min]) => q >= min);
-        return { name: t[1], color: t[2] };
+        return TIERS.find(t => q >= t.min);
+    }
+    function tierByKey(key) {
+        return TIERS.find(t => t.key === String(key || '').toLowerCase()) || null;
+    }
+
+    // Filtro de raridade/poder (cfg.minTier / cfg.minIv). Regra:
+    //   - nenhum dos dois configurado           -> passa tudo;
+    //   - raridade >= mínima                    -> passa (independe do poder);
+    //   - senão, poder (ivTotal) >= mínimo      -> passa;
+    //   - sem dados de qualidade (timeout)      -> passa, para não perder um raro.
+    function passesQualityFilter(info) {
+        const minTier = tierByKey(cfg.minTier);
+        const minIv = Number(cfg.minIv) || 0;
+        if (!minTier && minIv <= 0) return { ok: true, motivo: 'sem filtro de qualidade' };
+        const tier = qualityTier(info.quality);
+        if (tier == null && info.ivTotal == null) return { ok: true, motivo: 'sem dados de qualidade' };
+        if (minTier && tier && tier.rank >= minTier.rank) return { ok: true, motivo: `raridade ${tier.name} >= ${minTier.name}` };
+        if (minIv > 0 && info.ivTotal != null && info.ivTotal >= minIv) return { ok: true, motivo: `poder ${info.ivTotal} >= ${minIv}` };
+        return { ok: false, motivo: `abaixo do mínimo (raridade ${tier ? tier.name : '?'}, poder ${info.ivTotal ?? '?'})` };
     }
 
     let lastSocket = null;          // socket mais recente do jogo (para pokes-get)
@@ -301,16 +324,23 @@
         }
 
         const name = normalize(info.name);
-        // lista vazia = notificar qualquer captura
+        // lista vazia = qualquer Pokémon
         const inWatchList = cfg.watchList.length === 0 ||
             cfg.watchList.map(normalize).includes(name);
-        const shouldNotify =
-            cfg.notifyEveryCapture ||
-            inWatchList ||
-            (cfg.notifyShiny && info.shiny);
+        const passesName = cfg.notifyEveryCapture || inWatchList;
+        const isShinyPass = cfg.notifyShiny && info.shiny;
 
-        logEvent('decisao', { name: info.name, shiny: info.shiny, level: info.level, notificar: shouldNotify });
-        if (shouldNotify) withDetails(info).then(full => sendDiscordNotification(full, false));
+        if (!passesName && !isShinyPass) {
+            logEvent('decisao', { name: info.name, shiny: info.shiny, notificar: false, motivo: 'fora da lista' });
+            return;
+        }
+
+        // Raridade/poder só chegam no poke-delta: decide depois dos detalhes.
+        withDetails(info).then(full => {
+            const q = isShinyPass ? { ok: true, motivo: 'shiny' } : passesQualityFilter(full);
+            logEvent('decisao', { name: full.name, shiny: full.shiny, level: full.level, quality: full.quality ?? null, ivTotal: full.ivTotal ?? null, notificar: q.ok, motivo: q.motivo });
+            if (q.ok) sendDiscordNotification(full, false);
+        });
     }
 
     // ---- Interceptação do WebSocket (mesmo estilo do PIW-QOL) -------
@@ -384,7 +414,7 @@
         const panel = document.createElement('div');
         panel.id = 'pg-dn-panel';
         panel.style.cssText = 'position:fixed;bottom:58px;left:12px;z-index:99999;display:none;'
-            + 'width:300px;padding:12px;border-radius:10px;border:1px solid #444;'
+            + 'width:320px;max-height:90vh;overflow:auto;padding:12px;border-radius:10px;border:1px solid #444;'
             + 'background:#2b2d31;color:#eee;font:13px/1.5 sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.5);';
         panel.innerHTML = `
             <b>🔔 Discord Capture Notify</b>
@@ -396,6 +426,18 @@
                     style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
             <label style="display:block;margin-top:6px"><input id="pg-dn-shiny" type="checkbox"> Avisar todo shiny</label>
             <label style="display:block"><input id="pg-dn-all" type="checkbox"> Avisar TODA captura</label>
+            <div style="margin-top:8px;padding:8px;border:1px solid #444;border-radius:6px">
+                <b>Filtro de qualidade</b> <span style="color:#aaa">(nada marcado = avisa tudo)</span>
+                <div style="margin-top:4px">Raridade mínima:
+                    <select id="pg-dn-tier" style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px">
+                        <option value="">(qualquer)</option>
+                        ${TIERS_ASC.map(t => `<option value="${t.key}">${t.name} (${t.min === -Infinity ? '< 1.0' : t.min.toFixed(1) + '+'})</option>`).join('')}
+                    </select></div>
+                <div style="margin-top:4px">Poder mínimo (0–${IV_MAX}; 0 = desligado):
+                    <input id="pg-dn-miniv" type="number" min="0" max="${IV_MAX}" step="1"
+                        style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
+                <div style="margin-top:4px;color:#aaa;font-size:12px">Avisa se a raridade for ≥ a escolhida <b>ou</b> o poder for ≥ o mínimo. Shiny sempre avisa se a opção acima estiver marcada.</div>
+            </div>
             <div style="margin-top:6px">Mencionar (ID do Discord, opcional):
                 <input id="pg-dn-mention" type="text" placeholder="123456789012345678"
                     style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
@@ -419,6 +461,8 @@
             $('#pg-dn-list').value = cfg.watchList.join(', ');
             $('#pg-dn-shiny').checked = cfg.notifyShiny;
             $('#pg-dn-all').checked = cfg.notifyEveryCapture;
+            $('#pg-dn-tier').value = tierByKey(cfg.minTier) ? tierByKey(cfg.minTier).key : '';
+            $('#pg-dn-miniv').value = cfg.minIv || 0;
             $('#pg-dn-mention').value = cfg.mentionUserId;
             $('#pg-dn-cooldown').value = cfg.cooldownSeconds;
             $('#pg-dn-debug').checked = cfg.debug;
@@ -435,6 +479,8 @@
             cfg.watchList = $('#pg-dn-list').value.split(',').map(normalize).filter(Boolean);
             cfg.notifyShiny = $('#pg-dn-shiny').checked;
             cfg.notifyEveryCapture = $('#pg-dn-all').checked;
+            cfg.minTier = $('#pg-dn-tier').value;
+            cfg.minIv = Math.min(IV_MAX, Math.max(0, parseInt($('#pg-dn-miniv').value, 10) || 0));
             cfg.mentionUserId = $('#pg-dn-mention').value.trim();
             cfg.cooldownSeconds = Math.max(0, parseInt($('#pg-dn-cooldown').value, 10) || 0);
             cfg.cfgVersion = 2;
@@ -478,6 +524,7 @@
 
     buildUI();
 
-    console.log(TAG, 'v2.2.1 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
-        '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny);
+    console.log(TAG, 'v2.3.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+        '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
+        '| raridade mín.:', cfg.minTier || '(nenhuma)', '| poder mín.:', cfg.minIv || 0);
 })();

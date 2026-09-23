@@ -77,8 +77,13 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
 - **NUNCA commitar URLs de webhook do Discord** (nem em exemplos com IDs reais). O repo é
   público e o Discord desativa webhooks vazados. Toda config do usuário vive no `localStorage`
   (chave `pgDiscordNotifyCfg`), editada pelo painel 🔔 que o próprio script cria.
-- Semântica de filtro: lista de Pokémon VAZIA = notificar toda captura; lista preenchida =
-  só os listados (+ shinys se `notifyShiny`). `cooldownSeconds` (painel) é o intervalo mínimo entre
+- Semântica de filtro (duas etapas, ver `handleGameMessage` e `passesQualityFilter`):
+  1. Nome: lista VAZIA ou `notifyEveryCapture` = qualquer Pokémon; lista preenchida = só os listados.
+     Shiny com `notifyShiny` passa direto pelas duas etapas.
+  2. Qualidade (decidida DEPOIS do `poke-delta`): `minTier` ('' = sem filtro; chave em minúsculas,
+     ex. `legendary`) e `minIv` (0 = sem filtro; compara com `ivTotal` 0..192). Passa se raridade ≥
+     mínima OU poder ≥ mínimo. Nenhum configurado = passa tudo. Sem dados (timeout do delta) = passa,
+     para não perder um raro. `cooldownSeconds` (painel) é o intervalo mínimo entre
   avisos do mesmo Pokémon; padrão 0 = avisar todas. Configs anteriores a `cfgVersion: 2` tinham 30s
   fixos e são migradas para 0 no `loadCfg()`.
 - Comparações de nome sempre via `normalize()` (minúsculas, sem acento).
