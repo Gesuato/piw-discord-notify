@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      2.7.0
+// @version      2.8.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -33,8 +33,10 @@
         autoBuyQty: 100,        // quantas comprar por vez (1..10000)
         autoBuyGoldReserve: 0,  // nunca deixar o gold abaixo disto
         sellEnabled: false,     // vender drops marcados da hunt atual periodicamente
-        sellEveryMin: 10,       // intervalo da venda automática (minutos)
+        sellEveryMin: 10,       // intervalo mínimo da venda automática (minutos)
+        sellEveryMaxMin: 0,     // intervalo máximo; 0 ou <= mínimo = intervalo fixo. Entre os dois é sorteado
         sellItems: {},          // lista BRANCA: itemId -> { keep: N } (manter pelo menos N)
+        sellProfiles: {},       // por hunt: slug -> { items, everyMin, everyMaxMin } (carregado ao entrar)
         mentionUserId: '',      // seu ID de usuário do Discord, opcional
         cooldownSeconds: 0,     // intervalo mínimo (s) entre avisos do mesmo pokémon; 0 = avisar todas
         cfgVersion: 2,
@@ -436,6 +438,19 @@
     let itemsCatalog = null;        // Map id -> item do catálogo
     let sellRunning = false;
     let lastSellAt = 0;
+    let nextSellDelayMs = 0;        // sorteado a cada ciclo dentro de [sellEveryMin, sellEveryMaxMin]
+
+    function sellIntervalRange() {
+        const min = Math.max(1, Number(cfg.sellEveryMin) || 10);
+        const max = Math.max(min, Number(cfg.sellEveryMaxMin) || 0);
+        return { min, max };
+    }
+    function drawSellDelay() {
+        const { min, max } = sellIntervalRange();
+        const minutos = min + Math.random() * (max - min);
+        nextSellDelayMs = Math.round(minutos * 60 * 1000);
+        return nextSellDelayMs;
+    }
     let onHuntLootChange = null;    // callback do painel para redesenhar a lista
 
     function loadItemsCatalog() {
@@ -459,11 +474,38 @@
         return null;
     }
 
+    // Perfil por hunt: ao entrar numa hunt com perfil salvo, os itens marcados e a faixa de
+    // tempo daquela hunt viram os ativos. Salvar/Vender agora gravam o perfil da hunt atual.
+    function hasHuntProfile() { return Boolean(huntSlug && cfg.sellProfiles && cfg.sellProfiles[huntSlug]); }
+
+    function loadHuntProfile() {
+        if (!huntSlug) return;
+        const prof = cfg.sellProfiles?.[huntSlug];
+        if (!prof) { logEvent('perfil', { slug: huntSlug, salvo: false }); return; }
+        cfg.sellItems = Object.assign({}, prof.items || {});
+        if (prof.everyMin) cfg.sellEveryMin = Math.max(1, Number(prof.everyMin) || 10);
+        cfg.sellEveryMaxMin = Math.max(0, Number(prof.everyMaxMin) || 0);
+        drawSellDelay();
+        saveCfg(cfg);
+        logEvent('perfil', { slug: huntSlug, salvo: true, itens: Object.keys(cfg.sellItems).length, faixa: [cfg.sellEveryMin, cfg.sellEveryMaxMin] });
+    }
+
+    function saveHuntProfile() {
+        if (!huntSlug) return;
+        if (!cfg.sellProfiles || typeof cfg.sellProfiles !== 'object') cfg.sellProfiles = {};
+        cfg.sellProfiles[huntSlug] = {
+            items: Object.assign({}, cfg.sellItems || {}),
+            everyMin: cfg.sellEveryMin,
+            everyMaxMin: cfg.sellEveryMaxMin || 0,
+        };
+    }
+
     function setHunt(slug) {
         const novo = slug ? String(slug) : null;
         if (novo === huntSlug) return;
         huntSlug = novo;
         huntLoot.clear();
+        loadHuntProfile();
         logEvent('hunt', { slug: huntSlug });
         if (onHuntLootChange) onHuntLootChange();
     }
@@ -497,6 +539,7 @@
         if (!wanted.length) return { ok: false, motivo: huntSlug ? 'nenhum item marcado caiu nesta hunt' : 'fora de hunt' };
         sellRunning = true;
         lastSellAt = Date.now();
+        drawSellDelay();
         const who = playerName();
         const conta = who ? `Conta: ${who}\n` : '';
         try {
@@ -554,8 +597,8 @@
 
     function sellTick() {
         if (!cfg.sellEnabled) return;
-        const every = Math.max(1, Number(cfg.sellEveryMin) || 10) * 60 * 1000;
-        if (Date.now() - lastSellAt < every) return;
+        if (!nextSellDelayMs) drawSellDelay();
+        if (Date.now() - lastSellAt < nextSellDelayMs) return;
         runSellCycle(false);
     }
 
@@ -864,7 +907,9 @@
             <div style="margin-top:8px;padding:8px;border:1px solid #444;border-radius:6px">
                 <b>Venda automática</b> <span style="color:#aaa">(drops da hunt atual → NPC; aviso no webhook de alertas)</span>
                 <label style="display:block;margin-top:4px"><input id="pg-dn-sell" type="checkbox"> Vender automaticamente a cada
-                    <input id="pg-dn-sell-min" type="number" min="1" step="1" style="width:52px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:2px 4px"> min</label>
+                    <input id="pg-dn-sell-min" type="number" min="1" step="1" style="width:52px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:2px 4px"> a
+                    <input id="pg-dn-sell-max" type="number" min="0" step="1" style="width:52px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:2px 4px"> min
+                    <span style="color:#aaa;font-size:12px">(sorteado na faixa; deixe o 2º vazio para fixo)</span></label>
                 <div id="pg-dn-sell-hunt" style="margin-top:4px;color:#aaa;font-size:12px"></div>
                 <div id="pg-dn-sell-list" style="margin-top:4px;max-height:160px;overflow:auto"></div>
                 <div style="margin-top:4px;color:#aaa;font-size:12px">Marque só o que pode ir embora. Poções, bolas, pedras, feromônios, itens raros e itens com cadeado nunca são vendidos. "Manter" = reserva que fica na mochila.</div>
@@ -892,7 +937,9 @@
             const box = $('#pg-dn-sell-list');
             const info = $('#pg-dn-sell-hunt');
             if (!box || !info) return;
-            info.textContent = huntSlug ? `Hunt atual: ${huntSlug}` : 'Fora de hunt — entre numa hunt e cace um pouco; os itens que caírem aparecem aqui.';
+            info.textContent = huntSlug
+                ? `Hunt atual: ${huntSlug} — ${hasHuntProfile() ? 'perfil salvo (carregado ao entrar)' : 'sem perfil ainda; Salvar cria um para esta hunt'}`
+                : 'Fora de hunt — entre numa hunt e cace um pouco; os itens que caírem aparecem aqui.';
             const ids = [...huntLoot.keys()];
             if (!ids.length) { box.innerHTML = '<div style="color:#777;font-size:12px">(nenhum drop visto nesta hunt ainda)</div>'; return; }
             const inp = 'background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:2px 4px';
@@ -929,6 +976,7 @@
         function fill() {
             $('#pg-dn-sell').checked = Boolean(cfg.sellEnabled);
             $('#pg-dn-sell-min').value = cfg.sellEveryMin || 10;
+            $('#pg-dn-sell-max').value = cfg.sellEveryMaxMin || '';
             loadItemsCatalog().then(() => renderSellList());
             renderSellList();
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -978,7 +1026,10 @@
             cfg.debug = $('#pg-dn-debug').checked;
             cfg.sellEnabled = $('#pg-dn-sell').checked;
             cfg.sellEveryMin = Math.max(1, parseInt($('#pg-dn-sell-min').value, 10) || 10);
+            cfg.sellEveryMaxMin = Math.max(0, parseInt($('#pg-dn-sell-max').value, 10) || 0);
+            drawSellDelay(); // faixa mudou: sorteia de novo
             cfg.sellItems = readSellList();
+            saveHuntProfile();
             saveCfg(cfg);
             $('#pg-dn-msg').textContent = '✔ Salvo!';
             setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 2500);
@@ -1034,6 +1085,7 @@
 
         $('#pg-dn-sell-now').onclick = () => {
             cfg.sellItems = readSellList();
+            saveHuntProfile();
             saveCfg(cfg);
             $('#pg-dn-msg').textContent = '⏳ Vendendo...';
             runSellCycle(true).then(r => {
@@ -1052,10 +1104,10 @@
     setInterval(() => requestBalls(0), BALLS_POLL_MS);
     setInterval(sellTick, SELL_CHECK_MS);
 
-    console.log(TAG, 'v2.7.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v2.8.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
         '| raridade mín.:', cfg.minTier || '(nenhuma)', '| poder mín.:', cfg.minIv || 0,
         '| alerta bolas:', cfg.ballsMin ? `${cfg.ballsWatch} < ${cfg.ballsMin}` : 'desligado',
         '| compra auto:', cfg.autoBuy ? `${cfg.autoBuyQty} un.` : 'não',
-        '| venda auto:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens / ${cfg.sellEveryMin} min` : 'não');
+        '| venda auto:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens / ${cfg.sellEveryMin}${cfg.sellEveryMaxMin > cfg.sellEveryMin ? `–${cfg.sellEveryMaxMin}` : ''} min` : 'não');
 })();

@@ -51,9 +51,11 @@ Tampermonkey/Violentmonkey no navegador.
      webhook de alertas o que comprou (ou por que falhou). Uma tentativa por episódio de estoque baixo.
    - **Venda automática** (opcional): entre numa hunt e cace um pouco; os drops que caírem aparecem no
      painel com preço do NPC. Marque só o que pode ser vendido (lista branca) e, se quiser, um "manter"
-     de reserva. A cada N minutos o script vende o excedente dos marcados e avisa no webhook de alertas.
+     de reserva. A cada N minutos (ou num intervalo sorteado entre X e Y minutos, se você preencher os
+     dois campos) o script vende o excedente dos marcados e avisa no webhook de alertas.
      Poções, bolas, pedras, feromônios, itens raros e itens com cadeado no jogo nunca são vendidos.
-     O botão **Vender agora** vende os marcados na hora.
+     O botão **Vender agora** vende os marcados na hora. As marcações e a faixa de tempo são salvas como
+     **perfil da hunt**: ao voltar para a mesma hunt, o perfil é carregado sozinho.
 5. Clique em **Salvar** e depois em **Testar** — deve chegar uma mensagem no Discord
 
 A configuração fica salva no armazenamento de cada painel — configure em cada painel/conta que for usar.

@@ -72,6 +72,8 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   Cliente envia `enter-hunt {slug}` / `leave-hunt`.
 - Regra de venda (fixa, ver `protectedReason`): só `loot`, nunca `rare`, nunca nome com Pheromone/Stone,
   nunca preço 0, nunca cadeado. Lista branca por item em `cfg.sellItems`. Não afrouxar sem o usuário pedir.
+- `cfg.sellItems`/`sellEveryMin`/`sellEveryMaxMin` são os valores ATIVOS; `cfg.sellProfiles[slug]` guarda o
+  perfil de cada hunt e sobrescreve os ativos em `setHunt()` (ver `loadHuntProfile`/`saveHuntProfile`).
 - Referências: https://github.com/edulanzarin/piwdex (`src/lib/robo/motor/sessao.ts`, cases
   `catch-result`/`pending`) e https://github.com/luishferreira/poke-standalone-scripts (`AGENTS.md`).
 - Nome do personagem: `window.__poke.api['/api/characters/me'].character.name` (mesmo caminho
