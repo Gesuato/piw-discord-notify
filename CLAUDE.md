@@ -58,6 +58,12 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
 - `balls` → `{ type:'balls', counts:{ '<ballId>': qty } }`, resposta a `{ type:'balls-get' }`. IDs:
   Poke Ball 1, Great Ball 2, Super Ball 3, Ultra Ball 4, Idle Ball 6. O `catch-result` traz `ballId`
   e `ballName` da bola em uso (o script usa isso como bola "automática" do alerta de estoque).
+- REST do jogo (usado pela compra automática; confirmado no auto-refill de referência e no piwdex):
+  tokens em `sessionStorage['pokeweb:tokens']` (`{accessToken, refreshToken}`), header
+  `Authorization: Bearer`, renovação em `POST /api/auth/refresh {refreshToken}` quando vier 401.
+  `GET /api/game/shop` → `{ gold, balls:[{id,name,priceGold,catchRate,iconUrl}], items:[...] }`;
+  `POST /api/game/shop/buy {ballId, qty}` → `{ ok?, bought, gold }`, máx. 1000 por request.
+  NUNCA logar tokens nem gravá-los no `pgDiscordNotifyLog`.
 - Referências: https://github.com/edulanzarin/piwdex (`src/lib/robo/motor/sessao.ts`, cases
   `catch-result`/`pending`) e https://github.com/luishferreira/poke-standalone-scripts (`AGENTS.md`).
 - Nome do personagem: `window.__poke.api['/api/characters/me'].character.name` (mesmo caminho

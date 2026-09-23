@@ -65,6 +65,12 @@ de bola (`ballsWatch`, 'auto' = bola do último `catch-result`) + limite (`balls
 `counts` com chaves string ou número. O frame `balls` é gravado no log (`kind: 'balls'`) — conferir
 no disco se o jogo também o emite sozinho; se sim, dá para reduzir os pedidos.
 
+**Compra automática (v2.6.0):** `autoBuy`, `autoBuyQty`, `autoBuyGoldReserve`. Quando o estoque cruza o
+limite e `autoBuy` está ligado, `autoBuyBalls` compra via REST (`GET /api/game/shop` para gold/preço,
+`POST /api/game/shop/buy { ballId, qty }` em lotes de 1000, token de `sessionStorage['pokeweb:tokens']`
+com refresh em 401) e avisa o resultado no canal de alertas. Uma tentativa por episódio; rearma quando o
+estoque volta acima do limite ou ao Salvar.
+
 ---
 
 ## ⬜ 3. Desconectou / reconectou

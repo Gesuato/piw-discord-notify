@@ -17,6 +17,7 @@ Tampermonkey/Violentmonkey no navegador.
 - ✅ Poder (X/192) e qualidade (Common, Rare, Epic, Legendary...) do Pokémon capturado, com a cor do embed pela faixa
 - ✅ Filtro por **raridade mínima** (Legendary ou superior, por exemplo) e/ou **poder mínimo**
 - ✅ Alerta de **bolas acabando** (limite por bola, checado após cada captura e a cada 5 min)
+- ✅ **Compra automática** de bolas na loja quando o estoque cai (quantidade e reserva de gold configuráveis)
 - ✅ Webhooks separados por tipo de evento: capturas, shinys e alertas (cada um pode ir para um canal)
 - ✅ Anti-spam opcional: intervalo mínimo entre avisos do mesmo Pokémon (padrão 0 = avisa todas)
 - ✅ Painel de configurações dentro do jogo (botão 🔔) — nada de editar código
@@ -44,6 +45,9 @@ Tampermonkey/Violentmonkey no navegador.
    - **Alerta de bolas** (opcional): escolha a bola (ou "Automática", a do último catch) e um limite.
      Quando o estoque ficar abaixo dele chega um aviso no webhook de alertas (ou no principal, se vazio).
      Avisa uma vez e só repete depois de repor. O estoque é checado após cada captura e a cada 5 min.
+   - **Comprar automaticamente** (opcional, dentro do alerta de bolas): em vez de só avisar, compra a
+     quantidade escolhida na loja do NPC com o gold da conta, respeitando a reserva de gold. Avisa no
+     webhook de alertas o que comprou (ou por que falhou). Uma tentativa por episódio de estoque baixo.
 5. Clique em **Salvar** e depois em **Testar** — deve chegar uma mensagem no Discord
 
 A configuração fica salva no armazenamento de cada painel — configure em cada painel/conta que for usar.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      2.5.0
+// @version      2.6.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -29,6 +29,9 @@
         minIv: 0,               // poder mínimo (ivTotal 0..192); 0 = sem filtro
         ballsMin: 0,            // alerta quando a bola monitorada ficar abaixo disto; 0 = desligado
         ballsWatch: 'auto',     // 'auto' = bola do último catch-result, ou o id da bola ('4')
+        autoBuy: false,         // comprar a bola monitorada quando ficar abaixo do limite
+        autoBuyQty: 100,        // quantas comprar por vez (1..10000)
+        autoBuyGoldReserve: 0,  // nunca deixar o gold abaixo disto
         mentionUserId: '',      // seu ID de usuário do Discord, opcional
         cooldownSeconds: 0,     // intervalo mínimo (s) entre avisos do mesmo pokémon; 0 = avisar todas
         cfgVersion: 2,
@@ -280,6 +283,133 @@
         checkBallStock();
     }
 
+    // ---- Compra automática (REST, mesma API que o jogo usa) --------------
+    //   tokens : sessionStorage['pokeweb:tokens'] = { accessToken, refreshToken }
+    //   loja   : GET  /api/game/shop      -> { gold, balls:[{ id, name, priceGold }], items:[...] }
+    //   compra : POST /api/game/shop/buy  { ballId, qty } -> { ok?, bought, gold }
+    //   401    : POST /api/auth/refresh   { refreshToken } -> tokens novos
+    // Lotes de no máximo 1000 por request. Uma tentativa por episódio de estoque
+    // baixo; rearma quando o estoque volta acima do limite (ou ao Salvar).
+    // NUNCA logar os tokens.
+
+    const GAME_TOKENS_KEY = 'pokeweb:tokens';
+    const SHOP_URL = '/api/game/shop';
+    const SHOP_BUY_URL = '/api/game/shop/buy';
+    const AUTH_REFRESH_URL = '/api/auth/refresh';
+    const BUY_MAX_QTY = 10000;
+    const BUY_BATCH_QTY = 1000;
+
+    const autoBuyAttempted = {};    // ballId -> true após tentar comprar neste episódio
+    let autoBuyRunning = false;
+
+    function getGameTokens() {
+        try { return JSON.parse(sessionStorage.getItem(GAME_TOKENS_KEY) || 'null'); }
+        catch { return null; }
+    }
+
+    async function refreshGameToken() {
+        const tokens = getGameTokens();
+        if (!tokens?.refreshToken) return null;
+        const res = await fetch(AUTH_REFRESH_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refreshToken: tokens.refreshToken }),
+        });
+        if (!res.ok) return null;
+        const novo = await res.json().catch(() => null);
+        if (!novo?.accessToken) return null;
+        try { sessionStorage.setItem(GAME_TOKENS_KEY, JSON.stringify(novo)); } catch { /* ignora */ }
+        return novo.accessToken;
+    }
+
+    async function gameApi(url, options) {
+        const opts = options || {};
+        const send = (token) => fetch(url, Object.assign({}, opts, {
+            headers: Object.assign(
+                {},
+                opts.body ? { 'Content-Type': 'application/json' } : {},
+                token ? { Authorization: `Bearer ${token}` } : {},
+                opts.headers || {},
+            ),
+        }));
+        let res = await send(getGameTokens()?.accessToken);
+        if (res.status === 401) {
+            const token = await refreshGameToken();
+            if (token) res = await send(token);
+        }
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body?.message || `HTTP ${res.status}`);
+        return body;
+    }
+
+    // Compra `qty` da bola `id`. Devolve { ok, bought, spent, gold, motivo }.
+    async function buyBalls(id, qty) {
+        const shop = await gameApi(SHOP_URL);
+        const product = (Array.isArray(shop?.balls) ? shop.balls : []).find(b => Number(b?.id) === Number(id));
+        const price = Number(product?.priceGold);
+        let gold = Number(shop?.gold);
+        if (!product || !Number.isFinite(price) || price <= 0) return { ok: false, bought: 0, spent: 0, gold, motivo: 'bola não está à venda na loja' };
+        if (!Number.isFinite(gold)) return { ok: false, bought: 0, spent: 0, gold: null, motivo: 'loja não informou o gold' };
+        if (product.name) BALL_NAMES[Number(id)] = product.name;
+
+        const reserve = Math.max(0, Number(cfg.autoBuyGoldReserve) || 0);
+        let remaining = Math.min(BUY_MAX_QTY, Math.max(1, Math.floor(Number(qty) || 0)));
+        let bought = 0, spent = 0, motivo = null;
+        while (remaining > 0) {
+            const batch = Math.min(BUY_BATCH_QTY, remaining);
+            if (gold - price * batch < reserve) {
+                motivo = `gold insuficiente (tem ${gold.toLocaleString('pt-BR')}, precisa ${(price * batch + reserve).toLocaleString('pt-BR')})`;
+                break;
+            }
+            let r;
+            try { r = await gameApi(SHOP_BUY_URL, { method: 'POST', body: JSON.stringify({ ballId: Number(id), qty: batch }) }); }
+            catch (err) { motivo = `erro na compra: ${err?.message || err}`; break; }
+            const got = Math.max(0, Math.floor(Number(r?.bought) || 0));
+            bought += Math.min(batch, got);
+            spent += price * Math.min(batch, got);
+            if (Number.isFinite(Number(r?.gold))) gold = Number(r.gold);
+            if (r?.ok === false || got !== batch) { motivo = 'o jogo confirmou só parte do lote'; break; }
+            remaining -= batch;
+        }
+        return { ok: remaining === 0, bought, spent, gold, motivo };
+    }
+
+    async function autoBuyBalls(id, qty, min) {
+        if (autoBuyRunning) return;
+        autoBuyRunning = true;
+        const who = playerName();
+        const mention = cfg.mentionUserId ? `<@${cfg.mentionUserId}> ` : '';
+        const conta = who ? `Conta: ${who}\n` : '';
+        let r;
+        try { r = await buyBalls(id, cfg.autoBuyQty); }
+        catch (err) { r = { ok: false, bought: 0, spent: 0, gold: null, motivo: `erro: ${err?.message || err}` }; }
+        finally { autoBuyRunning = false; }
+        logEvent('compra', { ballId: id, qtyAntes: qty, pedido: cfg.autoBuyQty, comprado: r.bought, gasto: r.spent, gold: r.gold, motivo: r.motivo });
+        const goldTxt = r.gold != null ? `\nGold agora: ${Number(r.gold).toLocaleString('pt-BR')}` : '';
+        if (r.bought > 0) {
+            postWebhook('alert', {
+                content: `${mention}🛒 ${who ? `**${who}**` : 'Sua conta'} comprou **${r.bought} ${ballName(id)}** (estava com ${qty})${r.ok ? '' : ' — compra parcial'}`,
+                username: 'Poke Idle World',
+                embeds: [{
+                    title: `${r.ok ? 'Compra automática: ' : 'Compra parcial: '}${r.bought} ${ballName(id)}`,
+                    description: conta + `Gasto: ${r.spent.toLocaleString('pt-BR')} gold` + goldTxt + (r.motivo ? `\nObs.: ${r.motivo}` : '') + `\nEm ${new Date().toLocaleString('pt-BR')}`,
+                    color: r.ok ? 0x57f287 : 0xfee75c,
+                }],
+            }, { evento: 'compra', ballId: id, bought: r.bought });
+        } else {
+            postWebhook('alert', {
+                content: `${mention}⚠️ ${who ? `**${who}**` : 'Sua conta'} está com pouca **${ballName(id)}** (${qty}) e a compra automática falhou`,
+                username: 'Poke Idle World',
+                embeds: [{
+                    title: `Compra falhou: ${ballName(id)}`,
+                    description: conta + `Restam ${qty} (limite ${min})\nMotivo: ${r.motivo || 'desconhecido'}` + goldTxt + `\nEm ${new Date().toLocaleString('pt-BR')}`,
+                    color: 0xed4245,
+                }],
+            }, { evento: 'compra-falhou', ballId: id, qty });
+        }
+        requestBalls(1000); // confirma o estoque novo
+    }
+
     function checkBallStock() {
         if (!ballsEnabled()) return;
         const id = watchedBallId();
@@ -287,7 +417,13 @@
         const qty = ballCounts[id];
         if (qty == null) return;                // o jogo não listou essa bola
         const min = Number(cfg.ballsMin) || 0;
-        if (qty >= min) { ballAlerted[id] = false; return; }
+        if (qty >= min) { ballAlerted[id] = false; autoBuyAttempted[id] = false; return; }
+        if (cfg.autoBuy) {
+            if (autoBuyAttempted[id]) return;   // uma tentativa por episódio
+            autoBuyAttempted[id] = true;
+            autoBuyBalls(id, qty, min);
+            return;
+        }
         if (ballAlerted[id]) return;            // já avisado; espera repor
         ballAlerted[id] = true;
         const who = playerName();
@@ -563,6 +699,16 @@
                     <input id="pg-dn-ballsmin" type="number" min="0" step="1"
                         style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
                 <div style="margin-top:4px;color:#aaa;font-size:12px">Avisa uma vez ao ficar abaixo do limite e de novo só depois de repor. O estoque é checado após cada captura e a cada 5 min.</div>
+                <label style="display:block;margin-top:6px"><input id="pg-dn-autobuy" type="checkbox"> Comprar automaticamente na loja em vez de só avisar</label>
+                <div style="display:flex;gap:6px;margin-top:4px">
+                    <div style="flex:1">Quantidade por compra:
+                        <input id="pg-dn-autobuy-qty" type="number" min="1" max="${BUY_MAX_QTY}" step="1"
+                            style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
+                    <div style="flex:1">Reserva de gold:
+                        <input id="pg-dn-autobuy-reserve" type="number" min="0" step="1000"
+                            style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
+                </div>
+                <div style="margin-top:4px;color:#aaa;font-size:12px">Compra com o gold da conta (mesma loja do NPC). Uma tentativa por vez; se faltar gold ou der erro, avisa e só tenta de novo depois de repor ou salvar.</div>
             </div>
             <div style="margin-top:6px">Mencionar (ID do Discord, opcional):
                 <input id="pg-dn-mention" type="text" placeholder="123456789012345678"
@@ -593,6 +739,9 @@
             $('#pg-dn-miniv').value = cfg.minIv || 0;
             $('#pg-dn-ball').value = cfg.ballsWatch || 'auto';
             $('#pg-dn-ballsmin').value = cfg.ballsMin || 0;
+            $('#pg-dn-autobuy').checked = Boolean(cfg.autoBuy);
+            $('#pg-dn-autobuy-qty').value = cfg.autoBuyQty || 100;
+            $('#pg-dn-autobuy-reserve').value = cfg.autoBuyGoldReserve || 0;
             $('#pg-dn-mention').value = cfg.mentionUserId;
             $('#pg-dn-cooldown').value = cfg.cooldownSeconds;
             $('#pg-dn-debug').checked = cfg.debug;
@@ -615,7 +764,11 @@
             cfg.minIv = Math.min(IV_MAX, Math.max(0, parseInt($('#pg-dn-miniv').value, 10) || 0));
             cfg.ballsWatch = $('#pg-dn-ball').value || 'auto';
             cfg.ballsMin = Math.max(0, parseInt($('#pg-dn-ballsmin').value, 10) || 0);
+            cfg.autoBuy = $('#pg-dn-autobuy').checked;
+            cfg.autoBuyQty = Math.min(BUY_MAX_QTY, Math.max(1, parseInt($('#pg-dn-autobuy-qty').value, 10) || 100));
+            cfg.autoBuyGoldReserve = Math.max(0, parseInt($('#pg-dn-autobuy-reserve').value, 10) || 0);
             for (const k of Object.keys(ballAlerted)) delete ballAlerted[k]; // limite mudou: rearma
+            for (const k of Object.keys(autoBuyAttempted)) delete autoBuyAttempted[k];
             requestBalls(0);
             cfg.mentionUserId = $('#pg-dn-mention').value.trim();
             cfg.cooldownSeconds = Math.max(0, parseInt($('#pg-dn-cooldown').value, 10) || 0);
@@ -681,8 +834,9 @@
     buildUI();
     setInterval(() => requestBalls(0), BALLS_POLL_MS);
 
-    console.log(TAG, 'v2.5.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v2.6.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
         '| raridade mín.:', cfg.minTier || '(nenhuma)', '| poder mín.:', cfg.minIv || 0,
-        '| alerta bolas:', cfg.ballsMin ? `${cfg.ballsWatch} < ${cfg.ballsMin}` : 'desligado');
+        '| alerta bolas:', cfg.ballsMin ? `${cfg.ballsWatch} < ${cfg.ballsMin}` : 'desligado',
+        '| compra auto:', cfg.autoBuy ? `${cfg.autoBuyQty} un.` : 'não');
 })();
