@@ -70,8 +70,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   category,npcPrice,rare,icon}] }` (667 itens; categorias: loot, stone, heal, revive, clan, misc, card,
   addon, tm, berry, held). `field-kill` → `{ speciesName, shiny, xpGained, level, loot:[{itemId,name,qty}] }`.
   Cliente envia `enter-hunt {slug}` / `leave-hunt`.
-- Regra de venda (fixa, ver `protectedReason`): só `loot`, nunca `rare`, nunca nome com Pheromone/Stone,
-  nunca preço 0, nunca cadeado. Lista branca por item em `cfg.sellItems`. Não afrouxar sem o usuário pedir.
+- Regra de venda (ver `protectedReason` e `sellWarning`): desde a v3.1.0, a pedido do usuário, só preço 0
+  (NPC não compra) e cadeado do jogo bloqueiam; categoria fora de `loot`, `rare` e nome com Pheromone/Stone
+  viram aviso ⚠️ na lista, mas podem ser marcados. Lista branca por item em `cfg.sellItems`. Não voltar a
+  bloquear sem o usuário pedir.
 - `cfg.sellItems`/`sellEveryMin`/`sellEveryMaxMin` são os valores ATIVOS; `cfg.sellProfiles[slug]` guarda o
   perfil de cada hunt e sobrescreve os ativos em `setHunt()` (ver `loadHuntProfile`/`saveHuntProfile`).
 - Referências: https://github.com/edulanzarin/piwdex (`src/lib/robo/motor/sessao.ts`, cases

@@ -83,8 +83,9 @@ dá os itens que caem nela; `GET /game/items.json` (público) traz categoria, `n
 `GET /api/game/depot` a mochila; `GET /api/game/item/lock` os cadeados; `POST /api/game/shop/sell
 { items:[{itemId, qty}] }` vende.
 
-**Regras fixas:** só categoria `loot`; nunca `rare: true`, nome com Pheromone/Stone, preço 0 ou item com
-cadeado. Lista BRANCA (`sellItems: { id: { keep } }`) + reserva por item. Intervalo `sellEveryMin` a
+**Regras fixas:** nunca preço 0 nem item com cadeado do jogo. Desde a v3.1.0 (pedido do usuário) categoria
+fora de `loot`, `rare: true` e nome com Pheromone/Stone só mostram aviso ⚠️ e podem ser marcados. Lista
+BRANCA (`sellItems: { id: { keep } }`) + reserva por item. Intervalo `sellEveryMin` a
 `sellEveryMaxMin` (v2.8.0): sorteado a cada ciclo; máximo 0 ou ≤ mínimo = fixo. Perfis por hunt em
 `sellProfiles[slug] = { items, everyMin, everyMaxMin }`: carregados em `setHunt`, gravados em Salvar/Vender agora. Cadeados ilegíveis = venda
 cancelada (o jogo recusa o lote inteiro se um travado entrar).

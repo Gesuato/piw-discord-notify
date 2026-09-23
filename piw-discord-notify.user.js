@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.0.1
+// @version      3.1.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -423,8 +423,10 @@
     //   venda    : POST /api/game/shop/sell { items:[{ itemId, qty }] } -> { ok, soldCount, goldGained, gold }
     //   hunt     : `enter-hunt { slug }` / `leave-hunt` enviados pelo cliente; `field-kill` traz
     //              loot:[{ itemId, name, qty }] — é daí que sai a lista "o que cai nesta hunt".
-    // Regras fixas (não configuráveis): só categoria `loot`; nunca `rare: true`, nunca nome com
-    // "Pheromone"/"Stone", nunca preço 0, nunca item com cadeado. Lista BRANCA por item + reserva.
+    // Regras fixas (não configuráveis): nunca preço 0 (o NPC não compra) e nunca item com cadeado
+    // do jogo (o lote inteiro seria recusado). Todo o resto é lista BRANCA por item + reserva: o
+    // usuário escolhe; itens de outra categoria, raros ou com nome sensível só ganham um aviso ⚠️
+    // na lista (a pedido do usuário, v3.1.0 — antes ficavam com 🔒 e não podiam ser marcados).
 
     const ITEMS_CATALOG_URL = '/game/items.json';
     const DEPOT_URL = '/api/game/depot';
@@ -464,13 +466,19 @@
             .catch(err => { logEvent('catalogo-erro', { erro: String(err?.message || err) }); return new Map(); });
     }
 
-    // Motivo pelo qual um item NÃO pode ser vendido, ou null se pode.
+    // Motivo pelo qual um item NÃO pode ser vendido de jeito nenhum, ou null se pode.
     function protectedReason(item) {
-        if (!item) return 'desconhecido no catálogo';
+        if (!item) return null;                       // fora do catálogo: a mochila ainda traz npcPrice
+        if (!(Number(item.npcPrice) > 0)) return 'NPC não compra';
+        return null;
+    }
+
+    // Aviso (não bloqueia) para itens que merecem atenção antes de marcar para venda.
+    function sellWarning(item) {
+        if (!item) return 'fora do catálogo';
         if (item.category && item.category !== 'loot') return `categoria ${item.category}`;
         if (item.rare === true) return 'raro';
-        if (PROTECTED_NAME.test(String(item.name || ''))) return 'nome protegido';
-        if (!(Number(item.npcPrice) > 0)) return 'NPC não compra';
+        if (PROTECTED_NAME.test(String(item.name || ''))) return 'pedra/feromônio';
         return null;
     }
 
@@ -912,7 +920,7 @@
                     <span style="color:#aaa;font-size:12px">(sorteado na faixa; deixe o 2º vazio para fixo)</span></label>
                 <div id="pg-dn-sell-hunt" style="margin-top:4px;color:#aaa;font-size:12px"></div>
                 <div id="pg-dn-sell-list" style="margin-top:4px;max-height:160px;overflow:auto"></div>
-                <div style="margin-top:4px;color:#aaa;font-size:12px">Marque só o que pode ir embora. Poções, bolas, pedras, feromônios, itens raros e itens com cadeado nunca são vendidos. "Manter" = reserva que fica na mochila.</div>
+                <div style="margin-top:4px;color:#aaa;font-size:12px">Marque só o que pode ir embora: tudo que está marcado é vendido. ⚠️ = item raro, pedra/feromônio ou de outra categoria (confira antes). Só itens com cadeado no jogo ou que o NPC não compra ficam de fora. "Manter" = reserva que fica na mochila.</div>
                 <button id="pg-dn-sell-now" style="margin-top:6px;width:100%;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Vender agora (só os marcados)</button>
             </div>
             <div style="margin-top:6px">Mencionar (ID do Discord, opcional):
@@ -956,7 +964,8 @@
             box.innerHTML = ids.map(id => {
                 const loot = huntLoot.get(id);
                 const item = itemsCatalog?.get(id) || null;
-                const motivo = item ? protectedReason(item) : null;
+                const motivo = protectedReason(item);
+                const aviso = sellWarning(item);
                 const sel = cfg.sellItems?.[id];
                 const price = item ? Number(item.npcPrice) || 0 : null;
                 const esc = (t) => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -965,7 +974,7 @@
                 }
                 return `<div data-item-id="${id}" style="display:flex;gap:6px;align-items:center;font-size:12px;margin-top:2px">
                     <input type="checkbox" class="pg-dn-sell-chk" ${sel ? 'checked' : ''}>
-                    <span style="flex:1">${esc(loot.name)} <span style="color:#aaa">· caiu ${loot.qty}${price != null ? ` · ${price.toLocaleString('pt-BR')} gold` : ''}</span></span>
+                    <span style="flex:1">${esc(loot.name)} <span style="color:#aaa">· caiu ${loot.qty}${price != null ? ` · ${price.toLocaleString('pt-BR')} gold` : ''}</span>${aviso ? ` <span style="color:#fee75c" title="Atenção: ${esc(aviso)}">⚠️ ${esc(aviso)}</span>` : ''}</span>
                     <span style="color:#aaa">manter</span><input type="number" class="pg-dn-sell-keep" min="0" step="1" value="${sel ? (Number(sel.keep) || 0) : 0}" style="width:56px;${inp}">
                 </div>`;
             }).join('');
@@ -1157,7 +1166,7 @@
     setInterval(() => requestBalls(0), BALLS_POLL_MS);
     setInterval(sellTick, SELL_CHECK_MS);
 
-    console.log(TAG, 'v3.0.1 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v3.1.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
         '| raridade mín.:', cfg.minTier || '(nenhuma)', '| poder mín.:', cfg.minIv || 0,
         '| alerta bolas:', cfg.ballsMin ? `${cfg.ballsWatch} < ${cfg.ballsMin}` : 'desligado',
