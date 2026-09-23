@@ -112,6 +112,17 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
 - Comparações de nome sempre via `normalize()` (minúsculas, sem acento).
 - Idioma: comentários, UI e mensagens em pt-BR (o usuário é brasileiro).
 
+## Config compartilhada (sync-server)
+
+- `sync-server.js` (Node puro, porta 7391, arquivo `%APPDATA%\piw-discord-notify\shared-config.json`)
+  é o único jeito de compartilhar config entre painéis: o PokeGrid isola cada `<webview>` e não tem
+  ponte genérica (só escuta `console-message` com prefixo `__PGST__`/`__PGIV__`, ver `index.html`
+  ~linha 831 do app.asar). Não tentar BroadcastChannel/cookies/IndexedDB entre painéis: são partições
+  distintas.
+- No script: `LOCAL_KEYS` define o que NÃO sincroniza (compra automática, chaves de sync e os campos
+  ativos da venda). Ao criar config nova, decidir se ela é local ou compartilhada e, se local,
+  adicionar em `LOCAL_KEYS`. `saveCfg()` já empurra a parte compartilhada quando ela muda.
+
 ## Roadmap e comando /feature
 
 As features planejadas estão em `ROADMAP.md`, cada uma com mensagens do jogo envolvidas, config,

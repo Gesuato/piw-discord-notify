@@ -20,6 +20,7 @@ Tampermonkey/Violentmonkey no navegador.
 - ✅ **Compra automática** de bolas na loja quando o estoque cai (quantidade e reserva de gold configuráveis)
 - ✅ **Venda automática** dos drops da hunt atual que você marcar (lista branca, reserva por item, raros bloqueados)
 - ✅ **Exportar / importar** a configuração entre contas e painéis
+- ✅ **Config compartilhada** entre todas as contas via `sync-server` local (só a compra automática é por conta)
 - ✅ Webhooks separados por tipo de evento: capturas, shinys e alertas (cada um pode ir para um canal)
 - ✅ Anti-spam opcional: intervalo mínimo entre avisos do mesmo Pokémon (padrão 0 = avisa todas)
 - ✅ Painel de configurações dentro do jogo (botão 🔔) — nada de editar código
@@ -69,6 +70,24 @@ Para atualizar o script depois, use o botão **Atualizar** na lista de scripts d
 1. Instale o [Tampermonkey](https://www.tampermonkey.net/)
 2. Crie um novo script e cole o conteúdo de [`piw-discord-notify.user.js`](piw-discord-notify.user.js)
 3. Abra o jogo e configure pelo botão 🔔
+
+## Config compartilhada entre contas (sync-server)
+
+Cada painel do PokeGrid é uma partição isolada, então por padrão cada conta tem sua própria config.
+Para que **mudar num painel mude em todos**, o script sincroniza a config com um mini-servidor
+local que roda no seu PC:
+
+1. Tenha o [Node.js](https://nodejs.org) instalado (LTS).
+2. Baixe este repositório (Code → Download ZIP) ou clone, e dê dois cliques em **`sync-server.bat`**.
+   Uma janela preta fica aberta escutando em `http://127.0.0.1:7391`. Nada sai da sua máquina.
+3. No painel 🔔 de cada conta, o bloco "Sincronização entre painéis" deve mostrar 🟢 conectado
+   (a opção já vem ligada; se estiver 🔴, confira se a janela do servidor está aberta).
+4. Para iniciar junto com o Windows: `Win + R` → `shell:startup` → crie um atalho do `sync-server.bat` lá.
+
+O que é **comum a todos**: webhooks, lista de Pokémon, filtros de qualidade, alerta de bolas, venda
+automática e perfis de hunt. O que é **por conta**: a compra automática (ligada/desligada, quantidade,
+reserva de gold). O último painel que salvar vence. A config compartilhada fica em
+`%APPDATA%\piw-discord-notify\shared-config.json` (contém os webhooks; não compartilhe o arquivo).
 
 ## Como funciona
 

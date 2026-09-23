@@ -199,6 +199,25 @@ webhooks do painel de destino). A config exportada contém os webhooks — não 
 
 ---
 
+## ✅ 10. Config compartilhada entre painéis (v3.0.0)
+
+**O que faz:** a config vira comum a todos os painéis; mudar num muda em todos. Só a compra
+automática (`autoBuy*`) é por conta.
+
+**Como:** o PokeGrid isola cada painel (partição `persist:contaN`) e só escuta as mensagens de
+console `__PGST__`/`__PGIV__`, sem ponte genérica. Solução: `sync-server.js` (Node, sem dependências)
+em `127.0.0.1:7391` guardando `%APPDATA%\piw-discord-notify\shared-config.json`. O script faz GET
+`/cfg` ao iniciar e a cada 15 s (aplica se `updatedAt` for mais novo, preservando `LOCAL_KEYS`) e
+PUT `/cfg` (debounce 400 ms) quando a parte compartilhada muda. 409 = versão mais antiga → aplica a
+do servidor. `sellItems`/`sellEveryMin`/`sellEveryMaxMin` são locais (derivados do perfil da hunt
+deste painel); `sellProfiles` é compartilhado.
+
+**Pendências:** confirmar no PokeGrid (Electron 43) que o fetch da página https para
+`http://127.0.0.1` passa sem prompt de "rede local" (o servidor já responde
+`Access-Control-Allow-Private-Network: true`). Se bloquear, o status no painel mostra o erro.
+
+---
+
 ## ⬜ 9. Nível / evolução
 
 **O que faz:** avisa quando um Pokémon da lista (ou o líder) atinge o nível de evolução.
