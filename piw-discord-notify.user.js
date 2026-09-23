@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.0.0
+// @version      3.0.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -19,9 +19,6 @@
     // configurar webhook, lista de Pokémon, shiny etc.
 
     const DEFAULTS = {
-        syncEnabled: true,                   // sincronizar a config compartilhada via sync-server local
-        syncUrl: 'http://127.0.0.1:7391',    // endereço do sync-server (sync-server.bat)
-        sharedUpdatedAt: 0,                  // versão da config compartilhada aplicada neste painel
         webhookUrl: '',         // canal principal (capturas); os outros caem nele se vazios
         webhookShiny: '',       // canal só para capturas shiny (opcional)
         webhookAlerts: '',      // canal para alertas: shiny na fila, estoque, quedas... (opcional)
@@ -54,26 +51,8 @@
         if (!saved.cfgVersion || saved.cfgVersion < 2) delete saved.cooldownSeconds;
         return Object.assign({}, DEFAULTS, saved);
     }
-    // Chaves LOCAIS (por conta/painel): não são sincronizadas. Todo o resto é comum a todos os
-    // painéis via sync-server. Os campos ativos da venda (sellItems/sellEveryMin/sellEveryMaxMin)
-    // são derivados do perfil da hunt em que ESTE painel está, por isso ficam locais; os perfis
-    // (sellProfiles) são compartilhados.
-    const LOCAL_KEYS = new Set([
-        'autoBuy', 'autoBuyQty', 'autoBuyGoldReserve',
-        'syncEnabled', 'syncUrl', 'sharedUpdatedAt',
-        'sellItems', 'sellEveryMin', 'sellEveryMaxMin',
-    ]);
-    function sharedPart(c) {
-        const o = {};
-        for (const k of Object.keys(c || {})) if (!LOCAL_KEYS.has(k)) o[k] = c[k];
-        return o;
-    }
-    let lastPushedShared = null;   // JSON da última parte compartilhada enviada/recebida
-    let syncApplying = false;
-
-    function saveCfg(c) {
-        localStorage.setItem(LS_KEY, JSON.stringify(c));
-        if (!syncApplying) schedulePush();
+    function saveCfg(cfg) {
+        localStorage.setItem(LS_KEY, JSON.stringify(cfg));
     }
     let cfg = loadCfg();
 
@@ -653,88 +632,6 @@
         }, { evento: 'bolas', ballId: id, qty });
     }
 
-    // ---- Sincronização entre painéis (sync-server local) ------------------
-    //
-    // Cada painel do PokeGrid é uma partição isolada: um não enxerga o localStorage do outro.
-    // O sync-server.js (repo) guarda a config compartilhada num arquivo do PC e expõe
-    // GET/PUT /cfg em 127.0.0.1. Fluxo: ao iniciar e a cada SYNC_PULL_MS, GET; se o servidor
-    // tiver versão mais nova (updatedAt), aplica a parte compartilhada preservando as chaves
-    // locais. Ao salvar algo compartilhado, PUT com updatedAt = agora (last-writer-wins).
-
-    const SYNC_PULL_MS = 15 * 1000;
-    const SYNC_PUSH_DEBOUNCE_MS = 400;
-    let syncState = { status: 'desligado', detalhe: '' };   // status: ok | offline | desligado
-    let syncPushTimer = null;
-    let onSyncChange = null;   // callback do painel
-
-    function syncBase() { return String(cfg.syncUrl || '').trim().replace(/\/+$/, ''); }
-    function syncOn() { return Boolean(cfg.syncEnabled) && Boolean(syncBase()); }
-
-    function setSyncState(status, detalhe) {
-        const mudou = syncState.status !== status;
-        syncState = { status, detalhe: detalhe || '' };
-        if (mudou) logEvent('sync', { status, detalhe: syncState.detalhe });
-        if (onSyncChange) onSyncChange();
-    }
-
-    function applyShared(shared, updatedAt) {
-        const local = {};
-        for (const k of LOCAL_KEYS) if (k in cfg) local[k] = cfg[k];
-        syncApplying = true;
-        try {
-            cfg = Object.assign({}, DEFAULTS, shared, local, { sharedUpdatedAt: updatedAt });
-            lastPushedShared = JSON.stringify(sharedPart(cfg));
-            saveCfg(cfg);
-            for (const k of Object.keys(ballAlerted)) delete ballAlerted[k];
-            if (typeof loadHuntProfile === 'function') loadHuntProfile();   // perfis podem ter mudado
-        } finally { syncApplying = false; }
-        logEvent('sync-recebido', { updatedAt, chaves: Object.keys(shared || {}).length });
-        if (onSyncChange) onSyncChange(true);
-    }
-
-    async function syncPull() {
-        if (!syncOn()) { setSyncState('desligado'); return; }
-        let res, data;
-        try {
-            res = await fetch(syncBase() + '/cfg', { cache: 'no-store' });
-            data = await res.json();
-        } catch (err) { setSyncState('offline', String(err?.message || err)); return; }
-        if (!res.ok || !data || typeof data !== 'object') { setSyncState('offline', `HTTP ${res.status}`); return; }
-        setSyncState('ok');
-        const remoteAt = Number(data.updatedAt) || 0;
-        const localAt = Number(cfg.sharedUpdatedAt) || 0;
-        if (data.cfg && remoteAt > localAt) applyShared(data.cfg, remoteAt);
-        else if (!data.cfg) schedulePush(true);   // servidor vazio: este painel semeia
-    }
-
-    function schedulePush(force) {
-        if (!syncOn()) return;
-        const atual = JSON.stringify(sharedPart(cfg));
-        if (!force && atual === lastPushedShared) return;   // só mudou coisa local
-        clearTimeout(syncPushTimer);
-        syncPushTimer = setTimeout(() => syncPush(atual), SYNC_PUSH_DEBOUNCE_MS);
-    }
-
-    async function syncPush(json) {
-        if (!syncOn()) return;
-        const updatedAt = Date.now();
-        try {
-            const res = await fetch(syncBase() + '/cfg', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ updatedAt, cfg: JSON.parse(json) }),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (res.status === 409 && data?.cfg) { applyShared(data.cfg, Number(data.updatedAt) || 0); setSyncState('ok'); return; }
-            if (!res.ok) { setSyncState('offline', `HTTP ${res.status}`); return; }
-            lastPushedShared = json;
-            syncApplying = true;
-            try { cfg.sharedUpdatedAt = updatedAt; saveCfg(cfg); } finally { syncApplying = false; }
-            setSyncState('ok');
-            logEvent('sync-enviado', { updatedAt });
-        } catch (err) { setSyncState('offline', String(err?.message || err)); }
-    }
-
     // ---- Log persistente (para diagnóstico sem abrir o console) --------
     // Guarda os últimos eventos relevantes em localStorage[LOG_KEY]; o botão
     // "Copiar log" do painel copia tudo como JSON.
@@ -959,15 +856,6 @@
             + 'background:#2b2d31;color:#eee;font:13px/1.5 sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.5);';
         panel.innerHTML = `
             <b>🔔 Discord Capture Notify</b>
-            <div style="margin-top:8px;padding:8px;border:1px solid #444;border-radius:6px">
-                <b>🔗 Sincronização entre painéis</b>
-                <div id="pg-dn-sync-status" style="margin-top:2px;font-size:12px;color:#aaa"></div>
-                <label style="display:block;margin-top:4px"><input id="pg-dn-sync" type="checkbox"> Sincronizar a config com os outros painéis (via sync-server local)</label>
-                <div style="margin-top:4px;font-size:12px">Endereço do sync-server:
-                    <input id="pg-dn-sync-url" type="text" placeholder="http://127.0.0.1:7391"
-                        style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
-                <div style="margin-top:4px;color:#aaa;font-size:12px">Tudo é comum a todos os painéis, exceto a <b>compra automática</b> (por conta). Rode o <code>sync-server.bat</code> do repositório no PC.</div>
-            </div>
             <div style="margin-top:8px">Webhook de capturas (principal):
                 <input id="pg-dn-hook" type="password" placeholder="https://discord.com/api/webhooks/..."
                     style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
@@ -1005,7 +893,7 @@
                     <input id="pg-dn-ballsmin" type="number" min="0" step="1"
                         style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
                 <div style="margin-top:4px;color:#aaa;font-size:12px">Avisa uma vez ao ficar abaixo do limite e de novo só depois de repor. O estoque é checado após cada captura e a cada 5 min.</div>
-                <label style="display:block;margin-top:6px"><input id="pg-dn-autobuy" type="checkbox"> Comprar automaticamente na loja em vez de só avisar <span style="color:#aaa">(por conta — não sincroniza)</span></label>
+                <label style="display:block;margin-top:6px"><input id="pg-dn-autobuy" type="checkbox"> Comprar automaticamente na loja em vez de só avisar</label>
                 <div style="display:flex;gap:6px;margin-top:4px">
                     <div style="flex:1">Quantidade por compra:
                         <input id="pg-dn-autobuy-qty" type="number" min="1" max="${BUY_MAX_QTY}" step="1"
@@ -1095,25 +983,7 @@
             return out;
         }
 
-        function renderSyncStatus() {
-            const el = $('#pg-dn-sync-status');
-            if (!el) return;
-            const m = {
-                ok: '🟢 conectado — mudanças salvas aqui valem para todos os painéis',
-                offline: '🔴 servidor não encontrado — abra o sync-server.bat' + (syncState.detalhe ? ` (${syncState.detalhe})` : ''),
-                desligado: '⚪ desligada — cada painel tem sua própria config',
-            };
-            el.textContent = m[syncState.status] || syncState.status;
-        }
-        onSyncChange = (recebido) => {
-            renderSyncStatus();
-            if (recebido && panel.style.display !== 'none') { fill(); flash('🔗 Config atualizada por outro painel.'); }
-        };
-
         function fill() {
-            $('#pg-dn-sync').checked = Boolean(cfg.syncEnabled);
-            $('#pg-dn-sync-url').value = cfg.syncUrl || DEFAULTS.syncUrl;
-            renderSyncStatus();
             $('#pg-dn-sell').checked = Boolean(cfg.sellEnabled);
             $('#pg-dn-sell-min').value = cfg.sellEveryMin || 10;
             $('#pg-dn-sell-max').value = cfg.sellEveryMaxMin || '';
@@ -1164,8 +1034,6 @@
             cfg.cooldownSeconds = Math.max(0, parseInt($('#pg-dn-cooldown').value, 10) || 0);
             cfg.cfgVersion = 2;
             cfg.debug = $('#pg-dn-debug').checked;
-            cfg.syncEnabled = $('#pg-dn-sync').checked;
-            cfg.syncUrl = $('#pg-dn-sync-url').value.trim() || DEFAULTS.syncUrl;
             cfg.sellEnabled = $('#pg-dn-sell').checked;
             cfg.sellEveryMin = Math.max(1, parseInt($('#pg-dn-sell-min').value, 10) || 10);
             cfg.sellEveryMaxMin = Math.max(0, parseInt($('#pg-dn-sell-max').value, 10) || 0);
@@ -1173,7 +1041,6 @@
             cfg.sellItems = readSellList();
             saveHuntProfile();
             saveCfg(cfg);
-            syncPull();
             $('#pg-dn-msg').textContent = '✔ Salvo!';
             setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 2500);
         };
@@ -1256,12 +1123,10 @@
             delete data._piwDiscordNotify;
             const keepHooks = $('#pg-dn-import-keephooks').checked;
             const mine = { webhookUrl: cfg.webhookUrl, webhookShiny: cfg.webhookShiny, webhookAlerts: cfg.webhookAlerts };
-            const syncMine = { syncEnabled: cfg.syncEnabled, syncUrl: cfg.syncUrl };
-            cfg = Object.assign({}, DEFAULTS, data, syncMine, { sharedUpdatedAt: 0 });
+            cfg = Object.assign({}, DEFAULTS, data);
             if (keepHooks) Object.assign(cfg, mine);
             cfg.cfgVersion = 2;
             saveCfg(cfg);
-            schedulePush(true);
             for (const k of Object.keys(ballAlerted)) delete ballAlerted[k];
             for (const k of Object.keys(autoBuyAttempted)) delete autoBuyAttempted[k];
             drawSellDelay();
@@ -1291,15 +1156,11 @@
     buildUI();
     setInterval(() => requestBalls(0), BALLS_POLL_MS);
     setInterval(sellTick, SELL_CHECK_MS);
-    lastPushedShared = JSON.stringify(sharedPart(cfg));
-    syncPull();
-    setInterval(syncPull, SYNC_PULL_MS);
 
-    console.log(TAG, 'v3.0.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v3.0.1 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
         '| raridade mín.:', cfg.minTier || '(nenhuma)', '| poder mín.:', cfg.minIv || 0,
         '| alerta bolas:', cfg.ballsMin ? `${cfg.ballsWatch} < ${cfg.ballsMin}` : 'desligado',
         '| compra auto:', cfg.autoBuy ? `${cfg.autoBuyQty} un.` : 'não',
-        '| venda auto:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens / ${cfg.sellEveryMin}${cfg.sellEveryMaxMin > cfg.sellEveryMin ? `–${cfg.sellEveryMaxMin}` : ''} min` : 'não',
-        '| sync:', cfg.syncEnabled ? cfg.syncUrl : 'desligada');
+        '| venda auto:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens / ${cfg.sellEveryMin}${cfg.sellEveryMaxMin > cfg.sellEveryMin ? `–${cfg.sellEveryMaxMin}` : ''} min` : 'não');
 })();
