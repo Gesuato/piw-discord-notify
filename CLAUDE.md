@@ -77,6 +77,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
 - **NUNCA commitar URLs de webhook do Discord** (nem em exemplos com IDs reais). O repo é
   público e o Discord desativa webhooks vazados. Toda config do usuário vive no `localStorage`
   (chave `pgDiscordNotifyCfg`), editada pelo painel 🔔 que o próprio script cria.
+- Webhooks por tipo de evento: `webhookUrl` (capturas, principal), `webhookShiny`, `webhookAlerts`.
+  Todo envio passa por `postWebhook(kind, payload, meta)` com `kind` em `capture|shiny|alert`;
+  `webhookFor(kind)` cai no principal quando o específico está vazio. Eventos novos (ROADMAP)
+  devem usar `postWebhook('alert', ...)`, nunca `fetch` direto.
 - Semântica de filtro (duas etapas, ver `handleGameMessage` e `passesQualityFilter`):
   1. Nome: lista VAZIA ou `notifyEveryCapture` = qualquer Pokémon; lista preenchida = só os listados.
      Shiny com `notifyShiny` passa direto pelas duas etapas.
@@ -88,6 +92,12 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   fixos e são migradas para 0 no `loadCfg()`.
 - Comparações de nome sempre via `normalize()` (minúsculas, sem acento).
 - Idioma: comentários, UI e mensagens em pt-BR (o usuário é brasileiro).
+
+## Roadmap e comando /feature
+
+As features planejadas estão em `ROADMAP.md`, cada uma com mensagens do jogo envolvidas, config,
+UI e pendências. O usuário invoca `/feature <número ou nome>` (comando em `.claude/commands/feature.md`)
+para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o fluxo de release.
 
 ## Fluxo de release
 

@@ -16,6 +16,7 @@ Tampermonkey/Violentmonkey no navegador.
 - ✅ Mostra qual conta/painel capturou (útil com múltiplos painéis do PokeGrid)
 - ✅ Poder (X/192) e qualidade (Common, Rare, Epic, Legendary...) do Pokémon capturado, com a cor do embed pela faixa
 - ✅ Filtro por **raridade mínima** (Legendary ou superior, por exemplo) e/ou **poder mínimo**
+- ✅ Webhooks separados por tipo de evento: capturas, shinys e alertas (cada um pode ir para um canal)
 - ✅ Anti-spam opcional: intervalo mínimo entre avisos do mesmo Pokémon (padrão 0 = avisa todas)
 - ✅ Painel de configurações dentro do jogo (botão 🔔) — nada de editar código
 - ✅ Somente observa o jogo: não automatiza nada, não envia senha nem dados da conta
@@ -31,7 +32,9 @@ Tampermonkey/Violentmonkey no navegador.
    ```
 3. No painel do jogo, clique no botão **🔔** no canto inferior esquerdo
 4. Configure:
-   - **URL do webhook**: crie em Discord → Configurações do canal → Integrações → Webhooks → Novo Webhook → Copiar URL
+   - **Webhook de capturas**: crie em Discord → Configurações do canal → Integrações → Webhooks → Novo Webhook → Copiar URL
+   - **Webhook de shinys** (opcional): outro canal só para capturas shiny. Vazio = usa o de capturas
+   - **Webhook de alertas** (opcional): canal para os alertas do [ROADMAP](ROADMAP.md) (shiny na fila, estoque, quedas). Vazio = usa o de capturas
    - **Pokémon**: nomes separados por vírgula (ex.: `dratini, larvitar`) — ou deixe vazio para avisar toda captura
    - **Avisar todo shiny**: marca para receber aviso de qualquer shiny
    - **Filtro de qualidade** (opcional): escolha uma **raridade mínima** (ex.: Legendary) e/ou um
@@ -82,6 +85,10 @@ O script guarda a última fila `pending`, e quando chega um `catch-result` com `
 | Teste funciona, captura real não | Capture algo e clique em **Copiar log** no painel 🔔: ele copia os últimos eventos (mensagens `catch-result`, decisão dos filtros, resposta do webhook). Marque **Debug** para ver o mesmo no console |
 | Notificação sem nome da conta | O jogo ainda não carregou `/api/characters/me`; aparece na próxima |
 | Webhook parou de funcionar | Ele pode ter vazado e sido desativado — crie outro no Discord |
+
+## Próximas features
+
+As ideias planejadas estão em [ROADMAP.md](ROADMAP.md).
 
 ## Licença
 

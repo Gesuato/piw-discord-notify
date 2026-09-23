@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      2.3.0
+// @version      2.4.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -19,7 +19,9 @@
     // configurar webhook, lista de Pokémon, shiny etc.
 
     const DEFAULTS = {
-        webhookUrl: '',
+        webhookUrl: '',         // canal principal (capturas); os outros caem nele se vazios
+        webhookShiny: '',       // canal só para capturas shiny (opcional)
+        webhookAlerts: '',      // canal para alertas: shiny na fila, estoque, quedas... (opcional)
         watchList: [],          // nomes em minúsculas, ex.: ['dratini', 'larvitar']
         notifyEveryCapture: false,
         notifyShiny: true,
@@ -247,6 +249,38 @@
 
     // ---- Discord ----------------------------------------------------
 
+    // ---- Roteamento de webhooks por tipo de evento ----------------------
+    //   capture -> webhookUrl
+    //   shiny   -> webhookShiny  (vazio: webhookUrl)
+    //   alert   -> webhookAlerts (vazio: webhookUrl)  [eventos futuros, ver ROADMAP.md]
+    const WEBHOOK_KINDS = {
+        capture: { key: 'webhookUrl', label: 'capturas' },
+        shiny: { key: 'webhookShiny', label: 'shinys' },
+        alert: { key: 'webhookAlerts', label: 'alertas' },
+    };
+    function webhookFor(kind) {
+        const k = WEBHOOK_KINDS[kind] || WEBHOOK_KINDS.capture;
+        return (cfg[k.key] || '').trim() || (cfg.webhookUrl || '').trim();
+    }
+
+    function postWebhook(kind, payload, meta) {
+        const url = webhookFor(kind);
+        if (!url) {
+            console.warn(TAG, 'Webhook não configurado. Clique no 🔔 para configurar.');
+            flashButton();
+            return Promise.resolve(false);
+        }
+        return fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        }).then(res => {
+            if (!res.ok) { console.warn(TAG, 'Discord respondeu com erro:', res.status); logEvent('webhook-erro', Object.assign({ kind, status: res.status }, meta)); return false; }
+            logEvent('webhook-ok', Object.assign({ kind }, meta));
+            return true;
+        }).catch(err => { console.warn(TAG, 'Falha ao enviar webhook:', err); logEvent('webhook-falha', Object.assign({ kind, erro: String(err) }, meta)); return false; });
+    }
+
     function sendDiscordNotification(info, isTest) {
         if (!cfg.webhookUrl) {
             console.warn(TAG, 'Webhook não configurado. Clique no 🔔 para configurar.');
@@ -285,14 +319,7 @@
             }],
         };
 
-        fetch(cfg.webhookUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-        }).then(res => {
-            if (!res.ok) { console.warn(TAG, 'Discord respondeu com erro:', res.status); logEvent('webhook-erro', { status: res.status, name: info.name }); }
-            else logEvent('webhook-ok', { name: info.name, test: Boolean(isTest) });
-        }).catch(err => { console.warn(TAG, 'Falha ao enviar webhook:', err); logEvent('webhook-falha', { erro: String(err), name: info.name }); });
+        return postWebhook(info.shiny ? 'shiny' : 'capture', payload, { name: info.name, test: Boolean(isTest) });
     }
 
     // ---- Lógica principal -------------------------------------------
@@ -418,8 +445,14 @@
             + 'background:#2b2d31;color:#eee;font:13px/1.5 sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.5);';
         panel.innerHTML = `
             <b>🔔 Discord Capture Notify</b>
-            <div style="margin-top:8px">URL do webhook:
+            <div style="margin-top:8px">Webhook de capturas (principal):
                 <input id="pg-dn-hook" type="password" placeholder="https://discord.com/api/webhooks/..."
+                    style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
+            <div style="margin-top:6px">Webhook de shinys <span style="color:#aaa">(opcional; vazio = usa o principal)</span>:
+                <input id="pg-dn-hook-shiny" type="password" placeholder="https://discord.com/api/webhooks/..."
+                    style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
+            <div style="margin-top:6px">Webhook de alertas <span style="color:#aaa">(opcional; shiny na fila, estoque, quedas — em breve)</span>:
+                <input id="pg-dn-hook-alerts" type="password" placeholder="https://discord.com/api/webhooks/..."
                     style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
             <div style="margin-top:6px">Pokémon (separados por vírgula; vazio = avisar TODAS as capturas):
                 <input id="pg-dn-list" type="text" placeholder="dratini, larvitar (vazio = todas)"
@@ -458,6 +491,8 @@
         const $ = (id) => panel.querySelector(id);
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
+            $('#pg-dn-hook-shiny').value = cfg.webhookShiny || '';
+            $('#pg-dn-hook-alerts').value = cfg.webhookAlerts || '';
             $('#pg-dn-list').value = cfg.watchList.join(', ');
             $('#pg-dn-shiny').checked = cfg.notifyShiny;
             $('#pg-dn-all').checked = cfg.notifyEveryCapture;
@@ -476,6 +511,8 @@
 
         $('#pg-dn-save').onclick = () => {
             cfg.webhookUrl = $('#pg-dn-hook').value.trim();
+            cfg.webhookShiny = $('#pg-dn-hook-shiny').value.trim();
+            cfg.webhookAlerts = $('#pg-dn-hook-alerts').value.trim();
             cfg.watchList = $('#pg-dn-list').value.split(',').map(normalize).filter(Boolean);
             cfg.notifyShiny = $('#pg-dn-shiny').checked;
             cfg.notifyEveryCapture = $('#pg-dn-all').checked;
@@ -492,8 +529,28 @@
 
         $('#pg-dn-test').onclick = () => {
             cfg.webhookUrl = $('#pg-dn-hook').value.trim();
+            cfg.webhookShiny = $('#pg-dn-hook-shiny').value.trim();
+            cfg.webhookAlerts = $('#pg-dn-hook-alerts').value.trim();
+            if (!cfg.webhookUrl) {
+                $('#pg-dn-msg').textContent = '⚠ Preencha o webhook principal primeiro.';
+                setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 4000);
+                return;
+            }
+            // capturas: sempre; shinys/alertas: só se tiverem webhook próprio
             sendDiscordNotification({ name: 'Dratini (teste)', shiny: false, level: 5, ivTotal: 150, quality: 1.35, ball: 'Ultra Ball' }, true);
-            $('#pg-dn-msg').textContent = cfg.webhookUrl ? '📤 Teste enviado, veja o Discord.' : '⚠ Preencha o webhook primeiro.';
+            const canais = ['capturas'];
+            if (cfg.webhookShiny) {
+                canais.push('shinys');
+                sendDiscordNotification({ name: 'Dratini (teste)', shiny: true, level: 5, ivTotal: 180, quality: 1.72, ball: 'Idle Ball' }, true);
+            }
+            if (cfg.webhookAlerts) {
+                canais.push('alertas');
+                postWebhook('alert', {
+                    username: 'Poke Idle World',
+                    embeds: [{ title: 'Teste: canal de alertas', description: 'Aqui chegarão shiny na fila, estoque de bolas, quedas de conexão etc.', color: 0xfee75c }],
+                }, { test: true });
+            }
+            $('#pg-dn-msg').textContent = `📤 Teste enviado para: ${canais.join(', ')}.`;
             setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 4000);
         };
 
@@ -524,7 +581,7 @@
 
     buildUI();
 
-    console.log(TAG, 'v2.3.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v2.4.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
         '| raridade mín.:', cfg.minTier || '(nenhuma)', '| poder mín.:', cfg.minIv || 0);
 })();
