@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      2.2.0
+// @version      2.2.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -101,13 +101,14 @@
 
     // ---- IV e qualidade do indivíduo capturado -----------------------
     //
-    // O catch-result não traz IV/qualidade. Esses dados só existem no frame
-    // `pokes` (resposta a `pokes-get`), e o jogo também manda um `poke-delta`
-    // logo depois da captura. Estratégia: ao capturar, esperamos até
-    // DETAILS_TIMEOUT_MS pelo poke-delta; se ele já trouxer ivTotal/quality,
-    // ótimo; senão pedimos `pokes-get` e procuramos o recém-capturado na lista
-    // (pelo id que veio no delta, ou pela espécie com xp 0). Se nada chegar a
-    // tempo, a notificação sai sem esses campos.
+    // O catch-result não traz IV/qualidade. Logo após a captura o jogo manda
+    // `poke-delta` com o indivíduo completo (confirmado em 23/09/2026):
+    //   { type:'poke-delta', poke:{ id, speciesId, name, level, shiny, xp:0,
+    //     ivTotal (0..192), quality, power, stats{...}, type1, type2, ... } }
+    // Estratégia: ao capturar, esperamos até DETAILS_TIMEOUT_MS pelo
+    // poke-delta. Como plano B (caso o delta venha sem ivTotal/quality),
+    // pedimos `pokes-get` e procuramos o recém-capturado na lista `pokes`.
+    // Se nada chegar a tempo, a notificação sai sem esses campos.
     //
     // Tabela oficial de faixas (poke.idleworld.online/pokepedia/systems/quality):
     //   <1.0 Weak · 1.0 Common · 1.1 Uncommon · 1.3 Rare · 1.5 Epic
@@ -136,7 +137,6 @@
         const info = entry.info;
         if (num(p.ivTotal) != null) info.ivTotal = p.ivTotal;
         if (num(p.quality) != null) info.quality = p.quality;
-        if (num(p.power) != null) info.power = p.power;
         if (num(p.level) != null && info.level == null) info.level = p.level;
         if (p.id != null) entry.pokeId = String(p.id);
         return info.ivTotal != null || info.quality != null;
@@ -247,9 +247,9 @@
         const ballTxt = info.ball ? `\nBola: ${info.ball}` : '';
         const autoTxt = info.auto ? '\nCaptura automática (VIP)' : '';
         const tier = qualityTier(info.quality);
-        const ivTxt = info.ivTotal != null ? `\nIV: ${info.ivTotal}/${IV_MAX} (${Math.round(info.ivTotal / IV_MAX * 100)}%)` : '';
+        // O jogo mostra o ivTotal (0..192) como "Poder X/192"; usamos o mesmo rótulo.
+        const ivTxt = info.ivTotal != null ? `\nPoder: ${info.ivTotal}/${IV_MAX} (${Math.round(info.ivTotal / IV_MAX * 100)}%)` : '';
         const qualTxt = info.quality != null ? `\nQualidade: ${info.quality.toFixed(3)}${tier ? ` · ${tier.name}` : ''}` : '';
-        const powerTxt = info.power != null ? `\nPoder: ${info.power}` : '';
         const who = playerName();
 
         const payload = {
@@ -257,7 +257,7 @@
             username: 'Poke Idle World',
             embeds: [{
                 title: `${isTest ? 'Teste: ' : 'Captura: '}${info.name}${shinyTag}${tier ? ` [${tier.name}]` : ''}`,
-                description: (who ? `Conta: ${who}\n` : '') + `Em ${new Date().toLocaleString('pt-BR')}` + ivTxt + qualTxt + powerTxt + ballTxt + autoTxt,
+                description: (who ? `Conta: ${who}\n` : '') + `Em ${new Date().toLocaleString('pt-BR')}` + ivTxt + qualTxt + ballTxt + autoTxt,
                 color: info.shiny ? 0xffd700 : (tier ? tier.color : 0x57f287),
             }],
         };
@@ -446,7 +446,7 @@
 
         $('#pg-dn-test').onclick = () => {
             cfg.webhookUrl = $('#pg-dn-hook').value.trim();
-            sendDiscordNotification({ name: 'Dratini (teste)', shiny: false, level: 5, ivTotal: 150, quality: 1.35, power: 120, ball: 'Ultra Ball' }, true);
+            sendDiscordNotification({ name: 'Dratini (teste)', shiny: false, level: 5, ivTotal: 150, quality: 1.35, ball: 'Ultra Ball' }, true);
             $('#pg-dn-msg').textContent = cfg.webhookUrl ? '📤 Teste enviado, veja o Discord.' : '⚠ Preencha o webhook primeiro.';
             setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 4000);
         };
@@ -478,6 +478,6 @@
 
     buildUI();
 
-    console.log(TAG, 'v2.2.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v2.2.1 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny);
 })();
