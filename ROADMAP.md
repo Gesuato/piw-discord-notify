@@ -42,7 +42,7 @@ Não repetir enquanto o mesmo `id` continuar na fila.
 
 ---
 
-## ⬜ 2. Bolas acabando
+## ✅ 2. Bolas acabando (v2.5.0)
 
 **O que faz:** avisa quando o estoque de uma bola cai abaixo de um limite. Evita descobrir horas
 depois que o autocatch parou por falta de bola.
@@ -59,8 +59,11 @@ manda `balls` quando algo muda.
 **Config/UI:** campo "Avisar quando a bola do autocatch ficar abaixo de: N" (`ballsMin`, padrão 0 =
 desligado). Usar a bola do último `catch-result` como "a bola em uso", ou um select de bola.
 
-**Pendências:** confirmar no log se `counts` vem indexado por id numérico ou string; confirmar se
-o jogo emite `balls` sozinho após cada captura ou só sob `balls-get`.
+**Implementado em v2.5.0:** `handleBalls` / `checkBallStock` / `requestBalls` no script. Select
+de bola (`ballsWatch`, 'auto' = bola do último `catch-result`) + limite (`ballsMin`). Pede
+`balls-get` 3s após rastrear o socket, 1,5s após cada captura e a cada 5 min. O parse aceita
+`counts` com chaves string ou número. O frame `balls` é gravado no log (`kind: 'balls'`) — conferir
+no disco se o jogo também o emite sozinho; se sim, dá para reduzir os pedidos.
 
 ---
 

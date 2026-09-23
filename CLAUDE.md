@@ -55,6 +55,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   recém-capturado na lista `pokes` (por `id` do delta ou espécie com `xp === 0`). Sem resposta,
   notifica sem esses campos.
 - Cliente envia `{ type:'catch', pendingId, ballId }` para capturar.
+- `balls` → `{ type:'balls', counts:{ '<ballId>': qty } }`, resposta a `{ type:'balls-get' }`. IDs:
+  Poke Ball 1, Great Ball 2, Super Ball 3, Ultra Ball 4, Idle Ball 6. O `catch-result` traz `ballId`
+  e `ballName` da bola em uso (o script usa isso como bola "automática" do alerta de estoque).
 - Referências: https://github.com/edulanzarin/piwdex (`src/lib/robo/motor/sessao.ts`, cases
   `catch-result`/`pending`) e https://github.com/luishferreira/poke-standalone-scripts (`AGENTS.md`).
 - Nome do personagem: `window.__poke.api['/api/characters/me'].character.name` (mesmo caminho

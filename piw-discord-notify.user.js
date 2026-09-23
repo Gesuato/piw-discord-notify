@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      2.4.0
+// @version      2.5.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -27,6 +27,8 @@
         notifyShiny: true,
         minTier: '',            // raridade mínima ('' = sem filtro): weak, common, ... divine
         minIv: 0,               // poder mínimo (ivTotal 0..192); 0 = sem filtro
+        ballsMin: 0,            // alerta quando a bola monitorada ficar abaixo disto; 0 = desligado
+        ballsWatch: 'auto',     // 'auto' = bola do último catch-result, ou o id da bola ('4')
         mentionUserId: '',      // seu ID de usuário do Discord, opcional
         cooldownSeconds: 0,     // intervalo mínimo (s) entre avisos do mesmo pokémon; 0 = avisar todas
         cfgVersion: 2,
@@ -230,6 +232,78 @@
         }
     }
 
+    // ---- Alerta de estoque de bolas -------------------------------------
+    //
+    //   balls     -> { type:'balls', counts:{ '<ballId>': qty, ... } }   (resposta a balls-get)
+    //   balls-get -> pedido do cliente. O jogo não garante mandar `balls` sozinho,
+    //                então pedimos: ao rastrear o socket, logo após cada captura e
+    //                a cada BALLS_POLL_MS.
+    // Avisa UMA vez quando a quantidade cruza para baixo de cfg.ballsMin e rearma
+    // quando volta a ficar >= (compra/refil). Tudo desligado se ballsMin = 0.
+
+    const BALL_NAMES = { 1: 'Poke Ball', 2: 'Great Ball', 3: 'Super Ball', 4: 'Ultra Ball', 6: 'Idle Ball' };
+    const BALLS_POLL_MS = 5 * 60 * 1000;
+    const BALLS_AFTER_CATCH_MS = 1500;
+    const BALLS_AFTER_SOCKET_MS = 3000;
+
+    let lastBallId = null;          // bola usada no último catch-result
+    let ballCounts = {};            // ballId -> qty (último frame `balls`)
+    const ballAlerted = {};         // ballId -> true enquanto estiver abaixo do limite
+    let ballsRequestTimer = null;
+
+    function ballName(id) { return BALL_NAMES[id] || `Ball ${id}`; }
+    function ballsEnabled() { return (Number(cfg.ballsMin) || 0) > 0; }
+
+    function watchedBallId() {
+        if (cfg.ballsWatch && cfg.ballsWatch !== 'auto') return Number(cfg.ballsWatch) || null;
+        return lastBallId;
+    }
+
+    function requestBalls(delayMs) {
+        if (!ballsEnabled()) return;
+        clearTimeout(ballsRequestTimer);
+        ballsRequestTimer = setTimeout(() => {
+            ballsRequestTimer = null;
+            sendGame({ type: 'balls-get' });
+        }, delayMs || 0);
+    }
+
+    function handleBalls(message) {
+        const counts = {};
+        for (const [rawId, rawQty] of Object.entries(message.counts || {})) {
+            const id = Number(rawId);
+            if (Number.isInteger(id) && id > 0) counts[id] = Math.max(0, Number(rawQty) || 0);
+        }
+        ballCounts = counts;
+        const id = watchedBallId();
+        logEvent('balls', { counts, monitorando: id, limite: cfg.ballsMin || 0 });
+        checkBallStock();
+    }
+
+    function checkBallStock() {
+        if (!ballsEnabled()) return;
+        const id = watchedBallId();
+        if (id == null) return;                 // ainda não sabemos qual bola o autocatch usa
+        const qty = ballCounts[id];
+        if (qty == null) return;                // o jogo não listou essa bola
+        const min = Number(cfg.ballsMin) || 0;
+        if (qty >= min) { ballAlerted[id] = false; return; }
+        if (ballAlerted[id]) return;            // já avisado; espera repor
+        ballAlerted[id] = true;
+        const who = playerName();
+        const mention = cfg.mentionUserId ? `<@${cfg.mentionUserId}> ` : '';
+        const acabou = qty === 0;
+        postWebhook('alert', {
+            content: `${mention}${acabou ? '🚫' : '⚠️'} ${who ? `**${who}**` : 'Sua conta'} ${acabou ? 'ficou SEM' : 'está com pouca'} **${ballName(id)}**${acabou ? '' : ` (${qty})`}`,
+            username: 'Poke Idle World',
+            embeds: [{
+                title: `${acabou ? 'Acabou: ' : 'Estoque baixo: '}${ballName(id)}`,
+                description: (who ? `Conta: ${who}\n` : '') + `Restam ${qty} (limite ${min})\nEm ${new Date().toLocaleString('pt-BR')}`,
+                color: acabou ? 0xed4245 : 0xfee75c,
+            }],
+        }, { evento: 'bolas', ballId: id, qty });
+    }
+
     // ---- Log persistente (para diagnóstico sem abrir o console) --------
     // Guarda os últimos eventos relevantes em localStorage[LOG_KEY]; o botão
     // "Copiar log" do painel copia tudo como JSON.
@@ -337,12 +411,18 @@
         }
 
         if (message.type === 'poke-delta') { handlePokeDelta(message); return; }
+        if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
         if (message.type === 'pokes' && Array.isArray(message.list)) { handlePokesList(message.list); return; }
 
         if (message.type !== 'catch-result') return;
 
         logEvent('catch-result', message);
+        if (message.ballId != null) {
+            lastBallId = Number(message.ballId) || null;
+            if (message.ballName && lastBallId) BALL_NAMES[lastBallId] = message.ballName;
+        }
         if (message.success !== true) return;
+        requestBalls(BALLS_AFTER_CATCH_MS); // a captura consumiu uma bola: atualiza o estoque
 
         const info = extractPokemonInfo(message);
         if (!info) {
@@ -392,6 +472,7 @@
         });
         lastSocket = ws;
         logEvent('socket', { url: String(ws.url || '').split('?')[0] });
+        requestBalls(BALLS_AFTER_SOCKET_MS);
     }
 
     const NativeWebSocket = window.WebSocket;
@@ -471,6 +552,18 @@
                         style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
                 <div style="margin-top:4px;color:#aaa;font-size:12px">Avisa se a raridade for ≥ a escolhida <b>ou</b> o poder for ≥ o mínimo. Shiny sempre avisa se a opção acima estiver marcada.</div>
             </div>
+            <div style="margin-top:8px;padding:8px;border:1px solid #444;border-radius:6px">
+                <b>Alerta de bolas</b> <span style="color:#aaa">(vai para o webhook de alertas)</span>
+                <div style="margin-top:4px">Bola monitorada:
+                    <select id="pg-dn-ball" style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px">
+                        <option value="auto">Automática (a do último catch)</option>
+                        ${Object.entries(BALL_NAMES).map(([id, n]) => `<option value="${id}">${n}</option>`).join('')}
+                    </select></div>
+                <div style="margin-top:4px">Avisar quando restarem menos de (0 = desligado):
+                    <input id="pg-dn-ballsmin" type="number" min="0" step="1"
+                        style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
+                <div style="margin-top:4px;color:#aaa;font-size:12px">Avisa uma vez ao ficar abaixo do limite e de novo só depois de repor. O estoque é checado após cada captura e a cada 5 min.</div>
+            </div>
             <div style="margin-top:6px">Mencionar (ID do Discord, opcional):
                 <input id="pg-dn-mention" type="text" placeholder="123456789012345678"
                     style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
@@ -498,6 +591,8 @@
             $('#pg-dn-all').checked = cfg.notifyEveryCapture;
             $('#pg-dn-tier').value = tierByKey(cfg.minTier) ? tierByKey(cfg.minTier).key : '';
             $('#pg-dn-miniv').value = cfg.minIv || 0;
+            $('#pg-dn-ball').value = cfg.ballsWatch || 'auto';
+            $('#pg-dn-ballsmin').value = cfg.ballsMin || 0;
             $('#pg-dn-mention').value = cfg.mentionUserId;
             $('#pg-dn-cooldown').value = cfg.cooldownSeconds;
             $('#pg-dn-debug').checked = cfg.debug;
@@ -518,6 +613,10 @@
             cfg.notifyEveryCapture = $('#pg-dn-all').checked;
             cfg.minTier = $('#pg-dn-tier').value;
             cfg.minIv = Math.min(IV_MAX, Math.max(0, parseInt($('#pg-dn-miniv').value, 10) || 0));
+            cfg.ballsWatch = $('#pg-dn-ball').value || 'auto';
+            cfg.ballsMin = Math.max(0, parseInt($('#pg-dn-ballsmin').value, 10) || 0);
+            for (const k of Object.keys(ballAlerted)) delete ballAlerted[k]; // limite mudou: rearma
+            requestBalls(0);
             cfg.mentionUserId = $('#pg-dn-mention').value.trim();
             cfg.cooldownSeconds = Math.max(0, parseInt($('#pg-dn-cooldown').value, 10) || 0);
             cfg.cfgVersion = 2;
@@ -580,8 +679,10 @@
     }
 
     buildUI();
+    setInterval(() => requestBalls(0), BALLS_POLL_MS);
 
-    console.log(TAG, 'v2.4.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v2.5.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
-        '| raridade mín.:', cfg.minTier || '(nenhuma)', '| poder mín.:', cfg.minIv || 0);
+        '| raridade mín.:', cfg.minTier || '(nenhuma)', '| poder mín.:', cfg.minIv || 0,
+        '| alerta bolas:', cfg.ballsMin ? `${cfg.ballsWatch} < ${cfg.ballsMin}` : 'desligado');
 })();
