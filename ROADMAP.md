@@ -245,6 +245,27 @@ TELA pode seguir mostrando a cidade enquanto o servidor farma).
 
 ---
 
+## ✅ 13. Guardar o Pokémon avisado: cadeado e depósito da família (v3.6.0)
+
+**O que faz:** dois toggles na aba Avisos ("Guardar o Pokémon avisado"): 🔒 **Travar no jogo** e 📦 **Mandar
+para o depósito da família**. Todo Pokémon que passa nos filtros (nome + qualidade, ou shiny) é guardado ANTES
+do aviso, e o aviso diz o resultado ("🔒 Travado no jogo", "📦 Guardado no depósito da família" ou o motivo
+da falha).
+
+**Mensagens do jogo:** cadeado = `POST /api/game/pokemon/lock { id, locked:true }` (mesmo da loja/mercado; a
+venda em lote da loja exclui travados). Família = `family-action { action:'poke', dir:'deposit', capturedId }`
+pelo socket; confirmação quando o frame `family` seguinte traz o id em `depot.pokes`, falha em `error { message }`,
+sem família, depósito congelado ou limite diário (`movesUsed/movesCap`). O id do indivíduo vem do `poke-delta`.
+`poke-store` NÃO serve: só tira do time para o box comum, que é justamente de onde a loja vende.
+
+**Config/UI:** `lockNotified`, `familyNotified` (padrão desligados). Log: `poke-lock`, `poke-familia`,
+`familia`, `erro-jogo`, `guardar`. Teste: parte final de `node test/ui.smoke.js`.
+
+**Pendências:** formato do frame `family` visto só no bundle; confirmar no log na primeira vez que rodar ao
+vivo. Se o `poke-delta` atrasar mais de 4 s, avisa sem guardar (registrado no log).
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

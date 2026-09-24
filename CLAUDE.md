@@ -95,6 +95,15 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   guarda `localStorage.pgDiscordNotifyResume` antes do `location.reload()` e, na carga nova, `loadResume()` +
   `armResume()` reenviam `enter-hunt` via `switchHunt(slug, 1, 'recarga')` 3 s após o `set-city`. Slugs de cidade
   (`cerulean`, `pewter`, `viridian`, `cassino`, `arena_pvp`) nunca são reenviados.
+- Guardar o Pokémon avisado (v3.6.0, levantado no bundle em 24/09/2026): a aba "Pokémon" da loja do NPC vende
+  os Pokémon FORA do time (`!team && !starter && !shiny && sellValue > 0`) que não estejam `locked`, via
+  `POST /api/game/pokemon/sell { pokeIds }`. O cadeado é `POST /api/game/pokemon/lock { id, locked }` (mesmo
+  `gameApi` da compra). `poke-store` só tira do time para o box comum e NÃO protege da venda. O depósito da
+  FAMÍLIA é outro lugar: `family-action { action:'poke', dir:'deposit'|'withdraw', capturedId }` pelo socket,
+  resposta no frame `family { family:{ name, movesUsed, movesCap, frozen, members }, depot:{ items, pokes } }`
+  ou `error { message }`; limite diário de movimentos, líder/starter não vão, o que entra vira da família.
+  `cfg.lockNotified`/`cfg.familyNotified` aplicam isso (`keepNotified`) a quem passa nos filtros, ANTES do
+  aviso; o id vem do `poke-delta` (`info.pokeId`). Sem id, avisa sem guardar (log `guardar`).
 - Nome do personagem: `window.__poke.api['/api/characters/me'].character.name` (mesmo caminho
   que o PokeGrid usa para nomear abas). NÃO usar `.phud-name` — é o Pokémon ativo, não a conta.
 

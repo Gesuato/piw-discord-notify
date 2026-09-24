@@ -19,7 +19,8 @@ const errors = [];
 window.addEventListener('error', (e) => errors.push('ERRO: ' + (e.error && e.error.stack || e.message)));
 window.WebSocket = class FakeWS extends window.EventTarget { constructor(url) { super(); this.url = url; this.readyState = 1; this.sent = []; } send(d) { this.sent.push(d); } };
 Object.assign(window.WebSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
-window.fetch = () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ items: [{ id: 1, name: 'Pidgey Feather', category: 'loot', npcPrice: 10 }, { id: 2, name: 'Rare Candy', category: 'misc', npcPrice: 0 }] }) });
+const fetchCalls = [];
+window.fetch = (url, opts) => { fetchCalls.push(String(url) + (opts && opts.body ? ' ' + opts.body : '')); return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ items: [{ id: 1, name: 'Pidgey Feather', category: 'loot', npcPrice: 10 }, { id: 2, name: 'Rare Candy', category: 'misc', npcPrice: 0 }] }) }); };
 window.localStorage.setItem('pgDiscordNotifyCfg', JSON.stringify({
     webhookUrl: 'https://discord.com/api/webhooks/1/x', watchList: ['dratini'],
     route: [{ slug: 'pidgey', level: 10 }, { slug: 'larvitar', level: 15 }], routeEnabled: true, routeStage: 1,
@@ -95,9 +96,34 @@ setTimeout(() => {
         panel.querySelector('.dn-tab[data-tab=bolas]').click(); log('bolas=' + $('#pg-dn-balls-status').textContent.trim());
         panel.querySelector('.dn-tab[data-tab=sistema]').click(); log('socket=' + $('#pg-dn-socket').textContent);
         log('enviados=' + ws.sent.map(x => JSON.parse(x).type).join(','));
+        // ---- guardar o avisado: liga os dois toggles, salva, captura um da lista e confere lock + família + webhook ----
+        panel.querySelector('.dn-tab[data-tab=avisos]').click();
+        $('#pg-dn-lock').checked = true; fire($('#pg-dn-lock'), 'change');
+        $('#pg-dn-family').checked = true; fire($('#pg-dn-family'), 'change');
+        $('#pg-dn-save').click();
+        const cfgNow = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+        log('guardar salvo lock=' + cfgNow.lockNotified + ' family=' + cfgNow.familyNotified + ' lista=' + cfgNow.watchList + ' title=' + btn.title.split(' · ')[0]);
+        fetchCalls.length = 0;
+        recv({ type: 'catch-result', success: true, speciesName: 'Bagon', shiny: false, ballId: 4, ballName: 'Ultra Ball' });
+        recv({ type: 'poke-delta', poke: { id: 'cuid-bagon-1', speciesId: 371, name: 'Bagon', level: 5, shiny: false, xp: 0, ivTotal: 150, quality: 1.4 } });
+        setTimeout(() => {
+            log('apos delta: fetch=' + fetchCalls.map(c => c.split(' ')[0]).join(',') + ' | enviados=' + ws.sent.slice(1).map(x => JSON.parse(x).type + (JSON.parse(x).capturedId ? ':' + JSON.parse(x).capturedId : '')).join(','));
+            recv({ type: 'family', family: { name: 'Fam', movesUsed: 3, movesCap: 50, frozen: false, members: [] }, depot: { items: [], pokes: [{ id: 'cuid-bagon-1', name: 'Bagon', level: 5 }] } });
+            setTimeout(() => {
+                const hook = fetchCalls.find(c => c.startsWith('https://discord.com/'));
+                log('webhook enviado=' + Boolean(hook) + ' travado=' + (hook || '').includes('Travado no jogo') + ' familia=' + (hook || '').includes('depósito da família'));
+                const kinds = JSON.parse(window.localStorage.getItem('pgDiscordNotifyLog') || '[]').map(e => e.kind);
+                log('log kinds=' + kinds.filter(k => ['poke-lock', 'poke-familia', 'familia', 'decisao', 'webhook-ok'].includes(k)).join(','));
+                finish();
+            }, 50);
+        }, 50);
+        return;
         log('logEvents=' + JSON.parse(window.localStorage.getItem('pgDiscordNotifyLog') || '[]').map(e => e.ev || e.type || Object.keys(e)[0]).join(','));
     } catch (e) { log('EXC: ' + e.stack); }
-    if (errors.length) { console.error(errors.join(' | ')); process.exit(1); }
-    log('OK ui.smoke — painel abriu, salvou, testou, importou e recebeu hunt/drops/time/estoque sem erro de runtime');
-    process.exit(0);
+    finish();
+    function finish() {
+        if (errors.length) { console.error(errors.join(' | ')); process.exit(1); }
+        log('OK ui.smoke — painel abriu, salvou, testou, importou, recebeu hunt/drops/time/estoque e guardou uma captura sem erro de runtime');
+        process.exit(0);
+    }
 }, 1500);

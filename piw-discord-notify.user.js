@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.5.1
+// @version      3.6.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.5.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.6.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -27,6 +27,8 @@
         watchList: [],          // nomes em minúsculas, ex.: ['dratini', 'larvitar']
         notifyEveryCapture: false,
         notifyShiny: true,
+        lockNotified: false,    // travar (🔒) no jogo o Pokémon que passou nos filtros (fica fora da venda na loja)
+        familyNotified: false,  // mandar o Pokémon avisado para o depósito da família (family-action)
         minTier: '',            // raridade mínima ('' = sem filtro): weak, common, ... divine
         minIv: 0,               // poder mínimo (ivTotal 0..192); 0 = sem filtro
         minTierIv: 0,           // poder mínimo exigido TAMBÉM de quem passa pela raridade; 0 = qualquer poder
@@ -188,7 +190,7 @@
         if (num(p.ivTotal) != null) info.ivTotal = p.ivTotal;
         if (num(p.quality) != null) info.quality = p.quality;
         if (num(p.level) != null && info.level == null) info.level = p.level;
-        if (p.id != null) entry.pokeId = String(p.id);
+        if (p.id != null) { entry.pokeId = String(p.id); info.pokeId = entry.pokeId; }
         return info.ivTotal != null || info.quality != null;
     }
 
@@ -1094,6 +1096,9 @@
         const levelTxt = info.level != null ? ` (nível ${info.level})` : '';
         const ballTxt = info.ball ? `\nBola: ${info.ball}` : '';
         const autoTxt = info.auto ? '\nCaptura automática (VIP)' : '';
+        const keepTxt = (info.locked === true ? '\n🔒 Travado no jogo (fora da venda)' : info.locked === false ? '\n⚠ Não consegui travar no jogo' : '')
+            + (info.family === true ? '\n📦 Guardado no depósito da família' : info.family === false ? `\n⚠ Não foi para o depósito da família${info.familyMotivo ? ` (${info.familyMotivo})` : ''}` : '')
+            + (info.keepErro ? `\n⚠ Não guardei: ${info.keepErro}` : '');
         const tier = qualityTier(info.quality);
         // O jogo mostra o ivTotal (0..192) como "Poder X/192"; usamos o mesmo rótulo.
         const ivTxt = info.ivTotal != null ? `\nPoder: ${info.ivTotal}/${IV_MAX} (${Math.round(info.ivTotal / IV_MAX * 100)}%)` : '';
@@ -1105,12 +1110,93 @@
             username: 'Poke Idle World',
             embeds: [{
                 title: `${isTest ? 'Teste: ' : 'Captura: '}${info.name}${shinyTag}${tier ? ` [${tier.name}]` : ''}`,
-                description: (who ? `Conta: ${who}\n` : '') + `Em ${new Date().toLocaleString('pt-BR')}` + ivTxt + qualTxt + ballTxt + autoTxt,
+                description: (who ? `Conta: ${who}\n` : '') + `Em ${new Date().toLocaleString('pt-BR')}` + ivTxt + qualTxt + ballTxt + autoTxt + keepTxt,
                 color: info.shiny ? 0xffd700 : (tier ? tier.color : 0x57f287),
             }],
         };
 
         return postWebhook(info.shiny ? 'shiny' : 'capture', payload, { name: info.name, test: Boolean(isTest) });
+    }
+
+    // ---- Guardar o Pokémon avisado: cadeado (🔒) e/ou depósito da família ----
+    //
+    // Levantado no bundle do cliente (24/09/2026):
+    //   - A aba "Pokémon" da loja do NPC vende os Pokémon FORA do time (depósito/box) que não estejam
+    //     travados. O cadeado é o mesmo da loja/mercado: POST /api/game/pokemon/lock { id, locked }.
+    //     Guardar no depósito comum (`poke-store`) NÃO protege: é de lá que a loja vende.
+    //   - Depósito da família (janela "Família"): `family-action { action:'poke', dir:'deposit', capturedId }`
+    //     pelo socket. O servidor responde com o frame `family` (estado completo, com `depot.pokes`) ou
+    //     `error { message }`. Regras do jogo: precisa estar numa família; limite diário de movimentos
+    //     (`family.movesUsed/movesCap`); depósito congelado se houver conta banida; líder e starter não vão.
+    //     O que é depositado passa a ser DA FAMÍLIA (qualquer membro retira).
+    // O id do indivíduo vem do `poke-delta`; sem ele, avisa sem guardar e registra no log.
+    const POKE_LOCK_URL = '/api/game/pokemon/lock';
+    const KEEP_TIMEOUT_MS = 5000;
+
+    async function lockPokemon(pokeId, name) {
+        try {
+            const r = await Promise.race([
+                gameApi(POKE_LOCK_URL, { method: 'POST', body: JSON.stringify({ id: pokeId, locked: true }) }),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), KEEP_TIMEOUT_MS)),
+            ]);
+            logEvent('poke-lock', { name, pokeId, ok: true, resposta: r });
+            return true;
+        } catch (err) {
+            logEvent('poke-lock', { name, pokeId, ok: false, erro: String(err?.message || err) });
+            return false;
+        }
+    }
+
+    let familyPending = null;       // { pokeId, name, resolve, timer } depósito aguardando `family`/`error`
+    function familyDeposit(pokeId, name) {
+        return new Promise((resolve) => {
+            if (familyPending) familyPending.resolve({ ok: false, motivo: 'outro depósito em andamento' });
+            const entry = { pokeId, name, timer: null, resolve: null };
+            entry.resolve = (r) => {
+                clearTimeout(entry.timer);
+                if (familyPending === entry) familyPending = null;
+                logEvent('poke-familia', { name, pokeId, ok: r.ok, motivo: r.motivo || null });
+                resolve(r);
+            };
+            familyPending = entry;
+            if (!sendGame({ type: 'family-action', action: 'poke', dir: 'deposit', capturedId: pokeId })) {
+                entry.resolve({ ok: false, motivo: 'socket do jogo não rastreado' });
+                return;
+            }
+            entry.timer = setTimeout(() => entry.resolve({ ok: false, motivo: 'sem resposta do jogo' }), KEEP_TIMEOUT_MS);
+        });
+    }
+    function handleFamily(message) {
+        const fam = message.family || null;
+        const depot = message.depot || {};
+        logEvent('familia', { temFamilia: Boolean(fam), movimentos: fam ? `${fam.movesUsed}/${fam.movesCap}` : null, congelado: Boolean(fam?.frozen), pokesNoDeposito: Array.isArray(depot.pokes) ? depot.pokes.length : null });
+        if (!familyPending) return;
+        const achou = Array.isArray(depot.pokes) && depot.pokes.some(p => String(p?.id) === familyPending.pokeId);
+        if (achou) familyPending.resolve({ ok: true });
+        else if (!fam) familyPending.resolve({ ok: false, motivo: 'a conta não está numa família' });
+        else if (fam.frozen) familyPending.resolve({ ok: false, motivo: 'depósito da família congelado' });
+        else if (Number(fam.movesUsed) >= Number(fam.movesCap)) familyPending.resolve({ ok: false, motivo: `limite diário de movimentos (${fam.movesUsed}/${fam.movesCap})` });
+        else familyPending.resolve({ ok: false, motivo: 'o jogo respondeu sem o Pokémon no depósito' });
+    }
+    function handleGameError(message) {
+        logEvent('erro-jogo', { message: message.message || null });
+        if (familyPending) familyPending.resolve({ ok: false, motivo: message.message || 'erro do jogo' });
+    }
+
+    // Aplica as opções "guardar" ao Pokémon que passou nos filtros, ANTES do aviso (o texto do aviso diz o resultado).
+    async function keepNotified(info) {
+        if (!cfg.lockNotified && !cfg.familyNotified) return;
+        if (!info.pokeId) {
+            logEvent('guardar', { name: info.name, ok: false, erro: 'sem id do Pokémon (poke-delta não chegou a tempo)' });
+            info.keepErro = 'sem id do Pokémon';
+            return;
+        }
+        if (cfg.lockNotified) info.locked = await lockPokemon(info.pokeId, info.name);
+        if (cfg.familyNotified) {
+            const r = await familyDeposit(info.pokeId, info.name);
+            info.family = r.ok;
+            info.familyMotivo = r.motivo || null;
+        }
     }
 
     // ---- Lógica principal -------------------------------------------
@@ -1128,6 +1214,8 @@
         }
 
         if (message.type === 'poke-delta') { handlePokeDelta(message); return; }
+        if (message.type === 'family') { handleFamily(message); return; }
+        if (message.type === 'error') { handleGameError(message); return; }
         if (message.type === 'poke-xp') { handlePokeXp(message); return; }
         if (message.type === 'field' || message.type === 'field-init') { lastFieldAt = Date.now(); return; }
         if (message.type === 'field-kill') { noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); return; }
@@ -1166,7 +1254,7 @@
         withDetails(info).then(full => {
             const q = isShinyPass ? { ok: true, motivo: 'shiny' } : passesQualityFilter(full);
             logEvent('decisao', { name: full.name, shiny: full.shiny, level: full.level, quality: full.quality ?? null, ivTotal: full.ivTotal ?? null, notificar: q.ok, motivo: q.motivo });
-            if (q.ok) sendDiscordNotification(full, false);
+            if (q.ok) keepNotified(full).then(() => sendDiscordNotification(full, false));
         });
     }
 
@@ -1385,7 +1473,7 @@
         const rota = Array.isArray(d.route) ? d.route.filter(r => r && r.slug && Number(r.level) > 0) : [];
         const st = Number(cfg.routeStage) || 0;
         return [
-            `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}`,
+            `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
             `Bolas: ${moduleState('bolas', d) === 'off' ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}`,
             `Venda: ${d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} itens / ${d.sellEveryMin}${d.sellEveryMaxMin > d.sellEveryMin ? `–${d.sellEveryMaxMin}` : ''} min` : 'desligada'}`,
             `Treino: ${d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : 'desligado')}`,
@@ -1439,6 +1527,13 @@
                         <label class="dn-field"><span>Pokémon</span><input id="pg-dn-list" class="dn-input" type="text" placeholder="dratini, larvitar"><span class="dn-help">Separados por vírgula. Vazio = todas.</span></label>
                         <label class="dn-toggle"><input id="pg-dn-shiny" type="checkbox"><span class="sw"></span>Todo shiny <span class="dn-hint">(avisa sempre, mesmo fora da lista)</span></label>
                         <label class="dn-toggle"><input id="pg-dn-all" type="checkbox"><span class="sw"></span>Toda captura <span class="dn-hint">(ignora a lista)</span></label>
+                    </div>
+                    <div class="dn-section">
+                        <h3>Guardar o Pokémon avisado</h3>
+                        <label class="dn-toggle"><input id="pg-dn-lock" type="checkbox"><span class="sw"></span>🔒 Travar no jogo</label>
+                        <p class="dn-help">Cadeado da loja: fica fora da venda de Pokémon.</p>
+                        <label class="dn-toggle"><input id="pg-dn-family" type="checkbox"><span class="sw"></span>📦 Mandar para o depósito da família</label>
+                        <p class="dn-help">Precisa estar numa família e gasta 1 movimento do limite diário. O Pokémon passa a ser da família. Líder e starter não vão.</p>
                     </div>
                     <div class="dn-section">
                         <h3>Filtro de qualidade</h3>
@@ -1619,6 +1714,8 @@
                 watchList: $('#pg-dn-list').value.split(',').map(normalize).filter(Boolean),
                 notifyShiny: $('#pg-dn-shiny').checked,
                 notifyEveryCapture: $('#pg-dn-all').checked,
+                lockNotified: $('#pg-dn-lock').checked,
+                familyNotified: $('#pg-dn-family').checked,
                 minTier: $('#pg-dn-tier').value,
                 minIv: Math.min(IV_MAX, Math.max(0, parseInt($('#pg-dn-miniv').value, 10) || 0)),
                 minTierIv: Math.min(IV_MAX, Math.max(0, parseInt($('#pg-dn-tier-iv').value, 10) || 0)),
@@ -1843,6 +1940,8 @@
             $('#pg-dn-list').value = cfg.watchList.join(', ');
             $('#pg-dn-shiny').checked = cfg.notifyShiny;
             $('#pg-dn-all').checked = cfg.notifyEveryCapture;
+            $('#pg-dn-lock').checked = Boolean(cfg.lockNotified);
+            $('#pg-dn-family').checked = Boolean(cfg.familyNotified);
             $('#pg-dn-tier').value = tierByKey(cfg.minTier) ? tierByKey(cfg.minTier).key : '';
             $('#pg-dn-miniv').value = cfg.minIv || 0;
             $('#pg-dn-tier-iv').value = cfg.minTierIv || 0;

@@ -47,7 +47,7 @@ Confirmados no bundle. Os marcados com ✔ já são usados ou interceptados pelo
 | `send`, `dm`, `chat-delete` | `channel`, `body` | chat |
 | `trade-*` (`invite`, `respond`, `slot`, `money`, `confirm`, `cancel`, `get`) | vários | troca entre jogadores |
 | `pvp-*` (`queue`, `challenge`, `accept`, `decline`, `action`, `leave`, `watch`, `unwatch`, `state`) e `switch { teamIndex }`, `move { moveIndex }`, `forfeit` | vários | PvP (o `switch` é troca de Pokémon **na batalha**, não do líder) |
-| `family-get`, `family-action` | — | clã/família |
+| `family-get`, `family-action` ✔ | `family-action { action:'poke', dir:'deposit'\|'withdraw', capturedId }`; `{ action:'item', dir, itemId, quantity }`; `create`/`invite`/`respond` | clã/família: depósito compartilhado (limite diário de movimentos `movesUsed/movesCap`; responde `family` ou `error`) |
 
 ## Servidor → cliente (handlers registrados no bundle)
 
@@ -60,8 +60,19 @@ Confirmados no bundle. Os marcados com ✔ já são usados ou interceptados pelo
 `trade-settled`.
 
 Formatos confirmados em log (ver `CLAUDE.md`): `pending`, `catch-result`, `poke-delta`, `pokes`,
-`balls`, `field-kill`, `poke-xp`. Os demais só têm o nome confirmado; antes de usar, logar com
+`balls`, `field-kill`, `poke-xp`. Vistos só no bundle: `family { family:{ name, movesUsed, movesCap, frozen,
+members, isOwner, lockedUntil }, depot:{ items:[{itemId,name,quantity,icon}], pokes:[{id,name,level,ivTotal,quality,shiny}] }, invites, canCreate }`
+e `error { message }` (resposta de ação recusada; o script os trata em `handleFamily`/`handleGameError`). Os demais só têm o nome confirmado; antes de usar, logar com
 `logEvent` e ler com `tools/read-panel-logs.py`.
+
+## REST que o cliente usa (além da loja/depot de itens do CLAUDE.md)
+
+- `POST /api/game/pokemon/lock { id, locked }` — cadeado do Pokémon (loja e mercado mostram 🔒; a venda em lote
+  da loja exclui os travados). Usado pelo script em `lockPokemon`.
+- `POST /api/game/pokemon/sell { pokeIds:[...] }` → `{ gold, goldGained, sold }` — venda em lote da aba "Pokémon"
+  da loja; a lista vem do frame `pokes` filtrado por `!team && !starter && !shiny && sellValue > 0 && !locked`.
+- `GET /api/game/depot`, `POST /api/game/depot/move { itemId, dir }` / `{ all:true }` — depósito comum de ITENS
+  (NPC Depot). Pokémon no depósito comum = `poke-store`/`poke-withdraw` pelo socket (é o "box").
 
 ## Ideias que esses nomes destravam
 
