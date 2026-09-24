@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Mockup do painel redesenhado (proposta em docs/design-painel.md). Abra no navegador; não depende de nada externo. -->
+<title>Painel Notify Redesenhado</title>
+<style>
+  :root {
+    --pg-bg: #f3f2ee;
+    --pg-surface: #ffffff;
+    --pg-text: #1f2124;
+    --pg-muted: #6b6f76;
+    --pg-border: #dcdad3;
+    --pg-accent: #4752c4;
+    --pg-stage: #0f1114;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --pg-bg: #17181b; --pg-surface: #1f2125; --pg-text: #e6e7ea; --pg-muted: #9a9ea6;
+      --pg-border: #34363c; --pg-accent: #8891ff; --pg-stage: #0a0b0d; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --pg-bg: #17181b; --pg-surface: #1f2125; --pg-text: #e6e7ea; --pg-muted: #9a9ea6;
+    --pg-border: #34363c; --pg-accent: #8891ff; --pg-stage: #0a0b0d; color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--pg-bg); color: var(--pg-text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding-block: 24px 48px; padding-inline: 16px; display: flex; flex-direction: column; gap: 20px; }
+  h1 { font-size: 22px; margin: 0; text-wrap: balance; }
+  .lead { color: var(--pg-muted); margin: 4px 0 0; max-width: 68ch; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .controls .lbl { color: var(--pg-muted); font-size: 13px; }
+  .seg { display: inline-flex; border: 1px solid var(--pg-border); border-radius: 6px; overflow: hidden; }
+  .seg button { background: var(--pg-surface); color: var(--pg-text); border: 0; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--pg-border); }
+  .seg button[aria-pressed="true"] { background: var(--pg-accent); color: #fff; }
+
+  /* ---- palco: simula um webview do PokeGrid em grade 2x2 (~960x540) ---- */
+  .stage { position: relative; width: 100%; max-width: 960px; height: 540px; background: var(--pg-stage);
+    border: 1px solid var(--pg-border); border-radius: 8px; overflow: hidden;
+    background-image: radial-gradient(circle at 70% 35%, #1b2a1f 0, transparent 45%), radial-gradient(circle at 20% 80%, #1a1f2e 0, transparent 40%); }
+  .stage .game { position: absolute; inset: 0; color: #4b5563; font-size: 12px; padding: 10px 12px; display: flex; justify-content: space-between; }
+  .stage .game .hud { background: rgba(0,0,0,.35); border: 1px solid #262a31; border-radius: 6px; padding: 6px 10px; height: fit-content; color: #9aa3ad; font-variant-numeric: tabular-nums; }
+  .note { font-size: 12px; color: var(--pg-muted); }
+
+  /* ---- sistema visual do painel (tokens --dn-*, como será injetado no userscript) ---- */
+  #pg-dn-btn, #pg-dn-panel {
+    --dn-bg-0: #1e1f22; --dn-bg-1: #2b2d31; --dn-bg-2: #313338; --dn-bg-3: #3a3c42;
+    --dn-border: #3f4147; --dn-text: #dbdee1; --dn-muted: #949ba4; --dn-dim: #80848e;
+    --dn-accent: #5865f2; --dn-ok: #23a559; --dn-warn: #f0b232; --dn-danger: #da373c; --dn-shiny: #fee75c;
+    --dn-radius: 6px; --dn-radius-sm: 4px;
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--dn-text);
+  }
+  #pg-dn-btn { position: absolute; bottom: 12px; left: 12px; width: 38px; height: 38px; border-radius: 50%;
+    border: 1px solid var(--dn-border); background: var(--dn-bg-1); font-size: 18px; cursor: pointer; opacity: .95; }
+  #pg-dn-btn .dot { position: absolute; right: -1px; top: -1px; width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--pg-stage); background: transparent; }
+  #pg-dn-btn .dot[data-state="ok"] { background: var(--dn-ok); }
+  #pg-dn-btn .dot[data-state="warn"] { background: var(--dn-warn); }
+  #pg-dn-btn .dot[data-state="danger"] { background: var(--dn-danger); animation: dn-pulse 1.4s ease-in-out infinite; }
+  @keyframes dn-pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(218,55,60,.6); } 50% { box-shadow: 0 0 0 5px rgba(218,55,60,0); } }
+  @media (prefers-reduced-motion: reduce) { #pg-dn-btn .dot[data-state="danger"] { animation: none; } }
+
+  #pg-dn-panel { position: absolute; bottom: 58px; left: 12px; width: min(380px, calc(100% - 24px)); height: min(520px, calc(100% - 70px));
+    display: flex; flex-direction: column; background: var(--dn-bg-1); border: 1px solid var(--dn-border); border-radius: var(--dn-radius);
+    box-shadow: 0 8px 24px rgba(0,0,0,.5); overflow: hidden; }
+  .dn-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--dn-bg-0); border-bottom: 1px solid var(--dn-border); }
+  .dn-head .t { font-weight: 600; font-size: 14px; }
+  .dn-head .v { color: var(--dn-muted); font-size: 12px; }
+  .dn-dots { margin-left: auto; display: flex; gap: 4px; }
+  .dn-dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--dn-dim); display: block; }
+  .dn-dots i[data-state="on"] { background: var(--dn-ok); }
+  .dn-dots i[data-state="warn"] { background: var(--dn-warn); }
+  .dn-dots i[data-state="danger"] { background: var(--dn-danger); }
+  .dn-tabs { display: flex; background: var(--dn-bg-0); border-bottom: 1px solid var(--dn-border); }
+  .dn-tab { flex: 1; position: relative; background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--dn-muted);
+    font: inherit; font-size: 12px; font-weight: 600; padding: 7px 2px 6px; cursor: pointer; white-space: nowrap; }
+  .dn-tab[aria-selected="true"] { color: var(--dn-text); border-bottom-color: var(--dn-accent); background: var(--dn-bg-1); }
+  .dn-tab .b { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-left: 3px; background: var(--dn-dim); vertical-align: 1px; }
+  .dn-tab .b[data-state="on"] { background: var(--dn-ok); }
+  .dn-tab .b[data-state="warn"] { background: var(--dn-warn); }
+  .dn-tab .b[data-state="danger"] { background: var(--dn-danger); }
+  .dn-body { flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .dn-pane[hidden] { display: none; }
+  .dn-pane { display: flex; flex-direction: column; gap: 8px; }
+  .dn-section { display: flex; flex-direction: column; gap: 8px; }
+  .dn-section + .dn-section { border-top: 1px solid var(--dn-border); padding-top: 12px; margin-top: 4px; }
+  .dn-section > h3 { margin: 0; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .dn-section > h3 .spacer { flex: 1; }
+  .dn-field { display: flex; flex-direction: column; gap: 2px; }
+  .dn-field > span { font-size: 13px; }
+  .dn-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .dn-row .dn-field { flex: 1; min-width: 120px; }
+  .dn-input, .dn-select, .dn-textarea { width: 100%; min-height: 28px; background: var(--dn-bg-0); color: var(--dn-text); border: 1px solid var(--dn-border);
+    border-radius: var(--dn-radius-sm); padding: 4px 8px; font: inherit; }
+  .dn-input:focus, .dn-select:focus, .dn-textarea:focus, .dn-btn:focus-visible, .dn-tab:focus-visible { outline: 2px solid var(--dn-accent); outline-offset: 1px; }
+  .dn-input:disabled { color: var(--dn-dim); background: var(--dn-bg-1); }
+  .dn-input--sm { width: 64px; min-width: 64px; }
+  .dn-textarea { font: 12px/1.4 ui-monospace, Consolas, monospace; resize: vertical; }
+  .dn-help { font-size: 12px; color: var(--dn-muted); line-height: 1.4; margin: 0; }
+  .dn-help.warn { color: var(--dn-warn); }
+  .dn-inline { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .dn-status { display: flex; align-items: center; gap: 8px; font-size: 12px; background: var(--dn-bg-0); border-radius: var(--dn-radius-sm);
+    padding: 6px 8px; font-variant-numeric: tabular-nums; }
+  .dn-status .k { color: var(--dn-muted); }
+  .dn-summary { font-size: 12px; background: var(--dn-bg-0); border-left: 2px solid var(--dn-accent); padding: 6px 8px; border-radius: 0 var(--dn-radius-sm) var(--dn-radius-sm) 0; }
+  .dn-toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
+  .dn-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .dn-toggle .sw { width: 32px; height: 18px; border-radius: 9px; background: var(--dn-bg-3); position: relative; flex: none; transition: background .15s; }
+  .dn-toggle .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left .15s; }
+  .dn-toggle input:checked + .sw { background: var(--dn-ok); }
+  .dn-toggle input:checked + .sw::after { left: 16px; }
+  .dn-toggle input:focus-visible + .sw { outline: 2px solid var(--dn-accent); outline-offset: 1px; }
+  .dn-btn { min-height: 28px; border-radius: var(--dn-radius-sm); border: 1px solid transparent; font: inherit; font-size: 13px; font-weight: 600;
+    padding: 4px 12px; cursor: pointer; background: var(--dn-bg-3); color: var(--dn-text); }
+  .dn-btn--primary { background: var(--dn-accent); color: #fff; }
+  .dn-btn--primary.idle { background: var(--dn-bg-3); color: var(--dn-text); }
+  .dn-btn--danger { background: transparent; border-color: var(--dn-danger); color: #ff7a7e; }
+  .dn-btn--danger:hover { background: var(--dn-danger); color: #fff; }
+  .dn-btn--ghost { background: transparent; color: var(--dn-muted); font-weight: 400; padding: 2px 6px; }
+  .dn-btn--ghost:hover { color: var(--dn-text); }
+  .dn-btn--sm { min-height: 24px; padding: 2px 8px; font-size: 12px; }
+  .dn-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .dn-actions .dn-btn { flex: 1; }
+  .dn-badge { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 10px; background: var(--dn-bg-3); color: var(--dn-muted); }
+  .dn-badge[data-state="on"] { background: rgba(35,165,89,.18); color: #57d38a; }
+  .dn-badge[data-state="warn"] { background: rgba(240,178,50,.18); color: var(--dn-warn); }
+  .dn-badge[data-state="danger"] { background: rgba(218,55,60,.18); color: #ff7a7e; }
+  .dn-chan-summary { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--dn-muted); }
+  .dn-chan-summary b { color: var(--dn-text); font-weight: 500; }
+
+  /* itens de venda */
+  .dn-items { display: flex; flex-direction: column; }
+  .dn-item { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; padding: 4px 6px; border-radius: var(--dn-radius-sm); font-size: 12px; cursor: pointer; }
+  .dn-item:hover { background: var(--dn-bg-2); }
+  .dn-item input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var(--dn-accent); }
+  .dn-item .nm { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+  .dn-item .q { color: var(--dn-muted); font-variant-numeric: tabular-nums; }
+  .dn-item .w { color: var(--dn-shiny); }
+  .dn-item .keep { display: none; align-items: center; gap: 4px; color: var(--dn-muted); }
+  .dn-item.on .keep { display: inline-flex; }
+  .dn-item .keep input { width: 52px; min-height: 24px; padding: 2px 6px; }
+  .dn-item.locked { color: var(--dn-dim); cursor: default; }
+  .dn-item.locked:hover { background: transparent; }
+
+  /* rota */
+  .dn-route { list-style: none; margin: 0; padding: 0; font-size: 12px; display: flex; flex-direction: column; gap: 2px; font-variant-numeric: tabular-nums; }
+  .dn-route li { display: flex; gap: 8px; padding: 2px 6px; border-radius: var(--dn-radius-sm); }
+  .dn-route li .m { width: 14px; text-align: center; color: var(--dn-muted); }
+  .dn-route li.done { color: var(--dn-muted); }
+  .dn-route li.cur { background: var(--dn-bg-0); }
+  .dn-route li.cur .m { color: var(--dn-accent); }
+  .dn-route li .hint { margin-left: auto; color: var(--dn-muted); }
+
+  .dn-foot { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--dn-bg-0); border-top: 1px solid var(--dn-border); }
+  .dn-msg { flex: 1; min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--dn-muted); }
+  .dn-msg[data-kind="ok"] { color: #57d38a; }
+  .dn-msg[data-kind="warn"] { color: var(--dn-warn); }
+  .dn-msg[data-kind="error"] { color: #ff7a7e; }
+  .dn-msg[data-kind="dirty"] { color: var(--dn-warn); }
+
+  /* ---- notas de design abaixo do palco ---- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .card { background: var(--pg-surface); border: 1px solid var(--pg-border); border-radius: 8px; padding: 14px 16px; }
+  .card h2 { font-size: 14px; margin: 0 0 8px; }
+  .card ul, .card ol { margin: 0; padding-left: 18px; }
+  .card li { margin: 4px 0; }
+  .card li + li { margin-top: 6px; }
+  .phase { display: grid; grid-template-columns: 64px 1fr; gap: 10px; align-items: baseline; }
+  .phase b { font-variant-numeric: tabular-nums; }
+  .phase + .phase { margin-top: 8px; }
+  kbd { font: 12px ui-monospace, Consolas, monospace; background: var(--pg-bg); border: 1px solid var(--pg-border); border-radius: 4px; padding: 0 4px; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div>
+    <h1>Painel 🔔 redesenhado</h1>
+    <p class="lead">Mockup navegável da proposta do designer para o painel do piw-discord-notify. A moldura escura simula um webview do PokeGrid em grade 2×2 (960×540). Clique nas abas, mexa nos campos e veja o rodapé, os badges e o ponto do 🔔 reagirem.</p>
+  </div>
+
+  <div class="controls">
+    <span class="lbl">Cenário:</span>
+    <div class="seg" role="group" aria-label="Cenário">
+      <button type="button" id="sc-ok" aria-pressed="true">Conta configurada</button>
+      <button type="button" id="sc-new" aria-pressed="false">Conta nova (sem canal)</button>
+    </div>
+    <span class="lbl">·</span>
+    <button type="button" class="seg" style="padding:0"><span id="toggle-panel" style="padding:6px 12px;font-size:13px;cursor:pointer;display:block">Abrir / fechar painel</span></button>
+  </div>
+
+  <div class="stage" id="stage">
+    <div class="game">
+      <div class="hud">Hunt: pidgey · Larvitar ★ Lv 12 · 34 kills</div>
+      <div class="hud">Gold 128.400 · Ultra Ball 1.240</div>
+    </div>
+
+    <button id="pg-dn-btn" type="button" title="Notificações no Discord"><span>🔔</span><span class="dot" id="btn-dot" data-state="ok"></span></button>
+
+    <div id="pg-dn-panel">
+      <div class="dn-head">
+        <span class="t">🔔 Notify</span><span class="v">v3.6</span>
+        <div class="dn-dots" id="dots" title="Avisos · Bolas · Venda · Treino · Sistema"><i data-tab="avisos"></i><i data-tab="bolas"></i><i data-tab="venda"></i><i data-tab="treino"></i><i data-tab="sistema"></i></div>
+        <button type="button" class="dn-btn dn-btn--ghost" id="close" title="Fechar (Esc)">✕</button>
+      </div>
+      <div class="dn-tabs" role="tablist">
+        <button type="button" class="dn-tab" role="tab" data-tab="avisos" aria-selected="true">🔔 Avisos<span class="b"></span></button>
+        <button type="button" class="dn-tab" role="tab" data-tab="bolas" aria-selected="false">🎯 Bolas<span class="b"></span></button>
+        <button type="button" class="dn-tab" role="tab" data-tab="venda" aria-selected="false">💰 Venda<span class="b"></span></button>
+        <button type="button" class="dn-tab" role="tab" data-tab="treino" aria-selected="false">⚔ Treino<span class="b"></span></button>
+        <button type="button" class="dn-tab" role="tab" data-tab="sistema" aria-selected="false">⚙ Sistema<span class="b"></span></button>
+      </div>
+
+      <div class="dn-body">
+        <!-- ===== AVISOS ===== -->
+        <section class="dn-pane" data-pane="avisos">
+          <div class="dn-section">
+            <h3>Canais do Discord <span class="spacer"></span><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="chan-toggle">editar</button></h3>
+            <div class="dn-chan-summary" id="chan-summary"></div>
+            <div id="chan-box" hidden style="display:flex;flex-direction:column;gap:8px">
+              <label class="dn-field"><span>Capturas</span><input class="dn-input" id="hook-main" type="password" placeholder="https://discord.com/api/webhooks/…" autocomplete="off"><p class="dn-help">Obrigatório. Recebe as capturas e tudo que não tiver canal próprio.</p></label>
+              <label class="dn-field"><span>Shinys</span><input class="dn-input" id="hook-shiny" type="password" placeholder="https://discord.com/api/webhooks/…" autocomplete="off"><p class="dn-help">Vazio = vai para Capturas.</p></label>
+              <label class="dn-field"><span>Alertas</span><input class="dn-input" id="hook-alerts" type="password" placeholder="https://discord.com/api/webhooks/…" autocomplete="off"><p class="dn-help">Bolas, venda, hunt. Vazio = vai para Capturas.</p></label>
+              <label class="dn-field"><span>Nível</span><input class="dn-input" id="hook-level" type="password" placeholder="https://discord.com/api/webhooks/…" autocomplete="off"><p class="dn-help">Nível atingido e troca de líder. Vazio = vai para Alertas.</p></label>
+            </div>
+          </div>
+          <div class="dn-section">
+            <h3>Quais capturas avisar</h3>
+            <label class="dn-field"><span>Pokémon</span><input class="dn-input" id="watch" type="text" value="dratini, larvitar" placeholder="dratini, larvitar"><p class="dn-help">Vazio = todas.</p></label>
+            <label class="dn-toggle"><input type="checkbox" id="shiny" checked><span class="sw"></span>Todo shiny <span class="dn-help" style="margin-left:2px">(avisa sempre, mesmo fora da lista)</span></label>
+            <label class="dn-toggle"><input type="checkbox" id="all"><span class="sw"></span>Toda captura <span class="dn-help" style="margin-left:2px">(ignora a lista)</span></label>
+          </div>
+          <div class="dn-section">
+            <h3>Filtro de qualidade</h3>
+            <div class="dn-summary" id="q-summary"></div>
+            <label class="dn-field"><span>Raridade mínima</span>
+              <select class="dn-select" id="tier">
+                <option value="">Qualquer</option><option value="weak">Weak (&lt; 1.0)</option><option value="common">Common (1.0+)</option><option value="uncommon">Uncommon (1.1+)</option><option value="rare">Rare (1.3+)</option><option value="epic">Epic (1.5+)</option><option value="legendary" selected>Legendary (1.7+)</option><option value="mythic">Mythic (2.0+)</option><option value="ancient">Ancient (3.0+)</option><option value="divine">Divine (4.0+)</option>
+              </select></label>
+            <div class="dn-row">
+              <label class="dn-field"><span>Poder mínimo dessa raridade</span><input class="dn-input" id="tier-iv" type="number" min="0" max="192" value="120" placeholder="0 = qualquer"></label>
+              <label class="dn-field"><span>Poder mínimo, qualquer raridade</span><input class="dn-input" id="min-iv" type="number" min="0" max="192" value="180" placeholder="0 = desligado"></label>
+            </div>
+            <p class="dn-help">Poder é o X/192 que o jogo mostra.</p>
+          </div>
+          <div class="dn-section">
+            <h3>Mensagem</h3>
+            <div class="dn-row">
+              <label class="dn-field"><span>Mencionar (ID do Discord)</span><input class="dn-input" id="mention" type="text" placeholder="123456789012345678 (opcional)"></label>
+              <label class="dn-field"><span>Intervalo, mesmo Pokémon</span><span class="dn-inline"><input class="dn-input dn-input--sm" id="cooldown" type="number" min="0" value="0" placeholder="0">s</span><p class="dn-help">0 = avisa todas.</p></label>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===== BOLAS ===== -->
+        <section class="dn-pane" data-pane="bolas" hidden>
+          <div class="dn-section">
+            <h3>Estoque de bolas</h3>
+            <div class="dn-status"><span>🎯</span><span><span class="k">Ultra Ball:</span> 1.240 em estoque</span><span class="k" style="margin-left:auto">há 2 min</span></div>
+            <label class="dn-field"><span>Bola</span>
+              <select class="dn-select" id="ball"><option value="auto">A que estiver em uso</option><option value="1">Poke Ball</option><option value="2">Great Ball</option><option value="3">Super Ball</option><option value="4" selected>Ultra Ball</option><option value="6">Idle Ball</option></select></label>
+            <label class="dn-field"><span>Avisar abaixo de</span><input class="dn-input" id="balls-min" type="number" min="0" value="200" placeholder="0 = desligado"><p class="dn-help">Checa após cada captura e a cada 5 min. Avisa uma vez; rearma ao repor.</p></label>
+          </div>
+          <div class="dn-section">
+            <h3>Compra automática</h3>
+            <label class="dn-toggle"><input type="checkbox" id="autobuy" checked><span class="sw"></span>Comprar automaticamente</label>
+            <p class="dn-help">Compra na loja do NPC com o gold da conta quando ficar abaixo do limite.</p>
+            <p class="dn-help warn" id="autobuy-warn" hidden>⚠ Limite 0: compra só quando a bola acabar.</p>
+            <label class="dn-field"><span>Quantidade por compra</span><input class="dn-input" id="qty" type="number" min="1" max="1000" value="100"></label>
+            <p class="dn-help">Uma tentativa por vez; se faltar gold, avisa e espera repor ou salvar.</p>
+          </div>
+        </section>
+
+        <!-- ===== VENDA ===== -->
+        <section class="dn-pane" data-pane="venda" hidden>
+          <div class="dn-section">
+            <h3>Venda automática</h3>
+            <label class="dn-toggle"><input type="checkbox" id="sell" checked><span class="sw"></span>Vender automaticamente</label>
+            <div class="dn-inline">A cada <input class="dn-input dn-input--sm" id="sell-min" type="number" min="1" value="10"> a <input class="dn-input dn-input--sm" id="sell-max" type="number" min="0" value="15"> min</div>
+            <p class="dn-help">Sorteado na faixa. Segundo vazio = fixo.</p>
+            <div class="dn-status"><span>💰</span><span><span class="k">Hunt:</span> pidgey · perfil salvo</span><span class="k" style="margin-left:auto">próxima venda em 7 min</span></div>
+          </div>
+          <div class="dn-section">
+            <h3>Drops desta hunt <span class="spacer"></span><span class="dn-badge" id="sell-count"></span></h3>
+            <div class="dn-items" id="items">
+              <label class="dn-item on"><input type="checkbox" checked><span class="nm">Pidgey Feather <span class="q">×40 · 10 gold</span></span><span class="keep">manter <input class="dn-input" type="number" min="0" value="0"></span></label>
+              <label class="dn-item on"><input type="checkbox" checked><span class="nm">Small Feather <span class="q">×18 · 25 gold</span></span><span class="keep">manter <input class="dn-input" type="number" min="0" value="0"></span></label>
+              <label class="dn-item"><input type="checkbox"><span class="nm">Pheromone of Pidgey <span class="q">×12 · 250 gold</span> <span class="w" title="Atenção: feromônio">⚠ feromônio</span></span><span class="keep">manter <input class="dn-input" type="number" min="0" value="5"></span></label>
+              <label class="dn-item"><input type="checkbox"><span class="nm">Bird Egg <span class="q">×3 · 1.200 gold</span> <span class="w" title="Atenção: item raro">⚠ raro</span></span><span class="keep">manter <input class="dn-input" type="number" min="0" value="0"></span></label>
+              <div class="dn-item locked" title="Protegido: cadeado no jogo"><span>🔒</span><span class="nm">Rare Candy <span class="q">×1</span></span><span class="q">cadeado no jogo</span></div>
+            </div>
+            <p class="dn-help">Marcado = vendido. ⚠ = raro, pedra/feromônio ou outra categoria: confira. 🔒 = o jogo não deixa vender.</p>
+            <div class="dn-actions"><button type="button" class="dn-btn" id="sell-now">Vender agora</button></div>
+          </div>
+        </section>
+
+        <!-- ===== TREINO ===== -->
+        <section class="dn-pane" data-pane="treino" hidden>
+          <div class="dn-section">
+            <h3>Nível do líder</h3>
+            <label class="dn-field"><span>Avisar no nível</span><input class="dn-input" id="level" type="number" min="0" value="15" placeholder="0 = desligado"><p class="dn-help" id="level-help"></p></label>
+            <label class="dn-toggle"><input type="checkbox" id="swap" checked><span class="sw"></span>Trocar de líder ao atingir</label>
+            <p class="dn-help">Põe como líder o próximo do time abaixo do nível. Um aviso por Pokémon.</p>
+            <div class="dn-status"><span>★</span><span><span class="k">Time:</span> ★ Larvitar 12 · Pidgey 10 · Dratini 8</span><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="team-refresh" style="margin-left:auto">Atualizar</button></div>
+          </div>
+          <div class="dn-section">
+            <h3>Rota de treino</h3>
+            <textarea class="dn-textarea" id="route" rows="3" spellcheck="false">pidgey 10
+larvitar 15
+dratini 20
+bagon 25</textarea>
+            <p class="dn-help">Uma etapa por linha: <code>hunt nível</code>. Quando todo o time chega ao nível, troca para a próxima hunt.</p>
+            <label class="dn-toggle"><input type="checkbox" id="route-on" checked><span class="sw"></span>Seguir a rota</label>
+            <div class="dn-status" style="flex-direction:column;align-items:stretch;gap:4px">
+              <div><span class="k">Rota ·</span> etapa <span id="route-pos">2 de 4</span></div>
+              <ol class="dn-route" id="route-list"></ol>
+            </div>
+            <div class="dn-actions"><button type="button" class="dn-btn dn-btn--danger" id="route-reset">Reiniciar rota</button></div>
+          </div>
+        </section>
+
+        <!-- ===== SISTEMA ===== -->
+        <section class="dn-pane" data-pane="sistema" hidden>
+          <div class="dn-section">
+            <h3>Recarga do painel</h3>
+            <label class="dn-toggle"><input type="checkbox" id="reload"><span class="sw"></span>Recarregar automaticamente</label>
+            <div class="dn-inline">A cada <input class="dn-input dn-input--sm" id="reload-min" type="number" min="1" value="60"> a <input class="dn-input dn-input--sm" id="reload-max" type="number" min="0" value="90"> min</div>
+            <p class="dn-help">Guarda a hunt e volta pra ela após recarregar. Espera venda, troca e captura terminarem. <span title="O mesmo que o ⟳ Atualizar tudo do PokeGrid, só neste painel. A tela pode seguir mostrando a cidade enquanto o servidor farma." style="cursor:help">ⓘ</span></p>
+            <div class="dn-status" id="reload-status"><span>⟳</span><span>Recarga desligada</span></div>
+            <div class="dn-actions"><button type="button" class="dn-btn" id="reload-now">Recarregar agora</button></div>
+          </div>
+          <div class="dn-section">
+            <h3>Ferramentas</h3>
+            <div class="dn-actions">
+              <button type="button" class="dn-btn" id="copy-log" title="Últimos 40 eventos, sem canais. Cole para quem for diagnosticar.">Copiar log</button>
+              <button type="button" class="dn-btn" id="export" title="Copia a config inteira, com os canais.">Exportar config</button>
+              <button type="button" class="dn-btn" id="import">Importar config</button>
+            </div>
+            <div id="import-box" hidden style="display:flex;flex-direction:column;gap:8px">
+              <textarea class="dn-textarea" rows="3" placeholder="Cole a config exportada"></textarea>
+              <label class="dn-toggle"><input type="checkbox" id="keep-hooks" checked><span class="sw"></span>Manter os canais deste painel</label>
+              <div class="dn-actions"><button type="button" class="dn-btn dn-btn--primary" id="import-apply">Aplicar</button></div>
+            </div>
+            <label class="dn-toggle"><input type="checkbox" id="debug"><span class="sw"></span>Debug no console</label>
+            <div class="dn-status"><span class="k">v3.6.0</span><span style="margin-left:auto">socket do jogo <span style="color:#57d38a">● rastreado</span></span></div>
+          </div>
+        </section>
+      </div>
+
+      <div class="dn-foot">
+        <div class="dn-msg" id="msg" data-kind=""></div>
+        <button type="button" class="dn-btn" id="test" title="Envia uma mensagem de teste a cada canal preenchido.">Testar canais</button>
+        <button type="button" class="dn-btn dn-btn--primary idle" id="save">Salvar</button>
+      </div>
+    </div>
+  </div>
+  <p class="note">A moldura tem 960×540 como um painel do PokeGrid em 2×2. O painel ocupa 380×470 e não cresce ao trocar de aba; só o conteúdo de cada aba rola.</p>
+
+  <div class="grid">
+    <div class="card">
+      <h2>O que muda em relação ao painel atual</h2>
+      <ul>
+        <li><b>5 abas por objetivo</b> em vez de 10 blocos empilhados em 1.600 px de scroll. Menção e cooldown vão para Avisos; recarga, log e exportar/importar vão para Sistema; rota fica junto de nível em Treino.</li>
+        <li><b>Salvar sempre visível</b> no rodapé fixo, com "Alterações não salvas" quando algo foi editado. Continua um Salvar global, porque o salvar de hoje tem efeitos cruzados entre módulos.</li>
+        <li><b>Estado de relance</b>: ponto verde/amarelo/cinza em cada aba, 5 pontos no cabeçalho e ponto no 🔔. Responde "está tudo ligado?" sem abrir 4 painéis.</li>
+        <li><b>Canais do Discord colapsados</b> depois de configurados. Abrem sozinhos e com aviso vermelho na conta nova.</li>
+        <li><b>Regra do filtro de qualidade</b> vira uma frase gerada dos valores, no lugar do parágrafo de três orações.</li>
+        <li><b>Toggles</b> para ligar módulos, checkbox só na lista de drops. "Manter" só aparece no item marcado. Reiniciar rota em vermelho e pede um segundo clique.</li>
+        <li><b>Feedback no rodapé</b> colorido por tipo. Avisos e erros ficam até o próximo clique em vez de sumir em 2,5 s.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>Plano em versões pequenas</h2>
+      <div class="phase"><b>v3.5.0</b><span>Fundação: estilos em classes, painel 380×470, cabeçalho e rodapé fixos com Salvar. Sem mudar ordem nem texto.</span></div>
+      <div class="phase"><b>v3.6.0</b><span>Abas, reagrupamento, badges por aba e ponto no 🔔.</span></div>
+      <div class="phase"><b>v3.7.0</b><span>Copy nova, estados vazios com ação, rodapé por tipo, canais colapsáveis, frase do filtro.</span></div>
+      <div class="phase"><b>v3.8.0</b><span>Toggles, lista de drops em grid, rota com etapas, "não salvo", Enter salva, correção do Testar (hoje grava canais sem salvar).</span></div>
+      <p class="note" style="margin:10px 0 0">Nenhum id <kbd>#pg-dn-*</kbd> nem chave de config muda; os testes em Node continuam válidos. A aba ativa fica numa chave separada da config, fora do Exportar/Importar.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const $ = (s) => document.querySelector(s);
+  const $$ = (s) => Array.from(document.querySelectorAll(s));
+  let dirty = false;
+  let msgTimer = null;
+  const HOOKS = { main: 'https://discord.com/api/webhooks/000/exemplo', shiny: 'https://discord.com/api/webhooks/000/exemplo-shiny', alerts: '', level: '' };
+
+  // ---- abas ----
+  function showTab(name) {
+    $$('.dn-tab').forEach(t => t.setAttribute('aria-selected', String(t.dataset.tab === name)));
+    $$('.dn-pane').forEach(p => { p.hidden = p.dataset.pane !== name; });
+    try { localStorage.setItem('mock-dn-tab', name); } catch {}
+  }
+  $$('.dn-tab').forEach(t => t.addEventListener('click', () => showTab(t.dataset.tab)));
+  let savedTab = 'avisos';
+  try { savedTab = localStorage.getItem('mock-dn-tab') || 'avisos'; } catch {}
+  showTab(savedTab);
+
+  // ---- mensagens do rodapé ----
+  function flash(text, kind, ms) {
+    const m = $('#msg');
+    clearTimeout(msgTimer);
+    m.textContent = text; m.title = text; m.dataset.kind = kind || '';
+    if (ms) msgTimer = setTimeout(() => { if (m.textContent === text) renderDirty(); }, ms);
+  }
+  function renderDirty() {
+    const m = $('#msg');
+    if (dirty) { m.textContent = '● Alterações não salvas'; m.dataset.kind = 'dirty'; }
+    else { m.textContent = ''; m.dataset.kind = ''; }
+    $('#save').classList.toggle('idle', !dirty);
+    refreshState();
+  }
+  function markDirty() { dirty = true; renderDirty(); }
+
+  // ---- canais ----
+  function chanSummary() {
+    const has = (id) => Boolean($('#hook-' + id).value.trim());
+    const parts = [['main', 'Capturas'], ['shiny', 'Shinys'], ['alerts', 'Alertas'], ['level', 'Nível']]
+      .map(([id, n]) => `<b>${n}</b> ${has(id) ? '✔' : '—'}`);
+    $('#chan-summary').innerHTML = has('main') ? parts.join(' · ') : '<span style="color:#ff7a7e">⚠ Cole o webhook do canal de Capturas para começar.</span>';
+  }
+  function setChanOpen(open) {
+    $('#chan-box').hidden = !open;
+    $('#chan-toggle').textContent = open ? 'recolher' : 'editar';
+  }
+  $('#chan-toggle').addEventListener('click', () => setChanOpen($('#chan-box').hidden));
+
+  // ---- filtro de qualidade: frase gerada ----
+  const TIER_NAMES = { weak: 'Weak', common: 'Common', uncommon: 'Uncommon', rare: 'Rare', epic: 'Epic', legendary: 'Legendary', mythic: 'Mythic', ancient: 'Ancient', divine: 'Divine' };
+  function qualitySummary() {
+    const tier = $('#tier').value, tierIv = Number($('#tier-iv').value) || 0, minIv = Number($('#min-iv').value) || 0;
+    const parts = [];
+    if (tier) parts.push(`${TIER_NAMES[tier]}+${tierIv ? ` com poder ≥ ${tierIv}` : ''}`);
+    if (minIv) parts.push(`qualquer raridade com poder ≥ ${minIv}`);
+    let txt = parts.length ? `Avisa: ${parts.join(', ou ')}.` : 'Avisa: tudo que passar pela lista de nomes.';
+    if ($('#shiny').checked) txt += ' Shiny avisa sempre.';
+    $('#q-summary').textContent = txt;
+  }
+
+  // ---- venda ----
+  function sellCount() {
+    const on = $$('#items .dn-item input[type=checkbox]:checked').length;
+    const b = $('#sell-count');
+    b.textContent = on ? `${on} marcados` : 'nenhum marcado';
+    b.dataset.state = on ? 'on' : ($('#sell').checked ? 'warn' : '');
+  }
+  $$('#items .dn-item input[type=checkbox]').forEach(c => c.addEventListener('change', () => {
+    c.closest('.dn-item').classList.toggle('on', c.checked); sellCount();
+  }));
+  $$('#items .keep input').forEach(i => i.addEventListener('click', e => e.preventDefault(), false));
+  $$('#items .keep input').forEach(i => i.addEventListener('mousedown', e => e.stopPropagation()));
+  $('#sell-now').addEventListener('click', () => { dirty = false; renderDirty(); flash('⏳ Salvo. Vendendo…', ''); setTimeout(() => flash('✔ Vendeu 58 itens · +850 gold', 'ok', 6000), 900); });
+
+  // ---- treino ----
+  function renderRoute() {
+    const lines = $('#route').value.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const list = $('#route-list'); list.innerHTML = '';
+    const cur = 1;
+    lines.forEach((l, i) => {
+      const m = l.match(/^(\S+)\s+(\d+)$/);
+      const li = document.createElement('li');
+      if (!m) { li.innerHTML = `<span class="m" style="color:#ff7a7e">✖</span><span style="color:#ff7a7e">${l}</span><span class="hint">use "hunt nível"</span>`; list.appendChild(li); return; }
+      const mark = i < cur ? '✔' : i === cur ? '▶' : '';
+      li.className = i < cur ? 'done' : i === cur ? 'cur' : '';
+      li.innerHTML = `<span class="m">${mark}</span><span>${m[1]} → nível ${m[2]}</span>${i === cur ? '<span class="hint">atual · hunt: pidgey</span>' : ''}`;
+      list.appendChild(li);
+    });
+    const valid = lines.filter(l => /^(\S+)\s+(\d+)$/.test(l));
+    $('#route-pos').textContent = valid.length ? `${Math.min(cur + 1, valid.length)} de ${valid.length}` : '—';
+    const on = $('#route-on').checked && valid.length > 0;
+    const lv = $('#level');
+    lv.disabled = on;
+    if (on) { lv.dataset.prev = lv.dataset.prev || lv.value; lv.value = valid[cur] ? valid[cur].split(/\s+/)[1] : ''; $('#level-help').textContent = 'Vem da etapa atual da rota. Desligue "Seguir a rota" para editar.'; }
+    else { if (lv.dataset.prev) { lv.value = lv.dataset.prev; delete lv.dataset.prev; } $('#level-help').textContent = 'Se o líder já estiver no nível ao salvar, avisa e troca na hora.'; }
+  }
+  $('#route').addEventListener('input', renderRoute);
+  $('#route-on').addEventListener('change', renderRoute);
+  let resetArmed = null;
+  $('#route-reset').addEventListener('click', () => {
+    const b = $('#route-reset');
+    if (!resetArmed) { b.textContent = 'Clique de novo para confirmar'; flash('⚠ Reiniciar volta à 1ª etapa (pidgey 10).', 'warn'); resetArmed = setTimeout(() => { resetArmed = null; b.textContent = 'Reiniciar rota'; renderDirty(); }, 3000); return; }
+    clearTimeout(resetArmed); resetArmed = null; b.textContent = 'Reiniciar rota';
+    flash('✔ Rota reiniciada · etapa 1 de 4 (pidgey 10)', 'ok', 4000);
+  });
+  $('#team-refresh').addEventListener('click', () => flash('📥 Pedi o time ao jogo…', '', 3000));
+
+  // ---- sistema ----
+  function renderReload() {
+    const on = $('#reload').checked;
+    $('#reload-status').innerHTML = on ? `<span>⟳</span><span>Próxima recarga em 43 min</span>` : `<span>⟳</span><span>Recarga desligada</span>`;
+  }
+  $('#reload').addEventListener('change', renderReload);
+  $('#reload-now').addEventListener('click', () => flash('⟳ Recarregando (volto para pidgey)…', ''));
+  $('#copy-log').addEventListener('click', () => flash('✔ Log copiado', 'ok', 3000));
+  $('#export').addEventListener('click', () => flash('✔ Config copiada (inclui os canais). Na outra conta: Sistema → Importar.', 'ok', 6000));
+  $('#import').addEventListener('click', () => { $('#import-box').hidden = !$('#import-box').hidden; });
+  $('#import-apply').addEventListener('click', () => { $('#import-box').hidden = true; flash('✔ Config importada e salva', 'ok', 3000); });
+
+  // ---- bolas ----
+  function renderBalls() {
+    const warn = $('#autobuy').checked && !(Number($('#balls-min').value) || 0);
+    $('#autobuy-warn').hidden = !warn;
+  }
+
+  // ---- estado por aba, pontos e botão ----
+  function moduleState(tab) {
+    const hasMain = Boolean($('#hook-main').value.trim());
+    switch (tab) {
+      case 'avisos': return hasMain ? 'on' : 'danger';
+      case 'bolas': {
+        const min = Number($('#balls-min').value) || 0, buy = $('#autobuy').checked;
+        if (buy && !min) return 'warn';
+        return (min || buy) ? 'on' : 'off';
+      }
+      case 'venda': {
+        if (!$('#sell').checked) return 'off';
+        return $$('#items .dn-item input[type=checkbox]:checked').length ? 'on' : 'warn';
+      }
+      case 'treino': {
+        const valid = $('#route').value.split(/\r?\n/).filter(l => /^(\S+)\s+(\d+)$/.test(l.trim())).length;
+        if ($('#route-on').checked && !valid) return 'warn';
+        return ($('#route-on').checked || (Number($('#level').value) || 0) > 0) ? 'on' : 'off';
+      }
+      case 'sistema': return $('#reload').checked ? 'on' : 'off';
+    }
+    return 'off';
+  }
+  function refreshState() {
+    const states = {};
+    ['avisos', 'bolas', 'venda', 'treino', 'sistema'].forEach(t => {
+      states[t] = moduleState(t);
+      const badge = document.querySelector(`.dn-tab[data-tab="${t}"] .b`); badge.dataset.state = states[t];
+      const dot = document.querySelector(`.dn-dots i[data-tab="${t}"]`); dot.dataset.state = states[t];
+    });
+    const vals = Object.values(states);
+    const btn = $('#btn-dot');
+    if (vals.includes('danger')) btn.dataset.state = 'danger';
+    else if (vals.includes('warn') || dirty) btn.dataset.state = 'warn';
+    else if (vals.includes('on')) btn.dataset.state = 'ok';
+    else btn.dataset.state = '';
+    const resumo = [
+      `Avisos: ${$('#all').checked ? 'toda captura' : ($('#watch').value.trim() ? 'lista (' + $('#watch').value.split(',').filter(s => s.trim()).length + ')' : 'todas')}`,
+      `Bolas: ${states.bolas === 'off' ? 'desligado' : ($('#ball').selectedOptions[0].textContent + ' < ' + ($('#balls-min').value || 0) + ($('#autobuy').checked ? ' + compra' : ''))}`,
+      `Venda: ${$('#sell').checked ? $$('#items .dn-item input[type=checkbox]:checked').length + ' itens/' + $('#sell-min').value + '–' + $('#sell-max').value + ' min' : 'desligada'}`,
+      `Treino: ${$('#route-on').checked ? 'rota ' + $('#route-pos').textContent : ((Number($('#level').value) || 0) ? 'nível ' + $('#level').value : 'desligado')}`,
+      `Recarga: ${$('#reload').checked ? $('#reload-min').value + '–' + $('#reload-max').value + ' min' : 'desligada'}`,
+      dirty ? '● alterações não salvas' : '',
+    ].filter(Boolean).join(' · ');
+    $('#pg-dn-btn').title = resumo;
+    $('#dots').title = resumo;
+  }
+
+  // qualquer edição suja o formulário e recalcula
+  $('#pg-dn-panel').addEventListener('input', (e) => {
+    if (e.target.closest('#import-box')) return;
+    markDirty();
+    if (e.target.closest('#chan-box')) chanSummary();
+    qualitySummary(); sellCount(); renderBalls(); refreshState();
+  });
+  $('#pg-dn-panel').addEventListener('change', (e) => {
+    if (e.target.closest('#import-box')) return;
+    markDirty(); qualitySummary(); sellCount(); renderBalls(); refreshState();
+  });
+
+  // ---- salvar / testar / fechar ----
+  $('#save').addEventListener('click', () => {
+    dirty = false; renderDirty();
+    const avisos = [];
+    if ($('#autobuy').checked && !(Number($('#balls-min').value) || 0)) avisos.push('⚠ Compra com limite 0: só compra quando a bola acabar.');
+    if (!$('#hook-main').value.trim()) avisos.push('⚠ Sem canal de Capturas: nada será enviado.');
+    if (avisos.length) flash('✔ Salvo · ' + avisos.join(' '), 'warn');
+    else flash('✔ Salvo' + ($('#level').value > 0 ? ' · conferindo o time para o nível ' + $('#level').value + '…' : ''), 'ok', 2500);
+  });
+  $('#test').addEventListener('click', () => {
+    if (!$('#hook-main').value.trim()) { flash('⚠ Preencha o canal de Capturas primeiro.', 'warn'); showTab('avisos'); setChanOpen(true); $('#hook-main').focus(); return; }
+    const canais = ['capturas']; if ($('#hook-shiny').value.trim()) canais.push('shinys'); if ($('#hook-alerts').value.trim()) canais.push('alertas'); if ($('#hook-level').value.trim()) canais.push('nível');
+    flash('✔ Teste enviado: ' + canais.join(', '), 'ok', 4000);
+  });
+  function togglePanel(force) {
+    const p = $('#pg-dn-panel');
+    const open = typeof force === 'boolean' ? force : p.hidden;
+    p.hidden = !open;
+  }
+  $('#pg-dn-btn').addEventListener('click', () => togglePanel());
+  $('#close').addEventListener('click', () => togglePanel(false));
+  $('#toggle-panel').addEventListener('click', () => togglePanel());
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') togglePanel(false); });
+  $('#pg-dn-panel').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.matches('input:not([type=checkbox])')) { e.preventDefault(); $('#save').click(); }
+  });
+
+  // ---- cenários ----
+  function scenario(kind) {
+    $('#sc-ok').setAttribute('aria-pressed', String(kind === 'ok'));
+    $('#sc-new').setAttribute('aria-pressed', String(kind === 'new'));
+    if (kind === 'ok') {
+      $('#hook-main').value = HOOKS.main; $('#hook-shiny').value = HOOKS.shiny; $('#hook-alerts').value = HOOKS.alerts; $('#hook-level').value = HOOKS.level;
+      setChanOpen(false);
+    } else {
+      ['main', 'shiny', 'alerts', 'level'].forEach(id => { $('#hook-' + id).value = ''; });
+      setChanOpen(true); showTab('avisos'); $('#hook-main').focus();
+    }
+    dirty = false; togglePanel(true); chanSummary(); renderDirty();
+  }
+  $('#sc-ok').addEventListener('click', () => scenario('ok'));
+  $('#sc-new').addEventListener('click', () => scenario('new'));
+
+  // ---- estado inicial ----
+  $('#hook-main').value = HOOKS.main; $('#hook-shiny').value = HOOKS.shiny;
+  setChanOpen(false); chanSummary(); qualitySummary(); sellCount(); renderRoute(); renderReload(); renderBalls(); renderDirty();
+})();
+</script>
+</body>
+</html>

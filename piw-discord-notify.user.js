@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.4.1
+// @version      3.5.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,6 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
+    const VERSION = '3.5.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -33,7 +34,6 @@
         ballsWatch: 'auto',     // 'auto' = bola do último catch-result, ou o id da bola ('4')
         autoBuy: false,         // comprar a bola monitorada quando ficar abaixo do limite
         autoBuyQty: 100,        // quantas comprar por vez (1..10000)
-        autoBuyGoldReserve: 0,  // nunca deixar o gold abaixo disto
         sellEnabled: false,     // vender drops marcados da hunt atual periodicamente
         sellEveryMin: 10,       // intervalo mínimo da venda automática (minutos)
         sellEveryMaxMin: 0,     // intervalo máximo; 0 ou <= mínimo = intervalo fixo. Entre os dois é sorteado
@@ -59,6 +59,7 @@
         // Até a v2.1.0 o cooldown era fixo em 30s e não aparecia no painel; ao migrar,
         // descarta esse valor herdado para valer o novo padrão (0 = avisar todas).
         if (!saved.cfgVersion || saved.cfgVersion < 2) delete saved.cooldownSeconds;
+        delete saved.autoBuyGoldReserve; // reserva de gold removida na v3.5.0 (a pedido do usuário)
         return Object.assign({}, DEFAULTS, saved);
     }
     function saveCfg(cfg) {
@@ -507,6 +508,7 @@
     let ballCounts = {};            // ballId -> qty (último frame `balls`)
     const ballAlerted = {};         // ballId -> true enquanto estiver abaixo do limite
     let ballsRequestTimer = null;
+    let onBallsChange = null;       // callback do painel para redesenhar o estoque
 
     function ballName(id) { return BALL_NAMES[id] || `Ball ${id}`; }
     // Limite efetivo: o configurado, ou 1 quando só a compra automática está ligada.
@@ -541,6 +543,7 @@
         const id = watchedBallId();
         logEvent('balls', { counts, monitorando: id, limite: effectiveBallsMin(), autoBuy: Boolean(cfg.autoBuy) });
         checkBallStock();
+        if (onBallsChange) { try { onBallsChange(); } catch { /* painel fechado */ } }
     }
 
     // ---- Compra automática (REST, mesma API que o jogo usa) --------------
@@ -612,13 +615,12 @@
         if (!Number.isFinite(gold)) return { ok: false, bought: 0, spent: 0, gold: null, motivo: 'loja não informou o gold' };
         if (product.name) BALL_NAMES[Number(id)] = product.name;
 
-        const reserve = Math.max(0, Number(cfg.autoBuyGoldReserve) || 0);
         let remaining = Math.min(BUY_MAX_QTY, Math.max(1, Math.floor(Number(qty) || 0)));
         let bought = 0, spent = 0, motivo = null;
         while (remaining > 0) {
             const batch = Math.min(BUY_BATCH_QTY, remaining);
-            if (gold - price * batch < reserve) {
-                motivo = `gold insuficiente (tem ${gold.toLocaleString('pt-BR')}, precisa ${(price * batch + reserve).toLocaleString('pt-BR')})`;
+            if (gold < price * batch) {
+                motivo = `gold insuficiente (tem ${gold.toLocaleString('pt-BR')}, precisa ${(price * batch).toLocaleString('pt-BR')})`;
                 break;
             }
             let r;
@@ -1212,6 +1214,114 @@
     };
 
     // ---- Painel de configurações (botão 🔔) --------------------------
+    //
+    // Estrutura (v3.5.0, proposta em docs/design-painel.md): 5 abas por objetivo (Avisos, Bolas,
+    // Venda, Treino, Sistema), cabeçalho e rodapé fixos, Salvar GLOBAL sempre visível com indicador
+    // de "não salvo", badge de estado por aba e ponto de estado no botão 🔔. Os ids `#pg-dn-*` e as
+    // chaves de `cfg` são as mesmas de antes. Preferências só de UI (aba ativa) ficam em UI_KEY,
+    // fora de `cfg`, para não entrarem no Exportar/Importar.
+
+    const UI_KEY = 'pgDiscordNotifyUi';
+    const PANEL_CSS = `
+#pg-dn-btn,#pg-dn-panel{--dn-bg-0:#1e1f22;--dn-bg-1:#2b2d31;--dn-bg-2:#313338;--dn-bg-3:#3a3c42;--dn-border:#3f4147;--dn-text:#dbdee1;--dn-muted:#949ba4;--dn-dim:#80848e;--dn-accent:#5865f2;--dn-ok:#23a559;--dn-ok-t:#57d38a;--dn-warn:#f0b232;--dn-danger:#da373c;--dn-danger-t:#ff7a7e;--dn-shiny:#fee75c;--dn-radius:6px;--dn-radius-sm:4px;font:13px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--dn-text);box-sizing:border-box}
+#pg-dn-panel *,#pg-dn-panel *::before,#pg-dn-panel *::after{box-sizing:border-box}
+#pg-dn-panel[hidden],#pg-dn-panel [hidden]{display:none!important}
+#pg-dn-btn{position:fixed;bottom:12px;left:12px;z-index:99999;width:38px;height:38px;border-radius:50%;border:1px solid var(--dn-border);background:var(--dn-bg-1);font-size:18px;line-height:1;cursor:pointer;opacity:.95;padding:0}
+#pg-dn-btn .dn-dot{position:absolute;right:-1px;top:-1px;width:11px;height:11px;border-radius:50%;border:2px solid #111;background:transparent}
+#pg-dn-btn .dn-dot[data-state="ok"]{background:var(--dn-ok)}
+#pg-dn-btn .dn-dot[data-state="warn"]{background:var(--dn-warn)}
+#pg-dn-btn .dn-dot[data-state="danger"]{background:var(--dn-danger);animation:dn-pulse 1.4s ease-in-out infinite}
+@keyframes dn-pulse{0%,100%{box-shadow:0 0 0 0 rgba(218,55,60,.6)}50%{box-shadow:0 0 0 5px rgba(218,55,60,0)}}
+#pg-dn-panel{position:fixed;bottom:58px;left:12px;z-index:99999;width:min(380px,calc(100vw - 24px));height:min(520px,calc(100vh - 70px));display:flex;flex-direction:column;background:var(--dn-bg-1);border:1px solid var(--dn-border);border-radius:var(--dn-radius);box-shadow:0 8px 24px rgba(0,0,0,.5);overflow:hidden;text-align:left}
+#pg-dn-panel .dn-head{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--dn-bg-0);border-bottom:1px solid var(--dn-border)}
+#pg-dn-panel .dn-head .t{font-weight:600;font-size:14px}
+#pg-dn-panel .dn-head .v{color:var(--dn-muted);font-size:12px}
+#pg-dn-panel .dn-dots{margin-left:auto;display:flex;gap:4px}
+#pg-dn-panel .dn-dots i{width:8px;height:8px;border-radius:50%;background:var(--dn-dim);display:block}
+#pg-dn-panel .dn-dots i[data-state="on"],#pg-dn-panel .dn-tab .b[data-state="on"]{background:var(--dn-ok)}
+#pg-dn-panel .dn-dots i[data-state="warn"],#pg-dn-panel .dn-tab .b[data-state="warn"]{background:var(--dn-warn)}
+#pg-dn-panel .dn-dots i[data-state="danger"],#pg-dn-panel .dn-tab .b[data-state="danger"]{background:var(--dn-danger)}
+#pg-dn-panel .dn-tabs{display:flex;background:var(--dn-bg-0);border-bottom:1px solid var(--dn-border)}
+#pg-dn-panel .dn-tab{flex:1;background:transparent;border:0;border-bottom:2px solid transparent;color:var(--dn-muted);font:inherit;font-size:12px;font-weight:600;padding:7px 2px 6px;cursor:pointer;white-space:nowrap;border-radius:0}
+#pg-dn-panel .dn-tab[aria-selected="true"]{color:var(--dn-text);border-bottom-color:var(--dn-accent);background:var(--dn-bg-1)}
+#pg-dn-panel .dn-tab .b{display:inline-block;width:7px;height:7px;border-radius:50%;margin-left:3px;background:var(--dn-dim);vertical-align:1px}
+#pg-dn-panel .dn-body{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:8px}
+#pg-dn-panel .dn-pane{display:flex;flex-direction:column;gap:8px}
+#pg-dn-panel .dn-section{display:flex;flex-direction:column;gap:8px}
+#pg-dn-panel .dn-section+.dn-section{border-top:1px solid var(--dn-border);padding-top:12px;margin-top:4px}
+#pg-dn-panel .dn-section>h3{margin:0;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px;color:var(--dn-text)}
+#pg-dn-panel .dn-section>h3 .spacer{flex:1}
+#pg-dn-panel .dn-field{display:flex;flex-direction:column;gap:2px;margin:0}
+#pg-dn-panel .dn-field>span{font-size:13px}
+#pg-dn-panel .dn-row{display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap}
+#pg-dn-panel .dn-row .dn-field{flex:1;min-width:120px}
+#pg-dn-panel .dn-input,#pg-dn-panel .dn-select,#pg-dn-panel .dn-textarea{width:100%;min-height:28px;background:var(--dn-bg-0);color:var(--dn-text);border:1px solid var(--dn-border);border-radius:var(--dn-radius-sm);padding:4px 8px;font:inherit;margin:0}
+#pg-dn-panel .dn-input:focus,#pg-dn-panel .dn-select:focus,#pg-dn-panel .dn-textarea:focus,#pg-dn-panel .dn-btn:focus-visible,#pg-dn-panel .dn-tab:focus-visible{outline:2px solid var(--dn-accent);outline-offset:1px}
+#pg-dn-panel .dn-input:disabled{color:var(--dn-dim);background:var(--dn-bg-1)}
+#pg-dn-panel .dn-input--sm{width:64px;min-width:64px}
+#pg-dn-panel .dn-textarea{font:12px/1.4 ui-monospace,Consolas,monospace;resize:vertical}
+#pg-dn-panel .dn-help{display:block;font-size:12px;color:var(--dn-muted);line-height:1.4;margin:0}
+#pg-dn-panel .dn-hint{font-size:12px;color:var(--dn-muted);font-weight:400}
+#pg-dn-panel .dn-help.warn{color:var(--dn-warn)}
+#pg-dn-panel .dn-help.err{color:var(--dn-danger-t)}
+#pg-dn-panel .dn-inline{display:flex;align-items:center;gap:6px;font-size:13px}
+#pg-dn-panel .dn-status{display:flex;align-items:center;gap:8px;font-size:12px;background:var(--dn-bg-0);border-radius:var(--dn-radius-sm);padding:6px 8px;font-variant-numeric:tabular-nums}
+#pg-dn-panel .dn-status .k{color:var(--dn-muted)}
+#pg-dn-panel .dn-status .r{margin-left:auto}
+#pg-dn-panel .dn-status.col{flex-direction:column;align-items:stretch;gap:4px}
+#pg-dn-panel .dn-summary{font-size:12px;background:var(--dn-bg-0);border-left:2px solid var(--dn-accent);padding:6px 8px;border-radius:0 var(--dn-radius-sm) var(--dn-radius-sm) 0}
+#pg-dn-panel .dn-toggle{display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;position:relative;margin:0}
+#pg-dn-panel .dn-toggle input{position:absolute;opacity:0;width:0;height:0;margin:0}
+#pg-dn-panel .dn-toggle .sw{width:32px;height:18px;border-radius:9px;background:var(--dn-bg-3);position:relative;flex:none;transition:background .15s}
+#pg-dn-panel .dn-toggle .sw::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:left .15s}
+#pg-dn-panel .dn-toggle input:checked+.sw{background:var(--dn-ok)}
+#pg-dn-panel .dn-toggle input:checked+.sw::after{left:16px}
+#pg-dn-panel .dn-toggle input:focus-visible+.sw{outline:2px solid var(--dn-accent);outline-offset:1px}
+#pg-dn-panel .dn-btn{min-height:28px;border-radius:var(--dn-radius-sm);border:1px solid transparent;font:inherit;font-size:13px;font-weight:600;padding:4px 12px;cursor:pointer;background:var(--dn-bg-3);color:var(--dn-text);margin:0}
+#pg-dn-panel .dn-btn--primary{background:var(--dn-accent);color:#fff}
+#pg-dn-panel .dn-btn--primary.idle{background:var(--dn-bg-3);color:var(--dn-text)}
+#pg-dn-panel .dn-btn--danger{background:transparent;border-color:var(--dn-danger);color:var(--dn-danger-t)}
+#pg-dn-panel .dn-btn--danger:hover{background:var(--dn-danger);color:#fff}
+#pg-dn-panel .dn-btn--ghost{background:transparent;color:var(--dn-muted);font-weight:400;padding:2px 6px}
+#pg-dn-panel .dn-btn--ghost:hover{color:var(--dn-text)}
+#pg-dn-panel .dn-btn--sm{min-height:24px;padding:2px 8px;font-size:12px}
+#pg-dn-panel .dn-actions{display:flex;gap:8px;flex-wrap:wrap}
+#pg-dn-panel .dn-actions .dn-btn{flex:1}
+#pg-dn-panel .dn-badge{font-size:11px;font-weight:600;padding:1px 7px;border-radius:10px;background:var(--dn-bg-3);color:var(--dn-muted)}
+#pg-dn-panel .dn-badge[data-state="on"]{background:rgba(35,165,89,.18);color:var(--dn-ok-t)}
+#pg-dn-panel .dn-badge[data-state="warn"]{background:rgba(240,178,50,.18);color:var(--dn-warn)}
+#pg-dn-panel .dn-chan-summary{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--dn-muted);flex-wrap:wrap}
+#pg-dn-panel .dn-chan-summary b{color:var(--dn-text);font-weight:500}
+#pg-dn-panel .dn-items{display:flex;flex-direction:column}
+#pg-dn-panel .dn-item{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;padding:4px 6px;border-radius:var(--dn-radius-sm);font-size:12px;cursor:pointer;margin:0}
+#pg-dn-panel .dn-item:hover{background:var(--dn-bg-2)}
+#pg-dn-panel .dn-item input[type="checkbox"]{width:16px;height:16px;margin:0;accent-color:var(--dn-accent);position:static;opacity:1}
+#pg-dn-panel .dn-item .nm{display:flex;gap:6px;align-items:baseline;flex-wrap:wrap}
+#pg-dn-panel .dn-item .q{color:var(--dn-muted);font-variant-numeric:tabular-nums}
+#pg-dn-panel .dn-item .w{color:var(--dn-shiny)}
+#pg-dn-panel .dn-item .keep{display:none;align-items:center;gap:4px;color:var(--dn-muted)}
+#pg-dn-panel .dn-item.on .keep{display:inline-flex}
+#pg-dn-panel .dn-item .keep input{width:52px;min-height:24px;padding:2px 6px}
+#pg-dn-panel .dn-item.locked{color:var(--dn-dim);cursor:default}
+#pg-dn-panel .dn-item.locked:hover{background:transparent}
+#pg-dn-panel .dn-route{list-style:none;margin:0;padding:0;font-size:12px;display:flex;flex-direction:column;gap:2px;font-variant-numeric:tabular-nums}
+#pg-dn-panel .dn-route li{display:flex;gap:8px;padding:2px 6px;border-radius:var(--dn-radius-sm)}
+#pg-dn-panel .dn-route li .m{width:14px;text-align:center;color:var(--dn-muted);flex:none}
+#pg-dn-panel .dn-route li.done{color:var(--dn-muted)}
+#pg-dn-panel .dn-route li.cur{background:var(--dn-bg-1)}
+#pg-dn-panel .dn-route li.cur .m{color:var(--dn-accent)}
+#pg-dn-panel .dn-route li.bad,#pg-dn-panel .dn-route li.bad .m{color:var(--dn-danger-t)}
+#pg-dn-panel .dn-route li .hint{margin-left:auto;color:var(--dn-muted)}
+#pg-dn-panel .dn-foot{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--dn-bg-0);border-top:1px solid var(--dn-border)}
+#pg-dn-panel .dn-msg{flex:1;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--dn-muted);cursor:default}
+#pg-dn-panel .dn-msg.wrap{white-space:normal}
+#pg-dn-panel .dn-msg[data-kind="ok"]{color:var(--dn-ok-t)}
+#pg-dn-panel .dn-msg[data-kind="warn"],#pg-dn-panel .dn-msg[data-kind="dirty"]{color:var(--dn-warn)}
+#pg-dn-panel .dn-msg[data-kind="error"]{color:var(--dn-danger-t)}
+#pg-dn-panel .dn-ok-t{color:var(--dn-ok-t)}
+#pg-dn-panel .dn-err-t{color:var(--dn-danger-t)}
+@media (prefers-reduced-motion:reduce){#pg-dn-btn .dn-dot[data-state="danger"]{animation:none}}
+`;
 
     let btn;
     function flashButton() {
@@ -1220,212 +1330,249 @@
         setTimeout(() => { btn.style.boxShadow = ''; }, 3000);
     }
 
+    function loadUi() {
+        try { return JSON.parse(localStorage.getItem(UI_KEY) || '{}') || {}; } catch { return {}; }
+    }
+    function saveUi(patch) {
+        try { localStorage.setItem(UI_KEY, JSON.stringify(Object.assign(loadUi(), patch))); } catch { /* sem localStorage */ }
+    }
+    function escHtml(t) { return String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+    function fmtNum(n) { return Number(n).toLocaleString('pt-BR'); }
+
+    const TABS = [
+        { id: 'avisos', label: '🔔 Avisos' },
+        { id: 'bolas', label: '🎯 Bolas' },
+        { id: 'venda', label: '💰 Venda' },
+        { id: 'treino', label: '⚔ Treino' },
+        { id: 'sistema', label: '⚙ Sistema' },
+    ];
+
+    // Estado de cada módulo para os badges: 'on' | 'off' | 'warn' | 'danger'. Recebe um objeto no
+    // formato do cfg (o próprio cfg com o painel fechado; o rascunho do formulário com ele aberto).
+    function moduleState(tab, d) {
+        const rota = Array.isArray(d.route) ? d.route.filter(r => r && r.slug && Number(r.level) > 0) : [];
+        switch (tab) {
+            case 'avisos': return (d.webhookUrl || '').trim() ? 'on' : 'danger';
+            case 'bolas': {
+                const min = Number(d.ballsMin) || 0;
+                if (d.autoBuy && !min) return 'warn';
+                return (min > 0 || d.autoBuy) ? 'on' : 'off';
+            }
+            case 'venda':
+                if (!d.sellEnabled) return 'off';
+                return Object.keys(d.sellItems || {}).length ? 'on' : 'warn';
+            case 'treino':
+                if (d.routeEnabled && (!rota.length || (Number(cfg.routeStage) || 0) >= rota.length)) return 'warn';
+                return (d.routeEnabled || (Number(d.levelAlertAt) || 0) > 0) ? 'on' : 'off';
+            case 'sistema': return d.reloadEnabled ? 'on' : 'off';
+        }
+        return 'off';
+    }
+    function stateSummary(d) {
+        const rota = Array.isArray(d.route) ? d.route.filter(r => r && r.slug && Number(r.level) > 0) : [];
+        const st = Number(cfg.routeStage) || 0;
+        return [
+            `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}`,
+            `Bolas: ${moduleState('bolas', d) === 'off' ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}`,
+            `Venda: ${d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} itens / ${d.sellEveryMin}${d.sellEveryMaxMin > d.sellEveryMin ? `–${d.sellEveryMaxMin}` : ''} min` : 'desligada'}`,
+            `Treino: ${d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : 'desligado')}`,
+            `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
+        ].join(' · ');
+    }
+
+    const TIER_LABEL = (t) => `${t.name} (${t.min === -Infinity ? '< 1.0' : t.min.toFixed(1) + '+'})`;
+
     function buildUI() {
         if (document.getElementById('pg-dn-btn')) return;
         if (!document.body) { setTimeout(buildUI, 500); return; }
 
+        const style = document.createElement('style');
+        style.id = 'pg-dn-style';
+        style.textContent = PANEL_CSS;
+        document.head.appendChild(style);
+
         btn = document.createElement('button');
         btn.id = 'pg-dn-btn';
-        btn.textContent = '🔔';
+        btn.type = 'button';
+        btn.innerHTML = '<span>🔔</span><span class="dn-dot" id="pg-dn-dot"></span>';
         btn.title = 'Notificações no Discord — configurar';
-        btn.style.cssText = 'position:fixed;bottom:12px;left:12px;z-index:99999;'
-            + 'width:38px;height:38px;border-radius:50%;border:1px solid #444;'
-            + 'background:#2b2d31;color:#fff;font-size:18px;cursor:pointer;opacity:.85;';
 
         const panel = document.createElement('div');
         panel.id = 'pg-dn-panel';
-        panel.style.cssText = 'position:fixed;bottom:58px;left:12px;z-index:99999;display:none;'
-            + 'width:320px;max-height:90vh;overflow:auto;padding:12px;border-radius:10px;border:1px solid #444;'
-            + 'background:#2b2d31;color:#eee;font:13px/1.5 sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.5);';
+        panel.hidden = true;
+        const hookInput = (id, help) => `<label class="dn-field"><span>${id === 'hook' ? 'Capturas' : id === 'hook-shiny' ? 'Shinys' : id === 'hook-alerts' ? 'Alertas' : 'Nível'}</span>
+                <input id="pg-dn-${id}" class="dn-input" type="password" placeholder="https://discord.com/api/webhooks/…" autocomplete="off"><span class="dn-help">${help}</span></label>`;
         panel.innerHTML = `
-            <b>🔔 Discord Capture Notify</b>
-            <div style="margin-top:8px">Webhook de capturas (principal):
-                <input id="pg-dn-hook" type="password" placeholder="https://discord.com/api/webhooks/..."
-                    style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
-            <div style="margin-top:6px">Webhook de shinys <span style="color:#aaa">(opcional; vazio = usa o principal)</span>:
-                <input id="pg-dn-hook-shiny" type="password" placeholder="https://discord.com/api/webhooks/..."
-                    style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
-            <div style="margin-top:6px">Webhook de alertas <span style="color:#aaa">(opcional; shiny na fila, estoque, quedas — em breve)</span>:
-                <input id="pg-dn-hook-alerts" type="password" placeholder="https://discord.com/api/webhooks/..."
-                    style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
-            <div style="margin-top:6px">Webhook de nível <span style="color:#aaa">(opcional; vazio = usa o de alertas)</span>:
-                <input id="pg-dn-hook-level" type="password" placeholder="https://discord.com/api/webhooks/..."
-                    style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
-            <div style="margin-top:6px">Pokémon (separados por vírgula; vazio = avisar TODAS as capturas):
-                <input id="pg-dn-list" type="text" placeholder="dratini, larvitar (vazio = todas)"
-                    style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
-            <label style="display:block;margin-top:6px"><input id="pg-dn-shiny" type="checkbox"> Avisar todo shiny</label>
-            <label style="display:block"><input id="pg-dn-all" type="checkbox"> Avisar TODA captura</label>
-            <div style="margin-top:8px;padding:8px;border:1px solid #444;border-radius:6px">
-                <b>Filtro de qualidade</b> <span style="color:#aaa">(nada marcado = avisa tudo)</span>
-                <div style="margin-top:4px">Raridade mínima:
-                    <select id="pg-dn-tier" style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px">
-                        <option value="">(qualquer)</option>
-                        ${TIERS_ASC.map(t => `<option value="${t.key}">${t.name} (${t.min === -Infinity ? '< 1.0' : t.min.toFixed(1) + '+'})</option>`).join('')}
-                    </select></div>
-                <div style="margin-top:4px">Poder mínimo para essa raridade (0–${IV_MAX}; 0 = qualquer poder):
-                    <input id="pg-dn-tier-iv" type="number" min="0" max="${IV_MAX}" step="1"
-                        style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
-                <div style="margin-top:4px">Poder mínimo para qualquer raridade (0–${IV_MAX}; 0 = desligado):
-                    <input id="pg-dn-miniv" type="number" min="0" max="${IV_MAX}" step="1"
-                        style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
-                <div style="margin-top:4px;color:#aaa;font-size:12px">Avisa se a raridade for ≥ a escolhida (e o poder ≥ o 1º mínimo, se preenchido) <b>ou</b> o poder for ≥ o 2º mínimo, seja qual for a raridade. Ex.: Legendary com 120+ ou qualquer um com 180+. Shiny sempre avisa se a opção acima estiver marcada.</div>
+            <div class="dn-head">
+                <span class="t">🔔 Notify</span><span class="v">v${VERSION}</span>
+                <div class="dn-dots" id="pg-dn-dots">${TABS.map(t => `<i data-tab="${t.id}"></i>`).join('')}</div>
+                <button type="button" class="dn-btn dn-btn--ghost" id="pg-dn-close" title="Fechar (Esc)">✕</button>
             </div>
-            <div style="margin-top:8px;padding:8px;border:1px solid #444;border-radius:6px">
-                <b>Alerta de bolas</b> <span style="color:#aaa">(vai para o webhook de alertas)</span>
-                <div style="margin-top:4px">Bola monitorada:
-                    <select id="pg-dn-ball" style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px">
-                        <option value="auto">Automática (a do último catch)</option>
-                        ${Object.entries(BALL_NAMES).map(([id, n]) => `<option value="${id}">${n}</option>`).join('')}
-                    </select></div>
-                <div style="margin-top:4px">Avisar quando restarem menos de (0 = desligado; com compra automática, 0 = comprar quando acabar):
-                    <input id="pg-dn-ballsmin" type="number" min="0" step="1"
-                        style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
-                <div style="margin-top:4px;color:#aaa;font-size:12px">Avisa uma vez ao ficar abaixo do limite e de novo só depois de repor. O estoque é checado após cada captura e a cada 5 min.</div>
-                <label style="display:block;margin-top:6px"><input id="pg-dn-autobuy" type="checkbox"> Comprar automaticamente na loja em vez de só avisar</label>
-                <div style="display:flex;gap:6px;margin-top:4px">
-                    <div style="flex:1">Quantidade por compra:
-                        <input id="pg-dn-autobuy-qty" type="number" min="1" max="${BUY_MAX_QTY}" step="1"
-                            style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
-                    <div style="flex:1">Reserva de gold:
-                        <input id="pg-dn-autobuy-reserve" type="number" min="0" step="1000"
-                            style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
-                </div>
-                <div style="margin-top:4px;color:#aaa;font-size:12px">Compra com o gold da conta (mesma loja do NPC). Uma tentativa por vez; se faltar gold ou der erro, avisa e só tenta de novo depois de repor ou salvar.</div>
+            <div class="dn-tabs" role="tablist">${TABS.map(t => `<button type="button" class="dn-tab" role="tab" data-tab="${t.id}" aria-selected="false">${t.label}<span class="b"></span></button>`).join('')}</div>
+            <div class="dn-body">
+                <section class="dn-pane" data-pane="avisos" hidden>
+                    <div class="dn-section">
+                        <h3>Canais do Discord <span class="spacer"></span><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-chan-toggle">editar</button></h3>
+                        <div class="dn-chan-summary" id="pg-dn-chan-summary"></div>
+                        <div id="pg-dn-chan-box" class="dn-section" hidden>
+                            ${hookInput('hook', 'Obrigatório. Recebe as capturas e tudo que não tiver canal próprio.')}
+                            ${hookInput('hook-shiny', 'Vazio = vai para Capturas.')}
+                            ${hookInput('hook-alerts', 'Bolas, venda, hunt. Vazio = vai para Capturas.')}
+                            ${hookInput('hook-level', 'Nível atingido e troca de líder. Vazio = vai para Alertas.')}
+                        </div>
+                    </div>
+                    <div class="dn-section">
+                        <h3>Quais capturas avisar</h3>
+                        <label class="dn-field"><span>Pokémon</span><input id="pg-dn-list" class="dn-input" type="text" placeholder="dratini, larvitar"><span class="dn-help">Separados por vírgula. Vazio = todas.</span></label>
+                        <label class="dn-toggle"><input id="pg-dn-shiny" type="checkbox"><span class="sw"></span>Todo shiny <span class="dn-hint">(avisa sempre, mesmo fora da lista)</span></label>
+                        <label class="dn-toggle"><input id="pg-dn-all" type="checkbox"><span class="sw"></span>Toda captura <span class="dn-hint">(ignora a lista)</span></label>
+                    </div>
+                    <div class="dn-section">
+                        <h3>Filtro de qualidade</h3>
+                        <div class="dn-summary" id="pg-dn-q-summary"></div>
+                        <label class="dn-field"><span>Raridade mínima</span>
+                            <select id="pg-dn-tier" class="dn-select"><option value="">Qualquer</option>${TIERS_ASC.map(t => `<option value="${t.key}">${TIER_LABEL(t)}</option>`).join('')}</select></label>
+                        <div class="dn-row">
+                            <label class="dn-field"><span>Poder mínimo dessa raridade</span><input id="pg-dn-tier-iv" class="dn-input" type="number" min="0" max="${IV_MAX}" step="1" placeholder="0 = qualquer"></label>
+                            <label class="dn-field"><span>Poder mínimo, qualquer raridade</span><input id="pg-dn-miniv" class="dn-input" type="number" min="0" max="${IV_MAX}" step="1" placeholder="0 = desligado"></label>
+                        </div>
+                        <p class="dn-help">Poder é o X/${IV_MAX} que o jogo mostra.</p>
+                    </div>
+                    <div class="dn-section">
+                        <h3>Mensagem</h3>
+                        <div class="dn-row">
+                            <label class="dn-field"><span>Mencionar (ID do Discord)</span><input id="pg-dn-mention" class="dn-input" type="text" placeholder="123456789012345678 (opcional)"></label>
+                            <label class="dn-field"><span>Intervalo, mesmo Pokémon</span><span class="dn-inline"><input id="pg-dn-cooldown" class="dn-input dn-input--sm" type="number" min="0" step="1" placeholder="0">s</span><span class="dn-help">0 = avisa todas.</span></label>
+                        </div>
+                    </div>
+                </section>
+                <section class="dn-pane" data-pane="bolas" hidden>
+                    <div class="dn-section">
+                        <h3>Estoque de bolas</h3>
+                        <div class="dn-status" id="pg-dn-balls-status"></div>
+                        <label class="dn-field"><span>Bola</span>
+                            <select id="pg-dn-ball" class="dn-select"><option value="auto">A que estiver em uso (último catch)</option>${Object.entries(BALL_NAMES).map(([id, n]) => `<option value="${id}">${n}</option>`).join('')}</select></label>
+                        <label class="dn-field"><span>Avisar abaixo de</span><input id="pg-dn-ballsmin" class="dn-input" type="number" min="0" step="1" placeholder="0 = desligado"><span class="dn-help">Checa após cada captura e a cada 5 min. Avisa uma vez; rearma ao repor. Vai para o canal de Alertas.</span></label>
+                    </div>
+                    <div class="dn-section">
+                        <h3>Compra automática</h3>
+                        <label class="dn-toggle"><input id="pg-dn-autobuy" type="checkbox"><span class="sw"></span>Comprar automaticamente</label>
+                        <p class="dn-help">Compra na loja do NPC com o gold da conta quando ficar abaixo do limite.</p>
+                        <p class="dn-help warn" id="pg-dn-autobuy-warn" hidden>⚠ Limite 0: compra só quando a bola acabar.</p>
+                        <label class="dn-field"><span>Quantidade por compra</span><input id="pg-dn-autobuy-qty" class="dn-input" type="number" min="1" max="${BUY_MAX_QTY}" step="1" placeholder="100"></label>
+                        <p class="dn-help">Uma tentativa por vez; se faltar gold, avisa e espera repor ou salvar.</p>
+                    </div>
+                </section>
+                <section class="dn-pane" data-pane="venda" hidden>
+                    <div class="dn-section">
+                        <h3>Venda automática</h3>
+                        <label class="dn-toggle"><input id="pg-dn-sell" type="checkbox"><span class="sw"></span>Vender automaticamente</label>
+                        <div class="dn-inline">A cada <input id="pg-dn-sell-min" class="dn-input dn-input--sm" type="number" min="1" step="1"> a <input id="pg-dn-sell-max" class="dn-input dn-input--sm" type="number" min="0" step="1"> min</div>
+                        <p class="dn-help">Sorteado na faixa. Segundo vazio = fixo. Aviso no canal de Alertas.</p>
+                        <div class="dn-status" id="pg-dn-sell-hunt"></div>
+                    </div>
+                    <div class="dn-section">
+                        <h3>Drops desta hunt <span class="spacer"></span><span class="dn-badge" id="pg-dn-sell-count"></span></h3>
+                        <div class="dn-items" id="pg-dn-sell-list"></div>
+                        <p class="dn-help">Marcado = vendido. ⚠ = raro, pedra/feromônio ou outra categoria: confira. 🔒 = o jogo não deixa vender. "Manter" = quantidade que fica na mochila.</p>
+                        <div class="dn-actions"><button type="button" class="dn-btn" id="pg-dn-sell-now" title="Salva a lista e vende os marcados.">Vender agora</button></div>
+                    </div>
+                </section>
+                <section class="dn-pane" data-pane="treino" hidden>
+                    <div class="dn-section">
+                        <h3>Nível do líder</h3>
+                        <label class="dn-field"><span>Avisar no nível</span><input id="pg-dn-level" class="dn-input" type="number" min="0" step="1" placeholder="0 = desligado"><span class="dn-help" id="pg-dn-level-help"></span></label>
+                        <label class="dn-toggle"><input id="pg-dn-level-swap" type="checkbox"><span class="sw"></span>Trocar de líder ao atingir</label>
+                        <p class="dn-help">Põe como líder o próximo do time abaixo do nível. Um aviso por Pokémon, no canal de Nível.</p>
+                        <div class="dn-status"><span>★</span><span id="pg-dn-team"></span><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm r" id="pg-dn-team-refresh">Atualizar time</button></div>
+                    </div>
+                    <div class="dn-section">
+                        <h3>Rota de treino</h3>
+                        <textarea id="pg-dn-route" class="dn-textarea" rows="3" placeholder="pidgey 10&#10;larvitar 15" spellcheck="false"></textarea>
+                        <p class="dn-help">Uma etapa por linha: <b>hunt nível</b> (a hunt é o nome que aparece em "Hunt"). Quando todo o time chega ao nível, troca para a próxima hunt.</p>
+                        <label class="dn-toggle"><input id="pg-dn-route-on" type="checkbox"><span class="sw"></span>Seguir a rota <span class="dn-hint">(liga a troca de líder)</span></label>
+                        <div class="dn-status col"><div id="pg-dn-route-status"></div><ol class="dn-route" id="pg-dn-route-list"></ol></div>
+                        <div class="dn-actions"><button type="button" class="dn-btn dn-btn--danger" id="pg-dn-route-reset" title="Volta à 1ª etapa.">Reiniciar rota</button></div>
+                    </div>
+                </section>
+                <section class="dn-pane" data-pane="sistema" hidden>
+                    <div class="dn-section">
+                        <h3>Recarga do painel</h3>
+                        <label class="dn-toggle"><input id="pg-dn-reload" type="checkbox"><span class="sw"></span>Recarregar automaticamente</label>
+                        <div class="dn-inline">A cada <input id="pg-dn-reload-min" class="dn-input dn-input--sm" type="number" min="1" step="1"> a <input id="pg-dn-reload-max" class="dn-input dn-input--sm" type="number" min="0" step="1"> min</div>
+                        <p class="dn-help">Guarda a hunt e volta pra ela após recarregar. Espera venda, troca e captura terminarem. <span title="O mesmo que o ⟳ Atualizar tudo do PokeGrid, só neste painel. A tela pode seguir mostrando a cidade enquanto o servidor farma. Cada painel sorteia o próprio horário." style="cursor:help">ⓘ</span></p>
+                        <div class="dn-status"><span>⟳</span><span id="pg-dn-reload-status"></span></div>
+                        <div class="dn-actions"><button type="button" class="dn-btn" id="pg-dn-reload-now" title="Guarda a hunt e volta.">Recarregar agora</button></div>
+                    </div>
+                    <div class="dn-section">
+                        <h3>Ferramentas</h3>
+                        <div class="dn-actions">
+                            <button type="button" class="dn-btn" id="pg-dn-log" title="Últimos 40 eventos, sem canais. Cole para quem for diagnosticar.">Copiar log</button>
+                            <button type="button" class="dn-btn" id="pg-dn-export" title="Copia a config inteira, com os canais.">Exportar config</button>
+                            <button type="button" class="dn-btn" id="pg-dn-import" title="Cola uma config exportada de outro painel.">Importar config</button>
+                        </div>
+                        <div id="pg-dn-import-box" class="dn-section" hidden>
+                            <textarea id="pg-dn-import-text" class="dn-textarea" rows="3" placeholder="Cole a config exportada"></textarea>
+                            <label class="dn-toggle"><input id="pg-dn-import-keephooks" type="checkbox"><span class="sw"></span>Manter os canais deste painel</label>
+                            <div class="dn-actions"><button type="button" class="dn-btn dn-btn--primary" id="pg-dn-import-apply">Aplicar</button></div>
+                        </div>
+                        <label class="dn-toggle"><input id="pg-dn-debug" type="checkbox"><span class="sw"></span>Debug no console</label>
+                        <div class="dn-status"><span class="k">v${VERSION}</span><span class="r" id="pg-dn-socket"></span></div>
+                    </div>
+                </section>
             </div>
-            <div style="margin-top:8px;padding:8px;border:1px solid #444;border-radius:6px">
-                <b>Venda automática</b> <span style="color:#aaa">(drops da hunt atual → NPC; aviso no webhook de alertas)</span>
-                <label style="display:block;margin-top:4px"><input id="pg-dn-sell" type="checkbox"> Vender automaticamente a cada
-                    <input id="pg-dn-sell-min" type="number" min="1" step="1" style="width:52px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:2px 4px"> a
-                    <input id="pg-dn-sell-max" type="number" min="0" step="1" style="width:52px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:2px 4px"> min
-                    <span style="color:#aaa;font-size:12px">(sorteado na faixa; deixe o 2º vazio para fixo)</span></label>
-                <div id="pg-dn-sell-hunt" style="margin-top:4px;color:#aaa;font-size:12px"></div>
-                <div id="pg-dn-sell-list" style="margin-top:4px;max-height:160px;overflow:auto"></div>
-                <div style="margin-top:4px;color:#aaa;font-size:12px">Marque só o que pode ir embora: tudo que está marcado é vendido. ⚠️ = item raro, pedra/feromônio ou de outra categoria (confira antes). Só itens com cadeado no jogo ou que o NPC não compra ficam de fora. "Manter" = reserva que fica na mochila.</div>
-                <button id="pg-dn-sell-now" style="margin-top:6px;width:100%;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Vender agora (só os marcados)</button>
-            </div>
-            <div style="margin-top:8px;padding:8px;border:1px solid #444;border-radius:6px">
-                <b>Alerta de nível</b> <span style="color:#aaa">(vai para o webhook de nível)</span>
-                <div style="margin-top:4px">Avisar quando o líder chegar ao nível (0 = desligado):
-                    <input id="pg-dn-level" type="number" min="0" step="1"
-                        style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
-                <label style="display:block;margin-top:6px"><input id="pg-dn-level-swap" type="checkbox"> Ao atingir, trocar o líder pelo próximo do time abaixo do nível</label>
-                <div style="margin-top:4px;color:#aaa;font-size:12px">Confere pelo time que o jogo manda e troca o líder pelo próprio socket. Um aviso por Pokémon. Se o líder já estiver acima do nível ao salvar, avisa e troca na hora.</div>
-                <div id="pg-dn-team" style="margin-top:4px;font-size:12px;white-space:pre-line;color:#ccc"></div>
-                <button id="pg-dn-team-refresh" style="margin-top:6px;width:100%;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Atualizar time</button>
-                <div style="margin-top:8px;border-top:1px solid #444;padding-top:6px"><b>Rota de treino</b>
-                    <div style="margin-top:2px;color:#aaa;font-size:12px">Uma etapa por linha: <b>hunt nível</b>. O nome da hunt é o que aparece em "Hunt atual" (ex.: pidgey). Quando TODOS do time chegam ao nível, troca para a próxima hunt.</div>
-                    <textarea id="pg-dn-route" rows="3" placeholder="pidgey 10&#10;larvitar 15" spellcheck="false"
-                        style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px;font:12px monospace"></textarea>
-                    <label style="display:block;margin-top:4px"><input id="pg-dn-route-on" type="checkbox"> Seguir a rota (o nível da etapa vira o alvo e a troca de líder fica ligada)</label>
-                    <div id="pg-dn-route-status" style="margin-top:4px;font-size:12px;color:#ccc"></div>
-                    <button id="pg-dn-route-reset" style="margin-top:6px;width:100%;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Reiniciar rota (voltar à 1ª etapa)</button>
-                </div>
-            </div>
-            <div style="margin-top:8px;padding:8px;border:1px solid #444;border-radius:6px">
-                <b>Recarga automática</b> <span style="color:#aaa">(o "⟳ Atualizar tudo" do PokeGrid, só neste painel)</span>
-                <label style="display:block;margin-top:4px"><input id="pg-dn-reload" type="checkbox"> Recarregar a página a cada
-                    <input id="pg-dn-reload-min" type="number" min="1" step="1" style="width:52px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:2px 4px"> a
-                    <input id="pg-dn-reload-max" type="number" min="0" step="1" style="width:52px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:2px 4px"> min
-                    <span style="color:#aaa;font-size:12px">(sorteado na faixa; deixe o 2º vazio para fixo)</span></label>
-                <div id="pg-dn-reload-status" style="margin-top:4px;font-size:12px;color:#ccc"></div>
-                <div style="margin-top:4px;color:#aaa;font-size:12px">Guarda a hunt atual antes de recarregar e volta pra ela sozinho se o jogo abrir na cidade (a tela pode continuar mostrando a cidade enquanto o servidor farma, como no "Voltar pra hunt" do PokeGrid). Espera terminar venda, troca de hunt/líder e captura em andamento. Cada painel sorteia o próprio horário.</div>
-                <button id="pg-dn-reload-now" style="margin-top:6px;width:100%;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Recarregar agora (guarda a hunt e volta)</button>
-            </div>
-            <div style="margin-top:6px">Mencionar (ID do Discord, opcional):
-                <input id="pg-dn-mention" type="text" placeholder="123456789012345678"
-                    style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
-            <div style="margin-top:6px">Intervalo mínimo entre avisos do mesmo Pokémon (segundos; 0 = avisar todas):
-                <input id="pg-dn-cooldown" type="number" min="0" step="1"
-                    style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
-            <label style="display:block;margin-top:6px"><input id="pg-dn-debug" type="checkbox"> Debug (log no console)</label>
-            <div style="margin-top:10px;display:flex;gap:6px">
-                <button id="pg-dn-save" style="flex:1;background:#5865f2;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Salvar</button>
-                <button id="pg-dn-test" style="flex:1;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Testar</button>
-                <button id="pg-dn-log" title="Copia os últimos eventos (para diagnóstico)" style="flex:1;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Copiar log</button>
-            </div>
-            <div style="margin-top:6px;display:flex;gap:6px">
-                <button id="pg-dn-export" title="Copia toda a configuração deste painel como texto" style="flex:1;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Exportar config</button>
-                <button id="pg-dn-import" title="Cola uma configuração exportada de outro painel" style="flex:1;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Importar config</button>
-            </div>
-            <div id="pg-dn-import-box" style="display:none;margin-top:6px">
-                <textarea id="pg-dn-import-text" rows="4" placeholder="Cole aqui a config exportada"
-                    style="width:100%;box-sizing:border-box;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px;font:12px monospace"></textarea>
-                <label style="display:block;margin-top:2px;font-size:12px"><input id="pg-dn-import-keephooks" type="checkbox"> Manter os webhooks deste painel (importar só o resto)</label>
-                <button id="pg-dn-import-apply" style="margin-top:4px;width:100%;background:#5865f2;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Aplicar config importada</button>
-            </div>
-            <div id="pg-dn-msg" style="margin-top:6px;color:#8f9;min-height:16px"></div>`;
+            <div class="dn-foot">
+                <div class="dn-msg" id="pg-dn-msg" data-kind=""></div>
+                <button type="button" class="dn-btn" id="pg-dn-test" title="Salva os canais e envia uma mensagem de teste a cada um preenchido.">Testar canais</button>
+                <button type="button" class="dn-btn dn-btn--primary idle" id="pg-dn-save">Salvar</button>
+            </div>`;
 
         document.body.appendChild(btn);
         document.body.appendChild(panel);
 
         const $ = (id) => panel.querySelector(id);
-        function renderSellList() {
-            const box = $('#pg-dn-sell-list');
-            const info = $('#pg-dn-sell-hunt');
-            if (!box || !info) return;
-            info.textContent = huntSlug
-                ? `Hunt atual: ${huntSlug} — ${hasHuntProfile() ? 'perfil salvo (carregado ao entrar)' : 'sem perfil ainda; Salvar cria um para esta hunt'}`
-                : 'Fora de hunt — entre numa hunt e cace um pouco; os itens que caírem aparecem aqui.';
-            const ids = [...huntLoot.keys()];
-            if (!ids.length) { box.innerHTML = '<div style="color:#777;font-size:12px">(nenhum drop visto nesta hunt ainda)</div>'; return; }
-            const inp = 'background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:2px 4px';
-            box.innerHTML = ids.map(id => {
-                const loot = huntLoot.get(id);
-                const item = itemsCatalog?.get(id) || null;
-                const motivo = protectedReason(item);
-                const aviso = sellWarning(item);
-                const sel = cfg.sellItems?.[id];
-                const price = item ? Number(item.npcPrice) || 0 : null;
-                const esc = (t) => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-                if (motivo) {
-                    return `<div style="display:flex;gap:6px;align-items:center;color:#777;font-size:12px" title="Protegido: ${esc(motivo)}">🔒 ${esc(loot.name)} <span style="margin-left:auto">(${esc(motivo)})</span></div>`;
-                }
-                return `<div data-item-id="${id}" style="display:flex;gap:6px;align-items:center;font-size:12px;margin-top:2px">
-                    <input type="checkbox" class="pg-dn-sell-chk" ${sel ? 'checked' : ''}>
-                    <span style="flex:1">${esc(loot.name)} <span style="color:#aaa">· caiu ${loot.qty}${price != null ? ` · ${price.toLocaleString('pt-BR')} gold` : ''}</span>${aviso ? ` <span style="color:#fee75c" title="Atenção: ${esc(aviso)}">⚠️ ${esc(aviso)}</span>` : ''}</span>
-                    <span style="color:#aaa">manter</span><input type="number" class="pg-dn-sell-keep" min="0" step="1" value="${sel ? (Number(sel.keep) || 0) : 0}" style="width:56px;${inp}">
-                </div>`;
-            }).join('');
-        }
-        onHuntLootChange = () => { if (panel.style.display !== 'none') renderSellList(); };
+        let dirty = false;          // algum campo editado desde o último Salvar
+        let msgTimer = null;
+        let resetArmed = null;      // timer da confirmação em 2 cliques do Reiniciar rota
 
-        function renderTeam() {
-            const box = $('#pg-dn-team');
-            if (!box) return;
-            box.textContent = team.length ? `Time (★ líder):\n${teamLine()}` : '(time ainda não lido — entre numa hunt ou clique em Atualizar time)';
-            const rs = $('#pg-dn-route-status');
-            if (rs) rs.textContent = routeStatus() + (huntSlug ? ` · Hunt atual: ${huntSlug}` : '');
+        // ---- abas ----
+        function showTab(name) {
+            if (!TABS.some(t => t.id === name)) name = 'avisos';
+            for (const t of panel.querySelectorAll('.dn-tab')) t.setAttribute('aria-selected', String(t.dataset.tab === name));
+            for (const p of panel.querySelectorAll('.dn-pane')) p.hidden = p.dataset.pane !== name;
+            saveUi({ tab: name });
         }
-        $('#pg-dn-route-reset').onclick = () => {
-            cfg.routeStage = 0;
-            saveCfg(cfg);
-            levelAlerted.clear(); swapPending = null;
-            renderTeam();
-            lastPokesReqAt = 0; requestPokes(0);
-            $('#pg-dn-msg').textContent = routeList().length ? `↩ Rota reiniciada: ${routeStatus()}. Entre na hunt da 1ª etapa (ou espere: se todos já estiverem no nível, ela avança sozinha).` : '⚠ Nenhuma rota configurada.';
-            setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 8000);
-        };
-        onTeamChange = () => { if (panel.style.display !== 'none') renderTeam(); };
+        for (const t of panel.querySelectorAll('.dn-tab')) t.onclick = () => showTab(t.dataset.tab);
 
-        function renderReload() {
-            const el = $('#pg-dn-reload-status');
-            if (el) el.textContent = `Recarga: ${reloadStatus()}`;
+        // ---- rodapé: mensagens por tipo e indicador de não salvo ----
+        function renderDirty() {
+            const m = $('#pg-dn-msg');
+            m.classList.remove('wrap');
+            if (dirty) { m.textContent = '● Alterações não salvas'; m.dataset.kind = 'dirty'; }
+            else { m.textContent = ''; m.dataset.kind = ''; }
+            m.title = '';
+            $('#pg-dn-save').classList.toggle('idle', !dirty);
+            renderState();
         }
-        onReloadChange = () => { if (panel.style.display !== 'none') renderReload(); };
-        $('#pg-dn-reload-now').onclick = () => {
-            $('#pg-dn-msg').textContent = `⟳ Recarregando${huntSlug ? ` (volto para ${huntSlug})` : ''}...`;
-            setTimeout(() => doReload('manual'), 300);
-        };
-        $('#pg-dn-team-refresh').onclick = () => {
-            lastPokesReqAt = 0;
-            const ok = sendGame({ type: 'pokes-get' });
-            $('#pg-dn-msg').textContent = ok ? '📥 Pedi o time ao jogo...' : '⚠ Socket do jogo ainda não rastreado.';
-            setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 3000);
-        };
+        // kind: ok (some em 2,5 s) | info (4 s) | warn/error (fica até o próximo clique)
+        function flash(msg, kind, ms) {
+            const m = $('#pg-dn-msg');
+            clearTimeout(msgTimer);
+            m.textContent = msg; m.title = msg; m.dataset.kind = kind || 'info';
+            m.classList.remove('wrap');
+            const dur = ms || (kind === 'ok' ? 2500 : (kind === 'warn' || kind === 'error') ? 0 : 4000);
+            if (dur) msgTimer = setTimeout(() => { if (m.textContent === msg) renderDirty(); }, dur);
+        }
+        $('#pg-dn-msg').onclick = () => $('#pg-dn-msg').classList.toggle('wrap');
+        // aviso/erro persistente some no próximo clique em qualquer botão
+        panel.addEventListener('click', (e) => {
+            const m = $('#pg-dn-msg');
+            if (e.target.closest('button') && (m.dataset.kind === 'warn' || m.dataset.kind === 'error') && e.target.id !== 'pg-dn-msg') renderDirty();
+        }, true);
 
-        function readSellList() {
-            const out = Object.assign({}, cfg.sellItems || {});
+        // ---- leitura do formulário (rascunho no formato do cfg) ----
+        function readSellList(base) {
+            const out = Object.assign({}, base || cfg.sellItems || {});
             for (const row of panel.querySelectorAll('[data-item-id]')) {
                 const id = Number(row.getAttribute('data-item-id'));
                 const checked = row.querySelector('.pg-dn-sell-chk')?.checked;
@@ -1434,18 +1581,271 @@
             }
             return out;
         }
+        function readRoute() {
+            const linhasRuins = [];
+            const route = $('#pg-dn-route').value.split(/\r?\n/).map(l => l.trim()).filter(Boolean).map(l => {
+                const m = l.match(/^(\S+)\s+(\d+)$/);
+                if (!m) { linhasRuins.push(l); return null; }
+                return { slug: normalize(m[1]), level: parseInt(m[2], 10) };
+            }).filter(r => r && r.level > 0);
+            return { route, linhasRuins };
+        }
+        function readForm() {
+            const { route, linhasRuins } = readRoute();
+            const lv = $('#pg-dn-level');
+            const draft = {
+                webhookUrl: $('#pg-dn-hook').value.trim(),
+                webhookShiny: $('#pg-dn-hook-shiny').value.trim(),
+                webhookAlerts: $('#pg-dn-hook-alerts').value.trim(),
+                webhookLevel: $('#pg-dn-hook-level').value.trim(),
+                // com a rota ligada o campo mostra o nível da etapa (desabilitado); o valor do usuário fica em dataset.own
+                levelAlertAt: Math.max(0, parseInt(lv.disabled ? lv.dataset.own : lv.value, 10) || 0),
+                levelSwap: $('#pg-dn-level-swap').checked,
+                route,
+                routeEnabled: $('#pg-dn-route-on').checked && route.length > 0,
+                watchList: $('#pg-dn-list').value.split(',').map(normalize).filter(Boolean),
+                notifyShiny: $('#pg-dn-shiny').checked,
+                notifyEveryCapture: $('#pg-dn-all').checked,
+                minTier: $('#pg-dn-tier').value,
+                minIv: Math.min(IV_MAX, Math.max(0, parseInt($('#pg-dn-miniv').value, 10) || 0)),
+                minTierIv: Math.min(IV_MAX, Math.max(0, parseInt($('#pg-dn-tier-iv').value, 10) || 0)),
+                ballsWatch: $('#pg-dn-ball').value || 'auto',
+                ballsMin: Math.max(0, parseInt($('#pg-dn-ballsmin').value, 10) || 0),
+                autoBuy: $('#pg-dn-autobuy').checked,
+                autoBuyQty: Math.min(BUY_MAX_QTY, Math.max(1, parseInt($('#pg-dn-autobuy-qty').value, 10) || 100)),
+                mentionUserId: $('#pg-dn-mention').value.trim(),
+                cooldownSeconds: Math.max(0, parseInt($('#pg-dn-cooldown').value, 10) || 0),
+                debug: $('#pg-dn-debug').checked,
+                sellEnabled: $('#pg-dn-sell').checked,
+                sellEveryMin: Math.max(1, parseInt($('#pg-dn-sell-min').value, 10) || 10),
+                sellEveryMaxMin: Math.max(0, parseInt($('#pg-dn-sell-max').value, 10) || 0),
+                sellItems: readSellList(),
+                reloadEnabled: $('#pg-dn-reload').checked,
+                reloadEveryMin: Math.max(1, parseInt($('#pg-dn-reload-min').value, 10) || 60),
+                reloadEveryMaxMin: Math.max(0, parseInt($('#pg-dn-reload-max').value, 10) || 0),
+            };
+            return { draft, linhasRuins };
+        }
+        // Com o painel aberto os badges refletem o que está na tela; fechado, o que está salvo.
+        function current() { return panel.hidden ? cfg : readForm().draft; }
 
+        // ---- estado de relance: badges das abas, pontos do cabeçalho, ponto do 🔔 ----
+        function renderState() {
+            const d = current();
+            const states = {};
+            for (const t of TABS) {
+                states[t.id] = moduleState(t.id, d);
+                panel.querySelector(`.dn-tab[data-tab="${t.id}"] .b`).dataset.state = states[t.id];
+                panel.querySelector(`.dn-dots i[data-tab="${t.id}"]`).dataset.state = states[t.id];
+            }
+            const vals = Object.values(states);
+            const dot = document.getElementById('pg-dn-dot');
+            dot.dataset.state = vals.includes('danger') ? 'danger' : (vals.includes('warn') || dirty) ? 'warn' : vals.includes('on') ? 'ok' : '';
+            const resumo = stateSummary(d) + (dirty ? ' · ● alterações não salvas' : '') + (states.avisos === 'danger' ? ' · ⚠ sem canal de Capturas' : '');
+            btn.title = resumo;
+            $('#pg-dn-dots').title = resumo;
+        }
+
+        // ---- Avisos ----
+        function setChanOpen(open) {
+            $('#pg-dn-chan-box').hidden = !open;
+            $('#pg-dn-chan-toggle').textContent = open ? 'recolher' : 'editar';
+        }
+        $('#pg-dn-chan-toggle').onclick = () => setChanOpen($('#pg-dn-chan-box').hidden);
+        function renderChannels() {
+            const has = (id) => Boolean($('#pg-dn-' + id).value.trim());
+            const el = $('#pg-dn-chan-summary');
+            if (!has('hook')) { el.innerHTML = '<span class="dn-err-t">⚠ Cole o webhook do canal de Capturas para começar.</span>'; return; }
+            el.innerHTML = [['hook', 'Capturas'], ['hook-shiny', 'Shinys'], ['hook-alerts', 'Alertas'], ['hook-level', 'Nível']]
+                .map(([id, n]) => `<span><b>${n}</b> ${has(id) ? '✔' : '—'}</span>`).join('');
+        }
+        function renderQuality() {
+            const tier = tierByKey($('#pg-dn-tier').value);
+            const tierIv = parseInt($('#pg-dn-tier-iv').value, 10) || 0;
+            const minIv = parseInt($('#pg-dn-miniv').value, 10) || 0;
+            const parts = [];
+            if (tier) parts.push(`${tier.name}+${tierIv ? ` com poder ≥ ${tierIv}` : ''}`);
+            if (minIv) parts.push(`qualquer raridade com poder ≥ ${minIv}`);
+            let txt = parts.length ? `Avisa: ${parts.join(', ou ')}.` : 'Avisa: tudo que passar pela lista de nomes.';
+            if ($('#pg-dn-shiny').checked) txt += ' Shiny avisa sempre.';
+            $('#pg-dn-q-summary').textContent = txt;
+        }
+
+        // ---- Bolas ----
+        function renderBalls() {
+            const d = current();
+            const min = Number(d.ballsMin) || 0;
+            $('#pg-dn-autobuy-warn').hidden = !(d.autoBuy && !min);
+            const el = $('#pg-dn-balls-status');
+            const id = d.ballsWatch && d.ballsWatch !== 'auto' ? Number(d.ballsWatch) : lastBallId;
+            const qty = id != null ? ballCounts[id] : null;
+            if (!(min > 0 || d.autoBuy)) el.innerHTML = '<span>🎯</span><span class="k">Alerta desligado.</span>';
+            else if (id == null) el.innerHTML = '<span>🎯</span><span class="k">Bola em uso ainda não vista: capture algo.</span>';
+            else if (qty == null) el.innerHTML = `<span>🎯</span><span><span class="k">${escHtml(ballName(id))}:</span> estoque ainda não lido</span>`;
+            else el.innerHTML = `<span>🎯</span><span><span class="k">${escHtml(ballName(id))}:</span> ${fmtNum(qty)} em estoque</span>${qty < (min || 1) ? '<span class="r" style="color:var(--dn-warn)">abaixo do limite</span>' : ''}`;
+        }
+        onBallsChange = () => { if (!panel.hidden) renderBalls(); };
+
+        // ---- Venda ----
+        function renderSellList(sel) {
+            const box = $('#pg-dn-sell-list');
+            const info = $('#pg-dn-sell-hunt');
+            sel = sel || cfg.sellItems || {};
+            let proxima = '';
+            if (cfg.sellEnabled) {
+                if (!lastSellAt || !nextSellDelayMs) proxima = 'próxima venda na próxima checagem';
+                else proxima = `próxima venda em ${Math.max(0, Math.round((lastSellAt + nextSellDelayMs - Date.now()) / 60000))} min`;
+            }
+            info.innerHTML = huntSlug
+                ? `<span>💰</span><span><span class="k">Hunt:</span> ${escHtml(huntSlug)} · ${hasHuntProfile() ? 'perfil salvo' : 'sem perfil (Salvar cria)'}</span>${proxima ? `<span class="k r">${proxima}</span>` : ''}`
+                : '<span>💰</span><span class="k">Fora de hunt. Entre numa hunt e cace: os drops aparecem aqui.</span>';
+            const ids = [...huntLoot.keys()];
+            if (!ids.length) {
+                box.innerHTML = `<p class="dn-help">${huntSlug ? `Nenhum drop visto em ${escHtml(huntSlug)} ainda.` : 'Nenhum drop visto ainda.'}</p>`;
+                renderSellCount();
+                return;
+            }
+            box.innerHTML = ids.map(id => {
+                const loot = huntLoot.get(id);
+                const item = itemsCatalog?.get(id) || null;
+                const motivo = protectedReason(item);
+                const aviso = sellWarning(item);
+                const s = sel[id];
+                const price = item ? Number(item.npcPrice) || 0 : null;
+                if (motivo) {
+                    return `<div class="dn-item locked" title="Protegido: ${escHtml(motivo)}"><span>🔒</span><span class="nm">${escHtml(loot.name)} <span class="q">×${loot.qty}</span></span><span class="q">${escHtml(motivo)}</span></div>`;
+                }
+                return `<label class="dn-item${s ? ' on' : ''}" data-item-id="${id}">
+                    <input type="checkbox" class="pg-dn-sell-chk" ${s ? 'checked' : ''}>
+                    <span class="nm">${escHtml(loot.name)} <span class="q">×${loot.qty}${price != null ? ` · ${fmtNum(price)} gold` : ''}</span>${aviso ? ` <span class="w" title="Atenção: ${escHtml(aviso)}">⚠ ${escHtml(aviso)}</span>` : ''}</span>
+                    <span class="keep" title="Quantidade que fica na mochila">manter <input type="number" class="dn-input pg-dn-sell-keep" min="0" step="1" value="${s ? (Number(s.keep) || 0) : 0}"></span>
+                </label>`;
+            }).join('');
+            for (const chk of box.querySelectorAll('.pg-dn-sell-chk')) chk.addEventListener('change', () => chk.closest('.dn-item').classList.toggle('on', chk.checked));
+            renderSellCount();
+        }
+        function renderSellCount() {
+            const n = panel.querySelectorAll('.pg-dn-sell-chk:checked').length;
+            const b = $('#pg-dn-sell-count');
+            b.textContent = n ? `${n} marcados` : 'nenhum marcado';
+            b.dataset.state = n ? 'on' : ($('#pg-dn-sell').checked ? 'warn' : '');
+        }
+        // Drop novo chega com o painel aberto: redesenha sem perder o que o usuário marcou e ainda não salvou.
+        onHuntLootChange = () => { if (!panel.hidden) renderSellList(dirty ? readSellList() : null); };
+
+        // ---- Treino ----
+        function renderLevelField() {
+            const lv = $('#pg-dn-level');
+            const { route } = readRoute();
+            const on = $('#pg-dn-route-on').checked && route.length > 0;
+            const st = Math.min(Number(cfg.routeStage) || 0, route.length - 1);
+            if (on) {
+                if (!lv.disabled) lv.dataset.own = lv.value;
+                lv.disabled = true;
+                lv.value = route[Math.max(0, st)].level;
+                $('#pg-dn-level-help').textContent = 'Vem da etapa atual da rota. Desligue "Seguir a rota" para editar.';
+            } else {
+                if (lv.disabled) { lv.disabled = false; lv.value = lv.dataset.own || 0; }
+                $('#pg-dn-level-help').textContent = 'Se o líder já estiver no nível ao salvar, avisa e troca na hora.';
+            }
+        }
+        function renderTeam() {
+            const alvo = levelTarget();
+            $('#pg-dn-team').innerHTML = team.length
+                ? `<span class="k">Time:</span> ${team.map(p => `${p.leader ? '★ ' : ''}${p.shiny ? '✨' : ''}${escHtml(p.name)} ${p.level}${alvo && p.level >= alvo ? ' ✔' : ''}`).join(' · ')}`
+                : '<span class="k">Time ainda não lido.</span>';
+        }
+        function renderRoute() {
+            const lines = $('#pg-dn-route').value.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+            const valid = lines.filter(l => /^(\S+)\s+(\d+)$/.test(l));
+            const saved = JSON.stringify(readRoute().route) === JSON.stringify(routeList());
+            const cur = saved ? (Number(cfg.routeStage) || 0) : 0; // rota editada recomeça da 1ª etapa ao salvar
+            const list = $('#pg-dn-route-list');
+            let vi = 0;
+            list.innerHTML = lines.map(l => {
+                const m = l.match(/^(\S+)\s+(\d+)$/);
+                if (!m) return `<li class="bad"><span class="m">✖</span><span>${escHtml(l)}</span><span class="hint">use "hunt nível"</span></li>`;
+                const i = vi++;
+                const cls = i < cur ? 'done' : i === cur ? 'cur' : '';
+                const mark = i < cur ? '✔' : i === cur ? '▶' : '';
+                const hint = i === cur ? `<span class="hint">atual${huntSlug ? ` · hunt: ${escHtml(huntSlug)}` : ''}</span>` : '';
+                return `<li class="${cls}"><span class="m">${mark}</span><span>${escHtml(m[1])} → nível ${m[2]}</span>${hint}</li>`;
+            }).join('');
+            const on = $('#pg-dn-route-on').checked;
+            let st;
+            if (!valid.length) st = on ? '<span class="dn-err-t">Sem etapas: a rota fica desligada.</span>' : '<span class="k">Sem rota.</span>';
+            else if (cur >= valid.length) st = `<span class="k">Rota ·</span> concluída (${valid.length} etapas). Reiniciar para começar de novo.`;
+            else st = `<span class="k">Rota${on ? '' : ' (desligada)'} ·</span> etapa ${cur + 1} de ${valid.length}${!saved ? ' <span class="k">(recomeça ao salvar)</span>' : ''}`;
+            $('#pg-dn-route-status').innerHTML = st;
+            renderLevelField();
+        }
+        onTeamChange = () => { if (!panel.hidden) { renderTeam(); renderRoute(); } };
+        $('#pg-dn-team-refresh').onclick = () => {
+            lastPokesReqAt = 0;
+            const ok = sendGame({ type: 'pokes-get' });
+            if (ok) flash('📥 Pedi o time ao jogo…', 'info', 3000);
+            else flash('✖ Sem socket do jogo ainda. Recarregue o painel.', 'error');
+        };
+        $('#pg-dn-route-reset').onclick = () => {
+            const b = $('#pg-dn-route-reset');
+            if (!routeList().length) { flash('⚠ Nenhuma rota salva.', 'warn'); return; }
+            if (!resetArmed) {
+                b.textContent = 'Clique de novo para confirmar';
+                flash(`⚠ Reiniciar volta à 1ª etapa (${routeList()[0].slug} ${routeList()[0].level}).`, 'warn');
+                resetArmed = setTimeout(() => { resetArmed = null; b.textContent = 'Reiniciar rota'; renderDirty(); }, 3000);
+                return;
+            }
+            clearTimeout(resetArmed); resetArmed = null; b.textContent = 'Reiniciar rota';
+            cfg.routeStage = 0;
+            saveCfg(cfg);
+            levelAlerted.clear(); swapPending = null;
+            renderTeam(); renderRoute();
+            lastPokesReqAt = 0; requestPokes(0);
+            flash(`✔ Rota reiniciada · etapa 1 de ${routeList().length} (${routeList()[0].slug} ${routeList()[0].level})`, 'ok', 5000);
+        };
+
+        // ---- Sistema ----
+        function renderReload() {
+            $('#pg-dn-reload-status').textContent = cfg.reloadEnabled ? `Recarga ${reloadStatus()}` : 'Recarga desligada';
+            $('#pg-dn-socket').innerHTML = lastSocket && lastSocket.readyState === 1
+                ? 'socket do jogo <span class="dn-ok-t">● rastreado</span>'
+                : 'socket do jogo <span class="dn-err-t">○ não rastreado</span>';
+        }
+        onReloadChange = () => { if (!panel.hidden) renderReload(); };
+        $('#pg-dn-reload-now').onclick = () => {
+            flash(`⟳ Recarregando${huntSlug ? ` (volto para ${huntSlug})` : ''}…`, 'info', 10000);
+            setTimeout(() => doReload('manual'), 300);
+        };
+
+        // ---- preencher e redesenhar tudo ----
+        function renderLive() {
+            renderChannels(); renderQuality(); renderBalls(); renderSellCount(); renderRoute(); renderState();
+        }
         function fill() {
-            $('#pg-dn-sell').checked = Boolean(cfg.sellEnabled);
-            $('#pg-dn-sell-min').value = cfg.sellEveryMin || 10;
-            $('#pg-dn-sell-max').value = cfg.sellEveryMaxMin || '';
-            loadItemsCatalog().then(() => renderSellList());
-            renderSellList();
             $('#pg-dn-hook').value = cfg.webhookUrl;
             $('#pg-dn-hook-shiny').value = cfg.webhookShiny || '';
             $('#pg-dn-hook-alerts').value = cfg.webhookAlerts || '';
             $('#pg-dn-hook-level').value = cfg.webhookLevel || '';
-            $('#pg-dn-level').value = cfg.levelAlertAt || 0;
+            setChanOpen(!cfg.webhookUrl);
+            $('#pg-dn-list').value = cfg.watchList.join(', ');
+            $('#pg-dn-shiny').checked = cfg.notifyShiny;
+            $('#pg-dn-all').checked = cfg.notifyEveryCapture;
+            $('#pg-dn-tier').value = tierByKey(cfg.minTier) ? tierByKey(cfg.minTier).key : '';
+            $('#pg-dn-miniv').value = cfg.minIv || 0;
+            $('#pg-dn-tier-iv').value = cfg.minTierIv || 0;
+            $('#pg-dn-mention').value = cfg.mentionUserId;
+            $('#pg-dn-cooldown').value = cfg.cooldownSeconds;
+            $('#pg-dn-ball').value = cfg.ballsWatch || 'auto';
+            $('#pg-dn-ballsmin').value = cfg.ballsMin || 0;
+            $('#pg-dn-autobuy').checked = Boolean(cfg.autoBuy);
+            $('#pg-dn-autobuy-qty').value = cfg.autoBuyQty || 100;
+            $('#pg-dn-sell').checked = Boolean(cfg.sellEnabled);
+            $('#pg-dn-sell-min').value = cfg.sellEveryMin || 10;
+            $('#pg-dn-sell-max').value = cfg.sellEveryMaxMin || '';
+            loadItemsCatalog().then(() => { if (!panel.hidden) renderSellList(dirty ? readSellList() : null); });
+            renderSellList();
+            const lv = $('#pg-dn-level');
+            lv.disabled = false; lv.value = cfg.levelAlertAt || 0; lv.dataset.own = String(cfg.levelAlertAt || 0);
             $('#pg-dn-level-swap').checked = Boolean(cfg.levelSwap);
             $('#pg-dn-route').value = routeList().map(r => `${r.slug} ${r.level}`).join('\n');
             $('#pg-dn-route-on').checked = Boolean(cfg.routeEnabled);
@@ -1454,97 +1854,84 @@
             $('#pg-dn-reload-min').value = cfg.reloadEveryMin || 60;
             $('#pg-dn-reload-max').value = cfg.reloadEveryMaxMin || '';
             renderReload();
-            $('#pg-dn-list').value = cfg.watchList.join(', ');
-            $('#pg-dn-shiny').checked = cfg.notifyShiny;
-            $('#pg-dn-all').checked = cfg.notifyEveryCapture;
-            $('#pg-dn-tier').value = tierByKey(cfg.minTier) ? tierByKey(cfg.minTier).key : '';
-            $('#pg-dn-miniv').value = cfg.minIv || 0;
-            $('#pg-dn-tier-iv').value = cfg.minTierIv || 0;
-            $('#pg-dn-ball').value = cfg.ballsWatch || 'auto';
-            $('#pg-dn-ballsmin').value = cfg.ballsMin || 0;
-            $('#pg-dn-autobuy').checked = Boolean(cfg.autoBuy);
-            $('#pg-dn-autobuy-qty').value = cfg.autoBuyQty || 100;
-            $('#pg-dn-autobuy-reserve').value = cfg.autoBuyGoldReserve || 0;
-            $('#pg-dn-mention').value = cfg.mentionUserId;
-            $('#pg-dn-cooldown').value = cfg.cooldownSeconds;
             $('#pg-dn-debug').checked = cfg.debug;
+            $('#pg-dn-import-box').hidden = true;
+            renderLive();
         }
 
-        btn.onclick = () => {
-            const aberto = panel.style.display !== 'none';
-            panel.style.display = aberto ? 'none' : 'block';
-            if (!aberto) fill();
+        // qualquer edição marca "não salvo" e recalcula resumos e badges
+        const onEdit = (e) => {
+            if (e.target.closest('#pg-dn-import-box')) return;
+            if (!e.target.matches('input, select, textarea')) return;
+            dirty = true;
+            renderDirty();
+            renderLive();
         };
+        panel.querySelector('.dn-body').addEventListener('input', onEdit);
+        panel.querySelector('.dn-body').addEventListener('change', onEdit);
+        panel.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') { e.stopPropagation(); togglePanel(false); return; }
+            if (e.key === 'Enter' && e.target.matches('input:not([type=checkbox])')) { e.preventDefault(); $('#pg-dn-save').click(); }
+        });
 
+        function togglePanel(force) {
+            const open = typeof force === 'boolean' ? force : panel.hidden;
+            if (open && !dirty) fill();     // com edição pendente, reabrir mantém o que estava na tela
+            panel.hidden = !open;
+            if (open) {
+                showTab(cfg.webhookUrl ? (loadUi().tab || 'avisos') : 'avisos');
+                renderLive();
+                if (!cfg.webhookUrl) $('#pg-dn-hook').focus();
+            }
+            renderState();
+        }
+        btn.onclick = () => togglePanel();
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !panel.hidden) togglePanel(false); });
+        $('#pg-dn-close').onclick = () => togglePanel(false);
+
+        // ---- Salvar (global; mantém os efeitos colaterais de antes) ----
         $('#pg-dn-save').onclick = () => {
-            cfg.webhookUrl = $('#pg-dn-hook').value.trim();
-            cfg.webhookShiny = $('#pg-dn-hook-shiny').value.trim();
-            cfg.webhookAlerts = $('#pg-dn-hook-alerts').value.trim();
-            cfg.webhookLevel = $('#pg-dn-hook-level').value.trim();
+            const { draft, linhasRuins } = readForm();
             const alvoAntes = levelTarget(), swapAntes = swapEnabled();
-            cfg.levelAlertAt = Math.max(0, parseInt($('#pg-dn-level').value, 10) || 0);
-            cfg.levelSwap = $('#pg-dn-level-swap').checked;
             const rotaAntes = JSON.stringify(routeList());
-            const linhasRuins = [];
-            cfg.route = $('#pg-dn-route').value.split(/\r?\n/).map(l => l.trim()).filter(Boolean).map(l => {
-                const m = l.match(/^(\S+)\s+(\d+)$/);
-                if (!m) { linhasRuins.push(l); return null; }
-                return { slug: normalize(m[1]), level: parseInt(m[2], 10) };
-            }).filter(r => r && r.level > 0);
-            cfg.routeEnabled = $('#pg-dn-route-on').checked && cfg.route.length > 0;
+            const recargaAntes = JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]);
+            Object.assign(cfg, draft);
             if (JSON.stringify(routeList()) !== rotaAntes) cfg.routeStage = 0; // rota editada: recomeça
             // Alvo ou troca mudaram: reavalia o time inteiro (antes, ligar a troca depois do aviso não fazia nada).
             if (levelTarget() !== alvoAntes || swapEnabled() !== swapAntes) { levelAlerted.clear(); swapPending = null; }
-            const avisoRota = linhasRuins.length ? ` ⚠ Linhas ignoradas na rota (use "hunt nível"): ${linhasRuins.join(' | ')}.` : '';
-            const avisoNivel = levelEnabled() ? ` Conferindo o time para o nível ${levelTarget()}${swapEnabled() ? ' (com troca)' : ''}${routeActive() ? ` — ${routeStatus()}` : ''}...` : '';
             lastPokesReqAt = 0; requestPokes(0);
-            cfg.watchList = $('#pg-dn-list').value.split(',').map(normalize).filter(Boolean);
-            cfg.notifyShiny = $('#pg-dn-shiny').checked;
-            cfg.notifyEveryCapture = $('#pg-dn-all').checked;
-            cfg.minTier = $('#pg-dn-tier').value;
-            cfg.minIv = Math.min(IV_MAX, Math.max(0, parseInt($('#pg-dn-miniv').value, 10) || 0));
-            cfg.minTierIv = Math.min(IV_MAX, Math.max(0, parseInt($('#pg-dn-tier-iv').value, 10) || 0));
-            cfg.ballsWatch = $('#pg-dn-ball').value || 'auto';
-            cfg.ballsMin = Math.max(0, parseInt($('#pg-dn-ballsmin').value, 10) || 0);
-            cfg.autoBuy = $('#pg-dn-autobuy').checked;
-            cfg.autoBuyQty = Math.min(BUY_MAX_QTY, Math.max(1, parseInt($('#pg-dn-autobuy-qty').value, 10) || 100));
-            cfg.autoBuyGoldReserve = Math.max(0, parseInt($('#pg-dn-autobuy-reserve').value, 10) || 0);
-            const avisoCompra = cfg.autoBuy && !cfg.ballsMin ? ' Compra automática com limite 0: compra só quando a bola ACABAR; defina um limite para comprar antes.' : '';
             for (const k of Object.keys(ballAlerted)) delete ballAlerted[k]; // limite mudou: rearma
             for (const k of Object.keys(autoBuyAttempted)) delete autoBuyAttempted[k];
             requestBalls(0);
-            cfg.mentionUserId = $('#pg-dn-mention').value.trim();
-            cfg.cooldownSeconds = Math.max(0, parseInt($('#pg-dn-cooldown').value, 10) || 0);
-            cfg.cfgVersion = 2;
-            cfg.debug = $('#pg-dn-debug').checked;
-            cfg.sellEnabled = $('#pg-dn-sell').checked;
-            cfg.sellEveryMin = Math.max(1, parseInt($('#pg-dn-sell-min').value, 10) || 10);
-            cfg.sellEveryMaxMin = Math.max(0, parseInt($('#pg-dn-sell-max').value, 10) || 0);
             drawSellDelay(); // faixa mudou: sorteia de novo
-            cfg.sellItems = readSellList();
             saveHuntProfile();
-            const recargaAntes = JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]);
-            cfg.reloadEnabled = $('#pg-dn-reload').checked;
-            cfg.reloadEveryMin = Math.max(1, parseInt($('#pg-dn-reload-min').value, 10) || 60);
-            cfg.reloadEveryMaxMin = Math.max(0, parseInt($('#pg-dn-reload-max').value, 10) || 0);
             if (JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]) !== recargaAntes) scheduleReload(); // faixa mudou: sorteia de novo
-            renderReload();
+            cfg.cfgVersion = 2;
             saveCfg(cfg);
-            $('#pg-dn-msg').textContent = '✔ Salvo!' + avisoCompra + avisoNivel + avisoRota;
-            setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, (avisoCompra || avisoNivel || avisoRota) ? 9000 : 2500);
+            dirty = false;
+            fill();
+            const avisos = [];
+            if (cfg.autoBuy && !cfg.ballsMin) avisos.push('⚠ Compra com limite 0: só compra quando a bola acabar.');
+            if (linhasRuins.length) avisos.push(`⚠ Rota: ${linhasRuins.length} linha(s) ignorada(s) (formato "hunt nível"): ${linhasRuins.map(l => `"${l}"`).join(', ')}`);
+            if (!cfg.webhookUrl) avisos.push('⚠ Sem canal de Capturas: nada será enviado.');
+            const nivel = levelEnabled() ? ` · conferindo o time para o nível ${levelTarget()}${swapEnabled() ? ' (com troca)' : ''}…` : '';
+            if (avisos.length) flash('✔ Salvo · ' + avisos.join(' '), 'warn');
+            else flash('✔ Salvo' + nivel, 'ok', nivel ? 4000 : 2500);
         };
 
+        // ---- Testar canais: salva SÓ os canais (o resto do formulário segue como rascunho) e envia um teste a cada um ----
         $('#pg-dn-test').onclick = () => {
             cfg.webhookUrl = $('#pg-dn-hook').value.trim();
             cfg.webhookShiny = $('#pg-dn-hook-shiny').value.trim();
             cfg.webhookAlerts = $('#pg-dn-hook-alerts').value.trim();
             cfg.webhookLevel = $('#pg-dn-hook-level').value.trim();
+            saveCfg(cfg);
             if (!cfg.webhookUrl) {
-                $('#pg-dn-msg').textContent = '⚠ Preencha o webhook principal primeiro.';
-                setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 4000);
+                flash('⚠ Preencha o canal de Capturas primeiro.', 'warn');
+                showTab('avisos'); setChanOpen(true); $('#pg-dn-hook').focus();
                 return;
             }
-            // capturas: sempre; shinys/alertas: só se tiverem webhook próprio
+            // capturas: sempre; shinys/alertas/nível: só se tiverem canal próprio
             sendDiscordNotification({ name: 'Dratini (teste)', shiny: false, level: 5, ivTotal: 150, quality: 1.35, ball: 'Ultra Ball' }, true);
             const canais = ['capturas'];
             if (cfg.webhookShiny) {
@@ -1555,7 +1942,7 @@
                 canais.push('alertas');
                 postWebhook('alert', {
                     username: 'Poke Idle World',
-                    embeds: [{ title: 'Teste: canal de alertas', description: 'Aqui chegarão shiny na fila, estoque de bolas, quedas de conexão etc.', color: 0xfee75c }],
+                    embeds: [{ title: 'Teste: canal de alertas', description: 'Aqui chegarão estoque de bolas, compras, vendas e trocas de hunt.', color: 0xfee75c }],
                 }, { test: true });
             }
             if (cfg.webhookLevel) {
@@ -1565,8 +1952,8 @@
                     embeds: [{ title: 'Teste: canal de nível', description: 'Aqui chegarão os avisos de nível atingido e troca de líder.', color: 0x5865f2 }],
                 }, { test: true });
             }
-            $('#pg-dn-msg').textContent = `📤 Teste enviado para: ${canais.join(', ')}.`;
-            setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 4000);
+            renderChannels(); renderState();
+            flash(`✔ Canais salvos · teste enviado: ${canais.join(', ')}`, 'ok', 4000);
         };
 
         // Copia texto com fallback (o webview do PokeGrid às vezes nega navigator.clipboard).
@@ -1586,16 +1973,12 @@
             const clip = navigator.clipboard?.writeText ? navigator.clipboard.writeText(txt) : Promise.reject();
             return clip.then(() => true, () => legacyCopy());
         }
-        function flash(msg, ms) {
-            $('#pg-dn-msg').textContent = msg;
-            setTimeout(() => { if ($('#pg-dn-msg').textContent === msg) $('#pg-dn-msg').textContent = ''; }, ms || 4000);
-        }
 
         $('#pg-dn-log').onclick = () => {
             const txt = localStorage.getItem(LOG_KEY) || '[]';
             copyText(txt).then(ok => {
-                if (ok) flash('📋 Log copiado (cole para quem for diagnosticar).');
-                else { console.log(TAG, 'LOG:', txt); flash('⚠ Não copiou; o log foi impresso no console.'); }
+                if (ok) flash('✔ Log copiado. Cole para quem for diagnosticar.', 'ok', 4000);
+                else { console.log(TAG, 'LOG:', txt); flash('⚠ Não copiou; o log foi impresso no console.', 'warn'); }
             });
         };
 
@@ -1603,20 +1986,20 @@
         $('#pg-dn-export').onclick = () => {
             const txt = JSON.stringify(Object.assign({ _piwDiscordNotify: cfg.cfgVersion || 2 }, cfg));
             copyText(txt).then(ok => {
-                if (ok) flash('📤 Config copiada. Abra o 🔔 na outra conta, clique em Importar e cole. Atenção: inclui os webhooks.', 7000);
-                else { $('#pg-dn-import-box').style.display = 'block'; $('#pg-dn-import-text').value = txt; flash('⚠ Não copiou; a config apareceu na caixa abaixo — copie de lá.', 7000); }
+                if (ok) flash('✔ Config copiada (inclui os canais). Na outra conta: Sistema → Importar config.', 'ok', 7000);
+                else { $('#pg-dn-import-box').hidden = false; $('#pg-dn-import-text').value = txt; flash('⚠ Não copiou; a config apareceu na caixa abaixo — copie de lá.', 'warn'); }
             });
         };
         $('#pg-dn-import').onclick = () => {
             const box = $('#pg-dn-import-box');
-            box.style.display = box.style.display === 'none' ? 'block' : 'none';
-            if (box.style.display === 'block') { $('#pg-dn-import-text').value = ''; $('#pg-dn-import-text').focus(); }
+            box.hidden = !box.hidden;
+            if (!box.hidden) { $('#pg-dn-import-text').value = ''; $('#pg-dn-import-text').focus(); }
         };
         $('#pg-dn-import-apply').onclick = () => {
             let data;
             try { data = JSON.parse($('#pg-dn-import-text').value.trim()); }
-            catch { flash('⚠ Isso não é uma config válida (JSON inválido).'); return; }
-            if (!data || typeof data !== 'object' || Array.isArray(data) || !('webhookUrl' in data)) { flash('⚠ Isso não parece uma config deste script.'); return; }
+            catch { flash('✖ Não é uma config válida.', 'error'); return; }
+            if (!data || typeof data !== 'object' || Array.isArray(data) || !('webhookUrl' in data)) { flash('✖ Isso não parece uma config deste script.', 'error'); return; }
             delete data._piwDiscordNotify;
             const keepHooks = $('#pg-dn-import-keephooks').checked;
             const mine = { webhookUrl: cfg.webhookUrl, webhookShiny: cfg.webhookShiny, webhookAlerts: cfg.webhookAlerts, webhookLevel: cfg.webhookLevel };
@@ -1629,26 +2012,24 @@
             drawSellDelay();
             scheduleReload();
             loadHuntProfile();
+            dirty = false;
             fill();
-            $('#pg-dn-import-box').style.display = 'none';
-            flash('✔ Config importada e salva.');
+            flash('✔ Config importada e salva.', 'ok', 4000);
         };
 
         $('#pg-dn-sell-now').onclick = () => {
             cfg.sellItems = readSellList();
             saveHuntProfile();
             saveCfg(cfg);
-            $('#pg-dn-msg').textContent = '⏳ Vendendo...';
+            flash('⏳ Lista salva. Vendendo…', 'info', 30000);
             runSellCycle(true).then(r => {
-                $('#pg-dn-msg').textContent = r.ok
-                    ? `💰 Vendeu ${r.total} itens por ${Number(r.ganho).toLocaleString('pt-BR')} gold.`
-                    : `⚠ Não vendeu: ${r.motivo}`;
-                setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 6000);
+                if (r.ok) flash(`✔ Vendeu ${r.total} itens · +${fmtNum(r.ganho)} gold`, 'ok', 6000);
+                else flash(`✖ Não vendeu: ${r.motivo}`, 'error');
+                renderSellList(dirty ? readSellList() : null);
             });
         };
 
-        // sem webhook configurado ainda: chama atenção pro botão
-        if (!cfg.webhookUrl) flashButton();
+        renderState();
     }
 
     loadResume(); // antes do painel e dos timers: restaura o que a carga anterior guardou
@@ -1659,7 +2040,7 @@
     setInterval(sellTick, SELL_CHECK_MS);
     setInterval(reloadTick, RELOAD_CHECK_MS);
 
-    console.log(TAG, 'v3.4.1 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, `v${VERSION} ativo.`, 'Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
         '| raridade mín.:', cfg.minTier ? `${cfg.minTier}${cfg.minTierIv ? ` com poder ${cfg.minTierIv}+` : ''}` : '(nenhuma)', '| poder mín.:', cfg.minIv || 0,
         '| alerta bolas:', effectiveBallsMin() ? `${cfg.ballsWatch} < ${effectiveBallsMin()}` : 'desligado',

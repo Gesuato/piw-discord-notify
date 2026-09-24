@@ -120,6 +120,18 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
 - **NUNCA commitar URLs de webhook do Discord** (nem em exemplos com IDs reais). O repo é
   público e o Discord desativa webhooks vazados. Toda config do usuário vive no `localStorage`
   (chave `pgDiscordNotifyCfg`), editada pelo painel 🔔 que o próprio script cria.
+- **Painel 🔔 (v3.5.0, proposta em `docs/design-painel.md`, mockup em `docs/mockup-painel.html`)**: 5 abas
+  por objetivo (Avisos, Bolas, Venda, Treino, Sistema), cabeçalho com 5 pontos de estado, rodapé fixo com
+  `#pg-dn-msg` (tipos ok/info/warn/error; warn/error ficam até o próximo clique) + **Testar canais** +
+  **Salvar**. CSS em `PANEL_CSS` (`<style id="pg-dn-style">`, tokens `--dn-*`, classes `.dn-*`), sem estilo
+  inline. `readForm()` devolve o rascunho no formato do `cfg` e é a ÚNICA leitura do formulário: Salvar
+  (global, com os mesmos efeitos colaterais de sempre) faz `Object.assign(cfg, draft)`; `moduleState(tab, d)`
+  calcula o badge ('on'|'off'|'warn'|'danger') a partir do rascunho com o painel aberto e do `cfg` fechado.
+  Edição marca `dirty` ("● Alterações não salvas"; reabrir o painel não chama `fill()` enquanto sujo).
+  Aba ativa em `localStorage.pgDiscordNotifyUi` (fora do `cfg`, não entra no Exportar/Importar). Os ids
+  `#pg-dn-*` e as chaves de `cfg` são os mesmos de antes; ao criar campo novo, adicionar em `fill()`,
+  `readForm()` e, se for liga/desliga de módulo, em `moduleState`/`stateSummary`. A versão vem da const
+  `VERSION` (manter igual ao `@version`). Reserva de gold (`autoBuyGoldReserve`) foi removida na v3.5.0.
 - Webhooks por tipo de evento: `webhookUrl` (capturas, principal), `webhookShiny`, `webhookAlerts`,
   `webhookLevel`. Todo envio passa por `postWebhook(kind, payload, meta)` com `kind` em
   `capture|shiny|alert|level`; `webhookFor(kind)` cai no principal quando o específico está vazio
@@ -152,8 +164,8 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
 
 ## Fluxo de release
 
-1. Editar `piw-discord-notify.user.js` e **bumpar `@version`** no cabeçalho (e a string
-   `vX.Y.Z ativo` no `console.log` final).
+1. Editar `piw-discord-notify.user.js` e **bumpar `@version`** no cabeçalho e a const `VERSION`
+   (usada no `console.log` final e no cabeçalho do painel).
 2. Commit + push para `main`. O usuário atualiza pelo botão "Atualizar" do PokeGrid, que
    rebaixa o arquivo do GitHub e pede reload dos painéis (a config em localStorage sobrevive).
 3. Sem tags/releases por enquanto — o PokeGrid sempre baixa o `main`.
@@ -167,8 +179,14 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
   stubs de `sendGame`, `postWebhook`, `logEvent`, `saveCfg`, `localStorage`, `location` e timers (curtos
   rodam na hora; >= 5 s ficam em `state.longTimers`; `clock.now` controla o `Date.now()` do módulo de
   recarga). Ao mexer num módulo, rode os três; ao criar módulo novo, siga o mesmo padrão (marcadores + stubs).
+- **Painel (DOM)**: `node test/ui.smoke.js` carrega o userscript inteiro no jsdom com WebSocket/fetch
+  falsos, abre o painel, percorre as abas, edita, salva, testa canais, importa e simula hunt/drops/time/estoque
+  chegando pelo socket; falha em qualquer erro de runtime. Precisa do jsdom (`npm i -g jsdom` + `NODE_PATH`
+  apontando para o `node_modules` global); sem ele o teste é pulado. Rodar sempre que mexer em `buildUI`.
+  Chrome headless não funciona neste ambiente (sai sem output); use o jsdom.
 - Sempre `node --check piw-discord-notify.user.js` antes do commit.
 - Verificação manual: instalar no PokeGrid (ou colar no console de um navegador logado no jogo), usar
-  o botão **Testar** do painel 🔔 (envia mensagem de teste aos webhooks sem passar pelos filtros; NÃO
-  salva nem dispara checagens) e, para capturas reais, ligar o checkbox **Debug**. Depois, ler o que o
+  o botão **Testar canais** do painel 🔔 (salva SÓ os 4 canais e envia mensagem de teste a cada um preenchido,
+  sem passar pelos filtros; não salva o resto do formulário nem dispara checagens) e, para capturas reais,
+  ligar **Debug** na aba Sistema. Depois, ler o que o
   script viu com `python tools/read-panel-logs.py --panel N` (ver "Diagnóstico sem console").
