@@ -233,3 +233,5 @@ mudar o alvo). Troca: `poke-summon` → `pokes-get` 0,8 s depois → `checkSwapC
 **v3.2.1:** `poke-xp` confirmado como `{ id, speciesId, xpGained, xp, level, leveledUp }`; mudar o alvo OU a
 caixa de troca no Salvar reavalia o time (antes, ligar a troca depois do aviso não fazia nada). `poke-summon`
 confirmado no bundle do cliente (botão summon do time); bloqueado durante boss. Evolução continua fora.
+**v3.2.2:** quem deixa de ser líder sai de `levelAlerted`; se voltar a ser líder acima do alvo (troca manual),
+avisa e troca de novo. Para manter um líder acima do alvo, desligue a troca.

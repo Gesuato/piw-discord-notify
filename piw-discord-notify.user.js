@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.2.1
+// @version      3.2.2
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -255,7 +255,9 @@
     //                  Confirmar com pokes-get ~500 ms depois (piwdex `trocarLider`).
     // Regra: poke-xp/field-kill só DISPARAM uma conferência (pokes-get); quem decide é o frame
     // `pokes` (nível do líder vindo da lista). Evita agir sobre um `level` mal interpretado.
-    // Um alerta por líder (id) por nível alvo; o Set zera quando o alvo muda no Salvar.
+    // Um alerta por líder (id) por nível alvo; o Set zera quando o alvo muda no Salvar. Quando um
+    // Pokémon DEIXA de ser líder ele sai do Set: se voltar a ser líder (troca manual) acima do alvo,
+    // avisa e troca de novo (v3.2.2). Quem quiser um líder acima do alvo desliga a troca.
 
     const POKES_POLL_MS = 5 * 60 * 1000;
     const POKES_AFTER_SOCKET_MS = 4000;
@@ -271,6 +273,7 @@
     let pokesRequestTimer = null;
     const levelAlerted = new Set(); // ids de líderes já avisados para o alvo atual
     let swapPending = null;         // { fromId, toId, toName, at } aguardando confirmação no `pokes`
+    let lastLeaderId = null;        // líder do último `pokes` (para rearmar quem deixou de ser líder)
     let onTeamChange = null;        // callback do painel para redesenhar o time
 
     function levelTarget() { return Math.max(0, Number(cfg.levelAlertAt) || 0); }
@@ -315,6 +318,9 @@
         const sig = novo.map(p => `${p.id}:${p.level}:${p.leader ? 1 : 0}`).join('|');
         if (sig !== teamSig) { teamSig = sig; logEvent('time', { time: novo.map(p => ({ name: p.name, level: p.level, slot: p.slot, leader: p.leader })) }); }
         if (onTeamChange) { try { onTeamChange(); } catch { /* painel fechado */ } }
+        const liderId = teamLeader()?.id || null;
+        if (lastLeaderId && liderId !== lastLeaderId) levelAlerted.delete(lastLeaderId); // deixou de ser líder: rearma
+        lastLeaderId = liderId;
         checkSwapConfirm();
         checkLeaderLevel();
     }
@@ -1367,7 +1373,7 @@
     setInterval(() => requestPokes(0), POKES_POLL_MS);
     setInterval(sellTick, SELL_CHECK_MS);
 
-    console.log(TAG, 'v3.2.1 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v3.2.2 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
         '| raridade mín.:', cfg.minTier || '(nenhuma)', '| poder mín.:', cfg.minIv || 0,
         '| alerta bolas:', effectiveBallsMin() ? `${cfg.ballsWatch} < ${effectiveBallsMin()}` : 'desligado',
