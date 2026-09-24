@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.5.0
+// @version      3.5.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.5.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.5.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -1033,24 +1033,32 @@
     // ---- Roteamento de webhooks por tipo de evento ----------------------
     //   capture -> webhookUrl
     //   shiny   -> webhookShiny  (vazio: webhookUrl)
-    //   alert   -> webhookAlerts (vazio: webhookUrl)  [eventos futuros, ver ROADMAP.md]
-    //   level   -> webhookLevel  (vazio: webhookAlerts; vazio: webhookUrl)
+    //   alert   -> webhookAlerts (vazio: NÃO envia)
+    //   level   -> webhookLevel  (vazio: NÃO envia)
+    // Desde a v3.5.1 (a pedido do usuário) alertas e nível NÃO caem no principal: com o canal vazio o
+    // evento é só registrado no log. Shiny é uma captura, por isso continua caindo em Capturas.
     const WEBHOOK_KINDS = {
         capture: { key: 'webhookUrl', label: 'capturas' },
-        shiny: { key: 'webhookShiny', label: 'shinys' },
+        shiny: { key: 'webhookShiny', label: 'shinys', fallback: 'webhookUrl' },
         alert: { key: 'webhookAlerts', label: 'alertas' },
-        level: { key: 'webhookLevel', label: 'nível', fallback: 'webhookAlerts' },
+        level: { key: 'webhookLevel', label: 'nível' },
     };
     function webhookFor(kind) {
         const k = WEBHOOK_KINDS[kind] || WEBHOOK_KINDS.capture;
-        return (cfg[k.key] || '').trim() || (k.fallback && (cfg[k.fallback] || '').trim()) || (cfg.webhookUrl || '').trim();
+        return (cfg[k.key] || '').trim() || (k.fallback && (cfg[k.fallback] || '').trim()) || '';
     }
 
+    const webhookMissingWarned = {};
     function postWebhook(kind, payload, meta) {
         const url = webhookFor(kind);
         if (!url) {
-            console.warn(TAG, 'Webhook não configurado. Clique no 🔔 para configurar.');
-            flashButton();
+            const k = WEBHOOK_KINDS[kind] || WEBHOOK_KINDS.capture;
+            logEvent('webhook-sem-canal', Object.assign({ kind, canal: k.label }, meta));
+            if (!webhookMissingWarned[kind]) {
+                webhookMissingWarned[kind] = true;
+                console.warn(TAG, `Canal de ${k.label} vazio: esse aviso não foi enviado. Preencha no 🔔 › Avisos › Canais do Discord.`);
+            }
+            if (kind === 'capture' || kind === 'shiny') flashButton();
             return Promise.resolve(false);
         }
         return fetch(url, {
@@ -1351,19 +1359,24 @@
     // formato do cfg (o próprio cfg com o painel fechado; o rascunho do formulário com ele aberto).
     function moduleState(tab, d) {
         const rota = Array.isArray(d.route) ? d.route.filter(r => r && r.slug && Number(r.level) > 0) : [];
+        const temAlertas = Boolean((d.webhookAlerts || '').trim()); // true = canal de Alertas preenchido
         switch (tab) {
             case 'avisos': return (d.webhookUrl || '').trim() ? 'on' : 'danger';
             case 'bolas': {
                 const min = Number(d.ballsMin) || 0;
-                if (d.autoBuy && !min) return 'warn';
-                return (min > 0 || d.autoBuy) ? 'on' : 'off';
+                if (!(min > 0 || d.autoBuy)) return 'off';
+                if ((d.autoBuy && !min) || !temAlertas) return 'warn';
+                return 'on';
             }
             case 'venda':
                 if (!d.sellEnabled) return 'off';
-                return Object.keys(d.sellItems || {}).length ? 'on' : 'warn';
+                return (Object.keys(d.sellItems || {}).length && temAlertas) ? 'on' : 'warn';
             case 'treino':
+                if (!(d.routeEnabled || (Number(d.levelAlertAt) || 0) > 0)) return 'off';
                 if (d.routeEnabled && (!rota.length || (Number(cfg.routeStage) || 0) >= rota.length)) return 'warn';
-                return (d.routeEnabled || (Number(d.levelAlertAt) || 0) > 0) ? 'on' : 'off';
+                if (!(d.webhookLevel || '').trim()) return 'warn';
+                if (d.routeEnabled && !temAlertas) return 'warn'; // troca de hunt avisa em Alertas
+                return 'on';
             case 'sistema': return d.reloadEnabled ? 'on' : 'off';
         }
         return 'off';
@@ -1416,9 +1429,9 @@
                         <div class="dn-chan-summary" id="pg-dn-chan-summary"></div>
                         <div id="pg-dn-chan-box" class="dn-section" hidden>
                             ${hookInput('hook', 'Obrigatório. Recebe as capturas e tudo que não tiver canal próprio.')}
-                            ${hookInput('hook-shiny', 'Vazio = vai para Capturas.')}
-                            ${hookInput('hook-alerts', 'Bolas, venda, hunt. Vazio = vai para Capturas.')}
-                            ${hookInput('hook-level', 'Nível atingido e troca de líder. Vazio = vai para Alertas.')}
+                            ${hookInput('hook-shiny', 'Vazio = shinys vão para Capturas.')}
+                            ${hookInput('hook-alerts', 'Estoque, compra, venda e troca de hunt. Vazio = esses avisos NÃO são enviados.')}
+                            ${hookInput('hook-level', 'Nível atingido e troca de líder. Vazio = esses avisos NÃO são enviados.')}
                         </div>
                     </div>
                     <div class="dn-section">
@@ -1913,7 +1926,10 @@
             const avisos = [];
             if (cfg.autoBuy && !cfg.ballsMin) avisos.push('⚠ Compra com limite 0: só compra quando a bola acabar.');
             if (linhasRuins.length) avisos.push(`⚠ Rota: ${linhasRuins.length} linha(s) ignorada(s) (formato "hunt nível"): ${linhasRuins.map(l => `"${l}"`).join(', ')}`);
-            if (!cfg.webhookUrl) avisos.push('⚠ Sem canal de Capturas: nada será enviado.');
+            if (!cfg.webhookUrl) avisos.push('⚠ Sem canal de Capturas: capturas não serão enviadas.');
+            const usaAlertas = [effectiveBallsMin() > 0 && 'bolas', cfg.sellEnabled && 'venda', routeActive() && 'troca de hunt'].filter(Boolean);
+            if (usaAlertas.length && !cfg.webhookAlerts) avisos.push(`⚠ Sem canal de Alertas: avisos de ${usaAlertas.join(', ')} não serão enviados.`);
+            if (levelEnabled() && !cfg.webhookLevel) avisos.push('⚠ Sem canal de Nível: avisos de nível/troca de líder não serão enviados.');
             const nivel = levelEnabled() ? ` · conferindo o time para o nível ${levelTarget()}${swapEnabled() ? ' (com troca)' : ''}…` : '';
             if (avisos.length) flash('✔ Salvo · ' + avisos.join(' '), 'warn');
             else flash('✔ Salvo' + nivel, 'ok', nivel ? 4000 : 2500);

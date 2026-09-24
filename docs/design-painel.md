@@ -5,6 +5,7 @@ Data: 2026-09-24 · Base: `buildUI()` da v3.4.1 · Autor: agente designer (sess�
 > **Status: implementado na v3.5.0** (24/09/2026), as 4 fases de uma vez, depois do usuário validar o mockup
 > `docs/mockup-painel.html`. Diferenças em relação ao texto abaixo: a reserva de gold foi removida (UI e
 > lógica); "Testar canais" salva só os 4 canais antes de enviar; a fase 5 (refino) segue em aberto.
+> v3.5.1: alertas e nível deixaram de cair no canal principal (só enviam com o canal próprio preenchido).
 
 Contexto de uso que guia tudo abaixo:
 

@@ -134,8 +134,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `VERSION` (manter igual ao `@version`). Reserva de gold (`autoBuyGoldReserve`) foi removida na v3.5.0.
 - Webhooks por tipo de evento: `webhookUrl` (capturas, principal), `webhookShiny`, `webhookAlerts`,
   `webhookLevel`. Todo envio passa por `postWebhook(kind, payload, meta)` com `kind` em
-  `capture|shiny|alert|level`; `webhookFor(kind)` cai no principal quando o específico está vazio
-  (`level` cai primeiro no de alertas). Eventos novos (ROADMAP)
+  `capture|shiny|alert|level`. **Sem fallback desde a v3.5.1** (pedido do usuário: só enviar se o canal
+  estiver preenchido): `alert` e `level` com canal vazio NÃO são enviados (ficam só no log como
+  `webhook-sem-canal`); a única exceção é `shiny`, que cai em `webhookUrl` por ser uma captura. Os badges
+  do painel ficam ⚠ quando um módulo está ligado sem o canal dele, e o Salvar avisa. Eventos novos (ROADMAP)
   devem usar `postWebhook('alert', ...)`, nunca `fetch` direto.
 - Semântica de filtro (duas etapas, ver `handleGameMessage` e `passesQualityFilter`):
   1. Nome: lista VAZIA ou `notifyEveryCapture` = qualquer Pokémon; lista preenchida = só os listados.
