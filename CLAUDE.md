@@ -129,8 +129,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   1. Nome: lista VAZIA ou `notifyEveryCapture` = qualquer Pokémon; lista preenchida = só os listados.
      Shiny com `notifyShiny` passa direto pelas duas etapas.
   2. Qualidade (decidida DEPOIS do `poke-delta`): `minTier` ('' = sem filtro; chave em minúsculas,
-     ex. `legendary`) e `minIv` (0 = sem filtro; compara com `ivTotal` 0..192). Passa se raridade ≥
-     mínima OU poder ≥ mínimo. Nenhum configurado = passa tudo. Sem dados (timeout do delta) = passa,
+     ex. `legendary`), `minTierIv` (v3.4.1: poder mínimo exigido de quem passa pela raridade; 0 = qualquer)
+     e `minIv` (0 = sem filtro; compara com `ivTotal` 0..192). Passa se (raridade ≥ mínima E poder ≥
+     `minTierIv`) OU poder ≥ `minIv`. Nenhum configurado = passa tudo. Sem dados (timeout do delta) = passa,
      para não perder um raro. `cooldownSeconds` (painel) é o intervalo mínimo entre
   avisos do mesmo Pokémon; padrão 0 = avisar todas. Configs anteriores a `cfgVersion: 2` tinham 30s
   fixos e são migradas para 0 no `loadCfg()`.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.4.0
+// @version      3.4.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -28,6 +28,7 @@
         notifyShiny: true,
         minTier: '',            // raridade mínima ('' = sem filtro): weak, common, ... divine
         minIv: 0,               // poder mínimo (ivTotal 0..192); 0 = sem filtro
+        minTierIv: 0,           // poder mínimo exigido TAMBÉM de quem passa pela raridade; 0 = qualquer poder
         ballsMin: 0,            // alerta quando a bola monitorada ficar abaixo disto; 0 = desligado
         ballsWatch: 'auto',     // 'auto' = bola do último catch-result, ou o id da bola ('4')
         autoBuy: false,         // comprar a bola monitorada quando ficar abaixo do limite
@@ -155,20 +156,24 @@
         return TIERS.find(t => t.key === String(key || '').toLowerCase()) || null;
     }
 
-    // Filtro de raridade/poder (cfg.minTier / cfg.minIv). Regra:
-    //   - nenhum dos dois configurado           -> passa tudo;
-    //   - raridade >= mínima                    -> passa (independe do poder);
-    //   - senão, poder (ivTotal) >= mínimo      -> passa;
-    //   - sem dados de qualidade (timeout)      -> passa, para não perder um raro.
+    // Filtro de raridade/poder (cfg.minTier / cfg.minTierIv / cfg.minIv). Regra:
+    //   - nenhum configurado                                  -> passa tudo;
+    //   - raridade >= mínima E poder >= minTierIv (0 = qualquer) -> passa (v3.4.1: antes bastava a raridade);
+    //   - senão, poder (ivTotal) >= minIv                     -> passa;
+    //   - sem dados de qualidade (timeout)                    -> passa, para não perder um raro.
     function passesQualityFilter(info) {
         const minTier = tierByKey(cfg.minTier);
         const minIv = Number(cfg.minIv) || 0;
         if (!minTier && minIv <= 0) return { ok: true, motivo: 'sem filtro de qualidade' };
         const tier = qualityTier(info.quality);
         if (tier == null && info.ivTotal == null) return { ok: true, motivo: 'sem dados de qualidade' };
-        if (minTier && tier && tier.rank >= minTier.rank) return { ok: true, motivo: `raridade ${tier.name} >= ${minTier.name}` };
+        const tierIv = Number(cfg.minTierIv) || 0;
+        if (minTier && tier && tier.rank >= minTier.rank) {
+            if (tierIv <= 0 || info.ivTotal == null || info.ivTotal >= tierIv) return { ok: true, motivo: `raridade ${tier.name} >= ${minTier.name}${tierIv > 0 ? ` com poder ${info.ivTotal ?? '?'} >= ${tierIv}` : ''}` };
+            // raridade ok mas poder abaixo do exigido para ela: ainda pode passar pelo poder geral (minIv)
+        }
         if (minIv > 0 && info.ivTotal != null && info.ivTotal >= minIv) return { ok: true, motivo: `poder ${info.ivTotal} >= ${minIv}` };
-        return { ok: false, motivo: `abaixo do mínimo (raridade ${tier ? tier.name : '?'}, poder ${info.ivTotal ?? '?'})` };
+        return { ok: false, motivo: `abaixo do mínimo (raridade ${tier ? tier.name : '?'}, poder ${info.ivTotal ?? '?'}${minTier && tier && tier.rank >= minTier.rank ? ` < ${tierIv} exigido para ${minTier.name}+` : ''})` };
     }
 
     let lastSocket = null;          // socket mais recente do jogo (para pokes-get)
@@ -1258,10 +1263,13 @@
                         <option value="">(qualquer)</option>
                         ${TIERS_ASC.map(t => `<option value="${t.key}">${t.name} (${t.min === -Infinity ? '< 1.0' : t.min.toFixed(1) + '+'})</option>`).join('')}
                     </select></div>
-                <div style="margin-top:4px">Poder mínimo (0–${IV_MAX}; 0 = desligado):
+                <div style="margin-top:4px">Poder mínimo para essa raridade (0–${IV_MAX}; 0 = qualquer poder):
+                    <input id="pg-dn-tier-iv" type="number" min="0" max="${IV_MAX}" step="1"
+                        style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
+                <div style="margin-top:4px">Poder mínimo para qualquer raridade (0–${IV_MAX}; 0 = desligado):
                     <input id="pg-dn-miniv" type="number" min="0" max="${IV_MAX}" step="1"
                         style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
-                <div style="margin-top:4px;color:#aaa;font-size:12px">Avisa se a raridade for ≥ a escolhida <b>ou</b> o poder for ≥ o mínimo. Shiny sempre avisa se a opção acima estiver marcada.</div>
+                <div style="margin-top:4px;color:#aaa;font-size:12px">Avisa se a raridade for ≥ a escolhida (e o poder ≥ o 1º mínimo, se preenchido) <b>ou</b> o poder for ≥ o 2º mínimo, seja qual for a raridade. Ex.: Legendary com 120+ ou qualquer um com 180+. Shiny sempre avisa se a opção acima estiver marcada.</div>
             </div>
             <div style="margin-top:8px;padding:8px;border:1px solid #444;border-radius:6px">
                 <b>Alerta de bolas</b> <span style="color:#aaa">(vai para o webhook de alertas)</span>
@@ -1451,6 +1459,7 @@
             $('#pg-dn-all').checked = cfg.notifyEveryCapture;
             $('#pg-dn-tier').value = tierByKey(cfg.minTier) ? tierByKey(cfg.minTier).key : '';
             $('#pg-dn-miniv').value = cfg.minIv || 0;
+            $('#pg-dn-tier-iv').value = cfg.minTierIv || 0;
             $('#pg-dn-ball').value = cfg.ballsWatch || 'auto';
             $('#pg-dn-ballsmin').value = cfg.ballsMin || 0;
             $('#pg-dn-autobuy').checked = Boolean(cfg.autoBuy);
@@ -1494,6 +1503,7 @@
             cfg.notifyEveryCapture = $('#pg-dn-all').checked;
             cfg.minTier = $('#pg-dn-tier').value;
             cfg.minIv = Math.min(IV_MAX, Math.max(0, parseInt($('#pg-dn-miniv').value, 10) || 0));
+            cfg.minTierIv = Math.min(IV_MAX, Math.max(0, parseInt($('#pg-dn-tier-iv').value, 10) || 0));
             cfg.ballsWatch = $('#pg-dn-ball').value || 'auto';
             cfg.ballsMin = Math.max(0, parseInt($('#pg-dn-ballsmin').value, 10) || 0);
             cfg.autoBuy = $('#pg-dn-autobuy').checked;
@@ -1649,9 +1659,9 @@
     setInterval(sellTick, SELL_CHECK_MS);
     setInterval(reloadTick, RELOAD_CHECK_MS);
 
-    console.log(TAG, 'v3.4.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v3.4.1 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
-        '| raridade mín.:', cfg.minTier || '(nenhuma)', '| poder mín.:', cfg.minIv || 0,
+        '| raridade mín.:', cfg.minTier ? `${cfg.minTier}${cfg.minTierIv ? ` com poder ${cfg.minTierIv}+` : ''}` : '(nenhuma)', '| poder mín.:', cfg.minIv || 0,
         '| alerta bolas:', effectiveBallsMin() ? `${cfg.ballsWatch} < ${effectiveBallsMin()}` : 'desligado',
         '| compra auto:', cfg.autoBuy ? `${cfg.autoBuyQty} un.` : 'não',
         '| nível:', levelEnabled() ? `${levelTarget()}${swapEnabled() ? ' + troca' : ''}` : 'não',

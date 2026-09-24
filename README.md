@@ -45,9 +45,10 @@ Tampermonkey/Violentmonkey no navegador.
    - **Webhook de alertas** (opcional): canal para os alertas do [ROADMAP](ROADMAP.md) (shiny na fila, estoque, quedas). Vazio = usa o de capturas
    - **Pokémon**: nomes separados por vírgula (ex.: `dratini, larvitar`) — ou deixe vazio para avisar toda captura
    - **Avisar todo shiny**: marca para receber aviso de qualquer shiny
-   - **Filtro de qualidade** (opcional): escolha uma **raridade mínima** (ex.: Legendary) e/ou um
-     **poder mínimo** (0–192). Avisa se a raridade for ≥ a escolhida **ou** o poder ≥ o mínimo.
-     Nada marcado = avisa tudo. Shiny sempre avisa se a opção estiver marcada.
+   - **Filtro de qualidade** (opcional): escolha uma **raridade mínima** (ex.: Legendary), opcionalmente
+     um **poder mínimo para essa raridade** (ex.: Legendary só com 120+) e/ou um **poder mínimo para
+     qualquer raridade** (0–192). Avisa se a raridade for ≥ a escolhida (com o poder exigido, se houver)
+     **ou** o poder ≥ o mínimo geral. Nada marcado = avisa tudo. Shiny sempre avisa se a opção estiver marcada.
    - **Alerta de bolas** (opcional): escolha a bola (ou "Automática", a do último catch) e um limite.
      Quando o estoque ficar abaixo dele chega um aviso no webhook de alertas (ou no principal, se vazio).
      Avisa uma vez e só repete depois de repor. O estoque é checado após cada captura e a cada 5 min.
