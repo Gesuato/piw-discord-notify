@@ -22,6 +22,7 @@ Tampermonkey/Violentmonkey no navegador.
 - ✅ **Alerta de nível**: avisa quando o líder do time chega ao nível escolhido, em webhook próprio
 - ✅ **Troca automática de líder**: ao atingir o nível, passa a vez para o próximo do time que ainda está abaixo
 - ✅ **Rota de treino**: etapas "hunt + nível"; quando todos do time chegam ao nível, troca de hunt sozinho
+- ✅ **Recarga automática**: recarrega o painel sozinho a cada X–Y minutos (sorteado), como o "⟳ Atualizar tudo" do PokeGrid, e volta para a hunt em que estava
 - ✅ **Exportar / importar** a configuração entre contas e painéis
 - ✅ Webhooks separados por tipo de evento: capturas, shinys, alertas e nível (cada um pode ir para um canal)
 - ✅ Anti-spam opcional: intervalo mínimo entre avisos do mesmo Pokémon (padrão 0 = avisa todas)
@@ -123,7 +124,7 @@ O script guarda a última fila `pending`, e quando chega um `catch-result` com `
 
 ## Para desenvolver
 
-- `node test/level.test.js` e `node test/route.test.js`: testes isolados do alerta de nível, troca de líder e rota.
+- `node test/level.test.js`, `node test/route.test.js` e `node test/reload.test.js`: testes isolados do alerta de nível, troca de líder, rota e recarga automática.
 - `docs/mensagens-do-jogo.md`: todas as mensagens do WebSocket conhecidas (levantadas do cliente do jogo).
 - `tools/read-panel-logs.py`: leitor do log dos painéis direto do disco.
 

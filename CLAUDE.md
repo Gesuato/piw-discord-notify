@@ -88,6 +88,13 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   pela chegada de `field`/`field-init` (piwdex `cacar()`, auto-reconnect). O script guarda `lastFieldAt`.
   Com `routeEnabled`, `levelTarget()` devolve o nível da etapa atual (`cfg.route[cfg.routeStage]`), não
   `levelAlertAt`, e `swapEnabled()` é true. Sempre usar essas duas funções, não os campos diretos.
+- Recarga do painel (v3.4.0): o "⟳ Atualizar tudo" do PokeGrid é só `webview.reloadIgnoringCache()` por painel.
+  Quem tira a conta da hunt no reload é a SPA do jogo: ela nasce em Cerulean e envia `set-city` ao montar; o
+  servidor volta a farmar ao receber `enter-hunt { slug }` de novo (o PokeGrid tem um "↩ Voltar pra hunt"
+  experimental que faz isso 12 s depois, no máx. 3 vezes; a tela pode seguir mostrando a cidade). O script
+  guarda `localStorage.pgDiscordNotifyResume` antes do `location.reload()` e, na carga nova, `loadResume()` +
+  `armResume()` reenviam `enter-hunt` via `switchHunt(slug, 1, 'recarga')` 3 s após o `set-city`. Slugs de cidade
+  (`cerulean`, `pewter`, `viridian`, `cassino`, `arena_pvp`) nunca são reenviados.
 - Nome do personagem: `window.__poke.api['/api/characters/me'].character.name` (mesmo caminho
   que o PokeGrid usa para nomear abas). NÃO usar `.phud-name` — é o Pokémon ativo, não a conta.
 
@@ -152,11 +159,13 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
 
 ## Como testar
 
-- **Testes isolados em Node** (sem DOM): `node test/level.test.js` e `node test/route.test.js`.
-  `test/harness.js` recorta o módulo entre os marcadores `// ---- Alerta de nível do líder` e
-  `// ---- Alerta de estoque de bolas` do userscript e o roda com stubs de `sendGame`, `postWebhook`,
-  `logEvent`, `saveCfg` e timers (curtos rodam na hora; >= 5 s ficam em `state.longTimers`). Ao mexer
-  nesse módulo, rode os dois; ao criar módulo novo, siga o mesmo padrão (marcadores + stubs).
+- **Testes isolados em Node** (sem DOM): `node test/level.test.js`, `node test/route.test.js` e
+  `node test/reload.test.js`. `test/harness.js` recorta módulos do userscript pelos marcadores
+  (`loadLevelModule`: `// ---- Alerta de nível do líder` até `// ---- Alerta de estoque de bolas`;
+  `loadReloadModule`: `// ---- Recarga automática do painel` até `// ---- Log persistente`) e os roda com
+  stubs de `sendGame`, `postWebhook`, `logEvent`, `saveCfg`, `localStorage`, `location` e timers (curtos
+  rodam na hora; >= 5 s ficam em `state.longTimers`; `clock.now` controla o `Date.now()` do módulo de
+  recarga). Ao mexer num módulo, rode os três; ao criar módulo novo, siga o mesmo padrão (marcadores + stubs).
 - Sempre `node --check piw-discord-notify.user.js` antes do commit.
 - Verificação manual: instalar no PokeGrid (ou colar no console de um navegador logado no jogo), usar
   o botão **Testar** do painel 🔔 (envia mensagem de teste aos webhooks sem passar pelos filtros; NÃO

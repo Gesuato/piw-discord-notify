@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.3.0
+// @version      3.4.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -43,6 +43,9 @@
         routeEnabled: false,    // seguir a rota de treino (etapas hunt + nível); implica levelSwap
         route: [],              // [{ slug, level }] em ordem
         routeStage: 0,          // índice da etapa atual (persistido; >= route.length = concluída)
+        reloadEnabled: false,   // recarregar este painel sozinho (igual ao "⟳ Atualizar tudo" do PokeGrid)
+        reloadEveryMin: 60,     // intervalo mínimo da recarga (minutos)
+        reloadEveryMaxMin: 0,   // intervalo máximo; 0 ou <= mínimo = fixo. Entre os dois é sorteado
         mentionUserId: '',      // seu ID de usuário do Discord, opcional
         cooldownSeconds: 0,     // intervalo mínimo (s) entre avisos do mesmo pokémon; 0 = avisar todas
         cfgVersion: 2,
@@ -431,15 +434,18 @@
         else requestPokes(POKES_MIN_GAP_MS); // rota acabou: só atualiza o painel
     }
 
-    function switchHunt(slug, tentativa) {
+    // origem: 'rota' (padrão) ou 'recarga' (volta para a hunt depois da recarga automática; a conta
+    // já está na cidade, então não manda leave-hunt e o aviso de falha vai para o webhook de alertas).
+    function switchHunt(slug, tentativa, origem) {
+        origem = origem || 'rota';
         if (huntSwitch?.timer) clearTimeout(huntSwitch.timer);
-        sendGame({ type: 'leave-hunt' });
-        huntSwitch = { slug, at: 0, tries: tentativa, timer: null };
+        if (origem !== 'recarga') sendGame({ type: 'leave-hunt' });
+        huntSwitch = { slug, at: 0, tries: tentativa, timer: null, origem };
         huntSwitch.timer = setTimeout(() => {
             if (!huntSwitch || huntSwitch.slug !== slug) return;
             huntSwitch.at = Date.now();
             const ok = sendGame({ type: 'enter-hunt', slug }) && sendGame({ type: 'pending-get' });
-            logEvent('hunt-troca', { slug, tentativa, enviado: ok });
+            logEvent('hunt-troca', { slug, tentativa, origem, enviado: ok });
             huntSwitch.timer = setTimeout(() => confirmHuntSwitch(slug), HUNT_CONFIRM_MS);
         }, HUNT_ENTER_DELAY_MS);
     }
@@ -453,14 +459,22 @@
             requestPokes(0);
             return;
         }
-        if (huntSwitch.tries < 2) { switchHunt(slug, huntSwitch.tries + 1); return; }
-        logEvent('hunt-falhou', { slug });
+        const origem = huntSwitch.origem || 'rota';
+        if (huntSwitch.tries < 2) { switchHunt(slug, huntSwitch.tries + 1, origem); return; }
+        logEvent('hunt-falhou', { slug, origem });
         huntSwitch = null;
-        postWebhook('level', {
-            content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: não consegui entrar na hunt **${slug}** (rota)`,
+        const recarga = origem === 'recarga';
+        postWebhook(recarga ? 'alert' : 'level', {
+            content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: não consegui ${recarga ? 'voltar para a' : 'entrar na'} hunt **${slug}** (${recarga ? 'depois da recarga automática' : 'rota'})`,
             username: 'Poke Idle World',
-            embeds: [{ title: `Rota: entrada em ${slug} não confirmou`, description: (who ? `Conta: ${who}\n` : '') + 'Nenhum frame de combate chegou em 30 s após duas tentativas. Confira o nome da hunt (é o mesmo que aparece em "Hunt atual") e entre na mão; a rota continua da etapa atual.', color: 0xed4245 }],
-        }, { evento: 'hunt-falhou', slug });
+            embeds: [{
+                title: recarga ? `Recarga: volta para ${slug} não confirmou` : `Rota: entrada em ${slug} não confirmou`,
+                description: (who ? `Conta: ${who}\n` : '') + (recarga
+                    ? 'Nenhum frame de combate chegou em 30 s após duas tentativas. A conta deve estar na cidade: entre na hunt na mão.'
+                    : 'Nenhum frame de combate chegou em 30 s após duas tentativas. Confira o nome da hunt (é o mesmo que aparece em "Hunt atual") e entre na mão; a rota continua da etapa atual.'),
+                color: 0xed4245,
+            }],
+        }, { evento: 'hunt-falhou', slug, origem });
     }
 
     function handlePokeXp(message) {
@@ -760,6 +774,7 @@
         try { m = JSON.parse(data); } catch { return; }
         if (m?.type === 'enter-hunt') setHunt(m.slug);
         else if (m?.type === 'leave-hunt') setHunt(null);
+        else if (m?.type === 'set-city') armResume(RESUME_AFTER_CITY_MS); // SPA montou na cidade: hora de voltar pra hunt
     }
 
     function handleFieldKill(message) {
@@ -874,6 +889,119 @@
                 color: acabou ? 0xed4245 : 0xfee75c,
             }],
         }, { evento: 'bolas', ballId: id, qty });
+    }
+
+    // ---- Recarga automática do painel -------------------------------------
+    // Faz o que o botão "⟳ Atualizar tudo" do PokeGrid faz (reload do webview), mas só neste painel e em
+    // intervalo sorteado dentro de [reloadEveryMin, reloadEveryMaxMin] minutos. O PokeGrid injeta o script
+    // de novo no dom-ready da carga nova, então o que importa é guardado em localStorage[RESUME_KEY] logo
+    // antes do reload e lido na carga seguinte (só vale por RESUME_MAX_AGE_MS):
+    //   - hunt atual: quem tira a conta da hunt no reload é a SPA do jogo, que nasce em Cerulean e manda
+    //     `set-city` ao montar (comentário do "Voltar pra hunt" experimental do PokeGrid). O script espera
+    //     esse `set-city` sair (ou 12 s do socket, se não vier) e, se nenhum `field`/`field-init` chegou,
+    //     manda `enter-hunt { slug }` + `pending-get` pelo mesmo caminho da rota (switchHunt, origem
+    //     'recarga'). Efeito conhecido: a tela pode seguir mostrando a cidade enquanto o servidor farma.
+    //   - lastSellAt, avisos de bola e de nível já dados: para não vender/avisar de novo a cada recarga.
+    // Não recarrega com venda, troca de hunt ou de líder em andamento nem com captura esperando poke-delta
+    // (adia e tenta no tique seguinte; depois de RELOAD_POSTPONE_MAX_MS recarrega mesmo assim).
+
+    const RESUME_KEY = 'pgDiscordNotifyResume';
+    const RELOAD_CHECK_MS = 30 * 1000;
+    const RELOAD_POSTPONE_MAX_MS = 10 * 60 * 1000;
+    const RESUME_MAX_AGE_MS = 5 * 60 * 1000;
+    const RESUME_AFTER_CITY_MS = 3000;
+    const RESUME_AFTER_SOCKET_MS = 12000;
+    const CITY_SLUGS = ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp'];
+
+    let nextReloadAt = 0;           // quando recarregar (ms); 0 = ainda não sorteado
+    let reloadDueSince = 0;         // desde quando a recarga está adiada por algo em andamento
+    let resumeHunt = null;          // hunt guardada pela carga anterior, até ser reenviada
+    let resumeTimer = null;
+    let onReloadChange = null;      // callback do painel para redesenhar o status
+
+    function reloadIntervalRange() {
+        const min = Math.max(1, Number(cfg.reloadEveryMin) || 60);
+        const max = Math.max(min, Number(cfg.reloadEveryMaxMin) || 0);
+        return { min, max };
+    }
+    function scheduleReload() {
+        reloadDueSince = 0;
+        if (!cfg.reloadEnabled) { nextReloadAt = 0; return 0; }
+        const { min, max } = reloadIntervalRange();
+        const minutos = min + Math.random() * (max - min);
+        nextReloadAt = Date.now() + Math.round(minutos * 60 * 1000);
+        logEvent('recarga-agendada', { emMin: Math.round(minutos * 10) / 10 });
+        if (onReloadChange) { try { onReloadChange(); } catch { /* painel fechado */ } }
+        return nextReloadAt;
+    }
+    function reloadBusyReason() {
+        if (sellRunning) return 'venda em andamento';
+        if (huntSwitch) return 'troca de hunt em andamento';
+        if (swapPending) return 'troca de líder em andamento';
+        if (awaitingDetails.length) return 'captura aguardando detalhes';
+        return null;
+    }
+    function reloadStatus() {
+        if (!cfg.reloadEnabled) return 'desligada';
+        if (!nextReloadAt) return 'agendando...';
+        if (reloadDueSince) return `adiada (${reloadBusyReason() || 'aguardando'})`;
+        const min = Math.max(0, Math.round((nextReloadAt - Date.now()) / 60000));
+        const hora = new Date(nextReloadAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        return `próxima em ${min} min (${hora})`;
+    }
+    function doReload(motivo) {
+        const rec = {
+            at: Date.now(),
+            slug: huntSlug,
+            lastSellAt,
+            ballAlerted: Object.assign({}, ballAlerted),
+            autoBuyAttempted: Object.assign({}, autoBuyAttempted),
+            levelAlerted: Array.from(levelAlerted),
+        };
+        try { localStorage.setItem(RESUME_KEY, JSON.stringify(rec)); } catch { /* sem espaço: recarrega mesmo assim */ }
+        logEvent('recarga', { motivo, hunt: huntSlug, adiadaMin: reloadDueSince ? Math.round((Date.now() - reloadDueSince) / 60000) : 0 });
+        location.reload();
+    }
+    function reloadTick() {
+        if (!cfg.reloadEnabled) return;
+        if (!nextReloadAt) { scheduleReload(); return; }
+        if (Date.now() < nextReloadAt) return;
+        const busy = reloadBusyReason();
+        if (busy && (!reloadDueSince || Date.now() - reloadDueSince < RELOAD_POSTPONE_MAX_MS)) {
+            if (!reloadDueSince) { reloadDueSince = Date.now(); logEvent('recarga-adiada', { motivo: busy }); }
+            if (onReloadChange) { try { onReloadChange(); } catch { /* painel fechado */ } }
+            return;
+        }
+        doReload('agendada');
+    }
+
+    // Carga nova: restaura o que a carga anterior guardou (se foi há pouco).
+    function loadResume() {
+        let rec = null;
+        try { rec = JSON.parse(localStorage.getItem(RESUME_KEY) || 'null'); localStorage.removeItem(RESUME_KEY); } catch { rec = null; }
+        if (!rec || typeof rec !== 'object') return;
+        const idade = Date.now() - (Number(rec.at) || 0);
+        if (idade < 0 || idade > RESUME_MAX_AGE_MS) { logEvent('recarga-ignorada', { idadeMin: Math.round(idade / 60000) }); return; }
+        if (Number(rec.lastSellAt) > 0) lastSellAt = Number(rec.lastSellAt);
+        Object.assign(ballAlerted, rec.ballAlerted || {});
+        Object.assign(autoBuyAttempted, rec.autoBuyAttempted || {});
+        for (const id of (Array.isArray(rec.levelAlerted) ? rec.levelAlerted : [])) levelAlerted.add(String(id));
+        const slug = rec.slug ? normalize(rec.slug) : null;
+        resumeHunt = slug && !CITY_SLUGS.includes(slug) ? slug : null;
+        logEvent('recarga-retomada', { hunt: resumeHunt, idadeS: Math.round(idade / 1000) });
+    }
+    // Arma a volta para a hunt: chamado ao rastrear o socket (fallback) e quando a SPA manda `set-city`.
+    function armResume(delayMs) {
+        if (!resumeHunt) return;
+        if (resumeTimer) clearTimeout(resumeTimer);
+        resumeTimer = setTimeout(() => {
+            resumeTimer = null;
+            const slug = resumeHunt;
+            if (!slug) return;
+            resumeHunt = null;
+            if (lastFieldAt > 0) { logEvent('recarga-hunt', { slug, jaNaHunt: true }); return; }
+            switchHunt(slug, 1, 'recarga');
+        }, delayMs);
     }
 
     // ---- Log persistente (para diagnóstico sem abrir o console) --------
@@ -1051,6 +1179,7 @@
         logEvent('socket', { url: String(ws.url || '').split('?')[0] });
         requestBalls(BALLS_AFTER_SOCKET_MS);
         requestPokes(POKES_AFTER_SOCKET_MS);
+        armResume(RESUME_AFTER_SOCKET_MS);
     }
 
     const NativeWebSocket = window.WebSocket;
@@ -1185,6 +1314,16 @@
                     <button id="pg-dn-route-reset" style="margin-top:6px;width:100%;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Reiniciar rota (voltar à 1ª etapa)</button>
                 </div>
             </div>
+            <div style="margin-top:8px;padding:8px;border:1px solid #444;border-radius:6px">
+                <b>Recarga automática</b> <span style="color:#aaa">(o "⟳ Atualizar tudo" do PokeGrid, só neste painel)</span>
+                <label style="display:block;margin-top:4px"><input id="pg-dn-reload" type="checkbox"> Recarregar a página a cada
+                    <input id="pg-dn-reload-min" type="number" min="1" step="1" style="width:52px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:2px 4px"> a
+                    <input id="pg-dn-reload-max" type="number" min="0" step="1" style="width:52px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:2px 4px"> min
+                    <span style="color:#aaa;font-size:12px">(sorteado na faixa; deixe o 2º vazio para fixo)</span></label>
+                <div id="pg-dn-reload-status" style="margin-top:4px;font-size:12px;color:#ccc"></div>
+                <div style="margin-top:4px;color:#aaa;font-size:12px">Guarda a hunt atual antes de recarregar e volta pra ela sozinho se o jogo abrir na cidade (a tela pode continuar mostrando a cidade enquanto o servidor farma, como no "Voltar pra hunt" do PokeGrid). Espera terminar venda, troca de hunt/líder e captura em andamento. Cada painel sorteia o próprio horário.</div>
+                <button id="pg-dn-reload-now" style="margin-top:6px;width:100%;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Recarregar agora (guarda a hunt e volta)</button>
+            </div>
             <div style="margin-top:6px">Mencionar (ID do Discord, opcional):
                 <input id="pg-dn-mention" type="text" placeholder="123456789012345678"
                     style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
@@ -1260,6 +1399,16 @@
             setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 8000);
         };
         onTeamChange = () => { if (panel.style.display !== 'none') renderTeam(); };
+
+        function renderReload() {
+            const el = $('#pg-dn-reload-status');
+            if (el) el.textContent = `Recarga: ${reloadStatus()}`;
+        }
+        onReloadChange = () => { if (panel.style.display !== 'none') renderReload(); };
+        $('#pg-dn-reload-now').onclick = () => {
+            $('#pg-dn-msg').textContent = `⟳ Recarregando${huntSlug ? ` (volto para ${huntSlug})` : ''}...`;
+            setTimeout(() => doReload('manual'), 300);
+        };
         $('#pg-dn-team-refresh').onclick = () => {
             lastPokesReqAt = 0;
             const ok = sendGame({ type: 'pokes-get' });
@@ -1293,6 +1442,10 @@
             $('#pg-dn-route').value = routeList().map(r => `${r.slug} ${r.level}`).join('\n');
             $('#pg-dn-route-on').checked = Boolean(cfg.routeEnabled);
             renderTeam();
+            $('#pg-dn-reload').checked = Boolean(cfg.reloadEnabled);
+            $('#pg-dn-reload-min').value = cfg.reloadEveryMin || 60;
+            $('#pg-dn-reload-max').value = cfg.reloadEveryMaxMin || '';
+            renderReload();
             $('#pg-dn-list').value = cfg.watchList.join(', ');
             $('#pg-dn-shiny').checked = cfg.notifyShiny;
             $('#pg-dn-all').checked = cfg.notifyEveryCapture;
@@ -1360,6 +1513,12 @@
             drawSellDelay(); // faixa mudou: sorteia de novo
             cfg.sellItems = readSellList();
             saveHuntProfile();
+            const recargaAntes = JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]);
+            cfg.reloadEnabled = $('#pg-dn-reload').checked;
+            cfg.reloadEveryMin = Math.max(1, parseInt($('#pg-dn-reload-min').value, 10) || 60);
+            cfg.reloadEveryMaxMin = Math.max(0, parseInt($('#pg-dn-reload-max').value, 10) || 0);
+            if (JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]) !== recargaAntes) scheduleReload(); // faixa mudou: sorteia de novo
+            renderReload();
             saveCfg(cfg);
             $('#pg-dn-msg').textContent = '✔ Salvo!' + avisoCompra + avisoNivel + avisoRota;
             setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, (avisoCompra || avisoNivel || avisoRota) ? 9000 : 2500);
@@ -1458,6 +1617,7 @@
             for (const k of Object.keys(ballAlerted)) delete ballAlerted[k];
             for (const k of Object.keys(autoBuyAttempted)) delete autoBuyAttempted[k];
             drawSellDelay();
+            scheduleReload();
             loadHuntProfile();
             fill();
             $('#pg-dn-import-box').style.display = 'none';
@@ -1481,17 +1641,21 @@
         if (!cfg.webhookUrl) flashButton();
     }
 
+    loadResume(); // antes do painel e dos timers: restaura o que a carga anterior guardou
+    if (cfg.reloadEnabled) scheduleReload();
     buildUI();
     setInterval(() => requestBalls(0), BALLS_POLL_MS);
     setInterval(() => requestPokes(0), POKES_POLL_MS);
     setInterval(sellTick, SELL_CHECK_MS);
+    setInterval(reloadTick, RELOAD_CHECK_MS);
 
-    console.log(TAG, 'v3.3.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v3.4.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
         '| raridade mín.:', cfg.minTier || '(nenhuma)', '| poder mín.:', cfg.minIv || 0,
         '| alerta bolas:', effectiveBallsMin() ? `${cfg.ballsWatch} < ${effectiveBallsMin()}` : 'desligado',
         '| compra auto:', cfg.autoBuy ? `${cfg.autoBuyQty} un.` : 'não',
         '| nível:', levelEnabled() ? `${levelTarget()}${swapEnabled() ? ' + troca' : ''}` : 'não',
         '| rota:', routeActive() ? routeStatus() : 'não',
-        '| venda auto:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens / ${cfg.sellEveryMin}${cfg.sellEveryMaxMin > cfg.sellEveryMin ? `–${cfg.sellEveryMaxMin}` : ''} min` : 'não');
+        '| venda auto:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens / ${cfg.sellEveryMin}${cfg.sellEveryMaxMin > cfg.sellEveryMin ? `–${cfg.sellEveryMaxMin}` : ''} min` : 'não',
+        '| recarga auto:', cfg.reloadEnabled ? `${cfg.reloadEveryMin}${cfg.reloadEveryMaxMin > cfg.reloadEveryMin ? `–${cfg.reloadEveryMaxMin}` : ''} min` : 'não');
 })();

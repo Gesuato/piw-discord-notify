@@ -1,4 +1,5 @@
-// Extrai o módulo "Alerta de nível / troca de líder / rota" do userscript e o executa com stubs.
+// Extrai módulos do userscript pelos marcadores `// ---- ...` e os executa com stubs.
+// loadLevelModule: "Alerta de nível / troca de líder / rota".
 // Não há DOM nem WebSocket: `sendGame`, `postWebhook`, `logEvent`, `saveCfg` e os timers são falsos.
 // Timers curtos (< 5 s) rodam na hora; os longos (confirmação de hunt, 30 s) ficam em `longTimers`
 // para o teste disparar quando quiser.
@@ -47,4 +48,58 @@ function assert(cond, msg) {
     if (!cond) { console.error('FALHOU:', msg); process.exitCode = 1; throw new Error(msg); }
 }
 
-module.exports = { loadLevelModule, team, assert };
+// Extrai o módulo "Recarga automática do painel" e o executa com stubs. `clock.now` controla o Date.now()
+// visto pelo módulo; `state.store` é o localStorage falso; `state.switches` recebe as chamadas a switchHunt.
+const R_START = '    // ---- Recarga automática do painel';
+const R_END = '    // ---- Log persistente';
+
+function loadReloadModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(R_START), b = src.indexOf(R_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo de recarga não encontrados no script');
+    const mod = src.slice(a, b);
+
+    const clock = { now: Date.now() };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const store = init.store || {};
+    const state = { logs: [], reloads: 0, switches: [], longTimers: [], store };
+    const ctx = {
+        cfg,
+        logEvent: (k, d) => state.logs.push([k, d]),
+        normalize: (s) => String(s || '').toLowerCase().trim(),
+        switchHunt: (slug, tentativa, origem) => state.switches.push({ slug, tentativa, origem }),
+        localStorage: {
+            getItem: (k) => (k in store ? store[k] : null),
+            setItem: (k, v) => { store[k] = String(v); },
+            removeItem: (k) => { delete store[k]; },
+        },
+        location: { reload: () => { state.reloads++; } },
+        huntSlug: init.huntSlug != null ? init.huntSlug : null,
+        sellRunning: Boolean(init.sellRunning),
+        lastSellAt: init.lastSellAt || 0,
+        huntSwitch: null,
+        swapPending: null,
+        awaitingDetails: init.awaitingDetails || [],
+        ballAlerted: init.ballAlerted || {},
+        autoBuyAttempted: {},
+        levelAlerted: new Set(),
+        lastFieldAt: init.lastFieldAt || 0,
+        setTimeout: (fn, ms) => { if (ms >= 5000) { state.longTimers.push(fn); return 99; } fn(); return 1; },
+        clearTimeout: () => {},
+        Date: FakeDate,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            reloadIntervalRange, scheduleReload, reloadTick, reloadStatus, doReload, loadResume, armResume,
+            fieldArrived() { lastFieldAt = Date.now(); },
+            get nextReloadAt() { return nextReloadAt; },
+            get resumeHunt() { return resumeHunt; },
+            get lastSellAt() { return lastSellAt; },
+            get levelAlerted() { return levelAlerted; },
+        };`);
+    const api = factory(...Object.values(ctx));
+    return { api, state, cfg, clock };
+}
+
+module.exports = { loadLevelModule, loadReloadModule, team, assert };

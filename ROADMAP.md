@@ -221,6 +221,30 @@ tem acesso à hunt; a falha aparece como "entrada não confirmou".
 
 ---
 
+## ✅ 12. Recarga automática do painel (v3.4.0)
+
+**O que faz:** recarrega a página deste painel sozinho, a cada X–Y minutos sorteados (mesma faixa da venda
+automática), como o botão "⟳ Atualizar tudo" do PokeGrid — só que por painel, cada um no seu horário.
+
+**Como o PokeGrid faz:** `reloadAll` chama `webview.reloadIgnoringCache()` em cada painel ligado. Quem tira a
+conta da hunt no reload é a SPA do jogo, que nasce em Cerulean e manda `set-city` ao montar; o servidor
+continua farmando se receber `enter-hunt` de novo (comentário do "↩ Voltar pra hunt" experimental do app).
+
+**Lógica:** `reloadTick` a cada 30 s; vencido o horário, guarda `{ at, slug, lastSellAt, ballAlerted,
+autoBuyAttempted, levelAlerted }` em `localStorage.pgDiscordNotifyResume` e faz `location.reload()`. Na carga
+seguinte, `loadResume()` (válido por 5 min) restaura esses estados e `armResume()` manda `enter-hunt` +
+`pending-get` via `switchHunt(slug, 1, 'recarga')` 3 s depois do `set-city` da montagem (fallback: 12 s do
+socket), só se nenhum `field`/`field-init` chegou. Não recarrega com venda, troca de hunt/líder ou captura
+aguardando `poke-delta` (adia até 10 min). Falha em voltar avisa no webhook de alertas.
+
+**Config/UI:** `reloadEnabled`, `reloadEveryMin` (60), `reloadEveryMaxMin` (0 = fixo); bloco "Recarga
+automática" no painel com status "próxima em N min" e botão "Recarregar agora". Teste: `node test/reload.test.js`.
+
+**Pendências:** validar ao vivo que a volta pela mensagem `enter-hunt` mantém o farm (o PokeGrid avisa que a
+TELA pode seguir mostrando a cidade enquanto o servidor farma).
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel
