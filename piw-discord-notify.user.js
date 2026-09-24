@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.1.1
+// @version      3.2.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -22,6 +22,7 @@
         webhookUrl: '',         // canal principal (capturas); os outros caem nele se vazios
         webhookShiny: '',       // canal só para capturas shiny (opcional)
         webhookAlerts: '',      // canal para alertas: shiny na fila, estoque, quedas... (opcional)
+        webhookLevel: '',       // canal para alertas de nível (vazio: alertas; vazio: principal)
         watchList: [],          // nomes em minúsculas, ex.: ['dratini', 'larvitar']
         notifyEveryCapture: false,
         notifyShiny: true,
@@ -37,6 +38,8 @@
         sellEveryMaxMin: 0,     // intervalo máximo; 0 ou <= mínimo = intervalo fixo. Entre os dois é sorteado
         sellItems: {},          // lista BRANCA: itemId -> { keep: N } (manter pelo menos N)
         sellProfiles: {},       // por hunt: slug -> { items, everyMin, everyMaxMin } (carregado ao entrar)
+        levelAlertAt: 0,        // avisar quando o líder chegar a este nível; 0 = desligado
+        levelSwap: false,       // ao atingir, trocar o líder pelo próximo do time abaixo do nível
         mentionUserId: '',      // seu ID de usuário do Discord, opcional
         cooldownSeconds: 0,     // intervalo mínimo (s) entre avisos do mesmo pokémon; 0 = avisar todas
         cfgVersion: 2,
@@ -238,6 +241,143 @@
             if (match) applyPokeDetails(entry, match);
             finishDetails(entry);
         }
+    }
+
+    // ---- Alerta de nível do líder + troca automática de líder --------------
+    //   pokes       -> { type:'pokes', list:[{ id, name, level, team, slot, leader, shiny, ... }] }
+    //                  (resposta a pokes-get). Time = team:true ordenado por slot; líder = leader:true
+    //                  (ou o 1º do time). Fonte: piwdex sessao.ts (case 'pokes').
+    //   poke-xp     -> { type:'poke-xp', level, ... } a cada abate: nível ATUAL do líder (piwdex usa
+    //                  m.level como nivelLider). Outros campos não confirmados: os 3 primeiros frames
+    //                  vão para o log (kind 'poke-xp') para conferência.
+    //   field-kill  -> também traz `level` (líder) e `leveledUp` (piwdex).
+    //   poke-summon -> { type:'poke-summon', pokeId } enviado pelo cliente TROCA o líder pelo socket
+    //                  já aberto (piwdex `trocarLider`); confirmar com pokes-get ~500 ms depois.
+    // Regra: poke-xp/field-kill só DISPARAM uma conferência (pokes-get); quem decide é o frame
+    // `pokes` (nível do líder vindo da lista). Evita agir sobre um `level` mal interpretado.
+    // Um alerta por líder (id) por nível alvo; o Set zera quando o alvo muda no Salvar.
+
+    const POKES_POLL_MS = 5 * 60 * 1000;
+    const POKES_AFTER_SOCKET_MS = 4000;
+    const POKES_MIN_GAP_MS = 3000;
+    const SWAP_CONFIRM_MS = 800;
+    const SWAP_TIMEOUT_MS = 15000;
+
+    let team = [];                  // [{ id, name, level, slot, leader, shiny }] ordenado por slot
+    let teamSig = '';               // assinatura do último time logado (evita log repetido)
+    let leaderLevelSeen = null;     // último nível do líder visto em poke-xp/field-kill
+    let pokeXpLogged = 0;
+    let lastPokesReqAt = 0;
+    let pokesRequestTimer = null;
+    const levelAlerted = new Set(); // ids de líderes já avisados para o alvo atual
+    let swapPending = null;         // { fromId, toId, toName, at } aguardando confirmação no `pokes`
+    let onTeamChange = null;        // callback do painel para redesenhar o time
+
+    function levelTarget() { return Math.max(0, Number(cfg.levelAlertAt) || 0); }
+    function levelEnabled() { return levelTarget() > 0; }
+
+    function requestPokes(delayMs) {
+        if (!levelEnabled()) return;
+        clearTimeout(pokesRequestTimer);
+        pokesRequestTimer = setTimeout(() => {
+            pokesRequestTimer = null;
+            if (Date.now() - lastPokesReqAt < POKES_MIN_GAP_MS) return;
+            lastPokesReqAt = Date.now();
+            sendGame({ type: 'pokes-get' });
+        }, delayMs || 0);
+    }
+
+    function teamLeader() { return team.find(p => p.leader) || team[0] || null; }
+
+    function teamLine() {
+        const alvo = levelTarget();
+        return team.map(p => `${p.leader ? '★ ' : ''}${p.shiny ? '✨' : ''}${p.name} lv ${p.level}${alvo && p.level >= alvo ? ' ✔' : ''}`).join('\n') || '(time vazio)';
+    }
+
+    // Sinal de nível vindo de poke-xp/field-kill: só dispara a conferência pelo `pokes`.
+    function noteLeaderLevel(level, fonte, leveledUp) {
+        if (!Number.isFinite(level)) return;
+        const antes = leaderLevelSeen;
+        leaderLevelSeen = level;
+        if (!levelEnabled()) return;
+        const lider = teamLeader();
+        if (lider && lider.id && levelAlerted.has(lider.id)) return;
+        if (level >= levelTarget() || leveledUp || (antes != null && level > antes)) requestPokes(0);
+    }
+
+    function updateTeam(list) {
+        const novo = list
+            .filter(p => p && typeof p === 'object' && p.team)
+            .map(p => ({ id: String(p.id ?? ''), name: String(p.name || p.speciesName || '?'), level: Number(p.level) || 0, slot: Number(p.slot) || 0, leader: Boolean(p.leader), shiny: Boolean(p.shiny) }))
+            .sort((a, b) => a.slot - b.slot);
+        team = novo;
+        const sig = novo.map(p => `${p.id}:${p.level}:${p.leader ? 1 : 0}`).join('|');
+        if (sig !== teamSig) { teamSig = sig; logEvent('time', { time: novo.map(p => ({ name: p.name, level: p.level, slot: p.slot, leader: p.leader })) }); }
+        if (onTeamChange) { try { onTeamChange(); } catch { /* painel fechado */ } }
+        checkSwapConfirm();
+        checkLeaderLevel();
+    }
+
+    function checkSwapConfirm() {
+        if (!swapPending) return;
+        const lider = teamLeader();
+        const who = playerName();
+        if (lider && lider.id === swapPending.toId) {
+            logEvent('troca-ok', { para: lider.name, level: lider.level });
+            postWebhook('level', {
+                content: `🔁 ${who ? `**${who}**` : 'Sua conta'}: agora o líder é **${lider.name}** (lv ${lider.level})`,
+                username: 'Poke Idle World',
+                embeds: [{ title: `Troca confirmada: ${lider.name}`, description: (who ? `Conta: ${who}\n` : '') + `Time:\n${teamLine()}\nEm ${new Date().toLocaleString('pt-BR')}`, color: 0x57f287 }],
+            }, { evento: 'troca-ok', para: lider.id });
+            swapPending = null;
+        } else if (Date.now() - swapPending.at > SWAP_TIMEOUT_MS) {
+            logEvent('troca-falhou', { para: swapPending.toName, liderAtual: lider?.name });
+            postWebhook('level', {
+                content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: a troca para **${swapPending.toName}** não confirmou (líder ainda é ${lider?.name || '?'})`,
+                username: 'Poke Idle World',
+                embeds: [{ title: 'Troca de líder não confirmada', description: (who ? `Conta: ${who}\n` : '') + 'O jogo não mudou o líder após poke-summon. Troque na mão e confira o log.', color: 0xed4245 }],
+            }, { evento: 'troca-falhou' });
+            swapPending = null;
+        } else {
+            requestPokes(SWAP_CONFIRM_MS); // ainda esperando: confere de novo
+        }
+    }
+
+    function checkLeaderLevel() {
+        if (!levelEnabled() || swapPending) return;
+        const alvo = levelTarget();
+        const lider = teamLeader();
+        if (!lider || !lider.id || lider.level < alvo || levelAlerted.has(lider.id)) return;
+        levelAlerted.add(lider.id);
+        const who = playerName();
+        const mention = cfg.mentionUserId ? `<@${cfg.mentionUserId}> ` : '';
+        const conta = who ? `Conta: ${who}\n` : '';
+        const proximo = cfg.levelSwap ? team.find(p => p.id !== lider.id && p.level < alvo) || null : null;
+        const faltam = team.filter(p => p.id !== lider.id && p.level < alvo).length;
+        let acao;
+        if (!cfg.levelSwap) acao = faltam ? `Troca automática desligada; ${faltam} do time ainda abaixo de ${alvo}.` : 'Todos do time já estão no nível.';
+        else if (proximo) acao = `Trocando o líder para **${proximo.name}** (lv ${proximo.level})...`;
+        else acao = `🏁 Todos do time já estão no nível ${alvo}. Nada mais para trocar.`;
+        logEvent('nivel', { lider: lider.name, level: lider.level, alvo, proximo: proximo?.name || null, swap: Boolean(cfg.levelSwap) });
+        postWebhook('level', {
+            content: `${mention}🎯 ${who ? `**${who}**` : 'Sua conta'}: **${lider.name}** chegou ao nível **${lider.level}**${lider.level > alvo ? ` (alvo ${alvo})` : ''}`,
+            username: 'Poke Idle World',
+            embeds: [{
+                title: `Nível ${alvo} atingido: ${lider.name}`,
+                description: conta + acao + `\n\nTime:\n${teamLine()}\nEm ${new Date().toLocaleString('pt-BR')}`,
+                color: proximo ? 0x5865f2 : 0x57f287,
+            }],
+        }, { evento: 'nivel', lider: lider.id, level: lider.level });
+        if (proximo) {
+            const enviado = sendGame({ type: 'poke-summon', pokeId: proximo.id });
+            logEvent('troca', { de: lider.name, para: proximo.name, enviado });
+            if (enviado) { swapPending = { fromId: lider.id, toId: proximo.id, toName: proximo.name, at: Date.now() }; requestPokes(SWAP_CONFIRM_MS); }
+        }
+    }
+
+    function handlePokeXp(message) {
+        if (pokeXpLogged < 3) { pokeXpLogged++; logEvent('poke-xp', message); }
+        noteLeaderLevel(Number(message.level), 'poke-xp', false);
     }
 
     // ---- Alerta de estoque de bolas -------------------------------------
@@ -671,14 +811,16 @@
     //   capture -> webhookUrl
     //   shiny   -> webhookShiny  (vazio: webhookUrl)
     //   alert   -> webhookAlerts (vazio: webhookUrl)  [eventos futuros, ver ROADMAP.md]
+    //   level   -> webhookLevel  (vazio: webhookAlerts; vazio: webhookUrl)
     const WEBHOOK_KINDS = {
         capture: { key: 'webhookUrl', label: 'capturas' },
         shiny: { key: 'webhookShiny', label: 'shinys' },
         alert: { key: 'webhookAlerts', label: 'alertas' },
+        level: { key: 'webhookLevel', label: 'nível', fallback: 'webhookAlerts' },
     };
     function webhookFor(kind) {
         const k = WEBHOOK_KINDS[kind] || WEBHOOK_KINDS.capture;
-        return (cfg[k.key] || '').trim() || (cfg.webhookUrl || '').trim();
+        return (cfg[k.key] || '').trim() || (k.fallback && (cfg[k.fallback] || '').trim()) || (cfg.webhookUrl || '').trim();
     }
 
     function postWebhook(kind, payload, meta) {
@@ -755,9 +897,10 @@
         }
 
         if (message.type === 'poke-delta') { handlePokeDelta(message); return; }
-        if (message.type === 'field-kill') { handleFieldKill(message); return; }
+        if (message.type === 'poke-xp') { handlePokeXp(message); return; }
+        if (message.type === 'field-kill') { noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
-        if (message.type === 'pokes' && Array.isArray(message.list)) { handlePokesList(message.list); return; }
+        if (message.type === 'pokes' && Array.isArray(message.list)) { updateTeam(message.list); handlePokesList(message.list); return; }
 
         if (message.type !== 'catch-result') return;
 
@@ -818,6 +961,7 @@
         lastSocket = ws;
         logEvent('socket', { url: String(ws.url || '').split('?')[0] });
         requestBalls(BALLS_AFTER_SOCKET_MS);
+        requestPokes(POKES_AFTER_SOCKET_MS);
     }
 
     const NativeWebSocket = window.WebSocket;
@@ -881,6 +1025,9 @@
             <div style="margin-top:6px">Webhook de alertas <span style="color:#aaa">(opcional; shiny na fila, estoque, quedas — em breve)</span>:
                 <input id="pg-dn-hook-alerts" type="password" placeholder="https://discord.com/api/webhooks/..."
                     style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
+            <div style="margin-top:6px">Webhook de nível <span style="color:#aaa">(opcional; vazio = usa o de alertas)</span>:
+                <input id="pg-dn-hook-level" type="password" placeholder="https://discord.com/api/webhooks/..."
+                    style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
             <div style="margin-top:6px">Pokémon (separados por vírgula; vazio = avisar TODAS as capturas):
                 <input id="pg-dn-list" type="text" placeholder="dratini, larvitar (vazio = todas)"
                     style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
@@ -930,6 +1077,16 @@
                 <div id="pg-dn-sell-list" style="margin-top:4px;max-height:160px;overflow:auto"></div>
                 <div style="margin-top:4px;color:#aaa;font-size:12px">Marque só o que pode ir embora: tudo que está marcado é vendido. ⚠️ = item raro, pedra/feromônio ou de outra categoria (confira antes). Só itens com cadeado no jogo ou que o NPC não compra ficam de fora. "Manter" = reserva que fica na mochila.</div>
                 <button id="pg-dn-sell-now" style="margin-top:6px;width:100%;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Vender agora (só os marcados)</button>
+            </div>
+            <div style="margin-top:8px;padding:8px;border:1px solid #444;border-radius:6px">
+                <b>Alerta de nível</b> <span style="color:#aaa">(vai para o webhook de nível)</span>
+                <div style="margin-top:4px">Avisar quando o líder chegar ao nível (0 = desligado):
+                    <input id="pg-dn-level" type="number" min="0" step="1"
+                        style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px"></div>
+                <label style="display:block;margin-top:6px"><input id="pg-dn-level-swap" type="checkbox"> Ao atingir, trocar o líder pelo próximo do time abaixo do nível</label>
+                <div style="margin-top:4px;color:#aaa;font-size:12px">Confere pelo time que o jogo manda e troca o líder pelo próprio socket. Um aviso por Pokémon. Se o líder já estiver acima do nível ao salvar, avisa e troca na hora.</div>
+                <div id="pg-dn-team" style="margin-top:4px;font-size:12px;white-space:pre-line;color:#ccc"></div>
+                <button id="pg-dn-team-refresh" style="margin-top:6px;width:100%;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Atualizar time</button>
             </div>
             <div style="margin-top:6px">Mencionar (ID do Discord, opcional):
                 <input id="pg-dn-mention" type="text" placeholder="123456789012345678"
@@ -989,6 +1146,19 @@
         }
         onHuntLootChange = () => { if (panel.style.display !== 'none') renderSellList(); };
 
+        function renderTeam() {
+            const box = $('#pg-dn-team');
+            if (!box) return;
+            box.textContent = team.length ? `Time (★ líder):\n${teamLine()}` : '(time ainda não lido — entre numa hunt ou clique em Atualizar time)';
+        }
+        onTeamChange = () => { if (panel.style.display !== 'none') renderTeam(); };
+        $('#pg-dn-team-refresh').onclick = () => {
+            lastPokesReqAt = 0;
+            const ok = sendGame({ type: 'pokes-get' });
+            $('#pg-dn-msg').textContent = ok ? '📥 Pedi o time ao jogo...' : '⚠ Socket do jogo ainda não rastreado.';
+            setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 3000);
+        };
+
         function readSellList() {
             const out = Object.assign({}, cfg.sellItems || {});
             for (const row of panel.querySelectorAll('[data-item-id]')) {
@@ -1009,6 +1179,10 @@
             $('#pg-dn-hook').value = cfg.webhookUrl;
             $('#pg-dn-hook-shiny').value = cfg.webhookShiny || '';
             $('#pg-dn-hook-alerts').value = cfg.webhookAlerts || '';
+            $('#pg-dn-hook-level').value = cfg.webhookLevel || '';
+            $('#pg-dn-level').value = cfg.levelAlertAt || 0;
+            $('#pg-dn-level-swap').checked = Boolean(cfg.levelSwap);
+            renderTeam();
             $('#pg-dn-list').value = cfg.watchList.join(', ');
             $('#pg-dn-shiny').checked = cfg.notifyShiny;
             $('#pg-dn-all').checked = cfg.notifyEveryCapture;
@@ -1034,6 +1208,12 @@
             cfg.webhookUrl = $('#pg-dn-hook').value.trim();
             cfg.webhookShiny = $('#pg-dn-hook-shiny').value.trim();
             cfg.webhookAlerts = $('#pg-dn-hook-alerts').value.trim();
+            cfg.webhookLevel = $('#pg-dn-hook-level').value.trim();
+            const alvoAntes = levelTarget();
+            cfg.levelAlertAt = Math.max(0, parseInt($('#pg-dn-level').value, 10) || 0);
+            cfg.levelSwap = $('#pg-dn-level-swap').checked;
+            if (levelTarget() !== alvoAntes) { levelAlerted.clear(); swapPending = null; }
+            lastPokesReqAt = 0; requestPokes(0);
             cfg.watchList = $('#pg-dn-list').value.split(',').map(normalize).filter(Boolean);
             cfg.notifyShiny = $('#pg-dn-shiny').checked;
             cfg.notifyEveryCapture = $('#pg-dn-all').checked;
@@ -1067,6 +1247,7 @@
             cfg.webhookUrl = $('#pg-dn-hook').value.trim();
             cfg.webhookShiny = $('#pg-dn-hook-shiny').value.trim();
             cfg.webhookAlerts = $('#pg-dn-hook-alerts').value.trim();
+            cfg.webhookLevel = $('#pg-dn-hook-level').value.trim();
             if (!cfg.webhookUrl) {
                 $('#pg-dn-msg').textContent = '⚠ Preencha o webhook principal primeiro.';
                 setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 4000);
@@ -1084,6 +1265,13 @@
                 postWebhook('alert', {
                     username: 'Poke Idle World',
                     embeds: [{ title: 'Teste: canal de alertas', description: 'Aqui chegarão shiny na fila, estoque de bolas, quedas de conexão etc.', color: 0xfee75c }],
+                }, { test: true });
+            }
+            if (cfg.webhookLevel) {
+                canais.push('nível');
+                postWebhook('level', {
+                    username: 'Poke Idle World',
+                    embeds: [{ title: 'Teste: canal de nível', description: 'Aqui chegarão os avisos de nível atingido e troca de líder.', color: 0x5865f2 }],
                 }, { test: true });
             }
             $('#pg-dn-msg').textContent = `📤 Teste enviado para: ${canais.join(', ')}.`;
@@ -1140,7 +1328,7 @@
             if (!data || typeof data !== 'object' || Array.isArray(data) || !('webhookUrl' in data)) { flash('⚠ Isso não parece uma config deste script.'); return; }
             delete data._piwDiscordNotify;
             const keepHooks = $('#pg-dn-import-keephooks').checked;
-            const mine = { webhookUrl: cfg.webhookUrl, webhookShiny: cfg.webhookShiny, webhookAlerts: cfg.webhookAlerts };
+            const mine = { webhookUrl: cfg.webhookUrl, webhookShiny: cfg.webhookShiny, webhookAlerts: cfg.webhookAlerts, webhookLevel: cfg.webhookLevel };
             cfg = Object.assign({}, DEFAULTS, data);
             if (keepHooks) Object.assign(cfg, mine);
             cfg.cfgVersion = 2;
@@ -1173,12 +1361,14 @@
 
     buildUI();
     setInterval(() => requestBalls(0), BALLS_POLL_MS);
+    setInterval(() => requestPokes(0), POKES_POLL_MS);
     setInterval(sellTick, SELL_CHECK_MS);
 
-    console.log(TAG, 'v3.1.1 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v3.2.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
         '| raridade mín.:', cfg.minTier || '(nenhuma)', '| poder mín.:', cfg.minIv || 0,
         '| alerta bolas:', effectiveBallsMin() ? `${cfg.ballsWatch} < ${effectiveBallsMin()}` : 'desligado',
         '| compra auto:', cfg.autoBuy ? `${cfg.autoBuyQty} un.` : 'não',
+        '| nível:', levelEnabled() ? `${levelTarget()}${cfg.levelSwap ? ' + troca' : ''}` : 'não',
         '| venda auto:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens / ${cfg.sellEveryMin}${cfg.sellEveryMaxMin > cfg.sellEveryMin ? `–${cfg.sellEveryMaxMin}` : ''} min` : 'não');
 })();

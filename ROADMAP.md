@@ -211,11 +211,24 @@ usuário pedir. O código está no histórico do git (commit `25174b0`) caso vol
 
 ---
 
-## ⬜ 9. Nível / evolução
+## ✅ 9. Nível alvo do líder + troca automática de líder (v3.2.0)
 
-**O que faz:** avisa quando um Pokémon da lista (ou o líder) atinge o nível de evolução.
+**O que faz:** avisa (em webhook próprio, `webhookLevel`, que cai no de alertas e depois no principal)
+quando o líder do time chega ao nível configurado (`levelAlertAt`, 0 = desligado). Com `levelSwap`
+ligado, troca o líder pelo próximo do time (ordem de slot) que ainda está abaixo do nível, e confirma a
+troca. Quando todos estão no nível, avisa que acabou.
 
-**Mensagem do jogo:** `poke-xp` (por abate) e `pokes` (`level`, `hasEvolution`,
-`evolveNeedLevel`, `evolvesToName`, vistos no `poke-delta`).
+**Mensagens do jogo (piwdex `sessao.ts`):** `pokes` (resposta a `pokes-get`) traz `list[]` com `team`,
+`slot`, `leader`, `level`, `id`; `poke-xp { level }` a cada abate com o nível do líder; `field-kill` também
+traz `level` e `leveledUp`; o cliente troca o líder com `poke-summon { pokeId }` pelo mesmo socket.
 
-**Pendências:** formato de `poke-xp` não confirmado (logar primeiro). Baixa prioridade.
+**Lógica:** `poke-xp`/`field-kill` só disparam um `pokes-get` (com gap mínimo de 3 s); quem decide é o
+frame `pokes` (`updateTeam` → `checkLeaderLevel`). Um alerta por líder (`levelAlerted` por id; zera ao
+mudar o alvo). Troca: `poke-summon` → `pokes-get` 0,8 s depois → `checkSwapConfirm` (sucesso, ou
+"não confirmou" após 15 s). Também pede `pokes-get` 4 s após rastrear o socket, ao Salvar e a cada 5 min.
+
+**UI:** campo "Webhook de nível", bloco "Alerta de nível" com nível alvo, checkbox de troca, lista do time
+(★ líder, ✔ já no nível) e botão "Atualizar time".
+
+**Pendências:** os 3 primeiros frames `poke-xp` de cada sessão vão para o log (`kind: 'poke-xp'`) para
+confirmar os campos além de `level`. Evolução (`hasEvolution`/`evolveNeedLevel`) continua fora.

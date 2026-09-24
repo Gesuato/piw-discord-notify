@@ -78,6 +78,11 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   perfil de cada hunt e sobrescreve os ativos em `setHunt()` (ver `loadHuntProfile`/`saveHuntProfile`).
 - Referências: https://github.com/edulanzarin/piwdex (`src/lib/robo/motor/sessao.ts`, cases
   `catch-result`/`pending`) e https://github.com/luishferreira/poke-standalone-scripts (`AGENTS.md`).
+- Time e líder (v3.2.0): `pokes.list[]` traz `team`, `slot`, `leader`, `level`, `id` (cuid string). Líder =
+  `leader: true` ou o 1º por slot. `poke-xp { level }` chega a cada abate com o nível do líder; `field-kill`
+  também traz `level` e `leveledUp`. Trocar o líder: cliente envia `{ type:'poke-summon', pokeId }` pelo
+  mesmo socket e confirma com `pokes-get` (piwdex `trocarLider`). Mover box↔time: `poke-store` /
+  `poke-withdraw { pokeId }`. O script só decide pelo frame `pokes`, nunca direto pelo `poke-xp`.
 - Nome do personagem: `window.__poke.api['/api/characters/me'].character.name` (mesmo caminho
   que o PokeGrid usa para nomear abas). NÃO usar `.phud-name` — é o Pokémon ativo, não a conta.
 
@@ -98,9 +103,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
 - **NUNCA commitar URLs de webhook do Discord** (nem em exemplos com IDs reais). O repo é
   público e o Discord desativa webhooks vazados. Toda config do usuário vive no `localStorage`
   (chave `pgDiscordNotifyCfg`), editada pelo painel 🔔 que o próprio script cria.
-- Webhooks por tipo de evento: `webhookUrl` (capturas, principal), `webhookShiny`, `webhookAlerts`.
-  Todo envio passa por `postWebhook(kind, payload, meta)` com `kind` em `capture|shiny|alert`;
-  `webhookFor(kind)` cai no principal quando o específico está vazio. Eventos novos (ROADMAP)
+- Webhooks por tipo de evento: `webhookUrl` (capturas, principal), `webhookShiny`, `webhookAlerts`,
+  `webhookLevel`. Todo envio passa por `postWebhook(kind, payload, meta)` com `kind` em
+  `capture|shiny|alert|level`; `webhookFor(kind)` cai no principal quando o específico está vazio
+  (`level` cai primeiro no de alertas). Eventos novos (ROADMAP)
   devem usar `postWebhook('alert', ...)`, nunca `fetch` direto.
 - Semântica de filtro (duas etapas, ver `handleGameMessage` e `passesQualityFilter`):
   1. Nome: lista VAZIA ou `notifyEveryCapture` = qualquer Pokémon; lista preenchida = só os listados.
