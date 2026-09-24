@@ -18,12 +18,15 @@ Tampermonkey/Violentmonkey no navegador.
 - ✅ Filtro por **raridade mínima** (Legendary ou superior, por exemplo) e/ou **poder mínimo**
 - ✅ Alerta de **bolas acabando** (limite por bola, checado após cada captura e a cada 5 min)
 - ✅ **Compra automática** de bolas na loja quando o estoque cai (quantidade e reserva de gold configuráveis)
-- ✅ **Venda automática** dos drops da hunt atual que você marcar (lista branca, reserva por item, raros bloqueados)
+- ✅ **Venda automática** dos drops da hunt atual que você marcar (lista branca, reserva por item; itens raros e de outras categorias ganham aviso ⚠️ mas podem ser marcados)
+- ✅ **Alerta de nível**: avisa quando o líder do time chega ao nível escolhido, em webhook próprio
+- ✅ **Troca automática de líder**: ao atingir o nível, passa a vez para o próximo do time que ainda está abaixo
+- ✅ **Rota de treino**: etapas "hunt + nível"; quando todos do time chegam ao nível, troca de hunt sozinho
 - ✅ **Exportar / importar** a configuração entre contas e painéis
-- ✅ Webhooks separados por tipo de evento: capturas, shinys e alertas (cada um pode ir para um canal)
+- ✅ Webhooks separados por tipo de evento: capturas, shinys, alertas e nível (cada um pode ir para um canal)
 - ✅ Anti-spam opcional: intervalo mínimo entre avisos do mesmo Pokémon (padrão 0 = avisa todas)
 - ✅ Painel de configurações dentro do jogo (botão 🔔) — nada de editar código
-- ✅ Somente observa o jogo: não automatiza nada, não envia senha nem dados da conta
+- ✅ Não envia senha nem dados da conta; as automações (compra, venda, troca de líder, rota) usam as mesmas mensagens que o próprio cliente do jogo
 
 ## Instalação
 
@@ -54,10 +57,21 @@ Tampermonkey/Violentmonkey no navegador.
      painel com preço do NPC. Marque só o que pode ser vendido (lista branca) e, se quiser, um "manter"
      de reserva. A cada N minutos (ou num intervalo sorteado entre X e Y minutos, se você preencher os
      dois campos) o script vende o excedente dos marcados e avisa no webhook de alertas.
-     Poções, bolas, pedras, feromônios, itens raros e itens com cadeado no jogo nunca são vendidos.
+     Só itens com cadeado no jogo ou que o NPC não compra ficam de fora; raros, pedras e feromônios
+     aparecem com ⚠️ para você conferir antes de marcar.
      O botão **Vender agora** vende os marcados na hora. As marcações e a faixa de tempo são salvas como
      **perfil da hunt**: ao voltar para a mesma hunt, o perfil é carregado sozinho.
-5. Clique em **Salvar** e depois em **Testar** — deve chegar uma mensagem no Discord
+   - **Alerta de nível** (opcional): informe o nível e, se quiser, marque **trocar o líder** — quando o
+     líder chega ao nível, o script avisa (webhook de nível; vazio = alertas) e passa a liderança para o
+     próximo do time abaixo do nível. Se você devolver na mão um Pokémon acima do nível, ele troca de novo;
+     para manter um líder acima do nível, desmarque a troca. O painel mostra o time atual.
+   - **Rota de treino** (opcional): uma etapa por linha, `hunt nível` (ex.: `pidgey 10` e `ledyba 15`; o
+     nome da hunt é o que aparece em "Hunt atual"). Marque **Seguir a rota**: o nível da etapa vira o alvo,
+     a troca de líder fica ligada e, quando todos do time chegam ao nível, o script sai da hunt e entra na
+     próxima. Comece na hunt da 1ª etapa. O progresso fica salvo; editar a rota ou **Reiniciar rota** volta
+     para a 1ª etapa.
+5. Clique em **Salvar** e depois em **Testar** — deve chegar uma mensagem no Discord (o Testar só envia
+   mensagens de teste; quem aplica a config e dispara as checagens é o Salvar)
 
 A configuração fica salva no armazenamento de cada painel. Para copiar entre contas, use **Exportar config**
 num painel e **Importar config** no outro (a config exportada inclui os webhooks; há uma opção para manter
@@ -104,6 +118,14 @@ O script guarda a última fila `pending`, e quando chega um `catch-result` com `
 | Teste funciona, captura real não | Capture algo e clique em **Copiar log** no painel 🔔: ele copia os últimos eventos (mensagens `catch-result`, decisão dos filtros, resposta do webhook). Marque **Debug** para ver o mesmo no console |
 | Notificação sem nome da conta | O jogo ainda não carregou `/api/characters/me`; aparece na próxima |
 | Webhook parou de funcionar | Ele pode ter vazado e sido desativado — crie outro no Discord |
+| Quer ver o log sem abrir o jogo | `python tools/read-panel-logs.py --panel N` lê a config e o log de cada painel do PokeGrid direto do disco (webhooks redigidos) |
+| Compra automática não comprou | Confira o limite de bolas: com limite 0 ela só compra quando a bola acabar; defina um limite para comprar antes |
+
+## Para desenvolver
+
+- `node test/level.test.js` e `node test/route.test.js`: testes isolados do alerta de nível, troca de líder e rota.
+- `docs/mensagens-do-jogo.md`: todas as mensagens do WebSocket conhecidas (levantadas do cliente do jogo).
+- `tools/read-panel-logs.py`: leitor do log dos painéis direto do disco.
 
 ## Próximas features
 

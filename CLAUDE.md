@@ -98,10 +98,15 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   gravada SEM a query string (ela carrega o JWT da sessão). O botão
   **Copiar log** do painel copia esse JSON.
 - O localStorage de cada painel do PokeGrid fica em disco em
-  `%APPDATA%\pokegrid\Partitions\conta{1..4}\Local Storage\leveldb\*.log|*.ldb` (LevelDB;
-  valores em Latin-1 ou UTF-16LE). Dá para ler `pgDiscordNotifyCfg` e `pgDiscordNotifyLog` de lá
-  com um script Python simples, sem abrir o PokeGrid. Ao fazer isso, NUNCA copiar a URL do webhook
-  para a conversa ou para arquivos do repo.
+  `%APPDATA%\pokegrid\Partitions\conta{1..4}\Local Storage\leveldb\`. Use
+  **`python tools/read-panel-logs.py`** (ou o comando `/log`): é um leitor de LevelDB em Python puro
+  (`.log` = write-ahead sem compressão, `.ldb` = blocos Snappy; a última gravação vence) que imprime a
+  config e o log de cada painel com os webhooks redigidos. Não tente ler os arquivos "por texto": os
+  `.ldb` são comprimidos e o JSON aparece picado. Ao usar, NUNCA copiar a URL do webhook para a
+  conversa ou para arquivos do repo.
+- Referência de TODAS as mensagens do WebSocket (cliente→servidor e servidor→cliente) levantadas do
+  bundle do jogo, com o passo a passo para refazer: `docs/mensagens-do-jogo.md`. Consultar antes de
+  planejar feature nova; formatos só valem como confirmados depois de vistos no log.
 
 ## Regras do projeto
 
@@ -147,7 +152,13 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
 
 ## Como testar
 
-Não há testes automatizados. Verificação manual: instalar no PokeGrid (ou colar no console de
-um navegador logado no jogo), usar o botão **Testar** do painel 🔔 (envia mensagem de teste ao
-webhook sem passar pelos filtros) e, para capturas reais, ligar o checkbox **Debug** que loga
-no console toda mensagem de captura detectada com o payload completo.
+- **Testes isolados em Node** (sem DOM): `node test/level.test.js` e `node test/route.test.js`.
+  `test/harness.js` recorta o módulo entre os marcadores `// ---- Alerta de nível do líder` e
+  `// ---- Alerta de estoque de bolas` do userscript e o roda com stubs de `sendGame`, `postWebhook`,
+  `logEvent`, `saveCfg` e timers (curtos rodam na hora; >= 5 s ficam em `state.longTimers`). Ao mexer
+  nesse módulo, rode os dois; ao criar módulo novo, siga o mesmo padrão (marcadores + stubs).
+- Sempre `node --check piw-discord-notify.user.js` antes do commit.
+- Verificação manual: instalar no PokeGrid (ou colar no console de um navegador logado no jogo), usar
+  o botão **Testar** do painel 🔔 (envia mensagem de teste aos webhooks sem passar pelos filtros; NÃO
+  salva nem dispara checagens) e, para capturas reais, ligar o checkbox **Debug**. Depois, ler o que o
+  script viu com `python tools/read-panel-logs.py --panel N` (ver "Diagnóstico sem console").
