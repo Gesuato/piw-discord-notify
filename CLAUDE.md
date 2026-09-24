@@ -78,10 +78,11 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   perfil de cada hunt e sobrescreve os ativos em `setHunt()` (ver `loadHuntProfile`/`saveHuntProfile`).
 - Referências: https://github.com/edulanzarin/piwdex (`src/lib/robo/motor/sessao.ts`, cases
   `catch-result`/`pending`) e https://github.com/luishferreira/poke-standalone-scripts (`AGENTS.md`).
-- Time e líder (v3.2.0): `pokes.list[]` traz `team`, `slot`, `leader`, `level`, `id` (cuid string). Líder =
-  `leader: true` ou o 1º por slot. `poke-xp { level }` chega a cada abate com o nível do líder; `field-kill`
-  também traz `level` e `leveledUp`. Trocar o líder: cliente envia `{ type:'poke-summon', pokeId }` pelo
-  mesmo socket e confirma com `pokes-get` (piwdex `trocarLider`). Mover box↔time: `poke-store` /
+- Time e líder (v3.2.0): `pokes.list[]` traz `team`, `slot` (0-based), `leader`, `level`, `id` (cuid string).
+  Líder = `leader: true` ou o 1º por slot. `poke-xp { id, speciesId, xpGained, xp, level, leveledUp }` chega a
+  cada abate (CONFIRMADO 24/09/2026; `id`/`level` são do líder); `field-kill` também traz `level` e `leveledUp`.
+  Trocar o líder: `{ type:'poke-summon', pokeId }` — é o que o botão "⚔ summon" do time do próprio jogo
+  envia (bundle do cliente); o HUD bloqueia durante boss. Confirmar com `pokes-get` (piwdex `trocarLider`). Mover box↔time: `poke-store` /
   `poke-withdraw { pokeId }`. O script só decide pelo frame `pokes`, nunca direto pelo `poke-xp`.
 - Nome do personagem: `window.__poke.api['/api/characters/me'].character.name` (mesmo caminho
   que o PokeGrid usa para nomear abas). NÃO usar `.phud-name` — é o Pokémon ativo, não a conta.

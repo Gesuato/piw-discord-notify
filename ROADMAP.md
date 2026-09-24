@@ -230,5 +230,6 @@ mudar o alvo). Troca: `poke-summon` → `pokes-get` 0,8 s depois → `checkSwapC
 **UI:** campo "Webhook de nível", bloco "Alerta de nível" com nível alvo, checkbox de troca, lista do time
 (★ líder, ✔ já no nível) e botão "Atualizar time".
 
-**Pendências:** os 3 primeiros frames `poke-xp` de cada sessão vão para o log (`kind: 'poke-xp'`) para
-confirmar os campos além de `level`. Evolução (`hasEvolution`/`evolveNeedLevel`) continua fora.
+**v3.2.1:** `poke-xp` confirmado como `{ id, speciesId, xpGained, xp, level, leveledUp }`; mudar o alvo OU a
+caixa de troca no Salvar reavalia o time (antes, ligar a troca depois do aviso não fazia nada). `poke-summon`
+confirmado no bundle do cliente (botão summon do time); bloqueado durante boss. Evolução continua fora.

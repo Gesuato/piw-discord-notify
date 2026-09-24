@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.2.0
+// @version      3.2.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -247,12 +247,12 @@
     //   pokes       -> { type:'pokes', list:[{ id, name, level, team, slot, leader, shiny, ... }] }
     //                  (resposta a pokes-get). Time = team:true ordenado por slot; líder = leader:true
     //                  (ou o 1º do time). Fonte: piwdex sessao.ts (case 'pokes').
-    //   poke-xp     -> { type:'poke-xp', level, ... } a cada abate: nível ATUAL do líder (piwdex usa
-    //                  m.level como nivelLider). Outros campos não confirmados: os 3 primeiros frames
-    //                  vão para o log (kind 'poke-xp') para conferência.
+    //   poke-xp     -> { type:'poke-xp', id, speciesId, xpGained, xp, level, leveledUp } a cada abate
+    //                  (CONFIRMADO no log em 24/09/2026): `id` e `level` são do líder que ganhou o XP.
     //   field-kill  -> também traz `level` (líder) e `leveledUp` (piwdex).
-    //   poke-summon -> { type:'poke-summon', pokeId } enviado pelo cliente TROCA o líder pelo socket
-    //                  já aberto (piwdex `trocarLider`); confirmar com pokes-get ~500 ms depois.
+    //   poke-summon -> { type:'poke-summon', pokeId } é o que o botão "⚔ summon" do painel de time do
+    //                  próprio jogo envia (visto no bundle do cliente); o HUD bloqueia durante boss.
+    //                  Confirmar com pokes-get ~500 ms depois (piwdex `trocarLider`).
     // Regra: poke-xp/field-kill só DISPARAM uma conferência (pokes-get); quem decide é o frame
     // `pokes` (nível do líder vindo da lista). Evita agir sobre um `level` mal interpretado.
     // Um alerta por líder (id) por nível alvo; o Set zera quando o alvo muda no Salvar.
@@ -295,12 +295,13 @@
     }
 
     // Sinal de nível vindo de poke-xp/field-kill: só dispara a conferência pelo `pokes`.
-    function noteLeaderLevel(level, fonte, leveledUp) {
+    function noteLeaderLevel(level, fonte, leveledUp, pokeId) {
         if (!Number.isFinite(level)) return;
         const antes = leaderLevelSeen;
         leaderLevelSeen = level;
         if (!levelEnabled()) return;
         const lider = teamLeader();
+        if (pokeId && lider && lider.id && pokeId !== lider.id) { requestPokes(0); return; } // time desatualizado
         if (lider && lider.id && levelAlerted.has(lider.id)) return;
         if (level >= levelTarget() || leveledUp || (antes != null && level > antes)) requestPokes(0);
     }
@@ -377,7 +378,7 @@
 
     function handlePokeXp(message) {
         if (pokeXpLogged < 3) { pokeXpLogged++; logEvent('poke-xp', message); }
-        noteLeaderLevel(Number(message.level), 'poke-xp', false);
+        noteLeaderLevel(Number(message.level), 'poke-xp', Boolean(message.leveledUp), message.id != null ? String(message.id) : null);
     }
 
     // ---- Alerta de estoque de bolas -------------------------------------
@@ -1209,10 +1210,12 @@
             cfg.webhookShiny = $('#pg-dn-hook-shiny').value.trim();
             cfg.webhookAlerts = $('#pg-dn-hook-alerts').value.trim();
             cfg.webhookLevel = $('#pg-dn-hook-level').value.trim();
-            const alvoAntes = levelTarget();
+            const alvoAntes = levelTarget(), swapAntes = Boolean(cfg.levelSwap);
             cfg.levelAlertAt = Math.max(0, parseInt($('#pg-dn-level').value, 10) || 0);
             cfg.levelSwap = $('#pg-dn-level-swap').checked;
-            if (levelTarget() !== alvoAntes) { levelAlerted.clear(); swapPending = null; }
+            // Alvo ou troca mudaram: reavalia o time inteiro (antes, ligar a troca depois do aviso não fazia nada).
+            if (levelTarget() !== alvoAntes || cfg.levelSwap !== swapAntes) { levelAlerted.clear(); swapPending = null; }
+            const avisoNivel = levelEnabled() ? ` Conferindo o time para o nível ${levelTarget()}${cfg.levelSwap ? ' (com troca)' : ''}...` : '';
             lastPokesReqAt = 0; requestPokes(0);
             cfg.watchList = $('#pg-dn-list').value.split(',').map(normalize).filter(Boolean);
             cfg.notifyShiny = $('#pg-dn-shiny').checked;
@@ -1239,8 +1242,8 @@
             cfg.sellItems = readSellList();
             saveHuntProfile();
             saveCfg(cfg);
-            $('#pg-dn-msg').textContent = '✔ Salvo!' + avisoCompra;
-            setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, avisoCompra ? 8000 : 2500);
+            $('#pg-dn-msg').textContent = '✔ Salvo!' + avisoCompra + avisoNivel;
+            setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, (avisoCompra || avisoNivel) ? 8000 : 2500);
         };
 
         $('#pg-dn-test').onclick = () => {
@@ -1364,7 +1367,7 @@
     setInterval(() => requestPokes(0), POKES_POLL_MS);
     setInterval(sellTick, SELL_CHECK_MS);
 
-    console.log(TAG, 'v3.2.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v3.2.1 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
         '| raridade mín.:', cfg.minTier || '(nenhuma)', '| poder mín.:', cfg.minIv || 0,
         '| alerta bolas:', effectiveBallsMin() ? `${cfg.ballsWatch} < ${effectiveBallsMin()}` : 'desligado',
