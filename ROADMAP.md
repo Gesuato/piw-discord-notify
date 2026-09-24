@@ -201,6 +201,26 @@ webhooks do painel de destino). A config exportada contém os webhooks — não 
 
 ---
 
+## ✅ 11. Rota de treino (v3.3.0)
+
+**O que faz:** lista de etapas `hunt nível` (ex.: `pidgey 10` / `larvitar 15`). Com "Seguir a rota", o nível
+da etapa atual vira o alvo do alerta de nível e a troca de líder fica ligada. Quando TODOS do time chegam ao
+nível da etapa, o script avisa (webhook de nível), sai da hunt e entra na próxima, e avança a etapa. No fim,
+avisa "Rota concluída" e para.
+
+**Mensagens do jogo:** `leave-hunt` → 600 ms → `enter-hunt { slug }` + `pending-get` (mesma sequência do
+piwdex `cacar()` e do auto-reconnect). Entrada confirmada por `field`/`field-init` em até 30 s; sem frame,
+tenta de novo uma vez e depois avisa "não consegui entrar". O slug é o mesmo que aparece em "Hunt atual".
+
+**Config:** `route: [{ slug, level }]`, `routeEnabled`, `routeStage` (persistido: sobrevive a reload; editar a
+rota volta para 0; botão "Reiniciar rota"). Funções: `routeActive`/`routeStep`/`levelTarget`/`swapEnabled`/
+`advanceRoute`/`switchHunt`/`confirmHuntSwitch`.
+
+**Pendências:** se a etapa seguinte tiver nível ≤ atual, avança em cadeia (esperado). Não verifica se a conta
+tem acesso à hunt; a falha aparece como "entrada não confirmou".
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

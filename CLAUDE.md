@@ -84,6 +84,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   Trocar o líder: `{ type:'poke-summon', pokeId }` — é o que o botão "⚔ summon" do time do próprio jogo
   envia (bundle do cliente); o HUD bloqueia durante boss. Confirmar com `pokes-get` (piwdex `trocarLider`). Mover box↔time: `poke-store` /
   `poke-withdraw { pokeId }`. O script só decide pelo frame `pokes`, nunca direto pelo `poke-xp`.
+- Trocar de hunt (rota, v3.3.0): `leave-hunt` → ~600 ms → `enter-hunt { slug }` + `pending-get`; confirmar
+  pela chegada de `field`/`field-init` (piwdex `cacar()`, auto-reconnect). O script guarda `lastFieldAt`.
+  Com `routeEnabled`, `levelTarget()` devolve o nível da etapa atual (`cfg.route[cfg.routeStage]`), não
+  `levelAlertAt`, e `swapEnabled()` é true. Sempre usar essas duas funções, não os campos diretos.
 - Nome do personagem: `window.__poke.api['/api/characters/me'].character.name` (mesmo caminho
   que o PokeGrid usa para nomear abas). NÃO usar `.phud-name` — é o Pokémon ativo, não a conta.
 

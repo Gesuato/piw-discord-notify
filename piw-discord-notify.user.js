@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.2.2
+// @version      3.3.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -40,6 +40,9 @@
         sellProfiles: {},       // por hunt: slug -> { items, everyMin, everyMaxMin } (carregado ao entrar)
         levelAlertAt: 0,        // avisar quando o líder chegar a este nível; 0 = desligado
         levelSwap: false,       // ao atingir, trocar o líder pelo próximo do time abaixo do nível
+        routeEnabled: false,    // seguir a rota de treino (etapas hunt + nível); implica levelSwap
+        route: [],              // [{ slug, level }] em ordem
+        routeStage: 0,          // índice da etapa atual (persistido; >= route.length = concluída)
         mentionUserId: '',      // seu ID de usuário do Discord, opcional
         cooldownSeconds: 0,     // intervalo mínimo (s) entre avisos do mesmo pokémon; 0 = avisar todas
         cfgVersion: 2,
@@ -255,6 +258,11 @@
     //                  Confirmar com pokes-get ~500 ms depois (piwdex `trocarLider`).
     // Regra: poke-xp/field-kill só DISPARAM uma conferência (pokes-get); quem decide é o frame
     // `pokes` (nível do líder vindo da lista). Evita agir sobre um `level` mal interpretado.
+    // Rota de treino (v3.3.0): cfg.route = [{ slug, level }]. Com routeEnabled, o alvo é o nível da etapa
+    // atual (cfg.routeStage) e a troca de líder fica implícita. Quando TODOS do time estão no nível da
+    // etapa, o script manda `leave-hunt`, depois `enter-hunt { slug }` + `pending-get` (como o piwdex
+    // `cacar()` e o auto-reconnect) e avança a etapa (persistida). Entrada confirmada por `field`/
+    // `field-init`; sem frame em 30 s tenta de novo uma vez e depois avisa.
     // Um alerta por líder (id) por nível alvo; o Set zera quando o alvo muda no Salvar. Quando um
     // Pokémon DEIXA de ser líder ele sai do Set: se voltar a ser líder (troca manual) acima do alvo,
     // avisa e troca de novo (v3.2.2). Quem quiser um líder acima do alvo desliga a troca.
@@ -264,6 +272,8 @@
     const POKES_MIN_GAP_MS = 3000;
     const SWAP_CONFIRM_MS = 800;
     const SWAP_TIMEOUT_MS = 15000;
+    const HUNT_ENTER_DELAY_MS = 600;
+    const HUNT_CONFIRM_MS = 30000;
 
     let team = [];                  // [{ id, name, level, slot, leader, shiny }] ordenado por slot
     let teamSig = '';               // assinatura do último time logado (evita log repetido)
@@ -274,10 +284,27 @@
     const levelAlerted = new Set(); // ids de líderes já avisados para o alvo atual
     let swapPending = null;         // { fromId, toId, toName, at } aguardando confirmação no `pokes`
     let lastLeaderId = null;        // líder do último `pokes` (para rearmar quem deixou de ser líder)
+    let lastFieldAt = 0;            // último frame field/field-init (prova de que a hunt está viva)
+    let huntSwitch = null;          // { slug, at, tries, timer } troca de hunt aguardando confirmação
     let onTeamChange = null;        // callback do painel para redesenhar o time
 
-    function levelTarget() { return Math.max(0, Number(cfg.levelAlertAt) || 0); }
+    function routeList() { return Array.isArray(cfg.route) ? cfg.route.filter(r => r && r.slug && Number(r.level) > 0) : []; }
+    function routeActive() { return Boolean(cfg.routeEnabled) && routeList().length > 0 && (Number(cfg.routeStage) || 0) < routeList().length; }
+    function routeStep() { return routeActive() ? routeList()[Number(cfg.routeStage) || 0] : null; }
+    function levelTarget() {
+        const st = routeStep();
+        if (st) return Math.max(0, Number(st.level) || 0);
+        return Math.max(0, Number(cfg.levelAlertAt) || 0);
+    }
     function levelEnabled() { return levelTarget() > 0; }
+    function swapEnabled() { return Boolean(cfg.levelSwap) || routeActive(); }
+    function routeStatus() {
+        const lista = routeList();
+        if (!lista.length) return 'Sem rota.';
+        const i = Number(cfg.routeStage) || 0;
+        if (i >= lista.length) return `Rota concluída (${lista.length} etapas). "Reiniciar rota" para começar de novo.`;
+        return `${cfg.routeEnabled ? 'Etapa' : 'Rota desligada — etapa'} ${i + 1}/${lista.length}: ${lista[i].slug} até lv ${lista[i].level}`;
+    }
 
     function requestPokes(delayMs) {
         if (!levelEnabled()) return;
@@ -359,13 +386,18 @@
         const who = playerName();
         const mention = cfg.mentionUserId ? `<@${cfg.mentionUserId}> ` : '';
         const conta = who ? `Conta: ${who}\n` : '';
-        const proximo = cfg.levelSwap ? team.find(p => p.id !== lider.id && p.level < alvo) || null : null;
+        const swap = swapEnabled();
+        const proximo = swap ? team.find(p => p.id !== lider.id && p.level < alvo) || null : null;
         const faltam = team.filter(p => p.id !== lider.id && p.level < alvo).length;
+        const etapa = routeStep();
+        const proxEtapa = etapa ? routeList()[(Number(cfg.routeStage) || 0) + 1] || null : null;
         let acao;
-        if (!cfg.levelSwap) acao = faltam ? `Troca automática desligada; ${faltam} do time ainda abaixo de ${alvo}.` : 'Todos do time já estão no nível.';
+        if (!swap) acao = faltam ? `Troca automática desligada; ${faltam} do time ainda abaixo de ${alvo}.` : 'Todos do time já estão no nível.';
         else if (proximo) acao = `Trocando o líder para **${proximo.name}** (lv ${proximo.level})...`;
+        else if (etapa && proxEtapa) acao = `🏁 Etapa ${(Number(cfg.routeStage) || 0) + 1} concluída (${etapa.slug}, lv ${etapa.level}). Indo para **${proxEtapa.slug}** até lv ${proxEtapa.level}...`;
+        else if (etapa) acao = `🏁 Rota concluída: todos do time no nível ${alvo} (última etapa: ${etapa.slug}).`;
         else acao = `🏁 Todos do time já estão no nível ${alvo}. Nada mais para trocar.`;
-        logEvent('nivel', { lider: lider.name, level: lider.level, alvo, proximo: proximo?.name || null, swap: Boolean(cfg.levelSwap) });
+        logEvent('nivel', { lider: lider.name, level: lider.level, alvo, proximo: proximo?.name || null, swap, etapa: etapa ? (Number(cfg.routeStage) || 0) + 1 : null });
         postWebhook('level', {
             content: `${mention}🎯 ${who ? `**${who}**` : 'Sua conta'}: **${lider.name}** chegou ao nível **${lider.level}**${lider.level > alvo ? ` (alvo ${alvo})` : ''}`,
             username: 'Poke Idle World',
@@ -379,7 +411,56 @@
             const enviado = sendGame({ type: 'poke-summon', pokeId: proximo.id });
             logEvent('troca', { de: lider.name, para: proximo.name, enviado });
             if (enviado) { swapPending = { fromId: lider.id, toId: proximo.id, toName: proximo.name, at: Date.now() }; requestPokes(SWAP_CONFIRM_MS); }
+        } else if (etapa) {
+            advanceRoute();
         }
+    }
+
+    // Todos do time no nível da etapa: avança (persistido) e troca de hunt se houver próxima etapa.
+    function advanceRoute() {
+        const lista = routeList();
+        const i = Number(cfg.routeStage) || 0;
+        const proxima = lista[i + 1] || null;
+        cfg.routeStage = i + 1;
+        saveCfg(cfg);
+        levelAlerted.clear();
+        swapPending = null;
+        logEvent('rota', { etapaConcluida: i + 1, proxima: proxima ? proxima.slug : null });
+        if (onTeamChange) { try { onTeamChange(); } catch { /* painel fechado */ } }
+        if (proxima) switchHunt(proxima.slug, 1);
+        else requestPokes(POKES_MIN_GAP_MS); // rota acabou: só atualiza o painel
+    }
+
+    function switchHunt(slug, tentativa) {
+        if (huntSwitch?.timer) clearTimeout(huntSwitch.timer);
+        sendGame({ type: 'leave-hunt' });
+        huntSwitch = { slug, at: 0, tries: tentativa, timer: null };
+        huntSwitch.timer = setTimeout(() => {
+            if (!huntSwitch || huntSwitch.slug !== slug) return;
+            huntSwitch.at = Date.now();
+            const ok = sendGame({ type: 'enter-hunt', slug }) && sendGame({ type: 'pending-get' });
+            logEvent('hunt-troca', { slug, tentativa, enviado: ok });
+            huntSwitch.timer = setTimeout(() => confirmHuntSwitch(slug), HUNT_CONFIRM_MS);
+        }, HUNT_ENTER_DELAY_MS);
+    }
+
+    function confirmHuntSwitch(slug) {
+        if (!huntSwitch || huntSwitch.slug !== slug) return;
+        const who = playerName();
+        if (lastFieldAt >= huntSwitch.at) {
+            logEvent('hunt-ok', { slug });
+            huntSwitch = null;
+            requestPokes(0);
+            return;
+        }
+        if (huntSwitch.tries < 2) { switchHunt(slug, huntSwitch.tries + 1); return; }
+        logEvent('hunt-falhou', { slug });
+        huntSwitch = null;
+        postWebhook('level', {
+            content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: não consegui entrar na hunt **${slug}** (rota)`,
+            username: 'Poke Idle World',
+            embeds: [{ title: `Rota: entrada em ${slug} não confirmou`, description: (who ? `Conta: ${who}\n` : '') + 'Nenhum frame de combate chegou em 30 s após duas tentativas. Confira o nome da hunt (é o mesmo que aparece em "Hunt atual") e entre na mão; a rota continua da etapa atual.', color: 0xed4245 }],
+        }, { evento: 'hunt-falhou', slug });
     }
 
     function handlePokeXp(message) {
@@ -905,6 +986,7 @@
 
         if (message.type === 'poke-delta') { handlePokeDelta(message); return; }
         if (message.type === 'poke-xp') { handlePokeXp(message); return; }
+        if (message.type === 'field' || message.type === 'field-init') { lastFieldAt = Date.now(); return; }
         if (message.type === 'field-kill') { noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
         if (message.type === 'pokes' && Array.isArray(message.list)) { updateTeam(message.list); handlePokesList(message.list); return; }
@@ -1094,6 +1176,14 @@
                 <div style="margin-top:4px;color:#aaa;font-size:12px">Confere pelo time que o jogo manda e troca o líder pelo próprio socket. Um aviso por Pokémon. Se o líder já estiver acima do nível ao salvar, avisa e troca na hora.</div>
                 <div id="pg-dn-team" style="margin-top:4px;font-size:12px;white-space:pre-line;color:#ccc"></div>
                 <button id="pg-dn-team-refresh" style="margin-top:6px;width:100%;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Atualizar time</button>
+                <div style="margin-top:8px;border-top:1px solid #444;padding-top:6px"><b>Rota de treino</b>
+                    <div style="margin-top:2px;color:#aaa;font-size:12px">Uma etapa por linha: <b>hunt nível</b>. O nome da hunt é o que aparece em "Hunt atual" (ex.: pidgey). Quando TODOS do time chegam ao nível, troca para a próxima hunt.</div>
+                    <textarea id="pg-dn-route" rows="3" placeholder="pidgey 10&#10;larvitar 15" spellcheck="false"
+                        style="width:100%;box-sizing:border-box;margin-top:2px;background:#1e1f22;color:#eee;border:1px solid #555;border-radius:4px;padding:4px;font:12px monospace"></textarea>
+                    <label style="display:block;margin-top:4px"><input id="pg-dn-route-on" type="checkbox"> Seguir a rota (o nível da etapa vira o alvo e a troca de líder fica ligada)</label>
+                    <div id="pg-dn-route-status" style="margin-top:4px;font-size:12px;color:#ccc"></div>
+                    <button id="pg-dn-route-reset" style="margin-top:6px;width:100%;background:#3a3c42;color:#fff;border:0;border-radius:4px;padding:6px;cursor:pointer">Reiniciar rota (voltar à 1ª etapa)</button>
+                </div>
             </div>
             <div style="margin-top:6px">Mencionar (ID do Discord, opcional):
                 <input id="pg-dn-mention" type="text" placeholder="123456789012345678"
@@ -1157,7 +1247,18 @@
             const box = $('#pg-dn-team');
             if (!box) return;
             box.textContent = team.length ? `Time (★ líder):\n${teamLine()}` : '(time ainda não lido — entre numa hunt ou clique em Atualizar time)';
+            const rs = $('#pg-dn-route-status');
+            if (rs) rs.textContent = routeStatus() + (huntSlug ? ` · Hunt atual: ${huntSlug}` : '');
         }
+        $('#pg-dn-route-reset').onclick = () => {
+            cfg.routeStage = 0;
+            saveCfg(cfg);
+            levelAlerted.clear(); swapPending = null;
+            renderTeam();
+            lastPokesReqAt = 0; requestPokes(0);
+            $('#pg-dn-msg').textContent = routeList().length ? `↩ Rota reiniciada: ${routeStatus()}. Entre na hunt da 1ª etapa (ou espere: se todos já estiverem no nível, ela avança sozinha).` : '⚠ Nenhuma rota configurada.';
+            setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, 8000);
+        };
         onTeamChange = () => { if (panel.style.display !== 'none') renderTeam(); };
         $('#pg-dn-team-refresh').onclick = () => {
             lastPokesReqAt = 0;
@@ -1189,6 +1290,8 @@
             $('#pg-dn-hook-level').value = cfg.webhookLevel || '';
             $('#pg-dn-level').value = cfg.levelAlertAt || 0;
             $('#pg-dn-level-swap').checked = Boolean(cfg.levelSwap);
+            $('#pg-dn-route').value = routeList().map(r => `${r.slug} ${r.level}`).join('\n');
+            $('#pg-dn-route-on').checked = Boolean(cfg.routeEnabled);
             renderTeam();
             $('#pg-dn-list').value = cfg.watchList.join(', ');
             $('#pg-dn-shiny').checked = cfg.notifyShiny;
@@ -1216,12 +1319,22 @@
             cfg.webhookShiny = $('#pg-dn-hook-shiny').value.trim();
             cfg.webhookAlerts = $('#pg-dn-hook-alerts').value.trim();
             cfg.webhookLevel = $('#pg-dn-hook-level').value.trim();
-            const alvoAntes = levelTarget(), swapAntes = Boolean(cfg.levelSwap);
+            const alvoAntes = levelTarget(), swapAntes = swapEnabled();
             cfg.levelAlertAt = Math.max(0, parseInt($('#pg-dn-level').value, 10) || 0);
             cfg.levelSwap = $('#pg-dn-level-swap').checked;
+            const rotaAntes = JSON.stringify(routeList());
+            const linhasRuins = [];
+            cfg.route = $('#pg-dn-route').value.split(/\r?\n/).map(l => l.trim()).filter(Boolean).map(l => {
+                const m = l.match(/^(\S+)\s+(\d+)$/);
+                if (!m) { linhasRuins.push(l); return null; }
+                return { slug: normalize(m[1]), level: parseInt(m[2], 10) };
+            }).filter(r => r && r.level > 0);
+            cfg.routeEnabled = $('#pg-dn-route-on').checked && cfg.route.length > 0;
+            if (JSON.stringify(routeList()) !== rotaAntes) cfg.routeStage = 0; // rota editada: recomeça
             // Alvo ou troca mudaram: reavalia o time inteiro (antes, ligar a troca depois do aviso não fazia nada).
-            if (levelTarget() !== alvoAntes || cfg.levelSwap !== swapAntes) { levelAlerted.clear(); swapPending = null; }
-            const avisoNivel = levelEnabled() ? ` Conferindo o time para o nível ${levelTarget()}${cfg.levelSwap ? ' (com troca)' : ''}...` : '';
+            if (levelTarget() !== alvoAntes || swapEnabled() !== swapAntes) { levelAlerted.clear(); swapPending = null; }
+            const avisoRota = linhasRuins.length ? ` ⚠ Linhas ignoradas na rota (use "hunt nível"): ${linhasRuins.join(' | ')}.` : '';
+            const avisoNivel = levelEnabled() ? ` Conferindo o time para o nível ${levelTarget()}${swapEnabled() ? ' (com troca)' : ''}${routeActive() ? ` — ${routeStatus()}` : ''}...` : '';
             lastPokesReqAt = 0; requestPokes(0);
             cfg.watchList = $('#pg-dn-list').value.split(',').map(normalize).filter(Boolean);
             cfg.notifyShiny = $('#pg-dn-shiny').checked;
@@ -1248,8 +1361,8 @@
             cfg.sellItems = readSellList();
             saveHuntProfile();
             saveCfg(cfg);
-            $('#pg-dn-msg').textContent = '✔ Salvo!' + avisoCompra + avisoNivel;
-            setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, (avisoCompra || avisoNivel) ? 8000 : 2500);
+            $('#pg-dn-msg').textContent = '✔ Salvo!' + avisoCompra + avisoNivel + avisoRota;
+            setTimeout(() => { $('#pg-dn-msg').textContent = ''; }, (avisoCompra || avisoNivel || avisoRota) ? 9000 : 2500);
         };
 
         $('#pg-dn-test').onclick = () => {
@@ -1373,11 +1486,12 @@
     setInterval(() => requestPokes(0), POKES_POLL_MS);
     setInterval(sellTick, SELL_CHECK_MS);
 
-    console.log(TAG, 'v3.2.2 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
+    console.log(TAG, 'v3.3.0 ativo. Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
         '| raridade mín.:', cfg.minTier || '(nenhuma)', '| poder mín.:', cfg.minIv || 0,
         '| alerta bolas:', effectiveBallsMin() ? `${cfg.ballsWatch} < ${effectiveBallsMin()}` : 'desligado',
         '| compra auto:', cfg.autoBuy ? `${cfg.autoBuyQty} un.` : 'não',
-        '| nível:', levelEnabled() ? `${levelTarget()}${cfg.levelSwap ? ' + troca' : ''}` : 'não',
+        '| nível:', levelEnabled() ? `${levelTarget()}${swapEnabled() ? ' + troca' : ''}` : 'não',
+        '| rota:', routeActive() ? routeStatus() : 'não',
         '| venda auto:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens / ${cfg.sellEveryMin}${cfg.sellEveryMaxMin > cfg.sellEveryMin ? `–${cfg.sellEveryMaxMin}` : ''} min` : 'não');
 })();
