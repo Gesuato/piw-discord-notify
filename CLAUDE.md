@@ -104,6 +104,13 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   ou `error { message }`; limite diário de movimentos, líder/starter não vão, o que entra vira da família.
   `cfg.lockNotified`/`cfg.familyNotified` aplicam isso (`keepNotified`) a quem passa nos filtros, ANTES do
   aviso; o id vem do `poke-delta` (`info.pokeId`). Sem id, avisa sem guardar (log `guardar`).
+- Rota do PIW Tools (v3.7.0): https://piwtools.com.br/hunt (aba "Rota otimizada", de Rakupo / bar) calcula a rota
+  NO NAVEGADOR (React + `/creatures.json`, `/map-markers.json`, simulador de batalha próprio); não há API, e o
+  "Copiar link" do site não carrega as etapas (só `routeChoices`/`routeBreaks` quando editadas à mão). Por isso
+  o script importa o TEXTO copiado da página: blocos "<Pokémon> / De / n / Até / n / Hunt desta etapa / <hunt>"
+  (`parsePiwToolsRoute` na aba Treino → "Importar do PIW Tools"). Nível da nossa etapa = "De" da etapa seguinte
+  (última: "Até"); slug da hunt = nome normalizado com `_` (confere nas 347 hunts do `map-markers.json`).
+  "Copiar link do PIW Tools" monta a URL com o líder atual. Não reimplementar o cálculo do site (é autoral).
 - Nome do personagem: `window.__poke.api['/api/characters/me'].character.name` (mesmo caminho
   que o PokeGrid usa para nomear abas). NÃO usar `.phud-name` — é o Pokémon ativo, não a conta.
 

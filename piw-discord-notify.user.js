@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.6.0
+// @version      3.7.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.6.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.7.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -1598,6 +1598,15 @@
                         <h3>Rota de treino</h3>
                         <textarea id="pg-dn-route" class="dn-textarea" rows="3" placeholder="pidgey 10&#10;larvitar 15" spellcheck="false"></textarea>
                         <p class="dn-help">Uma etapa por linha: <b>hunt nível</b> (a hunt é o nome que aparece em "Hunt"). Quando todo o time chega ao nível, troca para a próxima hunt.</p>
+                        <div class="dn-actions">
+                            <button type="button" class="dn-btn dn-btn--sm" id="pg-dn-route-import" title="Cole o texto da aba Rota otimizada do PIW Tools e o script monta as etapas.">Importar do PIW Tools</button>
+                            <button type="button" class="dn-btn dn-btn--sm" id="pg-dn-route-piwlink" title="Copia o link do gerador de rota do PIW Tools já com o líder e o nível atuais.">Copiar link do PIW Tools</button>
+                        </div>
+                        <div id="pg-dn-route-import-box" class="dn-section" hidden>
+                            <textarea id="pg-dn-route-import-text" class="dn-textarea" rows="4" placeholder="No PIW Tools (aba Rota otimizada), selecione as etapas, Ctrl+C e cole aqui"></textarea>
+                            <p class="dn-help">Lê os blocos "De / Até / Hunt desta etapa". Cada etapa vira "hunt nível", com o nível em que a próxima hunt começa. Rota gerada pelo PIW Tools (Rakupo / bar).</p>
+                            <div class="dn-actions"><button type="button" class="dn-btn dn-btn--primary" id="pg-dn-route-import-apply">Aplicar na rota</button></div>
+                        </div>
                         <label class="dn-toggle"><input id="pg-dn-route-on" type="checkbox"><span class="sw"></span>Seguir a rota <span class="dn-hint">(liga a troca de líder)</span></label>
                         <div class="dn-status col"><div id="pg-dn-route-status"></div><ol class="dn-route" id="pg-dn-route-list"></ol></div>
                         <div class="dn-actions"><button type="button" class="dn-btn dn-btn--danger" id="pg-dn-route-reset" title="Volta à 1ª etapa.">Reiniciar rota</button></div>
@@ -1914,6 +1923,58 @@
             flash(`✔ Rota reiniciada · etapa 1 de ${routeList().length} (${routeList()[0].slug} ${routeList()[0].level})`, 'ok', 5000);
         };
 
+        // ---- Importar rota do PIW Tools (https://piwtools.com.br/hunt, aba "Rota otimizada") ----
+        // O texto copiado da página vem em blocos: "<Pokémon>", "De", "<n>", "Até", "<n>", "Hunt desta etapa",
+        // "<hunt>", "Lv. <n>", golpe, XP/h... Só De/Até/Hunt interessam. O nível de cada etapa da NOSSA rota é
+        // o "De" da etapa seguinte (quando o time chega lá, troca de hunt); na última, o "Até".
+        const PIWTOOLS_URL = 'https://piwtools.com.br/hunt';
+        function huntSlugFromName(name) { return normalize(name).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''); }
+        function parsePiwToolsRoute(text) {
+            const lines = String(text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+            const steps = [], avisos = [];
+            for (let i = 0; i < lines.length; i++) {
+                if (!/^de$/i.test(lines[i])) continue;
+                const from = parseInt(lines[i + 1], 10);
+                const j = lines.findIndex((l, k) => k > i && /^at[eé]$/i.test(l));
+                const to = j > 0 ? parseInt(lines[j + 1], 10) : NaN;
+                const h = lines.findIndex((l, k) => k > i && /^hunt desta etapa$/i.test(l));
+                const hunt = h > 0 ? (lines[h + 1] || '') : '';
+                const poke = i > 0 ? lines[i - 1] : '';
+                if (!Number.isFinite(from) || !Number.isFinite(to) || !hunt || /^de$/i.test(hunt)) {
+                    avisos.push(`bloco perto de "${lines[i - 1] || lines[i + 1] || '?'}" sem De/Até/Hunt`);
+                    continue;
+                }
+                steps.push({ poke, from, to, hunt, slug: huntSlugFromName(hunt) });
+                i = h;
+            }
+            const route = steps.map((st, k) => ({ slug: st.slug, level: k + 1 < steps.length ? steps[k + 1].from : st.to }));
+            const evolucoes = steps.filter((st, k) => k > 0 && st.poke && normalize(st.poke) !== normalize(steps[k - 1].poke)).map(st => `${st.poke} a partir do nível ${st.from}`);
+            return { steps, route, avisos, evolucoes };
+        }
+        $('#pg-dn-route-import').onclick = () => {
+            const box = $('#pg-dn-route-import-box');
+            box.hidden = !box.hidden;
+            if (!box.hidden) { $('#pg-dn-route-import-text').value = ''; $('#pg-dn-route-import-text').focus(); }
+        };
+        $('#pg-dn-route-import-apply').onclick = () => {
+            const r = parsePiwToolsRoute($('#pg-dn-route-import-text').value);
+            logEvent('rota-import', { etapas: r.route, avisos: r.avisos, evolucoes: r.evolucoes });
+            if (!r.route.length) { flash('✖ Não achei etapas "De / Até / Hunt desta etapa" no texto colado.', 'error'); return; }
+            $('#pg-dn-route').value = r.route.map(x => `${x.slug} ${x.level}`).join('\n');
+            $('#pg-dn-route-import-box').hidden = true;
+            dirty = true; renderDirty(); renderLive();
+            const extra = (r.evolucoes.length ? ` · evolui: ${r.evolucoes.join(', ')} (o script não evolui; faça no jogo)` : '')
+                + (r.avisos.length ? ` · ⚠ ${r.avisos.length} bloco(s) ignorado(s)` : '');
+            flash(`✔ ${r.route.length} etapas importadas: ${r.route.map(x => `${x.slug} ${x.level}`).join(' · ')}${extra}. Salve para valer.`, r.avisos.length ? 'warn' : 'ok', 12000);
+        };
+        $('#pg-dn-route-piwlink').onclick = () => {
+            const lider = teamLeader();
+            const q = new URLSearchParams({ tab: 'route', routeTarget: String(Math.max(levelTarget() || 0, (lider?.level || 1) + 50, 100)) });
+            if (lider?.name) { q.set('pokemon', normalize(lider.name)); q.set('level', String(lider.level || 1)); }
+            const url = `${PIWTOOLS_URL}?${q.toString()}`;
+            copyText(url).then(ok => flash(ok ? `✔ Link copiado${lider?.name ? ` (${lider.name} nível ${lider.level})` : ' (time ainda não lido: escolha o Pokémon no site)'}. Abra no navegador, copie as etapas e use "Importar do PIW Tools".` : `⚠ Não copiou. Link: ${url}`, ok ? 'ok' : 'warn', 9000));
+        };
+
         // ---- Sistema ----
         function renderReload() {
             $('#pg-dn-reload-status').textContent = cfg.reloadEnabled ? `Recarga ${reloadStatus()}` : 'Recarga desligada';
@@ -1968,12 +2029,13 @@
             renderReload();
             $('#pg-dn-debug').checked = cfg.debug;
             $('#pg-dn-import-box').hidden = true;
+            $('#pg-dn-route-import-box').hidden = true;
             renderLive();
         }
 
         // qualquer edição marca "não salvo" e recalcula resumos e badges
         const onEdit = (e) => {
-            if (e.target.closest('#pg-dn-import-box')) return;
+            if (e.target.closest('#pg-dn-import-box, #pg-dn-route-import-box')) return;
             if (!e.target.matches('input, select, textarea')) return;
             dirty = true;
             renderDirty();

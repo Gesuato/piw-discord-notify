@@ -96,6 +96,18 @@ setTimeout(() => {
         panel.querySelector('.dn-tab[data-tab=bolas]').click(); log('bolas=' + $('#pg-dn-balls-status').textContent.trim());
         panel.querySelector('.dn-tab[data-tab=sistema]').click(); log('socket=' + $('#pg-dn-socket').textContent);
         log('enviados=' + ws.sent.map(x => JSON.parse(x).type).join(','));
+        // ---- importar rota do PIW Tools (texto colado da aba Rota otimizada) ----
+        panel.querySelector('.dn-tab[data-tab=treino]').click();
+        $('#pg-dn-route-import').click();
+        $('#pg-dn-route-import-text').value = [
+            'Larvitar', '', 'De', '15', 'Até', '18', '', 'Hunt desta etapa', '', 'Gastly', '', 'Lv. 20', '', 'Bite', 'DARK', '2.5x', '327/h', 'KOs/h est.', '$18k/h', 'Editar etapa', 'Dividir', 'Remover', '',
+            'Larvitar', '', 'De', '19', 'Até', '27', '', 'Hunt desta etapa', '', 'Ledian', '', 'Lv. 40', 'Editar etapa', '',
+            'Pupitar', '', 'De', '28', 'Até', '59', '', 'Hunt desta etapa', '', 'Furious Scyther', '', 'Lv. 150', 'Remover',
+        ].join('\n');
+        $('#pg-dn-route-import-apply').click();
+        log('rota importada=' + JSON.stringify($('#pg-dn-route').value) + ' | boxHidden=' + $('#pg-dn-route-import-box').hidden + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 160));
+        $('#pg-dn-route-piwlink').click();
+        log('piwlink msg=' + $('#pg-dn-msg').textContent.slice(0, 120));
         // ---- guardar o avisado: liga os dois toggles, salva, captura um da lista e confere lock + família + webhook ----
         panel.querySelector('.dn-tab[data-tab=avisos]').click();
         $('#pg-dn-lock').checked = true; fire($('#pg-dn-lock'), 'change');

@@ -266,6 +266,26 @@ vivo. Se o `poke-delta` atrasar mais de 4 s, avisa sem guardar (registrado no lo
 
 ---
 
+## ✅ 14. Importar rota de treino do PIW Tools (v3.7.0)
+
+**O que faz:** na aba Treino, "Importar do PIW Tools" abre uma caixa onde o usuário cola o texto da aba
+"Rota otimizada" de https://piwtools.com.br/hunt (selecionar as etapas na página e Ctrl+C). O script lê os
+blocos "De / Até / Hunt desta etapa", converte cada um em `hunt nível` (nível = "De" da etapa seguinte; na
+última, o "Até"), preenche a rota e avisa as evoluções previstas pelo site (o script não evolui o Pokémon).
+"Copiar link do PIW Tools" copia a URL do gerador já com o líder e o nível atuais.
+
+**Por que texto colado:** o site calcula tudo no navegador com simulador próprio e dados públicos
+(`/creatures.json`, `/map-markers.json`); não há API e o "Copiar link" do site não inclui as etapas geradas.
+Reimplementar o cálculo seria copiar conteúdo autoral (aviso no próprio site). Créditos: Rakupo / bar (gcanivel).
+
+**Config/UI:** sem chave nova (escreve em `cfg.route` via o textarea; precisa Salvar). Log: `rota-import`.
+Teste: `node test/ui.smoke.js` (bloco "importar rota do PIW Tools").
+
+**Pendências:** o texto copiado depende do layout do site; se mudarem os rótulos "De/Até/Hunt desta etapa", o
+parser precisa acompanhar.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel
