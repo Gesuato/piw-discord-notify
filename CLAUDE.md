@@ -111,6 +111,13 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   (`parsePiwToolsRoute` na aba Treino → "Importar do PIW Tools"). Nível da nossa etapa = "De" da etapa seguinte
   (última: "Até"); slug da hunt = nome normalizado com `_` (confere nas 347 hunts do `map-markers.json`).
   "Copiar link do PIW Tools" monta a URL com o líder atual. Não reimplementar o cálculo do site (é autoral).
+- Daily Kill (v3.8.0, bundle em 25/09/2026): missão diária "derrote N de X" (1 de 3 opções), só por REST:
+  `GET /api/game/daily-kill` → `{ locked, claimed, pickedIdx, resetAt, reward:{xp,items}, options:[{ name, speciesId,
+  have, qty, done, xp }] }`; `POST /api/game/daily-kill/claim` → `{ state, payout:{ xp, level, leveledUp, items:[{label}] } }`.
+  O script NÃO escolhe missão (`/pick`, `/reroll` são do usuário). Com `dailyEnabled`, `dailyTick` consulta (30 s na
+  hunt da daily, 2 min fora), conta `field-kill` da espécie e, na meta, resgata (`dailyClaim`) e volta via
+  `switchHunt(slug, 1, 'daily')` para `dailyReturnSlug` > etapa da rota > `prevHuntSlug` (hunt anterior, guardada em
+  `setHunt`/`noteHuntChange` e no registro da recarga). Slug de hunt a partir de nome: `huntSlugFromName()` (global).
 - Nome do personagem: `window.__poke.api['/api/characters/me'].character.name` (mesmo caminho
   que o PokeGrid usa para nomear abas). NÃO usar `.phud-name` — é o Pokémon ativo, não a conta.
 
@@ -190,17 +197,19 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
 
 ## Como testar
 
-- **Testes isolados em Node** (sem DOM): `node test/level.test.js`, `node test/route.test.js` e
-  `node test/reload.test.js`. `test/harness.js` recorta módulos do userscript pelos marcadores
-  (`loadLevelModule`: `// ---- Alerta de nível do líder` até `// ---- Alerta de estoque de bolas`;
-  `loadReloadModule`: `// ---- Recarga automática do painel` até `// ---- Log persistente`) e os roda com
-  stubs de `sendGame`, `postWebhook`, `logEvent`, `saveCfg`, `localStorage`, `location` e timers (curtos
-  rodam na hora; >= 5 s ficam em `state.longTimers`; `clock.now` controla o `Date.now()` do módulo de
-  recarga). Ao mexer num módulo, rode os três; ao criar módulo novo, siga o mesmo padrão (marcadores + stubs).
+- **Testes isolados em Node** (sem DOM): `node test/level.test.js`, `node test/route.test.js`,
+  `node test/reload.test.js` e `node test/daily.test.js`. `test/harness.js` recorta módulos do userscript pelos
+  marcadores (`loadLevelModule`: `// ---- Alerta de nível do líder` até `// ---- Alerta de estoque de bolas`;
+  `loadDailyModule`: `// ---- Daily Kill` até `// ---- Recarga automática do painel`, com `init.api(url, opts)`
+  respondendo o REST; `loadReloadModule`: `// ---- Recarga automática do painel` até `// ---- Log persistente`) e os
+  roda com stubs de `sendGame`, `gameApi`, `postWebhook`, `logEvent`, `saveCfg`, `localStorage`, `location` e timers
+  (curtos rodam na hora; >= 5 s ficam em `state.longTimers`; `clock.now` controla o `Date.now()`). Ao mexer num
+  módulo, rode os quatro; ao criar módulo novo, siga o mesmo padrão (marcadores + stubs).
 - **Painel (DOM)**: `node test/ui.smoke.js` carrega o userscript inteiro no jsdom com WebSocket/fetch
   falsos, abre o painel, percorre as abas, edita, salva, testa canais, importa e simula hunt/drops/time/estoque
   chegando pelo socket; falha em qualquer erro de runtime. Precisa do jsdom (`npm i -g jsdom` + `NODE_PATH`
-  apontando para o `node_modules` global); sem ele o teste é pulado. Rodar sempre que mexer em `buildUI`.
+  apontando para o `node_modules` global, ou `npm i jsdom` numa pasta temporária e `NODE_PATH` para o
+  `node_modules` dela); sem ele o teste é pulado. Rodar sempre que mexer em `buildUI`.
   Chrome headless não funciona neste ambiente (sai sem output); use o jsdom.
 - Sempre `node --check piw-discord-notify.user.js` antes do commit.
 - Verificação manual: instalar no PokeGrid (ou colar no console de um navegador logado no jogo), usar

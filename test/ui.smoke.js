@@ -47,6 +47,7 @@ setTimeout(() => {
         log('venda=' + $('#pg-dn-sell-hunt').textContent.trim() + ' | ' + $('#pg-dn-sell-count').textContent + ' | lista=' + $('#pg-dn-sell-list').textContent.trim());
         log('treino level.disabled=' + $('#pg-dn-level').disabled + ' value=' + $('#pg-dn-level').value + ' | ' + $('#pg-dn-route-status').textContent + ' | itens=' + $('#pg-dn-route-list').children.length);
         log('team=' + $('#pg-dn-team').textContent);
+        log('daily=' + $('#pg-dn-daily-status').textContent + ' | claimPadrao=' + $('#pg-dn-daily-claim').checked);
         log('sistema=' + $('#pg-dn-reload-status').textContent + ' | ' + $('#pg-dn-socket').textContent);
         $('#pg-dn-ballsmin').value = 50; fire($('#pg-dn-ballsmin'), 'input');
         log('msg=' + $('#pg-dn-msg').textContent + ' saveIdle=' + $('#pg-dn-save').classList.contains('idle') + ' bolasBadge=' + panel.querySelector('.dn-tab[data-tab=bolas] .b').dataset.state + ' dot=' + $('#pg-dn-dot').dataset.state);
@@ -56,6 +57,15 @@ setTimeout(() => {
         const saved = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
         log('salvou msg=' + $('#pg-dn-msg').textContent);
         log('  ballsMin=' + saved.ballsMin + ' reserva=' + saved.autoBuyGoldReserve + ' routeStage=' + saved.routeStage + ' routeEnabled=' + saved.routeEnabled + ' levelAlertAt=' + saved.levelAlertAt + ' rota=' + JSON.stringify(saved.route) + ' sellItems=' + JSON.stringify(saved.sellItems));
+        // ---- Daily Kill: liga, escolhe hunt de volta, salva e confere status/cfg ----
+        panel.querySelector('.dn-tab[data-tab=treino]').click();
+        $('#pg-dn-daily').checked = true; fire($('#pg-dn-daily'), 'change');
+        $('#pg-dn-daily-return').value = 'Mr. Mime'; fire($('#pg-dn-daily-return'), 'input');
+        log('daily rascunho=' + $('#pg-dn-daily-status').textContent + ' | treinoBadge=' + panel.querySelector('.dn-tab[data-tab=treino] .b').dataset.state);
+        $('#pg-dn-save').click();
+        const cfgDaily = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+        log('daily salvo=' + cfgDaily.dailyEnabled + ' claim=' + cfgDaily.dailyClaim + ' volta=' + cfgDaily.dailyReturnSlug + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 160));
+        $('#pg-dn-daily').checked = false; fire($('#pg-dn-daily'), 'change'); $('#pg-dn-save').click();
         $('#pg-dn-route-reset').click(); log('reset1=' + $('#pg-dn-route-reset').textContent + ' | ' + $('#pg-dn-msg').textContent);
         $('#pg-dn-route-reset').click(); log('reset2=' + $('#pg-dn-msg').textContent);
         $('#pg-dn-hook').value = ''; fire($('#pg-dn-hook'), 'input');

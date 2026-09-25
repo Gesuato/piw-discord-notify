@@ -286,6 +286,35 @@ parser precisa acompanhar.
 
 ---
 
+## ✅ 15. Daily Kill: voltar para a hunt quando a missão do dia terminar (v3.8.0)
+
+**O que faz:** a "Daily Kill" (menu Quests, Tasks & Dailys) pede para derrotar N de um Pokémon escolhido entre 3.
+O usuário escolhe a missão e entra na hunt do Pokémon na mão; quando a meta bate, o script resgata a recompensa
+(opcional), sai da hunt e volta para a hunt de antes. Aviso no canal de Alertas com XP/itens e o destino.
+
+**Como o jogo faz (bundle do cliente, 25/09/2026):** não passa pelo socket. `GET /api/game/daily-kill` →
+`{ locked, minLevel, claimed, pickedIdx (-1 = não escolheu), resetAt, reward:{ xp, items }, options:[{ name,
+speciesId, have, qty, done, xp, type1 }], cards, rerollCost, rerollMax, rerolls }`; `POST /api/game/daily-kill/claim`
+→ `{ state, payout:{ xp, totalXp, level, leveledUp, items:[{ label }] } }`; `/pick { idx }` e `/reroll` existem, mas
+o script não escolhe missão. A janela do jogo repete o GET a cada 5 s. `GET /api/game/dailys-summary` traz o resumo
+(`kill:{ locked, claimed, picked, qty, have }`, `catch:{ used, total }`, `tasks:{ ready }`); a Daily Catch é outra
+missão (capturas premiadas), fora do escopo.
+
+**Lógica (`dailyTick`, módulo "Daily Kill"):** consulta a cada 30 s na hunt da daily (2 min fora dela) e a cada
+`field-kill` da espécie da missão conta o abate, antecipando a consulta quando a meta parece batida. "Na hunt da
+daily" = slug da hunt igual ao nome da missão OU abates da espécie vistos na hunt atual. Destino da volta:
+`dailyReturnSlug` > etapa atual da rota > hunt anterior (`prevHuntSlug`, guardado em `setHunt` e no registro da
+recarga). Troca via `switchHunt(slug, 1, 'daily')` (leave-hunt → enter-hunt, confirmação por `field`). Um tratamento
+por missão (`resetAt`); missão já resgatada quando o script a viu pela primeira vez não gera volta.
+
+**Config/UI:** `dailyEnabled`, `dailyClaim` (padrão ligado), `dailyReturnSlug`; seção "Daily Kill" na aba Treino com
+status ("Pidgey 3/5 · na hunt da daily · volta para larvitar"). Teste: `node test/daily.test.js`.
+
+**Pendências:** confirmar ao vivo o formato de `options[].done`/`have` e o payout do claim (levantados só no bundle).
+Não entra na hunt da daily sozinho (o usuário escolhe a missão e entra).
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

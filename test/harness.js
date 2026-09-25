@@ -85,6 +85,7 @@ function loadReloadModule(cfg, init) {
         autoBuyAttempted: {},
         levelAlerted: new Set(),
         lastFieldAt: init.lastFieldAt || 0,
+        prevHuntSlug: init.prevHuntSlug || null,
         setTimeout: (fn, ms) => { if (ms >= 5000) { state.longTimers.push(fn); return 99; } fn(); return 1; },
         clearTimeout: () => {},
         Date: FakeDate,
@@ -97,9 +98,56 @@ function loadReloadModule(cfg, init) {
             get resumeHunt() { return resumeHunt; },
             get lastSellAt() { return lastSellAt; },
             get levelAlerted() { return levelAlerted; },
+            get prevHuntSlug() { return prevHuntSlug; },
         };`);
     const api = factory(...Object.values(ctx));
     return { api, state, cfg, clock };
 }
 
-module.exports = { loadLevelModule, loadReloadModule, team, assert };
+// Extrai o módulo "Daily Kill" e o executa com stubs. `init.api(url, opts)` responde o REST do jogo
+// (GET /api/game/daily-kill e POST .../claim); `state.calls` guarda as chamadas, `state.switches` os switchHunt.
+const D_START = '    // ---- Daily Kill';
+const D_END = '    // ---- Recarga automática do painel';
+
+function loadDailyModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(D_START), b = src.indexOf(D_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo da daily não encontrados no script');
+    const mod = src.slice(a, b);
+
+    const clock = { now: Date.now() };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const state = { calls: [], switches: [], hooks: [], logs: [], pokesReqs: 0, longTimers: [] };
+    const normalize = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    const ctx = {
+        cfg,
+        gameApi: (url, opts) => { state.calls.push({ url, opts }); return Promise.resolve().then(() => init.api(url, opts)); },
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
+        switchHunt: (slug, tentativa, origem) => state.switches.push({ slug, tentativa, origem }),
+        requestPokes: () => { state.pokesReqs++; },
+        playerName: () => 'Teste',
+        normalize,
+        huntSlugFromName: (name) => normalize(name).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''),
+        fmtNum: (n) => String(n),
+        routeStep: () => init.routeStep || null,
+        huntSlug: init.huntSlug != null ? init.huntSlug : null,
+        CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp'],
+        setTimeout: (fn, ms) => { if (ms >= 5000) { state.longTimers.push(fn); return 99; } fn(); return 1; },
+        clearTimeout: () => {},
+        Date: FakeDate,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            dailyTick, noteDailyKill, noteHuntChange, dailyStatus, dailyReturnTarget, dailyOnHunt,
+            setHunt(slug) { huntSlug = slug; noteHuntChange(slug); },
+            get daily() { return daily; },
+            get prevHuntSlug() { return prevHuntSlug; },
+            get dailyHandledReset() { return dailyHandledReset; },
+        };`);
+    const api = factory(...Object.values(ctx));
+    return { api, state, cfg, clock };
+}
+
+module.exports = { loadLevelModule, loadReloadModule, loadDailyModule, team, assert };

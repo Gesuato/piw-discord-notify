@@ -73,6 +73,15 @@ e `error { message }` (resposta de ação recusada; o script os trata em `handle
   da loja; a lista vem do frame `pokes` filtrado por `!team && !starter && !shiny && sellValue > 0 && !locked`.
 - `GET /api/game/depot`, `POST /api/game/depot/move { itemId, dir }` / `{ all:true }` — depósito comum de ITENS
   (NPC Depot). Pokémon no depósito comum = `poke-store`/`poke-withdraw` pelo socket (é o "box").
+- Dailys (menu "Quests, Tasks & Dailys", levantado em 25/09/2026; nada passa pelo socket, a janela repete o GET a
+  cada 5 s): `GET /api/game/daily-kill` → `{ locked, minLevel, tierLabel, claimed, pickedIdx (-1 = não escolheu),
+  resetAt, reward:{ xp, items:[{ itemId, qty, name, icon }] }, options:[{ name, speciesId, looktype, type1, type2,
+  have, qty, done, xp }], cards, rerollCost, rerollMax, rerolls }`; `POST /api/game/daily-kill/pick { idx }`;
+  `POST /api/game/daily-kill/reroll {}` → estado novo; `POST /api/game/daily-kill/claim {}` → `{ state, payout:{ xp,
+  totalXp, level, leveledUp, items:[{ label }] } }`. Usado pelo script em `dailyTick`/`handleDailyState` (v3.8.0).
+  `GET /api/game/daily-catch` (Daily Catch: capturas premiadas por faixa, `tiers[]`) e `GET /api/game/dailys-summary`
+  → `{ tasks:{ ready }, kill:{ locked, claimed, picked, qty, have }, catch:{ used, total } }` existem, não usados.
+  `GET /api/game/daily` é o Daily Gift (calendário de 28 dias), outra coisa.
 
 ## Ideias que esses nomes destravam
 

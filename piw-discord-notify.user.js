@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.7.0
+// @version      3.8.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.7.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.8.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -46,6 +46,9 @@
         routeEnabled: false,    // seguir a rota de treino (etapas hunt + nível); implica levelSwap
         route: [],              // [{ slug, level }] em ordem
         routeStage: 0,          // índice da etapa atual (persistido; >= route.length = concluída)
+        dailyEnabled: false,    // Daily Kill: ao bater a meta da missão do dia, voltar para a hunt de antes
+        dailyClaim: true,       // ...e resgatar a recompensa sozinho (POST /api/game/daily-kill/claim)
+        dailyReturnSlug: '',    // hunt fixa para voltar; vazio = etapa da rota, senão a hunt anterior à daily
         reloadEnabled: false,   // recarregar este painel sozinho (igual ao "⟳ Atualizar tudo" do PokeGrid)
         reloadEveryMin: 60,     // intervalo mínimo da recarga (minutos)
         reloadEveryMaxMin: 0,   // intervalo máximo; 0 ou <= mínimo = fixo. Entre os dois é sorteado
@@ -80,6 +83,9 @@
             .replace(/[̀-ͯ]/g, '')
             .trim();
     }
+
+    // Nome de Pokémon/hunt -> slug de hunt do jogo (minúsculas, sem acento, `_` no lugar de espaço/ponto).
+    function huntSlugFromName(name) { return normalize(name).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''); }
 
     function playerName() {
         // mesmo caminho que o PokeGrid usa para nomear as abas
@@ -442,8 +448,9 @@
         else requestPokes(POKES_MIN_GAP_MS); // rota acabou: só atualiza o painel
     }
 
-    // origem: 'rota' (padrão) ou 'recarga' (volta para a hunt depois da recarga automática; a conta
-    // já está na cidade, então não manda leave-hunt e o aviso de falha vai para o webhook de alertas).
+    // origem: 'rota' (padrão), 'recarga' (volta para a hunt depois da recarga automática; a conta já está
+    // na cidade, então não manda leave-hunt) ou 'daily' (volta depois da Daily Kill). Recarga e daily avisam
+    // a falha no webhook de alertas; a rota, no de nível.
     function switchHunt(slug, tentativa, origem) {
         origem = origem || 'rota';
         if (huntSwitch?.timer) clearTimeout(huntSwitch.timer);
@@ -471,15 +478,17 @@
         if (huntSwitch.tries < 2) { switchHunt(slug, huntSwitch.tries + 1, origem); return; }
         logEvent('hunt-falhou', { slug, origem });
         huntSwitch = null;
-        const recarga = origem === 'recarga';
-        postWebhook(recarga ? 'alert' : 'level', {
-            content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: não consegui ${recarga ? 'voltar para a' : 'entrar na'} hunt **${slug}** (${recarga ? 'depois da recarga automática' : 'rota'})`,
+        const t = {
+            recarga: { verbo: 'voltar para a', quando: 'depois da recarga automática', titulo: `Recarga: volta para ${slug} não confirmou`, dica: 'A conta deve estar na cidade: entre na hunt na mão.' },
+            daily: { verbo: 'voltar para a', quando: 'depois da Daily Kill', titulo: `Daily Kill: volta para ${slug} não confirmou`, dica: 'Confira o nome da hunt em "Voltar para" (ou entre na hunt na mão).' },
+            rota: { verbo: 'entrar na', quando: 'rota', titulo: `Rota: entrada em ${slug} não confirmou`, dica: 'Confira o nome da hunt (é o mesmo que aparece em "Hunt atual") e entre na mão; a rota continua da etapa atual.' },
+        }[origem] || { verbo: 'entrar na', quando: origem, titulo: `Entrada em ${slug} não confirmou`, dica: 'Entre na hunt na mão.' };
+        postWebhook(origem === 'rota' ? 'level' : 'alert', {
+            content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: não consegui ${t.verbo} hunt **${slug}** (${t.quando})`,
             username: 'Poke Idle World',
             embeds: [{
-                title: recarga ? `Recarga: volta para ${slug} não confirmou` : `Rota: entrada em ${slug} não confirmou`,
-                description: (who ? `Conta: ${who}\n` : '') + (recarga
-                    ? 'Nenhum frame de combate chegou em 30 s após duas tentativas. A conta deve estar na cidade: entre na hunt na mão.'
-                    : 'Nenhum frame de combate chegou em 30 s após duas tentativas. Confira o nome da hunt (é o mesmo que aparece em "Hunt atual") e entre na mão; a rota continua da etapa atual.'),
+                title: t.titulo,
+                description: (who ? `Conta: ${who}\n` : '') + `Nenhum frame de combate chegou em 30 s após duas tentativas. ${t.dica}`,
                 color: 0xed4245,
             }],
         }, { evento: 'hunt-falhou', slug, origem });
@@ -772,6 +781,7 @@
         if (novo === huntSlug) return;
         huntSlug = novo;
         huntLoot.clear();
+        noteHuntChange(novo);
         loadHuntProfile();
         logEvent('hunt', { slug: huntSlug });
         if (onHuntLootChange) onHuntLootChange();
@@ -900,6 +910,194 @@
         }, { evento: 'bolas', ballId: id, qty });
     }
 
+    // ---- Daily Kill: voltar para a hunt quando a missão do dia terminar ----------
+    // A "Daily Kill" (menu Quests, Tasks & Dailys do jogo) é uma missão diária: o jogador escolhe 1 de 3
+    // Pokémon, derrota `qty` deles e resgata XP + itens. Não passa pelo socket — o cliente consulta por REST
+    // (levantado no bundle em 25/09/2026; a janela do jogo repete o GET a cada 5 s enquanto está aberta):
+    //   GET  /api/game/daily-kill       -> { locked, minLevel, claimed, pickedIdx (-1 = não escolheu), resetAt,
+    //                                       reward:{ xp, items }, options:[{ name, speciesId, have, qty, done, xp,
+    //                                       type1, type2 }], cards, rerollCost, rerollMax, rerolls }
+    //   POST /api/game/daily-kill/claim -> { state, payout:{ xp, totalXp, level, leveledUp, items:[{ label }] } }
+    //   POST /api/game/daily-kill/pick { idx } e /reroll existem, mas o script NÃO escolhe a missão (é do usuário).
+    // Fluxo: o usuário escolhe a missão e entra na hunt do Pokémon na mão. O script consulta o estado a cada
+    // 30 s enquanto a conta está na hunt da daily (2 min fora dela) e, a cada `field-kill` da espécie da missão,
+    // conta o abate e antecipa a consulta quando a meta parece batida. Terminou: resgata (opcional), sai da
+    // hunt e volta via switchHunt(origem 'daily') para: o campo "Voltar para", senão a etapa atual da rota,
+    // senão a hunt em que a conta estava antes da daily (`prevHuntSlug`, guardado a cada troca de hunt e no
+    // registro da recarga automática). Um tratamento por missão (`dailyHandledReset` = resetAt tratada).
+    // Missão já resgatada quando o script a viu pela primeira vez (ex.: depois de um reload) não gera volta.
+
+    const DAILY_URL = '/api/game/daily-kill';
+    const DAILY_CLAIM_URL = '/api/game/daily-kill/claim';
+    const DAILY_CHECK_MS = 30 * 1000;           // tique
+    const DAILY_POLL_HUNT_MS = 30 * 1000;       // consulta na hunt da daily
+    const DAILY_POLL_IDLE_MS = 2 * 60 * 1000;   // consulta fora dela (só para saber se há missão escolhida)
+    const DAILY_AFTER_KILL_MS = 2500;           // antecipação da consulta depois do abate que fecha a meta
+
+    let daily = null;               // último estado lido (ver parseDaily)
+    let dailyFetchedAt = 0;
+    let dailyRunning = false;
+    let dailyHandledReset = 0;      // resetAt da missão já tratada (não repete resgate/volta)
+    let dailySeenUnclaimed = false; // vimos a missão escolhida e ainda não resgatada nesta sessão
+    let dailyKillsHere = 0;         // abates da espécie da missão vistos na hunt atual
+    let dailyKillTimer = null;
+    let dailySig = '';
+    let prevHuntSlug = null;        // hunt (não cidade) anterior à atual: para onde voltar depois da daily
+    let lastRealHunt = null;        // última hunt (não cidade) vista
+    let onDailyChange = null;       // callback do painel para redesenhar o status
+
+    function dailyEnabled() { return Boolean(cfg.dailyEnabled); }
+
+    // Chamado por setHunt() a cada troca de hunt.
+    function noteHuntChange(novo) {
+        const slug = novo ? normalize(novo) : null;
+        if (!slug || CITY_SLUGS.includes(slug)) return;
+        if (lastRealHunt && lastRealHunt !== slug) prevHuntSlug = lastRealHunt;
+        if (lastRealHunt !== slug) dailyKillsHere = 0;
+        lastRealHunt = slug;
+        if (dailyEnabled()) scheduleDailyCheck(DAILY_AFTER_KILL_MS); // hunt nova: consulta a daily logo
+    }
+
+    function parseDaily(s) {
+        const opts = Array.isArray(s?.options) ? s.options : [];
+        const idx = Number(s?.pickedIdx);
+        const m = Number.isInteger(idx) && idx >= 0 ? opts[idx] : null;
+        const qty = Math.max(0, Number(m?.qty) || 0);
+        const have = Math.max(0, Number(m?.have) || 0);
+        return {
+            locked: Boolean(s?.locked),
+            claimed: Boolean(s?.claimed),
+            resetAt: Number(s?.resetAt) || 0,
+            picked: Boolean(m),
+            name: m?.name ? String(m.name) : null,
+            slug: m?.name ? huntSlugFromName(m.name) : null,
+            have, qty,
+            done: Boolean(m) && (m.done === true || (qty > 0 && have >= qty)),
+            xp: Number(s?.reward?.xp) || 0,
+        };
+    }
+    function dailyOnHunt() {
+        if (!daily?.picked || !huntSlug) return false;
+        const h = normalize(huntSlug);
+        if (CITY_SLUGS.includes(h)) return false;
+        return h === daily.slug || dailyKillsHere > 0;
+    }
+    // Para onde voltar (d = cfg ou rascunho do painel): campo fixo > etapa da rota > hunt anterior.
+    function dailyReturnTarget(d) {
+        d = d || cfg;
+        const fixo = huntSlugFromName(d.dailyReturnSlug || '');
+        if (fixo) return fixo;
+        const st = routeStep();
+        if (st?.slug) return st.slug;
+        return prevHuntSlug || null;
+    }
+    function dailyStatus(d) {
+        d = d || cfg;
+        if (!d.dailyEnabled) return 'desligada';
+        if (!daily) return dailyFetchedAt ? 'não consegui ler a missão (veja o log)' : 'ainda não lida';
+        if (daily.locked) return 'bloqueada no seu nível';
+        if (!daily.picked) return 'nenhuma missão escolhida (escolha no jogo, em Dailys)';
+        const meta = `${daily.name} ${fmtNum(daily.have)}/${fmtNum(daily.qty)}`;
+        if (daily.claimed) return `${meta} · concluída e resgatada hoje`;
+        if (daily.done) return `${meta} · meta batida${d.dailyClaim ? ', resgatando' : ' (resgate no jogo)'}`;
+        const dest = dailyReturnTarget(d);
+        return `${meta} · ${dailyOnHunt() ? 'na hunt da daily' : 'fora da hunt da daily'} · volta para ${dest || '? (entre numa hunt antes ou preencha "Voltar para")'}`;
+    }
+
+    function scheduleDailyCheck(ms) {
+        if (!dailyEnabled()) return;
+        clearTimeout(dailyKillTimer);
+        dailyKillTimer = setTimeout(() => { dailyKillTimer = null; dailyTick(true); }, ms);
+    }
+
+    // field-kill da espécie da missão: conta o abate; meta aparentemente batida antecipa a consulta.
+    function noteDailyKill(message) {
+        if (!dailyEnabled() || !daily?.picked || daily.claimed || !message?.speciesName) return;
+        if (normalize(message.speciesName) !== normalize(daily.name)) return;
+        dailyKillsHere++;
+        if (!daily.done) {
+            daily.have++;
+            if (daily.have >= daily.qty) scheduleDailyCheck(DAILY_AFTER_KILL_MS);
+        }
+        if (onDailyChange) { try { onDailyChange(); } catch { /* painel fechado */ } }
+    }
+
+    function dailyTick(force) {
+        if (!dailyEnabled() || dailyRunning) return;
+        const gap = dailyOnHunt() ? DAILY_POLL_HUNT_MS : DAILY_POLL_IDLE_MS;
+        if (!force && dailyFetchedAt && Date.now() - dailyFetchedAt < gap) return;
+        return refreshDaily().then(() => (daily ? handleDailyState() : undefined));
+    }
+
+    async function refreshDaily() {
+        dailyRunning = true;
+        try {
+            const novo = parseDaily(await gameApi(DAILY_URL));
+            if (daily && novo.resetAt !== daily.resetAt) { dailySeenUnclaimed = false; dailyKillsHere = 0; } // virou o dia
+            daily = novo;
+            if (daily.picked && !daily.claimed) dailySeenUnclaimed = true;
+            const sig = JSON.stringify([daily.picked, daily.name, daily.done, daily.claimed, daily.locked, daily.resetAt]);
+            if (sig !== dailySig) {
+                dailySig = sig;
+                logEvent('daily', { missao: daily.name, have: daily.have, qty: daily.qty, done: daily.done, resgatada: daily.claimed, bloqueada: daily.locked, naHunt: dailyOnHunt(), volta: dailyReturnTarget() });
+            }
+        } catch (err) {
+            logEvent('daily-erro', { erro: String(err?.message || err) });
+        } finally {
+            dailyFetchedAt = Date.now();
+            dailyRunning = false;
+            if (onDailyChange) { try { onDailyChange(); } catch { /* painel fechado */ } }
+        }
+    }
+
+    async function handleDailyState() {
+        const d = daily;
+        if (!d.picked || d.locked) return;
+        if (!(d.done || d.claimed)) return;                       // ainda caçando
+        const marca = d.resetAt || Math.floor(Date.now() / 86400000);
+        if (dailyHandledReset === marca) return;                    // já tratada
+        dailyHandledReset = marca;
+        const onHunt = dailyOnHunt();
+        if (d.claimed && !dailySeenUnclaimed) {                     // já estava resgatada quando a vimos: não foi a gente
+            logEvent('daily-pronta', { missao: d.name, resgatada: true, naHunt: onHunt, acao: 'nada (já estava resgatada)' });
+            return;
+        }
+        let payout = null, erroResgate = null;
+        if (!d.claimed && cfg.dailyClaim) {
+            try {
+                const r = await gameApi(DAILY_CLAIM_URL, { method: 'POST', body: '{}' });
+                payout = r?.payout || {};
+                d.claimed = true;
+                if (r?.state) daily = Object.assign(parseDaily(r.state), { claimed: true });
+                requestPokes(1500);                                 // o XP foi para o líder: reconfere nível/rota
+            } catch (err) { erroResgate = String(err?.message || err); }
+        }
+        const dest = onHunt ? dailyReturnTarget() : null;
+        const atual = huntSlug ? normalize(huntSlug) : null;
+        const volta = Boolean(dest && dest !== atual);
+        if (volta) switchHunt(dest, 1, 'daily');
+        logEvent('daily-pronta', { missao: d.name, have: d.have, qty: d.qty, resgatada: d.claimed, xp: payout ? (Number(payout.xp) || 0) : null, erroResgate, naHunt: onHunt, volta: volta ? dest : null });
+        const who = playerName();
+        const mention = cfg.mentionUserId ? `<@${cfg.mentionUserId}> ` : '';
+        const itens = Array.isArray(payout?.items) ? payout.items.map(i => i?.label || i?.name).filter(Boolean) : [];
+        const recompensa = payout
+            ? `Recompensa: +${fmtNum(Number(payout.xp) || 0)} XP${itens.length ? ` · ${itens.join(' · ')}` : ''}${payout.leveledUp ? ` · líder subiu para o nível ${payout.level}` : ''}`
+            : erroResgate ? `Resgate falhou: ${erroResgate} — resgate no jogo, em Dailys`
+            : d.claimed ? 'Recompensa resgatada no jogo' : 'Resgate automático desligado: resgate no jogo, em Dailys';
+        const destino = volta ? `Voltando para a hunt **${dest}**`
+            : onHunt ? 'Não sei para onde voltar: entre na hunt na mão (ou preencha "Voltar para" no painel 🔔)'
+            : `A conta não estava na hunt da daily (segue em ${atual || 'cidade'})`;
+        postWebhook('alert', {
+            content: `${mention}✅ ${who ? `**${who}**` : 'Sua conta'} terminou a Daily Kill (**${d.name}**)${volta ? ` — voltando para **${dest}**` : ''}`,
+            username: 'Poke Idle World',
+            embeds: [{
+                title: `Daily Kill concluída: ${d.name}`,
+                description: (who ? `Conta: ${who}\n` : '') + `Missão: ${d.name} ${fmtNum(d.have)}/${fmtNum(d.qty)}\n${recompensa}\n${destino}\nEm ${new Date().toLocaleString('pt-BR')}`,
+                color: volta || !onHunt ? 0x57f287 : 0xfee75c,
+            }],
+        }, { evento: 'daily-pronta', missao: d.name, volta: volta ? dest : null });
+    }
+
     // ---- Recarga automática do painel -------------------------------------
     // Faz o que o botão "⟳ Atualizar tudo" do PokeGrid faz (reload do webview), mas só neste painel e em
     // intervalo sorteado dentro de [reloadEveryMin, reloadEveryMaxMin] minutos. O PokeGrid injeta o script
@@ -962,6 +1160,7 @@
         const rec = {
             at: Date.now(),
             slug: huntSlug,
+            prevSlug: prevHuntSlug,
             lastSellAt,
             ballAlerted: Object.assign({}, ballAlerted),
             autoBuyAttempted: Object.assign({}, autoBuyAttempted),
@@ -997,6 +1196,7 @@
         for (const id of (Array.isArray(rec.levelAlerted) ? rec.levelAlerted : [])) levelAlerted.add(String(id));
         const slug = rec.slug ? normalize(rec.slug) : null;
         resumeHunt = slug && !CITY_SLUGS.includes(slug) ? slug : null;
+        if (rec.prevSlug) prevHuntSlug = normalize(rec.prevSlug);   // para onde a daily volta
         logEvent('recarga-retomada', { hunt: resumeHunt, idadeS: Math.round(idade / 1000) });
     }
     // Arma a volta para a hunt: chamado ao rastrear o socket (fallback) e quando a SPA manda `set-city`.
@@ -1218,7 +1418,7 @@
         if (message.type === 'error') { handleGameError(message); return; }
         if (message.type === 'poke-xp') { handlePokeXp(message); return; }
         if (message.type === 'field' || message.type === 'field-init') { lastFieldAt = Date.now(); return; }
-        if (message.type === 'field-kill') { noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); return; }
+        if (message.type === 'field-kill') { noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
         if (message.type === 'pokes' && Array.isArray(message.list)) { updateTeam(message.list); handlePokesList(message.list); return; }
 
@@ -1459,12 +1659,14 @@
             case 'venda':
                 if (!d.sellEnabled) return 'off';
                 return (Object.keys(d.sellItems || {}).length && temAlertas) ? 'on' : 'warn';
-            case 'treino':
-                if (!(d.routeEnabled || (Number(d.levelAlertAt) || 0) > 0)) return 'off';
+            case 'treino': {
+                const nivel = d.routeEnabled || (Number(d.levelAlertAt) || 0) > 0;
+                if (!(nivel || d.dailyEnabled)) return 'off';
                 if (d.routeEnabled && (!rota.length || (Number(cfg.routeStage) || 0) >= rota.length)) return 'warn';
-                if (!(d.webhookLevel || '').trim()) return 'warn';
-                if (d.routeEnabled && !temAlertas) return 'warn'; // troca de hunt avisa em Alertas
+                if (nivel && !(d.webhookLevel || '').trim()) return 'warn';
+                if ((d.routeEnabled || d.dailyEnabled) && !temAlertas) return 'warn'; // troca de hunt e daily avisam em Alertas
                 return 'on';
+            }
             case 'sistema': return d.reloadEnabled ? 'on' : 'off';
         }
         return 'off';
@@ -1476,7 +1678,7 @@
             `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
             `Bolas: ${moduleState('bolas', d) === 'off' ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}`,
             `Venda: ${d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} itens / ${d.sellEveryMin}${d.sellEveryMaxMin > d.sellEveryMin ? `–${d.sellEveryMaxMin}` : ''} min` : 'desligada'}`,
-            `Treino: ${d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : 'desligado')}`,
+            `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? 'daily' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
         ].join(' · ');
     }
@@ -1611,6 +1813,14 @@
                         <div class="dn-status col"><div id="pg-dn-route-status"></div><ol class="dn-route" id="pg-dn-route-list"></ol></div>
                         <div class="dn-actions"><button type="button" class="dn-btn dn-btn--danger" id="pg-dn-route-reset" title="Volta à 1ª etapa.">Reiniciar rota</button></div>
                     </div>
+                    <div class="dn-section">
+                        <h3>Daily Kill</h3>
+                        <label class="dn-toggle"><input id="pg-dn-daily" type="checkbox"><span class="sw"></span>Voltar para a hunt quando a missão do dia terminar</label>
+                        <label class="dn-toggle"><input id="pg-dn-daily-claim" type="checkbox"><span class="sw"></span>Resgatar a recompensa sozinho</label>
+                        <label class="dn-field"><span>Voltar para</span><input id="pg-dn-daily-return" class="dn-input" type="text" placeholder="vazio = hunt de antes (ou a etapa da rota)" spellcheck="false"></label>
+                        <p class="dn-help">Escolha a missão em Dailys e entre na hunt do Pokémon no jogo. Quando a meta bater, o script resgata (se marcado), sai da hunt e volta. Aviso no canal de Alertas.</p>
+                        <div class="dn-status"><span>⚔️</span><span id="pg-dn-daily-status"></span></div>
+                    </div>
                 </section>
                 <section class="dn-pane" data-pane="sistema" hidden>
                     <div class="dn-section">
@@ -1720,6 +1930,9 @@
                 levelSwap: $('#pg-dn-level-swap').checked,
                 route,
                 routeEnabled: $('#pg-dn-route-on').checked && route.length > 0,
+                dailyEnabled: $('#pg-dn-daily').checked,
+                dailyClaim: $('#pg-dn-daily-claim').checked,
+                dailyReturnSlug: huntSlugFromName($('#pg-dn-daily-return').value),
                 watchList: $('#pg-dn-list').value.split(',').map(normalize).filter(Boolean),
                 notifyShiny: $('#pg-dn-shiny').checked,
                 notifyEveryCapture: $('#pg-dn-all').checked,
@@ -1899,6 +2112,11 @@
             renderLevelField();
         }
         onTeamChange = () => { if (!panel.hidden) { renderTeam(); renderRoute(); } };
+        function renderDaily() {
+            const d = current();
+            $('#pg-dn-daily-status').textContent = d.dailyEnabled ? `Daily: ${dailyStatus(d)}` : 'Daily desligada';
+        }
+        onDailyChange = () => { if (!panel.hidden) renderDaily(); };
         $('#pg-dn-team-refresh').onclick = () => {
             lastPokesReqAt = 0;
             const ok = sendGame({ type: 'pokes-get' });
@@ -1928,7 +2146,6 @@
         // "<hunt>", "Lv. <n>", golpe, XP/h... Só De/Até/Hunt interessam. O nível de cada etapa da NOSSA rota é
         // o "De" da etapa seguinte (quando o time chega lá, troca de hunt); na última, o "Até".
         const PIWTOOLS_URL = 'https://piwtools.com.br/hunt';
-        function huntSlugFromName(name) { return normalize(name).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''); }
         function parsePiwToolsRoute(text) {
             const lines = String(text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
             const steps = [], avisos = [];
@@ -1990,7 +2207,7 @@
 
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSellCount(); renderRoute(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSellCount(); renderRoute(); renderDaily(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -2023,6 +2240,9 @@
             $('#pg-dn-route').value = routeList().map(r => `${r.slug} ${r.level}`).join('\n');
             $('#pg-dn-route-on').checked = Boolean(cfg.routeEnabled);
             renderTeam();
+            $('#pg-dn-daily').checked = Boolean(cfg.dailyEnabled);
+            $('#pg-dn-daily-claim').checked = cfg.dailyClaim !== false;
+            $('#pg-dn-daily-return').value = cfg.dailyReturnSlug || '';
             $('#pg-dn-reload').checked = Boolean(cfg.reloadEnabled);
             $('#pg-dn-reload-min').value = cfg.reloadEveryMin || 60;
             $('#pg-dn-reload-max').value = cfg.reloadEveryMaxMin || '';
@@ -2069,6 +2289,7 @@
             const alvoAntes = levelTarget(), swapAntes = swapEnabled();
             const rotaAntes = JSON.stringify(routeList());
             const recargaAntes = JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]);
+            const dailyAntes = JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug]);
             Object.assign(cfg, draft);
             if (JSON.stringify(routeList()) !== rotaAntes) cfg.routeStage = 0; // rota editada: recomeça
             // Alvo ou troca mudaram: reavalia o time inteiro (antes, ligar a troca depois do aviso não fazia nada).
@@ -2080,6 +2301,7 @@
             drawSellDelay(); // faixa mudou: sorteia de novo
             saveHuntProfile();
             if (JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]) !== recargaAntes) scheduleReload(); // faixa mudou: sorteia de novo
+            if (JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug]) !== dailyAntes) scheduleDailyCheck(500); // daily mudou: lê a missão já
             cfg.cfgVersion = 2;
             saveCfg(cfg);
             dirty = false;
@@ -2088,7 +2310,7 @@
             if (cfg.autoBuy && !cfg.ballsMin) avisos.push('⚠ Compra com limite 0: só compra quando a bola acabar.');
             if (linhasRuins.length) avisos.push(`⚠ Rota: ${linhasRuins.length} linha(s) ignorada(s) (formato "hunt nível"): ${linhasRuins.map(l => `"${l}"`).join(', ')}`);
             if (!cfg.webhookUrl) avisos.push('⚠ Sem canal de Capturas: capturas não serão enviadas.');
-            const usaAlertas = [effectiveBallsMin() > 0 && 'bolas', cfg.sellEnabled && 'venda', routeActive() && 'troca de hunt'].filter(Boolean);
+            const usaAlertas = [effectiveBallsMin() > 0 && 'bolas', cfg.sellEnabled && 'venda', routeActive() && 'troca de hunt', cfg.dailyEnabled && 'daily'].filter(Boolean);
             if (usaAlertas.length && !cfg.webhookAlerts) avisos.push(`⚠ Sem canal de Alertas: avisos de ${usaAlertas.join(', ')} não serão enviados.`);
             if (levelEnabled() && !cfg.webhookLevel) avisos.push('⚠ Sem canal de Nível: avisos de nível/troca de líder não serão enviados.');
             const nivel = levelEnabled() ? ` · conferindo o time para o nível ${levelTarget()}${swapEnabled() ? ' (com troca)' : ''}…` : '';
@@ -2119,7 +2341,7 @@
                 canais.push('alertas');
                 postWebhook('alert', {
                     username: 'Poke Idle World',
-                    embeds: [{ title: 'Teste: canal de alertas', description: 'Aqui chegarão estoque de bolas, compras, vendas e trocas de hunt.', color: 0xfee75c }],
+                    embeds: [{ title: 'Teste: canal de alertas', description: 'Aqui chegarão estoque de bolas, compras, vendas, trocas de hunt e a Daily Kill.', color: 0xfee75c }],
                 }, { test: true });
             }
             if (cfg.webhookLevel) {
@@ -2216,6 +2438,8 @@
     setInterval(() => requestPokes(0), POKES_POLL_MS);
     setInterval(sellTick, SELL_CHECK_MS);
     setInterval(reloadTick, RELOAD_CHECK_MS);
+    setInterval(dailyTick, DAILY_CHECK_MS);
+    if (cfg.dailyEnabled) scheduleDailyCheck(5000); // lê a missão do dia logo na carga (REST, não depende do socket)
 
     console.log(TAG, `v${VERSION} ativo.`, 'Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
@@ -2224,6 +2448,7 @@
         '| compra auto:', cfg.autoBuy ? `${cfg.autoBuyQty} un.` : 'não',
         '| nível:', levelEnabled() ? `${levelTarget()}${swapEnabled() ? ' + troca' : ''}` : 'não',
         '| rota:', routeActive() ? routeStatus() : 'não',
+        '| daily:', cfg.dailyEnabled ? `volta para ${dailyReturnTarget() || 'a hunt anterior'}${cfg.dailyClaim ? ' + resgate' : ''}` : 'não',
         '| venda auto:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens / ${cfg.sellEveryMin}${cfg.sellEveryMaxMin > cfg.sellEveryMin ? `–${cfg.sellEveryMaxMin}` : ''} min` : 'não',
         '| recarga auto:', cfg.reloadEnabled ? `${cfg.reloadEveryMin}${cfg.reloadEveryMaxMin > cfg.reloadEveryMin ? `–${cfg.reloadEveryMaxMin}` : ''} min` : 'não');
 })();
