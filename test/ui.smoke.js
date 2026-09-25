@@ -45,6 +45,7 @@ setTimeout(() => {
         for (const t of panel.querySelectorAll('.dn-tab')) { t.click(); log('aba ' + t.dataset.tab + ' badge=' + t.querySelector('.b').dataset.state + ' paneVisivel=' + !panel.querySelector('[data-pane=' + t.dataset.tab + ']').hidden); }
         log('bolas=' + $('#pg-dn-balls-status').textContent.trim() + ' | warn0=' + !$('#pg-dn-autobuy-warn').hidden);
         log('venda=' + $('#pg-dn-sell-hunt').textContent.trim() + ' | ' + $('#pg-dn-sell-count').textContent + ' | lista=' + $('#pg-dn-sell-list').textContent.trim());
+        log('psell=' + $('#pg-dn-psell-status').textContent.trim() + ' | tier=' + $('#pg-dn-psell-tier').value + ' lbl=' + $('#pg-dn-psell-high-lbl').textContent);
         log('treino level.disabled=' + $('#pg-dn-level').disabled + ' value=' + $('#pg-dn-level').value + ' | ' + $('#pg-dn-route-status').textContent + ' | itens=' + $('#pg-dn-route-list').children.length);
         log('team=' + $('#pg-dn-team').textContent);
         log('daily=' + $('#pg-dn-daily-status').textContent + ' | claimPadrao=' + $('#pg-dn-daily-claim').checked);
@@ -117,7 +118,7 @@ setTimeout(() => {
         const recv = (obj) => ws.dispatchEvent(new window.MessageEvent('message', { data: JSON.stringify(obj) }));
         ws.send(JSON.stringify({ type: 'enter-hunt', slug: 'pidgey' }));
         recv({ type: 'field-kill', speciesName: 'Pidgey', xpGained: 10, level: 12, loot: [{ itemId: 1, name: 'Pidgey Feather', qty: 2 }, { itemId: 2, name: 'Rare Candy', qty: 1 }] });
-        recv({ type: 'pokes', list: [{ id: 'a', speciesId: 1, name: 'Larvitar', level: 12, team: true, slot: 0, leader: true }, { id: 'b', speciesId: 2, name: 'Pidgey', level: 10, team: true, slot: 1 }] });
+        recv({ type: 'pokes', list: [{ id: 'a', speciesId: 1, name: 'Larvitar', level: 12, team: true, slot: 0, leader: true }, { id: 'b', speciesId: 2, name: 'Pidgey', level: 10, team: true, slot: 1 }, { id: 'c', speciesId: 19, name: 'Rattata', level: 3, team: false, sellValue: 100, ivTotal: 40, quality: 1.0 }, { id: 'd', speciesId: 147, name: 'Dratini', level: 3, team: false, sellValue: 500, ivTotal: 160, quality: 1.7 }] });
         recv({ type: 'catch-result', success: true, speciesName: 'Pidgey', shiny: false, ballId: 4, ballName: 'Ultra Ball' });
         recv({ type: 'balls', counts: { 4: 1240 } });
         panel.querySelector('.dn-tab[data-tab=venda]').click();
@@ -130,6 +131,17 @@ setTimeout(() => {
         $('#pg-dn-save').click();
         log('salvo sellItems=' + JSON.stringify(JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg')).sellItems) + ' perfil=' + JSON.stringify(JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg')).sellProfiles));
         panel.querySelector('.dn-tab[data-tab=treino]').click(); log('team=' + $('#pg-dn-team').textContent + ' | rota=' + $('#pg-dn-route-list').textContent.replace(/\s+/g, ' '));
+        // ---- venda de Pokémon: regras na tela mostram a prévia; salvar guarda; Vender agora chama o POST ----
+        panel.querySelector('.dn-tab[data-tab=venda]').click();
+        $('#pg-dn-psell-tier').value = 'legendary'; fire($('#pg-dn-psell-tier'), 'change');
+        $('#pg-dn-psell-low').value = 100; fire($('#pg-dn-psell-low'), 'input');
+        $('#pg-dn-psell-high').value = 150; fire($('#pg-dn-psell-high'), 'input');
+        log('psell previa=' + $('#pg-dn-psell-status').textContent.trim() + ' | ' + $('#pg-dn-psell-list').textContent.trim());
+        $('#pg-dn-psell').checked = true; fire($('#pg-dn-psell'), 'change'); $('#pg-dn-save').click();
+        const cfgP = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+        log('psell salvo=' + cfgP.pokeSellEnabled + ' tier=' + cfgP.pokeSellTier + ' low=' + cfgP.pokeSellIvLow + ' high=' + cfgP.pokeSellIvHigh + ' badge=' + panel.querySelector('.dn-tab[data-tab=venda] .b').dataset.state);
+        fetchCalls.length = 0; $('#pg-dn-psell-now').click();
+        log('psell vender agora: fetch=' + fetchCalls.filter(c => c.includes('pokemon/sell')).join(' | ').slice(0, 160) + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 60));
         panel.querySelector('.dn-tab[data-tab=bolas]').click(); log('bolas=' + $('#pg-dn-balls-status').textContent.trim());
         panel.querySelector('.dn-tab[data-tab=sistema]').click(); log('socket=' + $('#pg-dn-socket').textContent);
         log('enviados=' + ws.sent.map(x => JSON.parse(x).type).join(','));

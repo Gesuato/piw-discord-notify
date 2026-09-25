@@ -373,6 +373,34 @@ nível do treinador (hoje a falha só pula). Não escolhe a profissão nem sobe 
 
 ---
 
+## ✅ 18. Venda automática de Pokémon fora do time + abas Compras/Venda (v3.11.0)
+
+**O que faz:** vende os Pokémon que NÃO estão no time por duas faixas de raridade: abaixo de uma raridade (padrão
+Legendary) vende se o poder (ivTotal) for menor que X; nessa raridade e acima, vende se for menor que Y (0 = não
+vende a faixa). Nunca vende: no time/líder, inicial, shiny, com cadeado 🔒 (inclui os "guardados" pelo aviso), sem
+valor de venda, sem IV na lista, ou capturado nos últimos 2 min. A aba "🎯 Bolas" virou "🛒 Compras" (estoque +
+compra automática) e a aba "💰 Venda" tem duas seções: "Itens: venda automática dos drops" e "Pokémon fora do time".
+
+**Mensagens/REST:** frame `pokes` (resposta a `pokes-get`, a cada 5 min e após capturas; `requestPokes` agora também
+roda com a venda de Pokémon ligada, sem alvo de nível) → `list[{ id, name, level, team, leader, starter, shiny,
+locked, sellValue, ivTotal, quality }]`; `POST /api/game/pokemon/sell { pokeIds }` → `{ gold, goldGained, sold }`
+(lotes de 50). `poke-delta` marca a captura recente (`noteRecentCapture`).
+
+**Lógica (módulo "Venda automática de Pokémon"):** `pokeSellReason(p, d)` devolve o motivo de não vender (ou null);
+`pokeSellCandidates(d, list)`; `pokeSellOnPokes(list)` guarda a lista (prévia do painel) e vende no máximo uma vez
+por 60 s, nunca com captura aguardando `poke-delta`; `runPokeSellCycle(manual)` faz o POST, avisa no canal de
+Alertas (lista até 15 vendidos, gold), pede `pokes-get` de novo. Venda parcial/erro também avisa.
+
+**Config/UI:** `pokeSellEnabled`, `pokeSellTier` ('legendary'), `pokeSellIvLow`, `pokeSellIvHigh`. Seção com o
+seletor da raridade-fronteira, os dois limites, a prévia "N fora do time · M dentro das regras: Rattata lv5 Common
+40/192 · …" calculada com o que está na tela, botões "Vender Pokémon agora" (salva só as regras) e "Atualizar
+lista". Teste: `node test/pokesell.test.js`.
+
+**Pendências:** confirmar no log que o frame `pokes` traz `starter`/`locked`/`sellValue` (levantado do bundle, v3.6.0);
+sem esses campos o script só confia em `team`/`shiny`/IV.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

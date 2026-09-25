@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.10.0
+// @version      3.11.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.10.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.11.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -41,6 +41,10 @@
         sellEveryMaxMin: 0,     // intervalo máximo; 0 ou <= mínimo = intervalo fixo. Entre os dois é sorteado
         sellItems: {},          // lista BRANCA: itemId -> { keep: N } (manter pelo menos N)
         sellProfiles: {},       // por hunt: slug -> { items, everyMin, everyMaxMin } (carregado ao entrar)
+        pokeSellEnabled: false, // vender Pokémon fora do time pelas regras abaixo (v3.11.0)
+        pokeSellTier: 'legendary', // raridade que divide as duas faixas (abaixo dela / ela e acima)
+        pokeSellIvLow: 0,       // faixa baixa: vende se poder (ivTotal) < isto; 0 = não vende
+        pokeSellIvHigh: 0,      // faixa alta (a raridade acima e superiores): vende se poder < isto; 0 = não vende
         levelAlertAt: 0,        // avisar quando o líder chegar a este nível; 0 = desligado
         levelSwap: false,       // ao atingir, trocar o líder pelo próximo do time abaixo do nível
         routeEnabled: false,    // seguir a rota de treino (etapas hunt + nível); implica levelSwap
@@ -270,6 +274,7 @@
     function handlePokeDelta(message) {
         const poke = message.poke || message;
         logEvent('poke-delta', message);
+        noteRecentCapture(poke?.id);
         const entry = awaitingDetails.find(e => sameSpecies(e, poke)) || awaitingDetails[0];
         if (!entry) return;
         if (applyPokeDetails(entry, poke)) finishDetails(entry);
@@ -407,7 +412,7 @@
     }
 
     function requestPokes(delayMs) {
-        if (!levelEnabled()) return;
+        if (!levelEnabled() && !cfg.pokeSellEnabled) return; // a venda de Pokémon também precisa do frame `pokes`
         clearTimeout(pokesRequestTimer);
         pokesRequestTimer = setTimeout(() => {
             pokesRequestTimer = null;
@@ -994,6 +999,129 @@
                 color: acabou ? 0xed4245 : 0xfee75c,
             }],
         }, { evento: 'bolas', ballId: id, qty });
+    }
+
+    // ---- Venda automática de Pokémon fora do time --------------------------
+    //   lista  : frame `pokes` (resposta a pokes-get; também chega após capturas) -> list[{ id, name, level, team,
+    //            leader, starter, shiny, locked, sellValue, ivTotal (0..192), quality }]. É a mesma lista que a aba
+    //            "Pokémon" da loja do NPC usa, filtrada por !team && !starter && !shiny && sellValue > 0 && !locked.
+    //   venda  : POST /api/game/pokemon/sell { pokeIds:[...] } -> { gold, goldGained, sold } (bundle, v3.6.0).
+    // Regra (a pedido do usuário, v3.11.0): duas faixas de raridade separadas por `pokeSellTier` (padrão Legendary).
+    //   raridade ABAIXO da faixa  -> vende se poder (ivTotal) < pokeSellIvLow  (0 = não vende essa faixa)
+    //   raridade na faixa ou ACIMA -> vende se poder (ivTotal) < pokeSellIvHigh (0 = não vende essa faixa)
+    // Nunca vende: no time/líder, inicial, shiny, com cadeado do jogo (o 🔒 de "guardar o avisado" entra aqui),
+    // sem valor de venda, sem IV/qualidade na lista, ou capturado nos últimos POKE_SELL_RECENT_MS (dá tempo do
+    // aviso/cadeado da captura acontecer antes). Roda a cada frame `pokes` (a cada 5 min e após capturas), no
+    // máximo uma venda por POKE_SELL_MIN_GAP_MS, e nunca com captura esperando detalhes.
+
+    const POKE_SELL_URL = '/api/game/pokemon/sell';
+    const POKE_SELL_MIN_GAP_MS = 60 * 1000;
+    const POKE_SELL_RECENT_MS = 2 * 60 * 1000;
+    const POKE_SELL_BATCH = 50;
+
+    let lastPokesList = [];         // último frame `pokes` (para a prévia do painel e a venda)
+    let lastPokesAt = 0;
+    let pokeSellRunning = false;
+    let lastPokeSellAt = 0;
+    const recentCaptureIds = new Map();   // id -> quando chegou o poke-delta
+    let onPokeSellChange = null;    // callback do painel
+
+    function noteRecentCapture(id) {
+        if (id == null) return;
+        recentCaptureIds.set(String(id), Date.now());
+        for (const [k, at] of recentCaptureIds) if (Date.now() - at > POKE_SELL_RECENT_MS) recentCaptureIds.delete(k);
+    }
+    function pokeSellBoundary(d) { return tierByKey((d || cfg).pokeSellTier) || tierByKey('legendary'); }
+
+    // Motivo para NÃO vender `p` com as regras `d` (cfg ou rascunho do painel); null = vende.
+    function pokeSellReason(p, d) {
+        d = d || cfg;
+        if (!p || typeof p !== 'object') return 'inválido';
+        if (p.team || p.leader) return 'no time';
+        if (p.starter) return 'inicial';
+        if (p.shiny) return 'shiny';
+        if (p.locked) return 'cadeado';
+        if (p.sellValue != null && !(Number(p.sellValue) > 0)) return 'sem valor';
+        const at = recentCaptureIds.get(String(p.id));
+        if (at && Date.now() - at < POKE_SELL_RECENT_MS) return 'capturado agora';
+        const tier = qualityTier(Number(p.quality));
+        const iv = Number(p.ivTotal);
+        if (!tier || !Number.isFinite(iv)) return 'sem IV';
+        const alta = tier.rank >= pokeSellBoundary(d).rank;
+        const limite = Math.max(0, Number(alta ? d.pokeSellIvHigh : d.pokeSellIvLow) || 0);
+        if (!limite) return alta ? 'faixa alta sem limite' : 'faixa baixa sem limite';
+        if (iv >= limite) return `poder ${iv} ≥ ${limite}`;
+        return null;
+    }
+    function pokeSellCandidates(d, list) {
+        return (Array.isArray(list) ? list : lastPokesList).filter(p => !pokeSellReason(p, d));
+    }
+    function pokeLabel(p) {
+        const t = qualityTier(Number(p.quality));
+        return `${p.name || '?'} lv${Number(p.level) || 0} ${t ? t.name : '?'} ${Number.isFinite(Number(p.ivTotal)) ? Number(p.ivTotal) : '?'}/${IV_MAX}`;
+    }
+
+    async function runPokeSellCycle(manual) {
+        if (pokeSellRunning) return { ok: false, motivo: 'venda de Pokémon já em andamento' };
+        if (!manual && !cfg.pokeSellEnabled) return { ok: false, motivo: 'desligada' };
+        if (!lastPokesList.length) return { ok: false, motivo: 'time ainda não lido' };
+        if (awaitingDetails.length) return { ok: false, motivo: 'captura aguardando detalhes' };
+        const cand = pokeSellCandidates(cfg);
+        if (!cand.length) return { ok: false, motivo: 'nenhum Pokémon dentro das regras' };
+        pokeSellRunning = true;
+        lastPokeSellAt = Date.now();
+        const who = playerName();
+        const conta = who ? `Conta: ${who}\n` : '';
+        let vendidos = [], ganho = 0, gold = null, motivo = null;
+        try {
+            for (let i = 0; i < cand.length; i += POKE_SELL_BATCH) {
+                const lote = cand.slice(i, i + POKE_SELL_BATCH);
+                let r;
+                try { r = await gameApi(POKE_SELL_URL, { method: 'POST', body: JSON.stringify({ pokeIds: lote.map(p => p.id) }) }); }
+                catch (err) { motivo = `erro na venda: ${err?.message || err}`; break; }
+                const n = Number(r?.sold);
+                vendidos = vendidos.concat(Number.isFinite(n) && n < lote.length ? lote.slice(0, n) : lote);
+                ganho += Number(r?.goldGained) || 0;
+                if (Number.isFinite(Number(r?.gold))) gold = Number(r.gold);
+                if (Number.isFinite(n) && n < lote.length) { motivo = 'o jogo vendeu só parte do lote'; break; }
+            }
+        } finally { pokeSellRunning = false; }
+        const ids = new Set(vendidos.map(p => String(p.id)));
+        lastPokesList = lastPokesList.filter(p => !ids.has(String(p.id)));
+        logEvent('venda-pokes', { candidatos: cand.length, vendidos: vendidos.length, ganho, gold, motivo, lista: vendidos.slice(0, 20).map(pokeLabel) });
+        if (onPokeSellChange) { try { onPokeSellChange(); } catch { /* painel fechado */ } }
+        if (vendidos.length) {
+            const nomes = vendidos.slice(0, 15).map(pokeLabel).join('\n');
+            postWebhook('alert', {
+                content: `💰 ${who ? `**${who}**` : 'Sua conta'} vendeu **${vendidos.length} Pokémon** por ${fmtNum(ganho)} gold${motivo ? ' — venda parcial' : ''}`,
+                username: 'Poke Idle World',
+                embeds: [{
+                    title: `Venda de Pokémon: ${vendidos.length} por ${fmtNum(ganho)} gold`,
+                    description: conta + nomes + (vendidos.length > 15 ? `\n… e mais ${vendidos.length - 15}` : '') + (gold != null ? `\nGold agora: ${fmtNum(gold)}` : '') + (motivo ? `\nObs.: ${motivo}` : '') + `\nEm ${new Date().toLocaleString('pt-BR')}`,
+                    color: motivo ? 0xfee75c : 0x57f287,
+                }],
+            }, { evento: 'venda-pokes', vendidos: vendidos.length, ganho });
+        } else if (motivo) {
+            postWebhook('alert', {
+                content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: a venda automática de Pokémon falhou (${cand.length} candidatos)`,
+                username: 'Poke Idle World',
+                embeds: [{ title: 'Venda de Pokémon falhou', description: conta + `Motivo: ${motivo}\nEm ${new Date().toLocaleString('pt-BR')}`, color: 0xed4245 }],
+            }, { evento: 'venda-pokes-falhou', motivo });
+        }
+        requestPokes(1500); // confirma a lista nova
+        return { ok: vendidos.length > 0 && !motivo, vendidos: vendidos.length, ganho, motivo };
+    }
+
+    // Frame `pokes` chegou: guarda a lista e, se estiver na hora, vende.
+    function pokeSellOnPokes(list) {
+        lastPokesList = Array.isArray(list) ? list.filter(p => p && typeof p === 'object') : [];
+        lastPokesAt = Date.now();
+        if (onPokeSellChange) { try { onPokeSellChange(); } catch { /* painel fechado */ } }
+        if (!cfg.pokeSellEnabled || pokeSellRunning) return;
+        if (Date.now() - lastPokeSellAt < POKE_SELL_MIN_GAP_MS) return;
+        if (awaitingDetails.length) return;
+        if (!pokeSellCandidates(cfg).length) return;
+        runPokeSellCycle(false);
     }
 
     // ---- Rota de captura (aba Profissão): capturar todas as espécies, da hunt de menor nível à maior ----
@@ -1780,7 +1908,7 @@
         }
         if (message.type === 'field-kill') { noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
-        if (message.type === 'pokes' && Array.isArray(message.list)) { updateTeam(message.list); handlePokesList(message.list); return; }
+        if (message.type === 'pokes' && Array.isArray(message.list)) { updateTeam(message.list); handlePokesList(message.list); pokeSellOnPokes(message.list); return; }
 
         if (message.type !== 'catch-result') return;
 
@@ -2003,7 +2131,7 @@
 
     const TABS = [
         { id: 'avisos', label: '🔔 Avisos' },
-        { id: 'bolas', label: '🎯 Bolas' },
+        { id: 'bolas', label: '🛒 Compras' },
         { id: 'venda', label: '💰 Venda' },
         { id: 'treino', label: '⚔ Treino' },
         { id: 'profissao', label: '📖 Profissão' },
@@ -2023,9 +2151,14 @@
                 if ((d.autoBuy && !min) || !temAlertas) return 'warn';
                 return 'on';
             }
-            case 'venda':
-                if (!d.sellEnabled) return 'off';
-                return (Object.keys(d.sellItems || {}).length && temAlertas) ? 'on' : 'warn';
+            case 'venda': {
+                const itens = d.sellEnabled, pokes = d.pokeSellEnabled;
+                if (!itens && !pokes) return 'off';
+                if (!temAlertas) return 'warn';
+                if (itens && !Object.keys(d.sellItems || {}).length) return 'warn';
+                if (pokes && !(Number(d.pokeSellIvLow) > 0 || Number(d.pokeSellIvHigh) > 0)) return 'warn';
+                return 'on';
+            }
             case 'treino': {
                 const nivel = d.routeEnabled || (Number(d.levelAlertAt) || 0) > 0;
                 if (!(nivel || d.dailyEnabled)) return 'off';
@@ -2047,7 +2180,7 @@
         return [
             `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
             `Bolas: ${moduleState('bolas', d) === 'off' ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}`,
-            `Venda: ${d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} itens / ${d.sellEveryMin}${d.sellEveryMaxMin > d.sellEveryMin ? `–${d.sellEveryMaxMin}` : ''} min` : 'desligada'}`,
+            `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} itens / ${d.sellEveryMin}${d.sellEveryMaxMin > d.sellEveryMin ? `–${d.sellEveryMaxMin}` : ''} min` : '', d.pokeSellEnabled ? `Pokémon <${Number(d.pokeSellIvLow) || '–'}/<${Number(d.pokeSellIvHigh) || '–'}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? 'daily' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : 'desligada'}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
@@ -2146,8 +2279,8 @@
                 </section>
                 <section class="dn-pane" data-pane="venda" hidden>
                     <div class="dn-section">
-                        <h3>Venda automática</h3>
-                        <label class="dn-toggle"><input id="pg-dn-sell" type="checkbox"><span class="sw"></span>Vender automaticamente</label>
+                        <h3>Itens: venda automática dos drops</h3>
+                        <label class="dn-toggle"><input id="pg-dn-sell" type="checkbox"><span class="sw"></span>Vender os drops marcados automaticamente</label>
                         <div class="dn-inline">A cada <input id="pg-dn-sell-min" class="dn-input dn-input--sm" type="number" min="1" step="1"> a <input id="pg-dn-sell-max" class="dn-input dn-input--sm" type="number" min="0" step="1"> min</div>
                         <p class="dn-help">Sorteado na faixa. Segundo vazio = fixo. Aviso no canal de Alertas.</p>
                         <div class="dn-status" id="pg-dn-sell-hunt"></div>
@@ -2157,6 +2290,19 @@
                         <div class="dn-items" id="pg-dn-sell-list"></div>
                         <p class="dn-help">Marcado = vendido. ⚠ = raro, pedra/feromônio ou outra categoria: confira. 🔒 = o jogo não deixa vender. "Manter" = quantidade que fica na mochila.</p>
                         <div class="dn-actions"><button type="button" class="dn-btn" id="pg-dn-sell-now" title="Salva a lista e vende os marcados.">Vender agora</button></div>
+                    </div>
+                    <div class="dn-section">
+                        <h3>Pokémon fora do time</h3>
+                        <label class="dn-toggle"><input id="pg-dn-psell" type="checkbox"><span class="sw"></span>Vender Pokémon automaticamente</label>
+                        <div class="dn-inline">Abaixo de <select id="pg-dn-psell-tier" class="dn-select dn-input--sm">${TIERS_ASC.filter(t => t.key !== 'weak').map(t => `<option value="${t.key}">${TIER_LABEL(t)}</option>`).join('')}</select></div>
+                        <div class="dn-inline">&nbsp;&nbsp;→ vende se poder &lt; <input id="pg-dn-psell-low" class="dn-input dn-input--sm" type="number" min="0" max="${IV_MAX}" step="1" placeholder="0"> <span class="dn-hint">(0 = não vende)</span></div>
+                        <div class="dn-inline"><span id="pg-dn-psell-high-lbl">Legendary</span> e acima → vende se poder &lt; <input id="pg-dn-psell-high" class="dn-input dn-input--sm" type="number" min="0" max="${IV_MAX}" step="1" placeholder="0"> <span class="dn-hint">(0 = não vende)</span></div>
+                        <p class="dn-help">Poder = ivTotal (0..${IV_MAX}). Nunca vende: no time, inicial, shiny, com cadeado 🔒 (inclui os "guardados" pelo aviso) ou capturado nos últimos 2 min. Roda a cada leitura do time (5 min e após capturas). Aviso no canal de Alertas.</p>
+                        <div class="dn-status col"><div id="pg-dn-psell-status"></div><div id="pg-dn-psell-list" class="dn-help"></div></div>
+                        <div class="dn-actions">
+                            <button type="button" class="dn-btn" id="pg-dn-psell-now" title="Salva as regras e vende os candidatos agora.">Vender Pokémon agora</button>
+                            <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-psell-refresh" title="Pede a lista de Pokémon ao jogo.">Atualizar lista</button>
+                        </div>
                     </div>
                 </section>
                 <section class="dn-pane" data-pane="treino" hidden>
@@ -2360,6 +2506,10 @@
                 sellEveryMin: Math.max(1, parseInt($('#pg-dn-sell-min').value, 10) || 10),
                 sellEveryMaxMin: Math.max(0, parseInt($('#pg-dn-sell-max').value, 10) || 0),
                 sellItems: readSellList(),
+                pokeSellEnabled: $('#pg-dn-psell').checked,
+                pokeSellTier: $('#pg-dn-psell-tier').value || 'legendary',
+                pokeSellIvLow: Math.min(IV_MAX, Math.max(0, parseInt($('#pg-dn-psell-low').value, 10) || 0)),
+                pokeSellIvHigh: Math.min(IV_MAX, Math.max(0, parseInt($('#pg-dn-psell-high').value, 10) || 0)),
                 reloadEnabled: $('#pg-dn-reload').checked,
                 reloadEveryMin: Math.max(1, parseInt($('#pg-dn-reload-min').value, 10) || 60),
                 reloadEveryMaxMin: Math.max(0, parseInt($('#pg-dn-reload-max').value, 10) || 0),
@@ -2472,6 +2622,38 @@
         }
         // Drop novo chega com o painel aberto: redesenha sem perder o que o usuário marcou e ainda não salvou.
         onHuntLootChange = () => { if (!panel.hidden) renderSellList(dirty ? readSellList() : null); };
+        // Pokémon fora do time: prévia com as regras da tela (o que seria vendido agora)
+        function renderPokeSell() {
+            const d = current();
+            const b = pokeSellBoundary(d);
+            $('#pg-dn-psell-high-lbl').textContent = b.name;
+            const st = $('#pg-dn-psell-status'), ls = $('#pg-dn-psell-list');
+            if (!lastPokesList.length) { st.innerHTML = '<span class="k">Lista de Pokémon ainda não lida (Atualizar lista).</span>'; ls.textContent = ''; return; }
+            const fora = lastPokesList.filter(p => !p.team && !p.leader);
+            const cand = pokeSellCandidates(d);
+            const lida = lastPokesAt ? `lida há ${Math.max(0, Math.round((Date.now() - lastPokesAt) / 60000))} min` : '';
+            st.innerHTML = `<span class="k">${fora.length} fora do time ·</span> ${cand.length ? `<b>${cand.length}</b> dentro das regras${d.pokeSellEnabled ? ' (serão vendidos)' : ' (venda desligada)'}` : 'nenhum dentro das regras'}${lida ? ` <span class="k r">${lida}</span>` : ''}`;
+            ls.textContent = cand.length ? `Vende: ${cand.slice(0, 12).map(pokeLabel).join(' · ')}${cand.length > 12 ? ` … e mais ${cand.length - 12}` : ''}` : '';
+        }
+        onPokeSellChange = () => { if (!panel.hidden) renderPokeSell(); };
+        $('#pg-dn-psell-refresh').onclick = () => {
+            lastPokesReqAt = 0;
+            const ok = sendGame({ type: 'pokes-get' });
+            flash(ok ? '📥 Pedi a lista de Pokémon ao jogo…' : '✖ Sem socket do jogo ainda. Recarregue o painel.', ok ? 'info' : 'error', 3000);
+        };
+        $('#pg-dn-psell-now').onclick = () => {
+            const { draft } = readForm();
+            cfg.pokeSellTier = draft.pokeSellTier; cfg.pokeSellIvLow = draft.pokeSellIvLow; cfg.pokeSellIvHigh = draft.pokeSellIvHigh;
+            saveCfg(cfg);
+            const n = pokeSellCandidates(cfg).length;
+            if (!n) { flash('⚠ Nenhum Pokémon dentro das regras agora.', 'warn'); return; }
+            flash(`⏳ Regras salvas. Vendendo ${n} Pokémon…`, 'info', 30000);
+            runPokeSellCycle(true).then(r => {
+                if (r.vendidos) flash(`✔ Vendeu ${r.vendidos} Pokémon · +${fmtNum(r.ganho)} gold${r.motivo ? ` (${r.motivo})` : ''}`, r.ok ? 'ok' : 'warn', 6000);
+                else flash(`✖ Não vendeu: ${r.motivo}`, 'error');
+                renderPokeSell();
+            });
+        };
 
         // ---- Treino ----
         function renderLevelField() {
@@ -2739,7 +2921,7 @@
 
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSellCount(); renderRoute(); renderDaily(); renderCatch(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderCatch(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -2764,6 +2946,10 @@
             $('#pg-dn-sell').checked = Boolean(cfg.sellEnabled);
             $('#pg-dn-sell-min').value = cfg.sellEveryMin || 10;
             $('#pg-dn-sell-max').value = cfg.sellEveryMaxMin || '';
+            $('#pg-dn-psell').checked = Boolean(cfg.pokeSellEnabled);
+            $('#pg-dn-psell-tier').value = pokeSellBoundary(cfg).key;
+            $('#pg-dn-psell-low').value = cfg.pokeSellIvLow || '';
+            $('#pg-dn-psell-high').value = cfg.pokeSellIvHigh || '';
             loadItemsCatalog().then(() => { if (!panel.hidden) renderSellList(dirty ? readSellList() : null); });
             renderSellList();
             const lv = $('#pg-dn-level');
@@ -2862,7 +3048,8 @@
             if (cfg.autoBuy && !cfg.ballsMin) avisos.push('⚠ Compra com limite 0: só compra quando a bola acabar.');
             if (linhasRuins.length) avisos.push(`⚠ Rota: ${linhasRuins.length} linha(s) ignorada(s) (formato "hunt nível"): ${linhasRuins.map(l => `"${l}"`).join(', ')}`);
             if (!cfg.webhookUrl) avisos.push('⚠ Sem canal de Capturas: capturas não serão enviadas.');
-            const usaAlertas = [effectiveBallsMin() > 0 && 'bolas', cfg.sellEnabled && 'venda', routeActive() && 'troca de hunt', cfg.dailyEnabled && 'daily', cfg.catchRouteEnabled && 'rota de captura'].filter(Boolean);
+            if (cfg.pokeSellEnabled && !(cfg.pokeSellIvLow > 0 || cfg.pokeSellIvHigh > 0)) avisos.push('⚠ Venda de Pokémon ligada com os dois limites em 0: nada será vendido.');
+            const usaAlertas = [effectiveBallsMin() > 0 && 'bolas', cfg.sellEnabled && 'venda', cfg.pokeSellEnabled && 'venda de Pokémon', routeActive() && 'troca de hunt', cfg.dailyEnabled && 'daily', cfg.catchRouteEnabled && 'rota de captura'].filter(Boolean);
             if (usaAlertas.length && !cfg.webhookAlerts) avisos.push(`⚠ Sem canal de Alertas: avisos de ${usaAlertas.join(', ')} não serão enviados.`);
             if (levelEnabled() && !cfg.webhookLevel) avisos.push('⚠ Sem canal de Nível: avisos de nível/troca de líder não serão enviados.');
             const nivel = levelEnabled() ? ` · conferindo o time para o nível ${levelTarget()}${swapEnabled() ? ' (com troca)' : ''}…` : '';
@@ -2893,7 +3080,7 @@
                 canais.push('alertas');
                 postWebhook('alert', {
                     username: 'Poke Idle World',
-                    embeds: [{ title: 'Teste: canal de alertas', description: 'Aqui chegarão estoque de bolas, compras, vendas, trocas de hunt, Daily Kill e a rota de captura.', color: 0xfee75c }],
+                    embeds: [{ title: 'Teste: canal de alertas', description: 'Aqui chegarão estoque de bolas, compras, vendas de itens e de Pokémon, trocas de hunt, Daily Kill e a rota de captura.', color: 0xfee75c }],
                 }, { test: true });
             }
             if (cfg.webhookLevel) {
@@ -3004,6 +3191,7 @@
         '| rota:', routeActive() ? routeStatus() : 'não',
         '| captura:', cfg.catchRouteEnabled ? `${catchAreas().join('+')}${cfg.catchRouteMaxLevel ? ` até lv ${cfg.catchRouteMaxLevel}` : ''}${cfg.catchRouteAuto ? ' + bola' : ''}` : 'não',
         '| daily:', cfg.dailyEnabled ? `volta para ${dailyReturnTarget() || 'a hunt anterior'}${cfg.dailyClaim ? ' + resgate' : ''}` : 'não',
+        '| venda pokes:', cfg.pokeSellEnabled ? `<${cfg.pokeSellIvLow || '-'} abaixo de ${pokeSellBoundary(cfg).name}, <${cfg.pokeSellIvHigh || '-'} acima` : 'não',
         '| venda auto:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens / ${cfg.sellEveryMin}${cfg.sellEveryMaxMin > cfg.sellEveryMin ? `–${cfg.sellEveryMaxMin}` : ''} min` : 'não',
         '| recarga auto:', cfg.reloadEnabled ? `${cfg.reloadEveryMin}${cfg.reloadEveryMaxMin > cfg.reloadEveryMin ? `–${cfg.reloadEveryMaxMin}` : ''} min` : 'não');
 })();

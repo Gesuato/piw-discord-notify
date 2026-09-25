@@ -78,6 +78,11 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   perfil de cada hunt e sobrescreve os ativos em `setHunt()` (ver `loadHuntProfile`/`saveHuntProfile`).
 - Referências: https://github.com/edulanzarin/piwdex (`src/lib/robo/motor/sessao.ts`, cases
   `catch-result`/`pending`) e https://github.com/luishferreira/poke-standalone-scripts (`AGENTS.md`).
+- Venda de Pokémon (v3.11.0, aba Venda → "Pokémon fora do time"): regras por faixa em `pokeSellTier`/`pokeSellIvLow`/
+  `pokeSellIvHigh` (ver `pokeSellReason`); nunca vende time/líder, inicial, shiny, `locked`, `sellValue` 0, sem IV ou
+  capturado há < 2 min (`recentCaptureIds`, alimentado pelo `poke-delta`). Usa o frame `pokes` (por isso
+  `requestPokes` roda mesmo sem alvo de nível quando `pokeSellEnabled`) e `POST /api/game/pokemon/sell { pokeIds }`.
+  A aba de id `bolas` chama-se "🛒 Compras" desde a v3.11.0 (id mantido por causa do `pgDiscordNotifyUi`).
 - Time e líder (v3.2.0): `pokes.list[]` traz `team`, `slot` (0-based), `leader`, `level`, `id` (cuid string).
   Líder = `leader: true` ou o 1º por slot. `poke-xp { id, speciesId, xpGained, xp, level, leveledUp }` chega a
   cada abate (CONFIRMADO 24/09/2026; `id`/`level` são do líder); `field-kill` também traz `level` e `leveledUp`.
@@ -210,14 +215,15 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
 ## Como testar
 
 - **Testes isolados em Node** (sem DOM): `node test/level.test.js`, `node test/route.test.js`,
-  `node test/reload.test.js`, `node test/daily.test.js` e `node test/catch.test.js`. `test/harness.js` recorta módulos
-  do userscript pelos marcadores (`loadLevelModule`: `// ---- Alerta de nível do líder` até `// ---- Alerta de estoque
-  de bolas`; `loadCatchModule`: `// ---- Rota de captura` até `// ---- Daily Kill`, com `init.fetchJson(url)` para os
+  `node test/reload.test.js`, `node test/daily.test.js`, `node test/catch.test.js` e `node test/pokesell.test.js`.
+  `test/harness.js` recorta módulos do userscript pelos marcadores (`loadLevelModule`: `// ---- Alerta de nível do
+  líder` até `// ---- Alerta de estoque de bolas`; `loadPokeSellModule`: `// ---- Venda automática de Pokémon` até
+  `// ---- Rota de captura`; `loadCatchModule`: `// ---- Rota de captura` até `// ---- Daily Kill`, com `init.fetchJson(url)` para os
   arquivos públicos e `init.api(url)` para o REST; `loadDailyModule`: `// ---- Daily Kill` até `// ---- Recarga
   automática do painel`, com `init.api(url, opts)`; `loadReloadModule`: `// ---- Recarga automática do painel` até
   `// ---- Log persistente`) e os roda com stubs de `sendGame`, `gameApi`, `fetch`, `postWebhook`, `logEvent`,
   `saveCfg`, `localStorage`, `location` e timers (curtos rodam na hora; >= 5 s ficam em `state.longTimers`;
-  `clock.now` controla o `Date.now()`). Ao mexer num módulo, rode os cinco; ao criar módulo novo, siga o mesmo
+  `clock.now` controla o `Date.now()`). Ao mexer num módulo, rode os seis; ao criar módulo novo, siga o mesmo
   padrão (marcadores + stubs).
 - **Painel (DOM)**: `node test/ui.smoke.js` carrega o userscript inteiro no jsdom com WebSocket/fetch
   falsos, abre o painel, percorre as abas, edita, salva, testa canais, importa e simula hunt/drops/time/estoque

@@ -207,4 +207,45 @@ function loadCatchModule(cfg, init) {
     return { api, state, cfg, clock };
 }
 
-module.exports = { loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, team, assert };
+// Extrai o módulo "Venda automática de Pokémon" e o executa com stubs. `init.api(url, opts)` responde o POST de venda.
+const P_START = '    // ---- Venda automática de Pokémon';
+const P_END = '    // ---- Rota de captura';
+
+function loadPokeSellModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(P_START), b = src.indexOf(P_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo de venda de Pokémon não encontrados no script');
+    const mod = src.slice(a, b);
+
+    const clock = { now: Date.now() };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const state = { calls: [], hooks: [], logs: [], pokesReqs: 0, awaiting: init.awaiting || [] };
+    const TIERS = [[4.0, 'Divine'], [3.0, 'Ancient'], [2.0, 'Mythic'], [1.7, 'Legendary'], [1.5, 'Epic'], [1.3, 'Rare'], [1.1, 'Uncommon'], [1.0, 'Common'], [-Infinity, 'Weak']]
+        .map(([min, name], i, arr) => ({ min, name, key: name.toLowerCase(), rank: arr.length - 1 - i }));
+    const ctx = {
+        cfg,
+        gameApi: (url, opts) => { state.calls.push({ url, body: JSON.parse(opts?.body || 'null') }); return Promise.resolve().then(() => init.api(url, opts)); },
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
+        requestPokes: () => { state.pokesReqs++; },
+        playerName: () => 'Teste',
+        fmtNum: (n) => String(n),
+        qualityTier: (q) => (typeof q === 'number' && Number.isFinite(q)) ? TIERS.find(t => q >= t.min) : null,
+        tierByKey: (key) => TIERS.find(t => t.key === String(key || '').toLowerCase()) || null,
+        IV_MAX: 192,
+        awaitingDetails: state.awaiting,
+        setTimeout: (fn, ms) => { fn(); return 1; },
+        clearTimeout: () => {},
+        Date: FakeDate,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            pokeSellReason, pokeSellCandidates, runPokeSellCycle, pokeSellOnPokes, noteRecentCapture, pokeSellBoundary, pokeLabel,
+            get lastPokesList() { return lastPokesList; },
+        };`);
+    const api = factory(...Object.values(ctx));
+    return { api, state, cfg, clock };
+}
+
+module.exports = { loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, team, assert };
