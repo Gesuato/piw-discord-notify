@@ -1,0 +1,273 @@
+<title>Venda de Pokémon</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Mock da seção "Pokémon fora do time" da aba Venda do painel 🔔 (proposta para a v3.12.0). Sem dependências externas.
+     Os tokens --dn-* são os mesmos do userscript; a prévia é calculada em JS com uma lista de exemplo. -->
+<style>
+  :root {
+    --pg-bg: #f2f1ec; --pg-surface: #ffffff; --pg-text: #1f2124; --pg-muted: #6b6f76; --pg-border: #dad8d0;
+    --pg-accent: #4752c4; --pg-stage: #101215; color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --pg-bg: #17181b; --pg-surface: #1f2125; --pg-text: #e6e7ea; --pg-muted: #9a9ea6; --pg-border: #34363c; --pg-accent: #8891ff; --pg-stage: #0a0b0d; color-scheme: dark; }
+  }
+  :root[data-theme="dark"] { --pg-bg: #17181b; --pg-surface: #1f2125; --pg-text: #e6e7ea; --pg-muted: #9a9ea6; --pg-border: #34363c; --pg-accent: #8891ff; --pg-stage: #0a0b0d; color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--pg-bg); color: var(--pg-text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 980px; margin: 0 auto; padding-block: 24px 56px; padding-inline: 16px; display: flex; flex-direction: column; gap: 18px; }
+  h1 { font-size: 22px; margin: 0; text-wrap: balance; }
+  h2 { font-size: 16px; margin: 0; }
+  .lead { color: var(--pg-muted); margin: 4px 0 0; max-width: 66ch; }
+  .row { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+  .stage { flex: none; width: 100%; max-width: 400px; background: var(--pg-stage); border: 1px solid var(--pg-border); border-radius: 8px; padding: 14px; }
+  .notes { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+  .notes ol, .notes ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+  .notes b { font-weight: 600; }
+  .tag { display: inline-block; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--pg-accent); font-weight: 600; }
+  .compare { border-top: 1px solid var(--pg-border); padding-top: 18px; }
+  .q { background: var(--pg-surface); border: 1px solid var(--pg-border); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+  .q p { margin: 0; }
+
+  /* ---- painel: tokens e componentes iguais ao userscript ---- */
+  .dn { --dn-bg-0:#1e1f22; --dn-bg-1:#2b2d31; --dn-bg-2:#313338; --dn-bg-3:#3a3c42; --dn-border:#3f4147; --dn-text:#dbdee1; --dn-muted:#949ba4;
+    --dn-dim:#80848e; --dn-accent:#5865f2; --dn-ok:#23a559; --dn-ok-t:#57d38a; --dn-warn:#f0b232; --dn-danger:#da373c; --dn-danger-t:#ff7a7e;
+    --dn-radius:6px; --dn-radius-sm:4px; font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--dn-text);
+    background: var(--dn-bg-1); border: 1px solid var(--dn-border); border-radius: var(--dn-radius); overflow: hidden; color-scheme: dark; }
+  .dn-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--dn-bg-0); border-bottom: 1px solid var(--dn-border); }
+  .dn-head .t { font-weight: 600; font-size: 14px; }
+  .dn-head .v { color: var(--dn-muted); font-size: 12px; }
+  .dn-tabs { display: flex; flex-wrap: wrap; background: var(--dn-bg-0); border-bottom: 1px solid var(--dn-border); }
+  .dn-tab { flex: 1 1 auto; min-width: 0; background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--dn-muted); font: inherit; font-size: 12px; font-weight: 600; padding: 7px 4px 6px; white-space: nowrap; }
+  .dn-tab[aria-selected="true"] { color: var(--dn-text); border-bottom-color: var(--dn-accent); background: var(--dn-bg-1); }
+  .dn-body { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .dn-section { background: var(--dn-bg-2); border: 1px solid var(--dn-border); border-radius: var(--dn-radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .dn-section h3 { margin: 0; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .dn-section h3 .spacer { flex: 1; }
+  .dn-help { margin: 0; color: var(--dn-muted); font-size: 12px; }
+  .dn-toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+  .dn-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .dn-toggle .sw { width: 30px; height: 17px; border-radius: 9px; background: var(--dn-bg-3); position: relative; flex: none; transition: background .15s; }
+  .dn-toggle .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: #fff; transition: left .15s; }
+  .dn-toggle input:checked + .sw { background: var(--dn-ok); }
+  .dn-toggle input:checked + .sw::after { left: 15px; }
+  .dn-toggle input:focus-visible + .sw { outline: 2px solid var(--dn-accent); outline-offset: 1px; }
+  .dn-input, .dn-select { min-height: 28px; background: var(--dn-bg-0); color: var(--dn-text); border: 1px solid var(--dn-border); border-radius: var(--dn-radius-sm); padding: 4px 8px; font: inherit; margin: 0; }
+  .dn-input:focus, .dn-select:focus, .dn-btn:focus-visible { outline: 2px solid var(--dn-accent); outline-offset: 1px; }
+  .dn-input--sm { width: 64px; text-align: right; font-variant-numeric: tabular-nums; }
+  .dn-btn { min-height: 28px; padding: 4px 10px; border-radius: var(--dn-radius-sm); border: 1px solid var(--dn-border); background: var(--dn-bg-3); color: var(--dn-text); font: inherit; font-weight: 600; cursor: pointer; }
+  .dn-btn--primary { background: var(--dn-accent); border-color: var(--dn-accent); color: #fff; }
+  .dn-btn--ghost { background: transparent; color: var(--dn-muted); font-weight: 400; padding: 2px 6px; }
+  .dn-btn--sm { min-height: 24px; padding: 2px 8px; font-size: 12px; }
+  .dn-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .dn-inline { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .dn-status { display: flex; align-items: center; gap: 8px; font-size: 12px; background: var(--dn-bg-0); border-radius: var(--dn-radius-sm); padding: 6px 8px; font-variant-numeric: tabular-nums; }
+  .dn-status .k { color: var(--dn-muted); }
+  .dn-status .r { margin-left: auto; }
+  .dn-foot { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--dn-bg-0); border-top: 1px solid var(--dn-border); }
+  .dn-foot .msg { flex: 1; color: var(--dn-muted); font-size: 12px; }
+
+  /* ---- proposta: duas faixas ---- */
+  .band { border: 1px solid var(--dn-border); border-radius: var(--dn-radius-sm); background: var(--dn-bg-1); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+  .band .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 10px; background: var(--dn-bg-3); color: var(--dn-text); border: 1px solid transparent; }
+  .chip[data-c] { border-color: color-mix(in srgb, var(--c) 60%, transparent); color: var(--c); background: color-mix(in srgb, var(--c) 12%, var(--dn-bg-0)); }
+  .band .rule { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .band.off .rule { color: var(--dn-muted); }
+  .split { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .split .dn-select { flex: 1; min-width: 120px; }
+
+  /* prévia */
+  .prev { display: flex; flex-direction: column; gap: 4px; }
+  .prev-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .prev-head b { font-size: 13px; }
+  .prev-head .k { color: var(--dn-muted); font-size: 12px; }
+  .prev table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .prev th { text-align: left; color: var(--dn-muted); font-weight: 500; padding: 2px 6px; border-bottom: 1px solid var(--dn-border); }
+  .prev td { padding: 3px 6px; border-bottom: 1px solid color-mix(in srgb, var(--dn-border) 50%, transparent); }
+  .prev td.n { text-align: right; }
+  .prev tr.sell td:first-child { color: var(--dn-ok-t); }
+  .prev tr.keep td { color: var(--dn-muted); }
+  .prev .why { color: var(--dn-muted); }
+  .prev tr.sell .why { color: var(--dn-ok-t); }
+
+  /* proposta B: uma linha por raridade */
+  .tiers { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; font-size: 12px; }
+  .tiers .dn-input--sm { width: 60px; }
+  @media (prefers-reduced-motion: reduce) { .dn-toggle .sw, .dn-toggle .sw::after { transition: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="tag">Mock para validar antes de implementar</span>
+    <h1>Venda de Pokémon fora do time</h1>
+    <p class="lead">Seção da aba <b>💰 Venda</b> do painel 🔔, redesenhada. Mexa nos campos: a prévia embaixo mostra na hora quem seria vendido e por quê, com uma lista de exemplo.</p>
+  </header>
+
+  <section class="row">
+    <div class="stage">
+      <div class="dn" id="painel">
+        <div class="dn-head"><span class="t">🔔 Discord Notify</span><span class="v">v3.12.0</span></div>
+        <div class="dn-tabs" aria-hidden="true">
+          <button class="dn-tab" type="button">🔔 Avisos</button><button class="dn-tab" type="button">🛒 Compras</button><button class="dn-tab" type="button" aria-selected="true">💰 Venda</button><button class="dn-tab" type="button">⚔ Treino</button><button class="dn-tab" type="button">📖 Profissão</button><button class="dn-tab" type="button">⚙ Sistema</button>
+        </div>
+        <div class="dn-body">
+          <div class="dn-section" style="opacity:.55">
+            <h3>Itens: drops desta hunt <span class="spacer"></span><span class="dn-help">como hoje, recolhido</span></h3>
+          </div>
+
+          <div class="dn-section" id="secao-a">
+            <h3>Pokémon fora do time <span class="spacer"></span>
+              <label class="dn-toggle"><input id="a-on" type="checkbox" checked><span class="sw"></span>Vender sozinho</label></h3>
+            <p class="dn-help">Nunca vende: no time, inicial, shiny, com cadeado 🔒 ou capturado nos últimos 2 min.</p>
+
+            <div class="split">
+              <span>Raridade que divide as faixas</span>
+              <select id="a-tier" class="dn-select" aria-label="Raridade que divide as faixas">
+                <option value="uncommon">Uncommon</option><option value="rare">Rare</option><option value="epic">Epic</option>
+                <option value="legendary" selected>Legendary</option><option value="mythic">Mythic</option><option value="ancient">Ancient</option><option value="divine">Divine</option>
+              </select>
+            </div>
+
+            <div class="band" id="band-low">
+              <div class="chips" id="chips-low"></div>
+              <div class="rule">Vender se o poder for menor que <input id="a-low" class="dn-input dn-input--sm" type="number" min="0" max="192" value="100"> <span class="dn-help">de 192</span></div>
+            </div>
+            <div class="band" id="band-high">
+              <div class="chips" id="chips-high"></div>
+              <div class="rule">Vender se o poder for menor que <input id="a-high" class="dn-input dn-input--sm" type="number" min="0" max="192" value="150"> <span class="dn-help">de 192</span></div>
+            </div>
+            <p class="dn-help">0 = essa faixa não vende.</p>
+
+            <div class="dn-status" style="flex-direction:column;align-items:stretch">
+              <div class="prev">
+                <div class="prev-head"><b id="a-resumo">—</b><span class="k">prévia com os campos acima</span><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" style="margin-left:auto">Atualizar lista</button></div>
+                <table aria-label="Prévia da venda">
+                  <thead><tr><th>Pokémon</th><th>Raridade</th><th class="n">Poder</th><th>Decisão</th></tr></thead>
+                  <tbody id="a-lista"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="dn-actions"><button type="button" class="dn-btn" id="a-vender">Vender agora</button></div>
+          </div>
+        </div>
+        <div class="dn-foot"><span class="msg">● Alterações não salvas</span><button type="button" class="dn-btn dn-btn--sm">Testar canais</button><button type="button" class="dn-btn dn-btn--primary dn-btn--sm">Salvar</button></div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <h2>O que mudou em relação ao que está no ar</h2>
+      <ol>
+        <li><b>Um cartão por faixa.</b> As raridades de cada faixa aparecem como etiquetas coloridas (as mesmas cores dos avisos no Discord). Fica óbvio quem cai em cada regra sem ler a frase "abaixo de / e acima".</li>
+        <li><b>Uma frase só por cartão:</b> "Vender se o poder for menor que ___ de 192". Sem seta, sem parênteses.</li>
+        <li><b>Prévia em tabela</b>, com a decisão de cada Pokémon e o motivo (vende, poder alto demais, cadeado, shiny…). Antes era uma linha corrida de texto.</li>
+        <li><b>O interruptor vai para o título</b> da seção, como nos outros módulos. As proteções fixas viram uma linha curta logo abaixo.</li>
+        <li>A seção de itens fica recolhida quando você está mexendo nos Pokémon (mock só ilustra).</li>
+      </ol>
+      <h2>Para você decidir</h2>
+      <ul>
+        <li>Faixa desligada (0) deve <b>esconder</b> o campo ou só apagar o cartão, como aqui?</li>
+        <li>A prévia mostra todos os Pokémon fora do time ou só os que <b>seriam vendidos</b>? Aqui mostra todos, com os vendidos em verde.</li>
+        <li>Quer o total de gold estimado no resumo? O jogo informa o valor de venda de cada um.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="compare">
+    <div class="row">
+      <div class="stage">
+        <div class="dn">
+          <div class="dn-body">
+            <div class="dn-section">
+              <h3>Pokémon fora do time <span class="spacer"></span><label class="dn-toggle"><input type="checkbox" checked><span class="sw"></span>Vender sozinho</label></h3>
+              <p class="dn-help">Alternativa B: um limite de poder por raridade. Vazio = não vende.</p>
+              <div class="tiers" id="b-tiers"></div>
+              <div class="dn-status"><span class="k">Prévia:</span> <b id="b-resumo">—</b></div>
+              <div class="dn-actions"><button type="button" class="dn-btn">Vender agora</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="notes">
+        <h2>Alternativa B: um número por raridade</h2>
+        <p class="dn-help" style="color:var(--pg-muted)">Mais controle (ex.: Epic até 90, Legendary até 140, Mythic nunca), mas são 9 campos. Serve se você quiser regras diferentes dentro da mesma faixa. A prévia usa a mesma lista de exemplo.</p>
+        <div class="q">
+          <p><b>Minha recomendação:</b> a proposta A (duas faixas). É o que você descreveu e cabe no painel sem rolagem. A alternativa B só vale se as duas faixas ficarem curtas na prática.</p>
+          <p>Me diga qual das duas (ou o que ajustar) e eu implemento no script.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+  // Faixas de qualidade do jogo (mesma tabela do userscript), da mais fraca à mais forte, com a cor usada nos embeds.
+  const TIERS = [
+    ['weak', 'Weak', '#9aa4b2'], ['common', 'Common', '#4ade80'], ['uncommon', 'Uncommon', '#38bdf8'], ['rare', 'Rare', '#a78bfa'],
+    ['epic', 'Epic', '#f472b6'], ['legendary', 'Legendary', '#fbbf24'], ['mythic', 'Mythic', '#e879f9'], ['ancient', 'Ancient', '#fb923c'], ['divine', 'Divine', '#f1f5f9'],
+  ].map(([key, name, color], rank) => ({ key, name, color, rank }));
+  const byKey = (k) => TIERS.find(t => t.key === k);
+
+  // Lista de exemplo: o que o frame `pokes` traz para Pokémon fora do time.
+  const LISTA = [
+    { name: 'Rattata', level: 5, tier: 'common', iv: 40, sellValue: 300 },
+    { name: 'Pidgey', level: 2, tier: 'common', iv: 30, sellValue: 300, locked: true },
+    { name: 'Zubat', level: 3, tier: 'rare', iv: 88, sellValue: 600 },
+    { name: 'Gastly', level: 7, tier: 'epic', iv: 130, sellValue: 1500 },
+    { name: 'Dratini', level: 4, tier: 'legendary', iv: 120, sellValue: 4000 },
+    { name: 'Larvitar', level: 9, tier: 'mythic', iv: 170, sellValue: 9000 },
+    { name: 'Magikarp', level: 1, tier: 'weak', iv: 12, sellValue: 100, shiny: true },
+    { name: 'Abra', level: 6, tier: 'uncommon', iv: 61, sellValue: 500, recent: true },
+  ];
+  const fmt = (n) => n.toLocaleString('pt-BR');
+
+  function motivoA(p, tierKey, low, high) {
+    if (p.locked) return 'cadeado 🔒';
+    if (p.shiny) return 'shiny';
+    if (p.recent) return 'capturado agora';
+    const alta = byKey(p.tier).rank >= byKey(tierKey).rank;
+    const lim = alta ? high : low;
+    if (!lim) return 'faixa não vende';
+    if (p.iv >= lim) return `poder ${p.iv} ≥ ${lim}`;
+    return null;
+  }
+  function chip(t) { return `<span class="chip" data-c style="--c:${t.color}">${t.name}</span>`; }
+
+  function renderA() {
+    const tierKey = document.getElementById('a-tier').value;
+    const low = Math.max(0, Number(document.getElementById('a-low').value) || 0);
+    const high = Math.max(0, Number(document.getElementById('a-high').value) || 0);
+    const b = byKey(tierKey);
+    document.getElementById('chips-low').innerHTML = TIERS.filter(t => t.rank < b.rank).map(chip).join('');
+    document.getElementById('chips-high').innerHTML = TIERS.filter(t => t.rank >= b.rank).map(chip).join('');
+    document.getElementById('band-low').classList.toggle('off', !low);
+    document.getElementById('band-high').classList.toggle('off', !high);
+    let vende = 0, gold = 0;
+    document.getElementById('a-lista').innerHTML = LISTA.map(p => {
+      const m = motivoA(p, tierKey, low, high);
+      if (!m) { vende++; gold += p.sellValue; }
+      const t = byKey(p.tier);
+      return `<tr class="${m ? 'keep' : 'sell'}"><td>${p.name} <span class="why">lv${p.level}</span></td><td style="color:${t.color}">${t.name}</td><td class="n">${p.iv}</td><td class="why">${m ? m : '✔ vende'}</td></tr>`;
+    }).join('');
+    const on = document.getElementById('a-on').checked;
+    document.getElementById('a-resumo').textContent = `${LISTA.length} fora do time · ${vende} ${on ? 'serão vendidos' : 'dentro das regras (desligado)'} · ~${fmt(gold)} gold`;
+    document.getElementById('a-vender').textContent = vende ? `Vender ${vende} agora` : 'Vender agora';
+    document.getElementById('a-vender').disabled = !vende;
+  }
+  for (const id of ['a-tier', 'a-low', 'a-high', 'a-on']) document.getElementById(id).addEventListener('input', renderA);
+  renderA();
+
+  // Alternativa B
+  const B_DEFAULT = { weak: 192, common: 120, uncommon: 100, rare: 100, epic: 90, legendary: 140, mythic: 0, ancient: 0, divine: 0 };
+  const tb = document.getElementById('b-tiers');
+  tb.innerHTML = TIERS.map(t => `<label for="b-${t.key}">${chip(t)}</label><span class="dn-inline">poder &lt; <input id="b-${t.key}" class="dn-input dn-input--sm" type="number" min="0" max="192" value="${B_DEFAULT[t.key] || ''}" placeholder="—"></span>`).join('');
+  function renderB() {
+    let vende = 0;
+    for (const p of LISTA) {
+      if (p.locked || p.shiny || p.recent) continue;
+      const lim = Number(document.getElementById('b-' + p.tier).value) || 0;
+      if (lim && p.iv < lim) vende++;
+    }
+    document.getElementById('b-resumo').textContent = `${vende} de ${LISTA.length} seriam vendidos`;
+  }
+  tb.addEventListener('input', renderB);
+  renderB();
+</script>
