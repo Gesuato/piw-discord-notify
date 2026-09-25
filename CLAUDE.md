@@ -88,6 +88,11 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   pela chegada de `field`/`field-init` (piwdex `cacar()`, auto-reconnect). O script guarda `lastFieldAt`.
   Com `routeEnabled`, `levelTarget()` devolve o nível da etapa atual (`cfg.route[cfg.routeStage]`), não
   `levelAlertAt`, e `swapEnabled()` é true. Sempre usar essas duas funções, não os campos diretos.
+- Rotas salvas (v3.9.0): `cfg.routes[nome] = { route, stage }` e `cfg.routeName`; `cfg.route`/`cfg.routeStage` seguem
+  sendo a rota ATIVA (padrão de `sellItems`/`sellProfiles`). `saveCfg()` espelha a ativa em `routes[routeName]`;
+  `migrateCfg()` (loadCfg e Importar config) transforma config antiga em "Rota 1". Trocar/criar/renomear/excluir
+  pelo menu da aba Treino é imediato (`activateRoute`/`createRoute`/`renameRoute`/`deleteRoute`, módulo de nível);
+  só o texto das etapas passa pelo Salvar. Não voltar a tratar `route` como única fonte.
 - Recarga do painel (v3.4.0): o "⟳ Atualizar tudo" do PokeGrid é só `webview.reloadIgnoringCache()` por painel.
   Quem tira a conta da hunt no reload é a SPA do jogo: ela nasce em Cerulean e envia `set-city` ao montar; o
   servidor volta a farmar ao receber `enter-hunt { slug }` de novo (o PokeGrid tem um "↩ Voltar pra hunt"

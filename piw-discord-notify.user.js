@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.8.0
+// @version      3.9.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.8.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.9.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -46,6 +46,8 @@
         routeEnabled: false,    // seguir a rota de treino (etapas hunt + nível); implica levelSwap
         route: [],              // [{ slug, level }] em ordem
         routeStage: 0,          // índice da etapa atual (persistido; >= route.length = concluída)
+        routes: {},             // rotas salvas: nome -> { route, stage } (v3.9.0). route/routeStage acima = a ATIVA
+        routeName: '',          // nome da rota ativa ('' = nenhuma salva ainda)
         dailyEnabled: false,    // Daily Kill: ao bater a meta da missão do dia, voltar para a hunt de antes
         dailyClaim: true,       // ...e resgatar a recompensa sozinho (POST /api/game/daily-kill/claim)
         dailyReturnSlug: '',    // hunt fixa para voltar; vazio = etapa da rota, senão a hunt anterior à daily
@@ -65,9 +67,27 @@
         // descarta esse valor herdado para valer o novo padrão (0 = avisar todas).
         if (!saved.cfgVersion || saved.cfgVersion < 2) delete saved.cooldownSeconds;
         delete saved.autoBuyGoldReserve; // reserva de gold removida na v3.5.0 (a pedido do usuário)
-        return Object.assign({}, DEFAULTS, saved);
+        return migrateCfg(Object.assign({}, DEFAULTS, saved));
+    }
+    // Rotas nomeadas (v3.9.0): cfg.route/routeStage são a rota ATIVA e cfg.routes[nome] guarda cada rota com a
+    // etapa em que parou (mesmo padrão de sellItems/sellProfiles). Config antiga (só `route`) vira "Rota 1".
+    function migrateCfg(cfg) {
+        if (!cfg.routes || typeof cfg.routes !== 'object' || Array.isArray(cfg.routes)) cfg.routes = {};
+        const ativa = Array.isArray(cfg.route) ? cfg.route : [];
+        if (!cfg.routeName && ativa.length) {
+            let nome = 'Rota 1', i = 1;
+            while (cfg.routes[nome]) nome = `Rota ${++i}`;
+            cfg.routeName = nome;
+        }
+        if (cfg.routeName && !cfg.routes[cfg.routeName]) cfg.routes[cfg.routeName] = { route: ativa, stage: Number(cfg.routeStage) || 0 };
+        return cfg;
     }
     function saveCfg(cfg) {
+        // espelha a rota ativa (com a etapa) na rota nomeada, para a troca pelo menu não perder progresso
+        if (cfg.routeName) {
+            if (!cfg.routes || typeof cfg.routes !== 'object') cfg.routes = {};
+            cfg.routes[cfg.routeName] = { route: Array.isArray(cfg.route) ? cfg.route : [], stage: Number(cfg.routeStage) || 0 };
+        }
         localStorage.setItem(LS_KEY, JSON.stringify(cfg));
     }
     let cfg = loadCfg();
@@ -319,8 +339,64 @@
         const lista = routeList();
         if (!lista.length) return 'Sem rota.';
         const i = Number(cfg.routeStage) || 0;
-        if (i >= lista.length) return `Rota concluída (${lista.length} etapas). "Reiniciar rota" para começar de novo.`;
-        return `${cfg.routeEnabled ? 'Etapa' : 'Rota desligada — etapa'} ${i + 1}/${lista.length}: ${lista[i].slug} até lv ${lista[i].level}`;
+        const nome = cfg.routeName ? `"${cfg.routeName}" ` : '';
+        if (i >= lista.length) return `Rota ${nome}concluída (${lista.length} etapas). "Reiniciar rota" para começar de novo.`;
+        return `${cfg.routeEnabled ? 'Rota' : 'Rota desligada'} ${nome}· etapa ${i + 1}/${lista.length}: ${lista[i].slug} até lv ${lista[i].level}`;
+    }
+
+    // Rotas nomeadas (v3.9.0): cfg.routes[nome] = { route, stage }; cfg.route/routeStage/routeName = a ativa.
+    // Trocar de rota é imediato (não passa pelo Salvar): guarda a etapa da anterior e a nova volta de onde parou.
+    function routeNames() { return Object.keys(cfg.routes || {}); }
+    function uniqueRouteName(base) {
+        let n = base, i = 1;
+        while (cfg.routes?.[n]) n = `${base} ${++i}`;
+        return n;
+    }
+    function storeActiveRoute() {
+        if (!cfg.routeName) return;
+        if (!cfg.routes || typeof cfg.routes !== 'object') cfg.routes = {};
+        cfg.routes[cfg.routeName] = { route: routeList(), stage: Number(cfg.routeStage) || 0 };
+    }
+    function activateRoute(name) {
+        const r = cfg.routes?.[name];
+        if (!r) return false;
+        storeActiveRoute();
+        cfg.routeName = name;
+        cfg.route = (Array.isArray(r.route) ? r.route : []).map(x => ({ slug: x.slug, level: Number(x.level) || 0 }));
+        cfg.routeStage = Math.max(0, Number(r.stage) || 0);
+        levelAlerted.clear(); swapPending = null;
+        saveCfg(cfg);
+        logEvent('rota-ativa', { nome: name, etapa: cfg.routeStage + 1, etapas: routeList().length });
+        lastPokesReqAt = 0; requestPokes(0);
+        if (onTeamChange) { try { onTeamChange(); } catch { /* painel fechado */ } }
+        return true;
+    }
+    function createRoute(name, route) {
+        if (!cfg.routes || typeof cfg.routes !== 'object') cfg.routes = {};
+        cfg.routes[name] = { route: Array.isArray(route) ? route : [], stage: 0 };
+        return activateRoute(name);
+    }
+    function renameRoute(oldName, newName) {
+        if (!cfg.routes?.[oldName] || cfg.routes[newName]) return false;
+        cfg.routes[newName] = cfg.routes[oldName];
+        delete cfg.routes[oldName];
+        if (cfg.routeName === oldName) cfg.routeName = newName;
+        saveCfg(cfg);
+        return true;
+    }
+    // Exclui; se era a ativa, ativa a primeira que sobrar (ou fica sem rota e desliga "Seguir a rota").
+    function deleteRoute(name) {
+        if (!cfg.routes?.[name]) return false;
+        delete cfg.routes[name];
+        if (cfg.routeName === name) {
+            cfg.routeName = '';
+            const next = routeNames()[0];
+            if (next) return activateRoute(next);
+            cfg.route = []; cfg.routeStage = 0; cfg.routeEnabled = false;
+            levelAlerted.clear(); swapPending = null;
+        }
+        saveCfg(cfg);
+        return true;
     }
 
     function requestPokes(delayMs) {
@@ -482,6 +558,7 @@
             recarga: { verbo: 'voltar para a', quando: 'depois da recarga automática', titulo: `Recarga: volta para ${slug} não confirmou`, dica: 'A conta deve estar na cidade: entre na hunt na mão.' },
             daily: { verbo: 'voltar para a', quando: 'depois da Daily Kill', titulo: `Daily Kill: volta para ${slug} não confirmou`, dica: 'Confira o nome da hunt em "Voltar para" (ou entre na hunt na mão).' },
             rota: { verbo: 'entrar na', quando: 'rota', titulo: `Rota: entrada em ${slug} não confirmou`, dica: 'Confira o nome da hunt (é o mesmo que aparece em "Hunt atual") e entre na mão; a rota continua da etapa atual.' },
+            painel: { verbo: 'entrar na', quando: 'botão do painel', titulo: `Painel: entrada em ${slug} não confirmou`, dica: 'Confira o nome da hunt da etapa e entre na mão.' },
         }[origem] || { verbo: 'entrar na', quando: origem, titulo: `Entrada em ${slug} não confirmou`, dica: 'Entre na hunt na mão.' };
         postWebhook(origem === 'rota' ? 'level' : 'alert', {
             content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: não consegui ${t.verbo} hunt **${slug}** (${t.quando})`,
@@ -1561,6 +1638,9 @@
 #pg-dn-panel .dn-help.warn{color:var(--dn-warn)}
 #pg-dn-panel .dn-help.err{color:var(--dn-danger-t)}
 #pg-dn-panel .dn-inline{display:flex;align-items:center;gap:6px;font-size:13px}
+#pg-dn-panel .dn-route-bar .dn-select{flex:1;min-width:0}
+#pg-dn-panel .dn-route-bar .dn-btn{flex:none}
+#pg-dn-panel .dn-btn:disabled{opacity:.4;cursor:default}
 #pg-dn-panel .dn-status{display:flex;align-items:center;gap:8px;font-size:12px;background:var(--dn-bg-0);border-radius:var(--dn-radius-sm);padding:6px 8px;font-variant-numeric:tabular-nums}
 #pg-dn-panel .dn-status .k{color:var(--dn-muted)}
 #pg-dn-panel .dn-status .r{margin-left:auto}
@@ -1678,7 +1758,7 @@
             `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
             `Bolas: ${moduleState('bolas', d) === 'off' ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}`,
             `Venda: ${d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} itens / ${d.sellEveryMin}${d.sellEveryMaxMin > d.sellEveryMin ? `–${d.sellEveryMaxMin}` : ''} min` : 'desligada'}`,
-            `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? 'daily' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
+            `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? 'daily' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
         ].join(' · ');
     }
@@ -1798,8 +1878,18 @@
                     </div>
                     <div class="dn-section">
                         <h3>Rota de treino</h3>
+                        <div class="dn-inline dn-route-bar">
+                            <select id="pg-dn-route-sel" class="dn-select" title="Rota ativa. Cada rota guarda as próprias etapas e a etapa em que parou; trocar aqui vale na hora."></select>
+                            <button type="button" class="dn-btn dn-btn--sm" id="pg-dn-route-new" title="Cria outra rota (ex.: para outro Pokémon) e a deixa ativa.">＋ Nova</button>
+                            <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-route-rename" title="Renomear a rota ativa.">✎</button>
+                            <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-route-del" title="Excluir a rota ativa.">🗑</button>
+                        </div>
+                        <div id="pg-dn-route-name-box" class="dn-section" hidden>
+                            <label class="dn-field"><span id="pg-dn-route-name-lbl">Nome da rota</span><input id="pg-dn-route-name" class="dn-input" type="text" maxlength="40" placeholder="ex.: Dratini até 50" spellcheck="false"></label>
+                            <div class="dn-actions"><button type="button" class="dn-btn dn-btn--primary dn-btn--sm" id="pg-dn-route-name-ok">OK</button><button type="button" class="dn-btn dn-btn--sm" id="pg-dn-route-name-cancel">Cancelar</button></div>
+                        </div>
                         <textarea id="pg-dn-route" class="dn-textarea" rows="3" placeholder="pidgey 10&#10;larvitar 15" spellcheck="false"></textarea>
-                        <p class="dn-help">Uma etapa por linha: <b>hunt nível</b> (a hunt é o nome que aparece em "Hunt"). Quando todo o time chega ao nível, troca para a próxima hunt.</p>
+                        <p class="dn-help">Uma etapa por linha: <b>hunt nível</b> (a hunt é o nome que aparece em "Hunt"). Quando todo o time chega ao nível, troca para a próxima hunt. Uma rota por Pokémon: crie com <b>＋ Nova</b> e troque no menu acima.</p>
                         <div class="dn-actions">
                             <button type="button" class="dn-btn dn-btn--sm" id="pg-dn-route-import" title="Cole o texto da aba Rota otimizada do PIW Tools e o script monta as etapas.">Importar do PIW Tools</button>
                             <button type="button" class="dn-btn dn-btn--sm" id="pg-dn-route-piwlink" title="Copia o link do gerador de rota do PIW Tools já com o líder e o nível atuais.">Copiar link do PIW Tools</button>
@@ -2108,7 +2198,13 @@
             if (!valid.length) st = on ? '<span class="dn-err-t">Sem etapas: a rota fica desligada.</span>' : '<span class="k">Sem rota.</span>';
             else if (cur >= valid.length) st = `<span class="k">Rota ·</span> concluída (${valid.length} etapas). Reiniciar para começar de novo.`;
             else st = `<span class="k">Rota${on ? '' : ' (desligada)'} ·</span> etapa ${cur + 1} de ${valid.length}${!saved ? ' <span class="k">(recomeça ao salvar)</span>' : ''}`;
-            $('#pg-dn-route-status').innerHTML = st;
+            const passo = routeStep();
+            const go = passo && normalize(huntSlug || '') !== passo.slug
+                ? ` <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-route-go" title="Manda a conta para a hunt da etapa atual (leave-hunt + enter-hunt).">→ ir para ${escHtml(passo.slug)}</button>`
+                : '';
+            $('#pg-dn-route-status').innerHTML = st + go;
+            const goBtn = $('#pg-dn-route-go');
+            if (goBtn) goBtn.onclick = () => { switchHunt(passo.slug, 1, 'painel'); flash(`⏳ Entrando em ${passo.slug}… (confirmo pelo combate em até 30 s)`, 'info', 8000); };
             renderLevelField();
         }
         onTeamChange = () => { if (!panel.hidden) { renderTeam(); renderRoute(); } };
@@ -2139,6 +2235,88 @@
             renderTeam(); renderRoute();
             lastPokesReqAt = 0; requestPokes(0);
             flash(`✔ Rota reiniciada · etapa 1 de ${routeList().length} (${routeList()[0].slug} ${routeList()[0].level})`, 'ok', 5000);
+        };
+
+        // ---- Rotas nomeadas: menu de troca, nova, renomear, excluir (agem na hora; só o texto das etapas passa pelo Salvar) ----
+        function routeOptionLabel(name) {
+            const r = cfg.routes?.[name] || {};
+            const lista = (Array.isArray(r.route) ? r.route : []).filter(x => x && x.slug && Number(x.level) > 0);
+            const st = Number(r.stage) || 0;
+            const prog = !lista.length ? 'vazia' : st >= lista.length ? 'concluída' : `etapa ${st + 1}/${lista.length}: ${lista[st].slug}`;
+            return `${name} · ${prog}`;
+        }
+        function renderRouteSelect() {
+            const sel = $('#pg-dn-route-sel');
+            const nomes = routeNames();
+            sel.innerHTML = nomes.length
+                ? nomes.map(n => `<option value="${escHtml(n)}">${escHtml(routeOptionLabel(n))}</option>`).join('')
+                : '<option value="">— nenhuma rota salva: digite as etapas e Salve —</option>';
+            sel.value = cfg.routeName || '';
+            $('#pg-dn-route-rename').disabled = $('#pg-dn-route-del').disabled = !cfg.routeName;
+        }
+        // O que está na tela pertence à rota atual: com edição pendente, salva antes de trocar/criar/excluir.
+        function saveIfDirty() { if (!dirty) return false; $('#pg-dn-save').click(); return true; }
+        $('#pg-dn-route-sel').onchange = () => {
+            const name = $('#pg-dn-route-sel').value;
+            if (!name || name === cfg.routeName) return;
+            const salvou = saveIfDirty();
+            if (!activateRoute(name)) { renderRouteSelect(); flash('✖ Rota não encontrada.', 'error'); return; }
+            dirty = false; fill();
+            const passo = routeStep();
+            const onde = passo ? ` · etapa ${(Number(cfg.routeStage) || 0) + 1}/${routeList().length}: ${passo.slug} até lv ${passo.level}` : routeList().length ? ' · concluída' : ' · sem etapas: digite e Salve';
+            flash(`${salvou ? '✔ Salvo · ' : '✔ '}Rota "${name}" ativa${onde}${cfg.routeEnabled ? '' : ' · "Seguir a rota" está desligado'}`, 'ok', 6000);
+        };
+        let nameMode = null;        // 'new' | 'rename'
+        function openNameBox(mode) {
+            nameMode = mode;
+            $('#pg-dn-route-name-box').hidden = false;
+            $('#pg-dn-route-name-lbl').textContent = mode === 'rename' ? `Novo nome para "${cfg.routeName}"` : 'Nome da nova rota (ex.: o Pokémon que vai upar)';
+            $('#pg-dn-route-name').value = mode === 'rename' ? cfg.routeName : '';
+            $('#pg-dn-route-name').focus();
+        }
+        function closeNameBox() { nameMode = null; $('#pg-dn-route-name-box').hidden = true; }
+        $('#pg-dn-route-new').onclick = () => openNameBox('new');
+        $('#pg-dn-route-rename').onclick = () => { if (cfg.routeName) openNameBox('rename'); };
+        $('#pg-dn-route-name-cancel').onclick = closeNameBox;
+        $('#pg-dn-route-name').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); $('#pg-dn-route-name-ok').click(); }
+            else if (e.key === 'Escape') { e.stopPropagation(); closeNameBox(); }
+        });
+        $('#pg-dn-route-name-ok').onclick = () => {
+            const name = $('#pg-dn-route-name').value.trim();
+            if (!name) { flash('⚠ Dê um nome para a rota.', 'warn'); return; }
+            if (cfg.routes?.[name] && name !== cfg.routeName) { flash(`⚠ Já existe uma rota chamada "${name}".`, 'warn'); return; }
+            if (nameMode === 'rename') {
+                const antigo = cfg.routeName;
+                closeNameBox();
+                if (name === antigo) return;
+                renameRoute(antigo, name); renderRouteSelect(); renderState();
+                flash(`✔ Rota "${antigo}" agora se chama "${name}".`, 'ok', 4000);
+                return;
+            }
+            const salvou = saveIfDirty();
+            closeNameBox();
+            createRoute(name, []);
+            dirty = false; fill();
+            $('#pg-dn-route').focus();
+            flash(`${salvou ? '✔ Salvo · ' : '✔ '}Rota "${name}" criada e ativa. Digite as etapas (ou importe do PIW Tools) e Salve.`, 'ok', 7000);
+        };
+        let delArmed = null;        // timer da confirmação em 2 cliques do Excluir
+        $('#pg-dn-route-del').onclick = () => {
+            const b = $('#pg-dn-route-del');
+            if (!cfg.routeName) return;
+            if (!delArmed) {
+                b.textContent = 'confirmar 🗑';
+                flash(`⚠ Excluir a rota "${cfg.routeName}"? Clique de novo em 🗑.`, 'warn');
+                delArmed = setTimeout(() => { delArmed = null; b.textContent = '🗑'; renderDirty(); }, 3000);
+                return;
+            }
+            clearTimeout(delArmed); delArmed = null; b.textContent = '🗑';
+            saveIfDirty();
+            const nome = cfg.routeName;
+            deleteRoute(nome);
+            dirty = false; fill();
+            flash(`✔ Rota "${nome}" excluída${cfg.routeName ? ` · ativa agora: "${cfg.routeName}"` : ' · sem rota'}.`, 'ok', 5000);
         };
 
         // ---- Importar rota do PIW Tools (https://piwtools.com.br/hunt, aba "Rota otimizada") ----
@@ -2239,6 +2417,8 @@
             $('#pg-dn-level-swap').checked = Boolean(cfg.levelSwap);
             $('#pg-dn-route').value = routeList().map(r => `${r.slug} ${r.level}`).join('\n');
             $('#pg-dn-route-on').checked = Boolean(cfg.routeEnabled);
+            renderRouteSelect();
+            $('#pg-dn-route-name-box').hidden = true;
             renderTeam();
             $('#pg-dn-daily').checked = Boolean(cfg.dailyEnabled);
             $('#pg-dn-daily-claim').checked = cfg.dailyClaim !== false;
@@ -2255,7 +2435,7 @@
 
         // qualquer edição marca "não salvo" e recalcula resumos e badges
         const onEdit = (e) => {
-            if (e.target.closest('#pg-dn-import-box, #pg-dn-route-import-box')) return;
+            if (e.target.closest('#pg-dn-import-box, #pg-dn-route-import-box, #pg-dn-route-name-box') || e.target.id === 'pg-dn-route-sel') return;
             if (!e.target.matches('input, select, textarea')) return;
             dirty = true;
             renderDirty();
@@ -2292,6 +2472,7 @@
             const dailyAntes = JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug]);
             Object.assign(cfg, draft);
             if (JSON.stringify(routeList()) !== rotaAntes) cfg.routeStage = 0; // rota editada: recomeça
+            if (routeList().length && !cfg.routeName) cfg.routeName = uniqueRouteName('Rota 1'); // primeira rota ganha nome sozinha (saveCfg espelha)
             // Alvo ou troca mudaram: reavalia o time inteiro (antes, ligar a troca depois do aviso não fazia nada).
             if (levelTarget() !== alvoAntes || swapEnabled() !== swapAntes) { levelAlerted.clear(); swapPending = null; }
             lastPokesReqAt = 0; requestPokes(0);
@@ -2402,7 +2583,7 @@
             delete data._piwDiscordNotify;
             const keepHooks = $('#pg-dn-import-keephooks').checked;
             const mine = { webhookUrl: cfg.webhookUrl, webhookShiny: cfg.webhookShiny, webhookAlerts: cfg.webhookAlerts, webhookLevel: cfg.webhookLevel };
-            cfg = Object.assign({}, DEFAULTS, data);
+            cfg = migrateCfg(Object.assign({}, DEFAULTS, data));
             if (keepHooks) Object.assign(cfg, mine);
             cfg.cfgVersion = 2;
             saveCfg(cfg);

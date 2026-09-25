@@ -31,6 +31,7 @@ function loadLevelModule(cfg) {
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
             updateTeam, handlePokeXp, noteLeaderLevel, levelTarget, routeStatus,
+            routeNames, uniqueRouteName, activateRoute, createRoute, renameRoute, deleteRoute,
             fieldArrived() { lastFieldAt = Date.now(); },
             get team() { return team; },
             get swapPending() { return swapPending; },

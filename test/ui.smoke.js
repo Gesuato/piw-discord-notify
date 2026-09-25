@@ -68,6 +68,22 @@ setTimeout(() => {
         $('#pg-dn-daily').checked = false; fire($('#pg-dn-daily'), 'change'); $('#pg-dn-save').click();
         $('#pg-dn-route-reset').click(); log('reset1=' + $('#pg-dn-route-reset').textContent + ' | ' + $('#pg-dn-msg').textContent);
         $('#pg-dn-route-reset').click(); log('reset2=' + $('#pg-dn-msg').textContent);
+        // ---- rotas nomeadas: migração da config antiga, nova, troca pelo menu, renomear, excluir ----
+        const selR = $('#pg-dn-route-sel');
+        let cfgR = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+        log('rotas migradas=' + JSON.stringify(Object.keys(cfgR.routes || {})) + ' ativa=' + cfgR.routeName + ' opts=' + [...selR.options].map(o => o.textContent).join(' | ') + ' go=' + ($('#pg-dn-route-go') ? $('#pg-dn-route-go').textContent : '-'));
+        $('#pg-dn-route-new').click(); log('nameBox=' + !$('#pg-dn-route-name-box').hidden + ' lbl=' + $('#pg-dn-route-name-lbl').textContent);
+        $('#pg-dn-route-name').value = 'Dratini'; $('#pg-dn-route-name-ok').click();
+        $('#pg-dn-route').value = 'dratini 30'; fire($('#pg-dn-route'), 'input'); $('#pg-dn-save').click();
+        cfgR = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+        log('nova rota=' + cfgR.routeName + ' rotas=' + JSON.stringify(cfgR.routes) + ' | opts=' + [...selR.options].map(o => o.textContent).join(' | '));
+        selR.value = 'Rota 1'; fire(selR, 'change');
+        cfgR = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+        log('trocou=' + cfgR.routeName + ' etapa=' + cfgR.routeStage + ' texto=' + JSON.stringify($('#pg-dn-route').value) + ' dirty=' + $('#pg-dn-msg').textContent.slice(0, 100));
+        $('#pg-dn-route-rename').click(); $('#pg-dn-route-name').value = 'Larvitar'; $('#pg-dn-route-name-ok').click();
+        $('#pg-dn-route-del').click(); log('del1=' + $('#pg-dn-route-del').textContent); $('#pg-dn-route-del').click();
+        cfgR = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+        log('renomeou+excluiu: ativa=' + cfgR.routeName + ' rotas=' + Object.keys(cfgR.routes) + ' rota=' + JSON.stringify(cfgR.route) + ' | ' + $('#pg-dn-msg').textContent.slice(0, 80));
         $('#pg-dn-hook').value = ''; fire($('#pg-dn-hook'), 'input');
         log('avisosBadge=' + panel.querySelector('.dn-tab[data-tab=avisos] .b').dataset.state + ' dot=' + $('#pg-dn-dot').dataset.state + ' resumo=' + $('#pg-dn-chan-summary').textContent.trim());
         $('#pg-dn-test').click(); log('testar=' + $('#pg-dn-msg').textContent + ' aba=' + panel.querySelector('.dn-tab[aria-selected=true]').dataset.tab + ' hookSalvo=' + JSON.stringify(JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg')).webhookUrl));

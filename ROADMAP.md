@@ -315,6 +315,28 @@ Não entra na hunt da daily sozinho (o usuário escolhe a missão e entra).
 
 ---
 
+## ✅ 16. Rotas salvas com menu de troca (v3.9.0)
+
+**O que faz:** várias rotas de treino guardadas por nome (ex.: uma por Pokémon que está upando), com um menu
+na aba Treino para trocar a ativa na hora. Cada rota lembra a própria etapa: sair da rota "Dratini" na etapa 3 e
+voltar depois continua da etapa 3.
+
+**UI (seção "Rota de treino"):** barra `[ menu de rotas ▾ ] [＋ Nova] [✎] [🗑]` acima do texto das etapas. O menu
+mostra `nome · etapa i/n: hunt` (ou `vazia`/`concluída`). Trocar no menu, criar, renomear e excluir agem NA HORA
+(salvam a config, como o "Reiniciar rota"); só o texto das etapas continua passando pelo Salvar. Se havia edição
+pendente, a troca/criação/exclusão salva antes (o que está na tela pertence à rota atual). "＋ Nova" e "✎" abrem
+uma caixa de nome inline (Enter confirma, Esc cancela); "🗑" pede 2 cliques. Na linha de status aparece
+"→ ir para <hunt>" quando a conta não está na hunt da etapa atual (manda `switchHunt(slug, 1, 'painel')`).
+
+**Config:** `routes: { nome: { route, stage } }` e `routeName`; `route`/`routeStage` continuam sendo a rota ATIVA
+(mesmo padrão de `sellItems`/`sellProfiles`). `saveCfg` espelha a ativa em `routes[routeName]`; `migrateCfg` (usado
+no `loadCfg` e no Importar config) transforma config antiga (só `route`) na rota "Rota 1"; Salvar com etapas e sem
+nome cria "Rota 1" sozinho. Funções no módulo de nível: `routeNames`/`uniqueRouteName`/`storeActiveRoute`/
+`activateRoute`/`createRoute`/`renameRoute`/`deleteRoute`. Testes: `node test/route.test.js` (bloco "rotas
+nomeadas") e o smoke do painel.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

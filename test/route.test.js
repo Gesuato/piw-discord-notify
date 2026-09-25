@@ -55,4 +55,25 @@ assert(m.levelTarget() === 0, 'sem alvo após a rota (levelAlertAt 0)');
     assert(api.levelTarget() === 7, 'rota desligada usa levelAlertAt');
 }
 
+// rotas nomeadas (v3.9.0): trocar guarda a etapa da anterior; a nova volta de onde parou; excluir a ativa cai na próxima
+{
+    const rotaA = [{ slug: 'a', level: 5 }, { slug: 'b', level: 9 }];
+    const { api, state: st, cfg: c } = loadLevelModule({
+        routeEnabled: true, routeName: 'A', route: rotaA, routeStage: 1,
+        routes: { A: { route: rotaA, stage: 1 }, B: { route: [{ slug: 'c', level: 20 }], stage: 0 } },
+    });
+    assert(api.levelTarget() === 9, 'A na etapa 2');
+    assert(api.activateRoute('B') && c.routeName === 'B' && api.levelTarget() === 20 && c.routeStage === 0, 'B ativa do início');
+    assert(c.routes.A.stage === 1, 'A guardou a etapa');
+    assert(st.saved === 1 && st.logs.some(l => l[0] === 'rota-ativa' && l[1].nome === 'B'), 'salvou e logou');
+    assert(api.activateRoute('A') && c.routeStage === 1 && api.levelTarget() === 9, 'A volta de onde parou');
+    assert(!api.activateRoute('zzz'), 'rota inexistente');
+    assert(api.createRoute('C', []) && c.routeName === 'C' && api.levelTarget() === 0, 'C vazia ativa: sem alvo');
+    assert(api.renameRoute('C', 'D') && c.routeName === 'D' && !c.routes.C && c.routes.D, 'renomeada');
+    assert(!api.renameRoute('D', 'A'), 'não renomeia por cima de outra');
+    assert(api.deleteRoute('D') && c.routeName === 'A' && api.levelTarget() === 9, 'excluir a ativa cai na primeira que sobra');
+    assert(api.deleteRoute('A') && api.deleteRoute('B') && c.routeName === '' && c.route.length === 0 && c.routeEnabled === false, 'sem rotas: desliga');
+    assert(api.routeNames().length === 0 && api.uniqueRouteName('Rota 1') === 'Rota 1', 'nome livre');
+}
+
 console.log('OK route.test —', m.routeStatus());
