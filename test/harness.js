@@ -235,13 +235,14 @@ function loadPokeSellModule(cfg, init) {
         tierByKey: (key) => TIERS.find(t => t.key === String(key || '').toLowerCase()) || null,
         IV_MAX: 192,
         awaitingDetails: state.awaiting,
+        TIERS,
         setTimeout: (fn, ms) => { fn(); return 1; },
         clearTimeout: () => {},
         Date: FakeDate,
     };
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
-            pokeSellReason, pokeSellCandidates, runPokeSellCycle, pokeSellOnPokes, noteRecentCapture, pokeSellBoundary, pokeLabel,
+            pokeSellReason, pokeSellCandidates, runPokeSellCycle, pokeSellOnPokes, noteRecentCapture, pokeSellLimit, pokeSellHasRules, pokeLabel,
             get lastPokesList() { return lastPokesList; },
         };`);
     const api = factory(...Object.values(ctx));

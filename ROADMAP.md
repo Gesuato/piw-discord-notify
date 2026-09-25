@@ -391,10 +391,12 @@ locked, sellValue, ivTotal, quality }]`; `POST /api/game/pokemon/sell { pokeIds 
 por 60 s, nunca com captura aguardando `poke-delta`; `runPokeSellCycle(manual)` faz o POST, avisa no canal de
 Alertas (lista até 15 vendidos, gold), pede `pokes-get` de novo. Venda parcial/erro também avisa.
 
-**Config/UI:** `pokeSellEnabled`, `pokeSellTier` ('legendary'), `pokeSellIvLow`, `pokeSellIvHigh`. Seção com o
-seletor da raridade-fronteira, os dois limites, a prévia "N fora do time · M dentro das regras: Rattata lv5 Common
-40/192 · …" calculada com o que está na tela, botões "Vender Pokémon agora" (salva só as regras) e "Atualizar
-lista". Teste: `node test/pokesell.test.js`.
+**Config/UI (v3.12.0, formato escolhido no mock `docs/mockup-venda-pokemon.html`, alternativa B):** `pokeSellEnabled`
+e `pokeSellLimits: { weak..divine: limite }` — um campo "poder <" por raridade (etiqueta colorida), vazio = essa
+raridade não vende. Config da v3.11.x (duas faixas `pokeSellTier`/`pokeSellIvLow`/`pokeSellIvHigh`) é migrada em
+`migrateCfg` para um limite por raridade. Prévia em tabela (Pokémon, raridade, poder, decisão: "✔ vende", "poder 130 ≥
+100", "cadeado", "Mythic sem limite"…) calculada com os campos da tela, gold estimado no resumo, botão "Vender N agora"
+(salva só os limites) e "Atualizar lista". Teste: `node test/pokesell.test.js`.
 
 **Pendências:** confirmar no log que o frame `pokes` traz `starter`/`locked`/`sellValue` (levantado do bundle, v3.6.0);
 sem esses campos o script só confia em `team`/`shiny`/IV.
