@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.11.0
+// @version      3.11.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.11.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.11.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -2018,7 +2018,7 @@
 #pg-dn-btn .dn-dot[data-state="warn"]{background:var(--dn-warn)}
 #pg-dn-btn .dn-dot[data-state="danger"]{background:var(--dn-danger);animation:dn-pulse 1.4s ease-in-out infinite}
 @keyframes dn-pulse{0%,100%{box-shadow:0 0 0 0 rgba(218,55,60,.6)}50%{box-shadow:0 0 0 5px rgba(218,55,60,0)}}
-#pg-dn-panel{position:fixed;bottom:58px;left:12px;z-index:99999;width:min(380px,calc(100vw - 24px));height:min(520px,calc(100vh - 70px));display:flex;flex-direction:column;background:var(--dn-bg-1);border:1px solid var(--dn-border);border-radius:var(--dn-radius);box-shadow:0 8px 24px rgba(0,0,0,.5);overflow:hidden;text-align:left}
+#pg-dn-panel{position:fixed;bottom:58px;left:12px;z-index:99999;width:min(400px,calc(100vw - 24px));height:min(520px,calc(100vh - 70px));container-type:inline-size;display:flex;flex-direction:column;background:var(--dn-bg-1);border:1px solid var(--dn-border);border-radius:var(--dn-radius);box-shadow:0 8px 24px rgba(0,0,0,.5);overflow:hidden;text-align:left}
 #pg-dn-panel .dn-head{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--dn-bg-0);border-bottom:1px solid var(--dn-border)}
 #pg-dn-panel .dn-head .t{font-weight:600;font-size:14px}
 #pg-dn-panel .dn-head .v{color:var(--dn-muted);font-size:12px}
@@ -2027,8 +2027,10 @@
 #pg-dn-panel .dn-dots i[data-state="on"],#pg-dn-panel .dn-tab .b[data-state="on"]{background:var(--dn-ok)}
 #pg-dn-panel .dn-dots i[data-state="warn"],#pg-dn-panel .dn-tab .b[data-state="warn"]{background:var(--dn-warn)}
 #pg-dn-panel .dn-dots i[data-state="danger"],#pg-dn-panel .dn-tab .b[data-state="danger"]{background:var(--dn-danger)}
-#pg-dn-panel .dn-tabs{display:flex;background:var(--dn-bg-0);border-bottom:1px solid var(--dn-border)}
-#pg-dn-panel .dn-tab{flex:1;background:transparent;border:0;border-bottom:2px solid transparent;color:var(--dn-muted);font:inherit;font-size:12px;font-weight:600;padding:7px 2px 6px;cursor:pointer;white-space:nowrap;border-radius:0}
+#pg-dn-panel .dn-tabs{display:flex;flex-wrap:wrap;background:var(--dn-bg-0);border-bottom:1px solid var(--dn-border)}
+#pg-dn-panel .dn-tab{flex:1 1 auto;min-width:0;background:transparent;border:0;border-bottom:2px solid transparent;color:var(--dn-muted);font:inherit;font-size:12px;font-weight:600;padding:7px 4px 6px;cursor:pointer;white-space:nowrap;border-radius:0}
+#pg-dn-panel .dn-tab .ic{margin-right:3px}
+@container (max-width:370px){#pg-dn-panel .dn-tab .lbl{display:none}#pg-dn-panel .dn-tab .ic{margin-right:0;font-size:15px}}
 #pg-dn-panel .dn-tab[aria-selected="true"]{color:var(--dn-text);border-bottom-color:var(--dn-accent);background:var(--dn-bg-1)}
 #pg-dn-panel .dn-tab .b{display:inline-block;width:7px;height:7px;border-radius:50%;margin-left:3px;background:var(--dn-dim);vertical-align:1px}
 #pg-dn-panel .dn-body{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:8px}
@@ -2130,12 +2132,12 @@
     function fmtNum(n) { return Number(n).toLocaleString('pt-BR'); }
 
     const TABS = [
-        { id: 'avisos', label: '🔔 Avisos' },
-        { id: 'bolas', label: '🛒 Compras' },
-        { id: 'venda', label: '💰 Venda' },
-        { id: 'treino', label: '⚔ Treino' },
-        { id: 'profissao', label: '📖 Profissão' },
-        { id: 'sistema', label: '⚙ Sistema' },
+        { id: 'avisos', icon: '🔔', label: 'Avisos' },
+        { id: 'bolas', icon: '🛒', label: 'Compras' },
+        { id: 'venda', icon: '💰', label: 'Venda' },
+        { id: 'treino', icon: '⚔', label: 'Treino' },
+        { id: 'profissao', icon: '📖', label: 'Profissão' },
+        { id: 'sistema', icon: '⚙', label: 'Sistema' },
     ];
 
     // Estado de cada módulo para os badges: 'on' | 'off' | 'warn' | 'danger'. Recebe um objeto no
@@ -2215,7 +2217,7 @@
                 <div class="dn-dots" id="pg-dn-dots">${TABS.map(t => `<i data-tab="${t.id}"></i>`).join('')}</div>
                 <button type="button" class="dn-btn dn-btn--ghost" id="pg-dn-close" title="Fechar (Esc)">✕</button>
             </div>
-            <div class="dn-tabs" role="tablist">${TABS.map(t => `<button type="button" class="dn-tab" role="tab" data-tab="${t.id}" aria-selected="false">${t.label}<span class="b"></span></button>`).join('')}</div>
+            <div class="dn-tabs" role="tablist">${TABS.map(t => `<button type="button" class="dn-tab" role="tab" data-tab="${t.id}" aria-selected="false" title="${t.label}"><span class="ic">${t.icon}</span><span class="lbl">${t.label}</span><span class="b"></span></button>`).join('')}</div>
             <div class="dn-body">
                 <section class="dn-pane" data-pane="avisos" hidden>
                     <div class="dn-section">
