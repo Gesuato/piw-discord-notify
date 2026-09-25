@@ -337,6 +337,42 @@ nomeadas") e o smoke do painel.
 
 ---
 
+## ✅ 17. Rota de captura — aba Profissão (v3.10.0)
+
+**O que faz:** captura todas as espécies, hunt por hunt, da de menor nível à de maior, pulando as que a conta já
+tem na Pokédex. Entra na hunt da espécie da vez; quando um `catch-result` de sucesso dela chega (captura manual,
+Auto-Catch VIP ou a bola que o próprio script joga), marca, avisa no canal de Alertas ("capturou X (12/137) —
+próximo: Y (lv 10)") e vai para a próxima. Sem espécie faltando: avisa "rota concluída" e desliga.
+
+**Fontes (bundle + arquivos públicos, 25/09/2026):** `GET /api/game/map-markers` (público) → `hunts[{ slug, name,
+level, area, looktype }]` (454 hunts; level 0 = cidade; áreas kanto/orre/outland/nightmare); `GET /game/creatures.json`
+(público) → `creatures[{ pokeId, name, looktype, huntLevel, rarity }]` (pokeId < 10000 = espécie normal, as que a
+Pokédex lista); `GET /api/game/pokedex` (auth) → `species[{ id, caught, kills, unlocked, claimed }]`;
+`GET /api/game/professions` (auth) → `{ profession, rankKey, speciesCount, nextStep:{ toRankKey, species:{ have,
+need } } }` (só para o status). Espécie da hunt = criatura com o mesmo `looktype` (pokeId < 10000; empate = nome
+igual, senão o menor id; "nidoranfe" → Nidoran Female). `field-init { slug }` agora também define a hunt atual
+quando o script carregou depois do `enter-hunt`.
+
+**Lógica (módulo "Rota de captura"):** `catchScope()` = hunts das áreas marcadas até `catchRouteMaxLevel`, uma por
+espécie, ordem nível → nome; `catchPlan()` = escopo menos capturadas (Pokédex + `catchRouteDone`), `catchRouteSkipped`
+e falhas de entrada da sessão. `catchNext()` pega a 1ª e chama `switchHunt(slug, 1, 'captura')`; entrada não confirmada
+ou `error` do jogo durante a entrada pula a hunt. `catchOnPending()` joga `{ type:'catch', pendingId, ballId }` na
+espécie da vez (respeita `catch-cooldown`/`cooldownMs`, 1,5 s entre bolas, estoque 0 não joga). `catchOnResult()`
+marca qualquer espécie do escopo capturada (avança se era o alvo). `catchTick` (60 s) volta para a hunt do alvo se
+a conta está parada fora de hunt há 2 min. Excludente com "Seguir a rota" (Salvar desliga a outra). A Daily volta
+para a hunt do alvo quando a rota de captura está ligada.
+
+**Config/UI:** `catchRouteEnabled`, `catchRouteAreas` (padrão kanto), `catchRouteMaxLevel`, `catchRouteAuto`,
+`catchRouteBall` ('auto' = última usada), `catchRouteSkipped`, `catchRouteDone`. Aba **📖 Profissão**: liga/desliga,
+áreas, nível máximo, bola automática, status ("alvo Pidgey (lv 1, kanto) · na hunt · 12/137 feitas, faltam 125 ·
+Pokédex 88/410"), próximas 8, botões Pular esta / Atualizar Pokédex / Limpar puladas, e a profissão (rank, espécies
+capturadas, próximo rank). Teste: `node test/catch.test.js`.
+
+**Pendências:** confirmar ao vivo `field-init.slug`, o `error` de hunt recusada e se hunts de nível alto exigem
+nível do treinador (hoje a falha só pula). Não escolhe a profissão nem sobe de rank.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

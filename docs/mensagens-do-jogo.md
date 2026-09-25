@@ -82,6 +82,18 @@ e `error { message }` (resposta de ação recusada; o script os trata em `handle
   `GET /api/game/daily-catch` (Daily Catch: capturas premiadas por faixa, `tiers[]`) e `GET /api/game/dailys-summary`
   → `{ tasks:{ ready }, kill:{ locked, claimed, picked, qty, have }, catch:{ used, total } }` existem, não usados.
   `GET /api/game/daily` é o Daily Gift (calendário de 28 dias), outra coisa.
+- Pokédex e mapa (v3.10.0): `GET /api/game/map-markers` (SEM auth) → `{ map:{ w, h }, hunts:[{ slug, name, level,
+  area:'kanto'|'orre'|'outland'|'nightmare', looktype, pixel, range }] }` (454 hunts, level 0 = cidades);
+  `GET /game/creatures.json` (público) → `{ creatures:[{ pokeId, name, looktype, type1, type2, rarity, huntLevel,
+  evolvesToId, evolveLevel, priceNpc, loot:[...], attacks:[...] }] }` (647; pokeId < 10000 são as 410 espécies da
+  Pokédex; ≥ 10000 = Brave/Furious/Nightmare/Outland); `GET /api/game/pokedex` → `{ unlockKills, species:[{ id, kills,
+  unlocked, claimed, caught, canClaim, captureBonus }] }` e `POST /api/game/pokedex/claim { speciesId }` (bônus +25% XP);
+  `GET /api/game/professions` → `{ profession:'prestige'|'botanist'|..., professions:[{ key, ... }], rankKey,
+  speciesCount, pictures, herbs, nextStep:{ toRankKey, species:{ have, need }, pictures:{...}, ... } }`;
+  `POST /api/game/professions/choose { profession }`, `/rankup`, `/craft`, `/talent`. `GET /api/game/capture-log`
+  é o histórico de capturas do perfil (não usado). Handlers vistos: `field-init { slug, ... }`, `field-none { slug }`,
+  `catch-cooldown { leftMs }`, `catch-result` também traz `pendingId`, `cooldownMs`, `row`, `col`, `ballId`;
+  `hunt-cooldown { ms }` (o cliente reenvia `enter-hunt` depois de `ms`).
 
 ## Ideias que esses nomes destravam
 

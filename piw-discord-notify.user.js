@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.9.0
+// @version      3.10.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.9.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.10.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -48,6 +48,13 @@
         routeStage: 0,          // índice da etapa atual (persistido; >= route.length = concluída)
         routes: {},             // rotas salvas: nome -> { route, stage } (v3.9.0). route/routeStage acima = a ATIVA
         routeName: '',          // nome da rota ativa ('' = nenhuma salva ainda)
+        catchRouteEnabled: false, // Rota de captura (aba Profissão): capturar todas as espécies, hunt por hunt, por nível
+        catchRouteAreas: ['kanto'], // áreas do mapa incluídas: kanto, orre, outland, nightmare
+        catchRouteMaxLevel: 0,  // só hunts até este nível; 0 = todas
+        catchRouteAuto: false,  // jogar a bola sozinho quando a espécie da vez entrar na fila (`catch`)
+        catchRouteBall: 'auto', // bola do `catch` automático: 'auto' = última usada, ou o id da bola
+        catchRouteSkipped: [],  // slugs pulados no painel
+        catchRouteDone: [],     // speciesIds capturados por esta rota (soma à Pokédex até ela atualizar)
         dailyEnabled: false,    // Daily Kill: ao bater a meta da missão do dia, voltar para a hunt de antes
         dailyClaim: true,       // ...e resgatar a recompensa sozinho (POST /api/game/daily-kill/claim)
         dailyReturnSlug: '',    // hunt fixa para voltar; vazio = etapa da rota, senão a hunt anterior à daily
@@ -559,6 +566,7 @@
             daily: { verbo: 'voltar para a', quando: 'depois da Daily Kill', titulo: `Daily Kill: volta para ${slug} não confirmou`, dica: 'Confira o nome da hunt em "Voltar para" (ou entre na hunt na mão).' },
             rota: { verbo: 'entrar na', quando: 'rota', titulo: `Rota: entrada em ${slug} não confirmou`, dica: 'Confira o nome da hunt (é o mesmo que aparece em "Hunt atual") e entre na mão; a rota continua da etapa atual.' },
             painel: { verbo: 'entrar na', quando: 'botão do painel', titulo: `Painel: entrada em ${slug} não confirmou`, dica: 'Confira o nome da hunt da etapa e entre na mão.' },
+            captura: { verbo: 'entrar na', quando: 'rota de captura', titulo: `Rota de captura: entrada em ${slug} não confirmou`, dica: 'Essa hunt foi pulada nesta sessão; a rota segue para a próxima espécie.' },
         }[origem] || { verbo: 'entrar na', quando: origem, titulo: `Entrada em ${slug} não confirmou`, dica: 'Entre na hunt na mão.' };
         postWebhook(origem === 'rota' ? 'level' : 'alert', {
             content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: não consegui ${t.verbo} hunt **${slug}** (${t.quando})`,
@@ -569,6 +577,7 @@
                 color: 0xed4245,
             }],
         }, { evento: 'hunt-falhou', slug, origem });
+        if (origem === 'captura') catchHuntFailed(slug);
     }
 
     function handlePokeXp(message) {
@@ -987,6 +996,268 @@
         }, { evento: 'bolas', ballId: id, qty });
     }
 
+    // ---- Rota de captura (aba Profissão): capturar todas as espécies, da hunt de menor nível à maior ----
+    // Fontes (levantadas no bundle e nos arquivos públicos em 25/09/2026):
+    //   GET /api/game/map-markers  (público) -> { map, hunts:[{ slug, name, level, area, looktype, pixel, range }] }
+    //                                          454 hunts; level 0 = cidade; areas: kanto, orre, outland, nightmare.
+    //   GET /game/creatures.json   (público) -> { creatures:[{ pokeId, name, looktype, huntLevel, rarity, type1... }] }
+    //                                          pokeId < 10000 = espécie normal (a Pokédex só lista essas).
+    //   GET /api/game/pokedex      (auth)    -> { unlockKills, species:[{ id, kills, unlocked, claimed, caught,
+    //                                          canClaim, captureBonus }] }   `caught` = a conta já capturou.
+    //   GET /api/game/professions  (auth)    -> { profession, rankKey, speciesCount, pictures, nextStep:{ toRankKey,
+    //                                          species:{ have, need }, ... } }  (só para o status do painel)
+    //   socket: `pending` { list:[{ id, pokeId, name, level, shiny }] } é a fila capturável; o cliente captura com
+    //   `{ type:'catch', pendingId, ballId }`; `catch-result { success, speciesName, pendingId, cooldownMs, auto }`;
+    //   `catch-cooldown { leftMs }`. `field-init { slug }` confirma a hunt em que a conta está.
+    // Espécie de cada hunt: criatura com o mesmo `looktype` (pokeId < 10000; empate = nome igual, senão o menor id).
+    // Plano = hunts das áreas marcadas, até o nível máximo, sem espécie já capturada (Pokédex + capturas desta
+    // rota), sem as puladas e sem as que falharam na entrada nesta sessão; ordem: nível, depois nome. O alvo é a
+    // 1ª do plano: o script entra na hunt (switchHunt origem 'captura'); quando um `catch-result` de sucesso da
+    // espécie chega (manual, Auto-Catch VIP ou a bola que o script joga com `catchRouteAuto`), marca capturada e
+    // segue para a próxima. Sem alvo = rota concluída (avisa e desliga). Excludente com a rota de treino.
+
+    const MAP_MARKERS_URL = '/api/game/map-markers';
+    const CREATURES_URL = '/game/creatures.json';
+    const POKEDEX_URL = '/api/game/pokedex';
+    const PROFESSIONS_URL = '/api/game/professions';
+    const CATCH_AREAS = ['kanto', 'orre', 'outland', 'nightmare'];
+    const CATCH_TICK_MS = 60 * 1000;
+    const CATCH_IDLE_REENTER_MS = 2 * 60 * 1000;   // fora de hunt há tanto tempo: volta para a hunt do alvo
+    const CATCH_SEND_GAP_MS = 1500;                 // intervalo mínimo entre bolas jogadas pelo script
+    const DEX_REFRESH_MIN_MS = 30 * 1000;
+
+    let huntCatalog = null;         // [{ slug, name, level, area, speciesId, speciesName }] ordenado por nível
+    let dexCaught = new Set();      // speciesId capturados (Pokédex + capturas desta rota)
+    let dexTotal = 0;               // espécies normais no catálogo
+    let dexFetchedAt = 0;
+    let profession = null;          // { name, rank, speciesCount, next:{ rank, have, need } } | null
+    let catchTarget = null;         // hunt da vez (entrada do catálogo)
+    let catchBusy = false;
+    let catchCooldownUntil = 0;
+    let catchSentFor = null;        // pendingId da última bola jogada pelo script
+    let catchSentAt = 0;
+    const catchFailed = new Set();  // slugs cuja entrada falhou nesta sessão (não persiste)
+    let onCatchChange = null;       // callback do painel
+
+    function catchRouteActive() { return Boolean(cfg.catchRouteEnabled); }
+    function catchAreas() {
+        const a = Array.isArray(cfg.catchRouteAreas) ? cfg.catchRouteAreas.filter(x => CATCH_AREAS.includes(x)) : [];
+        return a.length ? a : ['kanto'];
+    }
+
+    async function loadHuntCatalog() {
+        if (huntCatalog) return huntCatalog;
+        const getJson = (url) => fetch(url).then(r => r.ok ? r.json() : Promise.reject(new Error(`${url}: HTTP ${r.status}`)));
+        const [mm, cr] = await Promise.all([getJson(MAP_MARKERS_URL), getJson(CREATURES_URL)]);
+        const creatures = (Array.isArray(cr?.creatures) ? cr.creatures : []).filter(c => Number(c?.pokeId) > 0 && c.name);
+        const byLook = new Map();
+        for (const c of creatures) { const k = Number(c.looktype); if (!byLook.has(k)) byLook.set(k, []); byLook.get(k).push(c); }
+        const byName = new Map(creatures.map(c => [normalize(c.name), c]));
+        dexTotal = creatures.filter(c => Number(c.pokeId) < 10000).length;
+        huntCatalog = (Array.isArray(mm?.hunts) ? mm.hunts : [])
+            .filter(h => h && h.slug && Number(h.level) > 0)
+            .map(h => {
+                const cands = (byLook.get(Number(h.looktype)) || []).filter(c => Number(c.pokeId) < 10000).sort((a, b) => Number(a.pokeId) - Number(b.pokeId));
+                const sp = cands.find(c => normalize(c.name) === normalize(h.name)) || cands[0] || byName.get(normalize(h.name)) || null;
+                return { slug: normalize(h.slug), name: String(h.name), level: Number(h.level), area: String(h.area || ''), speciesId: sp ? Number(sp.pokeId) : null, speciesName: sp ? String(sp.name) : null };
+            })
+            .sort((a, b) => a.level - b.level || a.slug.localeCompare(b.slug));
+        logEvent('captura-catalogo', { hunts: huntCatalog.length, semEspecie: huntCatalog.filter(h => !h.speciesId).length, especies: dexTotal });
+        return huntCatalog;
+    }
+
+    async function refreshPokedex(force) {
+        if (!force && dexFetchedAt && Date.now() - dexFetchedAt < DEX_REFRESH_MIN_MS) return dexCaught;
+        const d = await gameApi(POKEDEX_URL);
+        const list = Array.isArray(d?.species) ? d.species : [];
+        dexCaught = new Set(list.filter(s => s && s.caught).map(s => Number(s.id)));
+        for (const id of (Array.isArray(cfg.catchRouteDone) ? cfg.catchRouteDone : [])) dexCaught.add(Number(id));
+        dexFetchedAt = Date.now();
+        logEvent('pokedex', { capturadas: dexCaught.size, listadas: list.length });
+        return dexCaught;
+    }
+
+    async function refreshProfession() {
+        try {
+            const d = await gameApi(PROFESSIONS_URL);
+            const ns = d?.nextStep || null;
+            profession = {
+                key: d?.profession || null,
+                rank: d?.rankKey || null,
+                speciesCount: Number(d?.speciesCount) || 0,
+                next: ns ? { rank: ns.toRankKey || null, have: Number(ns.species?.have) || 0, need: Number(ns.species?.need) || 0 } : null,
+            };
+        } catch (err) { logEvent('profissao-erro', { erro: String(err?.message || err) }); }
+        if (onCatchChange) { try { onCatchChange(); } catch { /* painel fechado */ } }
+        return profession;
+    }
+
+    // Hunts no escopo (áreas + nível máximo), uma por espécie, na ordem da rota.
+    function catchScope() {
+        if (!huntCatalog) return [];
+        const areas = new Set(catchAreas());
+        const max = Number(cfg.catchRouteMaxLevel) || 0;
+        const vistos = new Set();
+        return huntCatalog.filter(h => {
+            if (!h.speciesId || h.speciesId >= 10000 || !areas.has(h.area) || (max && h.level > max)) return false;
+            if (vistos.has(h.speciesId)) return false;
+            vistos.add(h.speciesId);
+            return true;
+        });
+    }
+    // O que falta: escopo menos capturadas, puladas e falhas desta sessão.
+    function catchPlan() {
+        const skipped = new Set(Array.isArray(cfg.catchRouteSkipped) ? cfg.catchRouteSkipped : []);
+        return catchScope().filter(h => !dexCaught.has(h.speciesId) && !skipped.has(h.slug) && !catchFailed.has(h.slug));
+    }
+    function catchProgress() {
+        const escopo = catchScope();
+        const feitas = escopo.filter(h => dexCaught.has(h.speciesId)).length;
+        return { total: escopo.length, feitas, faltam: catchPlan().length, dex: dexCaught.size, dexTotal };
+    }
+    function catchBallId() {
+        const v = cfg.catchRouteBall;
+        if (v && v !== 'auto') return Number(v) || null;
+        return lastBallId || 1;
+    }
+    function catchStatus() {
+        if (!catchRouteActive()) return 'desligada';
+        if (!huntCatalog) return catchBusy ? 'carregando hunts e Pokédex…' : 'ainda não carregada';
+        const p = catchProgress();
+        if (!catchTarget) return p.faltam ? `${p.faltam} espécies faltando · aguardando` : `concluída: ${p.feitas}/${p.total} espécies das áreas marcadas`;
+        const onde = normalize(huntSlug || '') === catchTarget.slug ? 'na hunt' : (huntSwitch?.origem === 'captura' ? 'entrando…' : `você está em ${huntSlug || 'cidade'}`);
+        return `alvo ${catchTarget.name} (lv ${catchTarget.level}, ${catchTarget.area}) · ${onde} · ${p.feitas}/${p.total} feitas, faltam ${p.faltam} · Pokédex ${p.dex}/${p.dexTotal}`;
+    }
+
+    // Carrega catálogo + Pokédex e vai para o 1º alvo. `motivo` só para o log.
+    async function startCatchRoute(motivo) {
+        if (!catchRouteActive() || catchBusy) return;
+        catchBusy = true;
+        if (onCatchChange) { try { onCatchChange(); } catch { /* painel fechado */ } }
+        try {
+            await loadHuntCatalog();
+            await refreshPokedex(true);
+        } catch (err) {
+            logEvent('captura-erro', { motivo, erro: String(err?.message || err) });
+            catchBusy = false;
+            if (onCatchChange) { try { onCatchChange(); } catch { /* painel fechado */ } }
+            return;
+        }
+        catchBusy = false;
+        refreshProfession();
+        catchNext(motivo);
+    }
+
+    function catchNext(motivo) {
+        if (!catchRouteActive() || !huntCatalog) return;
+        const alvo = catchPlan()[0] || null;
+        if (!alvo) { finishCatchRoute(); return; }
+        const trocou = !catchTarget || catchTarget.slug !== alvo.slug;
+        catchTarget = alvo;
+        catchSentFor = null;
+        const p = catchProgress();
+        if (trocou) logEvent('captura-alvo', { slug: alvo.slug, level: alvo.level, speciesId: alvo.speciesId, faltam: p.faltam, motivo });
+        if (normalize(huntSlug || '') !== alvo.slug && !(huntSwitch && huntSwitch.slug === alvo.slug)) switchHunt(alvo.slug, 1, 'captura');
+        if (onCatchChange) { try { onCatchChange(); } catch { /* painel fechado */ } }
+    }
+
+    // Entrada na hunt do alvo não confirmou (ou o jogo respondeu `error`): pula nesta sessão e segue.
+    function catchHuntFailed(slug, erro) {
+        if (!catchRouteActive() || !catchTarget || catchTarget.slug !== slug) return;
+        catchFailed.add(slug);
+        logEvent('captura-pulou', { slug, erro: erro || 'entrada não confirmou' });
+        catchNext('entrada falhou');
+    }
+
+    function skipCatchTarget() {
+        if (!catchTarget) return null;
+        const slug = catchTarget.slug;
+        cfg.catchRouteSkipped = [...new Set([...(Array.isArray(cfg.catchRouteSkipped) ? cfg.catchRouteSkipped : []), slug])];
+        saveCfg(cfg);
+        logEvent('captura-pulou', { slug, erro: 'pulado no painel' });
+        catchNext('pulado');
+        return slug;
+    }
+
+    // `pending` chegou: se a espécie da vez está na fila e a bola automática está ligada, joga a bola.
+    function catchOnPending(list) {
+        if (!catchRouteActive() || !cfg.catchRouteAuto || !catchTarget) return;
+        if (Date.now() < catchCooldownUntil || Date.now() - catchSentAt < CATCH_SEND_GAP_MS) return;
+        const alvo = list.find(p => p && p.id != null && (Number(p.pokeId) === catchTarget.speciesId || normalize(p.name) === normalize(catchTarget.speciesName || catchTarget.name)));
+        if (!alvo || catchSentFor === alvo.id) return;
+        const ballId = catchBallId();
+        if (!ballId) return;
+        if (ballCounts[ballId] === 0) { logEvent('captura-sem-bola', { ballId, name: alvo.name }); return; }
+        catchSentFor = alvo.id;
+        catchSentAt = Date.now();
+        const ok = sendGame({ type: 'catch', pendingId: alvo.id, ballId });
+        logEvent('captura-bola', { pendingId: alvo.id, name: alvo.name, shiny: Boolean(alvo.shiny), ballId, enviado: ok });
+    }
+
+    function catchOnCooldown(message) {
+        const ms = Number(message?.leftMs ?? message?.cooldownMs) || 0;
+        if (ms > 0) catchCooldownUntil = Date.now() + ms;
+    }
+
+    // `catch-result` de sucesso (qualquer origem: manual, Auto-Catch VIP ou o script). `info` já extraído.
+    function catchOnResult(info, message) {
+        if (message?.cooldownMs) catchOnCooldown(message);
+        if (!catchRouteActive() || !huntCatalog || !info?.name) return;
+        const nome = normalize(info.name);
+        const hit = catchScope().find(h => normalize(h.speciesName || h.name) === nome || h.slug === huntSlugFromName(nome));
+        if (!hit || dexCaught.has(hit.speciesId)) return;
+        dexCaught.add(hit.speciesId);
+        cfg.catchRouteDone = [...new Set([...(Array.isArray(cfg.catchRouteDone) ? cfg.catchRouteDone : []), hit.speciesId])];
+        saveCfg(cfg);
+        const eraAlvo = Boolean(catchTarget && catchTarget.slug === hit.slug);
+        const p = catchProgress();
+        const proximo = catchPlan().find(h => h.slug !== hit.slug) || null;
+        logEvent('captura-feita', { slug: hit.slug, speciesId: hit.speciesId, eraAlvo, feitas: p.feitas, total: p.total, proximo: proximo?.slug || null });
+        const who = playerName();
+        const mention = cfg.mentionUserId ? `<@${cfg.mentionUserId}> ` : '';
+        postWebhook('alert', {
+            content: `${mention}📖 ${who ? `**${who}**` : 'Sua conta'} capturou **${hit.name}** (${p.feitas}/${p.total})${proximo ? ` — próximo: **${proximo.name}** (lv ${proximo.level})` : ' — era a última!'}`,
+            username: 'Poke Idle World',
+            embeds: [{
+                title: `Rota de captura: ${hit.name} ✔`,
+                description: (who ? `Conta: ${who}\n` : '') + `Hunt ${hit.slug} (lv ${hit.level}, ${hit.area})${info.shiny ? ' · ✨ shiny' : ''}${message?.auto ? ' · Auto-Catch' : ''}\nProgresso: ${p.feitas}/${p.total} espécies das áreas marcadas · faltam ${p.faltam} · Pokédex ${p.dex}/${p.dexTotal}\n${proximo ? `Próximo alvo: ${proximo.name} (hunt ${proximo.slug}, lv ${proximo.level})` : 'Rota concluída!'}\nEm ${new Date().toLocaleString('pt-BR')}`,
+                color: 0x57f287,
+            }],
+        }, { evento: 'captura-feita', slug: hit.slug });
+        refreshPokedex(true).catch(() => {});
+        if (eraAlvo) catchNext('capturou');
+        else if (onCatchChange) { try { onCatchChange(); } catch { /* painel fechado */ } }
+    }
+
+    function finishCatchRoute() {
+        const p = catchProgress();
+        catchTarget = null;
+        cfg.catchRouteEnabled = false;
+        saveCfg(cfg);
+        logEvent('captura-concluida', { feitas: p.feitas, total: p.total, puladas: (cfg.catchRouteSkipped || []).length, falhas: catchFailed.size });
+        const who = playerName();
+        const pend = (cfg.catchRouteSkipped || []).length + catchFailed.size;
+        postWebhook('alert', {
+            content: `🏁 ${who ? `**${who}**` : 'Sua conta'} terminou a rota de captura: ${p.feitas}/${p.total} espécies (${catchAreas().join(', ')}${Number(cfg.catchRouteMaxLevel) ? `, até lv ${cfg.catchRouteMaxLevel}` : ''})${pend ? ` · ${pend} hunt(s) puladas/sem entrada` : ''}`,
+            username: 'Poke Idle World',
+            embeds: [{ title: 'Rota de captura concluída', description: (who ? `Conta: ${who}\n` : '') + `Pokédex ${p.dex}/${p.dexTotal}. A rota foi desligada no painel 🔔; amplie as áreas ou o nível para continuar.\nEm ${new Date().toLocaleString('pt-BR')}`, color: 0x5865f2 }],
+        }, { evento: 'captura-concluida' });
+        if (onCatchChange) { try { onCatchChange(); } catch { /* painel fechado */ } }
+    }
+
+    // Tique: conta parada fora de hunt (ex.: teleporte para a cidade) volta para a hunt do alvo.
+    function catchTick() {
+        if (!catchRouteActive()) return;
+        if (!huntCatalog) { startCatchRoute('tique'); return; }
+        if (!catchTarget || huntSwitch || catchBusy) return;
+        const h = normalize(huntSlug || '');
+        if (h && !CITY_SLUGS.includes(h)) return;                       // está em alguma hunt (a do alvo ou escolha do usuário)
+        if (dailyEnabled() && dailyOnHunt()) return;
+        if (Date.now() - lastFieldAt < CATCH_IDLE_REENTER_MS) return;   // combate recente: não mexe
+        logEvent('captura-reentrada', { slug: catchTarget.slug });
+        switchHunt(catchTarget.slug, 1, 'captura');
+    }
+
     // ---- Daily Kill: voltar para a hunt quando a missão do dia terminar ----------
     // A "Daily Kill" (menu Quests, Tasks & Dailys do jogo) é uma missão diária: o jogador escolhe 1 de 3
     // Pokémon, derrota `qty` deles e resgata XP + itens. Não passa pelo socket — o cliente consulta por REST
@@ -1064,6 +1335,7 @@
         d = d || cfg;
         const fixo = huntSlugFromName(d.dailyReturnSlug || '');
         if (fixo) return fixo;
+        if (catchRouteActive() && catchTarget) return catchTarget.slug;
         const st = routeStep();
         if (st?.slug) return st.slug;
         return prevHuntSlug || null;
@@ -1458,6 +1730,11 @@
     function handleGameError(message) {
         logEvent('erro-jogo', { message: message.message || null });
         if (familyPending) familyPending.resolve({ ok: false, motivo: message.message || 'erro do jogo' });
+        if (huntSwitch?.origem === 'captura' && huntSwitch.at && catchTarget && huntSwitch.slug === catchTarget.slug) {
+            const slug = huntSwitch.slug;
+            clearTimeout(huntSwitch.timer); huntSwitch = null;
+            catchHuntFailed(slug, message.message || 'erro do jogo');
+        }
     }
 
     // Aplica as opções "guardar" ao Pokémon que passou nos filtros, ANTES do aviso (o texto do aviso diz o resultado).
@@ -1487,14 +1764,20 @@
         if (message.type === 'pending' && Array.isArray(message.list)) {
             rememberPending(message.list);
             if (cfg.debug) console.log(TAG, 'Fila pending:', message.list);
+            catchOnPending(message.list);
             return;
         }
+        if (message.type === 'catch-cooldown') { catchOnCooldown(message); return; }
 
         if (message.type === 'poke-delta') { handlePokeDelta(message); return; }
         if (message.type === 'family') { handleFamily(message); return; }
         if (message.type === 'error') { handleGameError(message); return; }
         if (message.type === 'poke-xp') { handlePokeXp(message); return; }
-        if (message.type === 'field' || message.type === 'field-init') { lastFieldAt = Date.now(); return; }
+        if (message.type === 'field' || message.type === 'field-init') {
+            lastFieldAt = Date.now();
+            if (message.type === 'field-init' && message.slug && !huntSlug) setHunt(message.slug); // script carregou depois do enter-hunt
+            return;
+        }
         if (message.type === 'field-kill') { noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
         if (message.type === 'pokes' && Array.isArray(message.list)) { updateTeam(message.list); handlePokesList(message.list); return; }
@@ -1514,6 +1797,8 @@
             logEvent('sem-nome', message);
             return;
         }
+
+        catchOnResult(info, message);
 
         const name = normalize(info.name);
         // lista vazia = qualquer Pokémon
@@ -1639,6 +1924,7 @@
 #pg-dn-panel .dn-help.err{color:var(--dn-danger-t)}
 #pg-dn-panel .dn-inline{display:flex;align-items:center;gap:6px;font-size:13px}
 #pg-dn-panel .dn-route-bar .dn-select{flex:1;min-width:0}
+#pg-dn-panel .dn-toggle--sm{font-size:12px;margin:0 6px 0 0}
 #pg-dn-panel .dn-route-bar .dn-btn{flex:none}
 #pg-dn-panel .dn-btn:disabled{opacity:.4;cursor:default}
 #pg-dn-panel .dn-status{display:flex;align-items:center;gap:8px;font-size:12px;background:var(--dn-bg-0);border-radius:var(--dn-radius-sm);padding:6px 8px;font-variant-numeric:tabular-nums}
@@ -1720,6 +2006,7 @@
         { id: 'bolas', label: '🎯 Bolas' },
         { id: 'venda', label: '💰 Venda' },
         { id: 'treino', label: '⚔ Treino' },
+        { id: 'profissao', label: '📖 Profissão' },
         { id: 'sistema', label: '⚙ Sistema' },
     ];
 
@@ -1747,6 +2034,9 @@
                 if ((d.routeEnabled || d.dailyEnabled) && !temAlertas) return 'warn'; // troca de hunt e daily avisam em Alertas
                 return 'on';
             }
+            case 'profissao':
+                if (!d.catchRouteEnabled) return 'off';
+                return temAlertas ? 'on' : 'warn';
             case 'sistema': return d.reloadEnabled ? 'on' : 'off';
         }
         return 'off';
@@ -1759,6 +2049,7 @@
             `Bolas: ${moduleState('bolas', d) === 'off' ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}`,
             `Venda: ${d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} itens / ${d.sellEveryMin}${d.sellEveryMaxMin > d.sellEveryMin ? `–${d.sellEveryMaxMin}` : ''} min` : 'desligada'}`,
             `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? 'daily' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
+            `Profissão: ${d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : 'desligada'}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
         ].join(' · ');
     }
@@ -1912,6 +2203,28 @@
                         <div class="dn-status"><span>⚔️</span><span id="pg-dn-daily-status"></span></div>
                     </div>
                 </section>
+                <section class="dn-pane" data-pane="profissao" hidden>
+                    <div class="dn-section">
+                        <h3>Rota de captura (Pokédex)</h3>
+                        <label class="dn-toggle"><input id="pg-dn-catch" type="checkbox"><span class="sw"></span>Capturar todas as espécies, da hunt de menor nível à maior</label>
+                        <p class="dn-help">Entra na hunt da espécie da vez; quando ela for capturada (por você, pelo Auto-Catch VIP ou pela bola abaixo), vai para a próxima. Espécies que a conta já tem na Pokédex são puladas. Desliga a rota de treino.</p>
+                        <div class="dn-inline" id="pg-dn-catch-areas">Áreas: ${CATCH_AREAS.map(a => `<label class="dn-toggle dn-toggle--sm"><input type="checkbox" class="pg-dn-catch-area" value="${a}"><span class="sw"></span>${a}</label>`).join('')}</div>
+                        <div class="dn-inline">Só hunts até o nível <input id="pg-dn-catch-max" class="dn-input dn-input--sm" type="number" min="0" step="1" placeholder="0"> <span class="dn-hint">(0 = todas)</span></div>
+                        <label class="dn-toggle"><input id="pg-dn-catch-auto" type="checkbox"><span class="sw"></span>Jogar a bola sozinho quando a espécie da vez entrar na fila</label>
+                        <label class="dn-field"><span>Bola</span><select id="pg-dn-catch-ball" class="dn-select"><option value="auto">A última usada (senão Poke Ball)</option>${Object.entries(BALL_NAMES).map(([id, n]) => `<option value="${id}">${n}</option>`).join('')}</select></label>
+                        <div class="dn-status col"><div id="pg-dn-catch-status"></div><div id="pg-dn-catch-next" class="dn-help"></div></div>
+                        <div class="dn-actions">
+                            <button type="button" class="dn-btn dn-btn--sm" id="pg-dn-catch-skip" title="Pula a espécie da vez (fica na lista de puladas).">Pular esta</button>
+                            <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-catch-refresh" title="Relê a Pokédex e a profissão no jogo.">Atualizar Pokédex</button>
+                            <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-catch-unskip" title="Volta as puladas para a rota.">Limpar puladas</button>
+                        </div>
+                    </div>
+                    <div class="dn-section">
+                        <h3>Profissão</h3>
+                        <div class="dn-status"><span>🎓</span><span id="pg-dn-prof-status"></span></div>
+                        <p class="dn-help">"Espécies diferentes capturadas" é requisito de rank no jogo; a rota acima serve para isso. Os dados vêm de Profissões e da Pokédex do jogo.</p>
+                    </div>
+                </section>
                 <section class="dn-pane" data-pane="sistema" hidden>
                     <div class="dn-section">
                         <h3>Recarga do painel</h3>
@@ -2020,6 +2333,11 @@
                 levelSwap: $('#pg-dn-level-swap').checked,
                 route,
                 routeEnabled: $('#pg-dn-route-on').checked && route.length > 0,
+                catchRouteEnabled: $('#pg-dn-catch').checked,
+                catchRouteAreas: [...panel.querySelectorAll('.pg-dn-catch-area:checked')].map(c => c.value),
+                catchRouteMaxLevel: Math.max(0, parseInt($('#pg-dn-catch-max').value, 10) || 0),
+                catchRouteAuto: $('#pg-dn-catch-auto').checked,
+                catchRouteBall: $('#pg-dn-catch-ball').value || 'auto',
                 dailyEnabled: $('#pg-dn-daily').checked,
                 dailyClaim: $('#pg-dn-daily-claim').checked,
                 dailyReturnSlug: huntSlugFromName($('#pg-dn-daily-return').value),
@@ -2370,6 +2688,42 @@
             copyText(url).then(ok => flash(ok ? `✔ Link copiado${lider?.name ? ` (${lider.name} nível ${lider.level})` : ' (time ainda não lido: escolha o Pokémon no site)'}. Abra no navegador, copie as etapas e use "Importar do PIW Tools".` : `⚠ Não copiou. Link: ${url}`, ok ? 'ok' : 'warn', 9000));
         };
 
+        // ---- Profissão: rota de captura ----
+        function renderCatch() {
+            const d = current();
+            $('#pg-dn-catch-status').innerHTML = d.catchRouteEnabled
+                ? `<span class="k">Rota ·</span> ${escHtml(catchStatus())}`
+                : '<span class="k">Rota de captura desligada.</span>';
+            const prox = (cfg.catchRouteEnabled && huntCatalog) ? catchPlan().slice(0, 8) : [];
+            $('#pg-dn-catch-next').textContent = prox.length
+                ? `Próximas: ${prox.map((h, i) => `${i === 0 ? '▶ ' : ''}${h.name} lv${h.level}`).join(' · ')}${catchPlan().length > 8 ? ` (+${catchPlan().length - 8})` : ''}`
+                : (cfg.catchRouteEnabled && huntCatalog ? 'Nada faltando nas áreas marcadas.' : '');
+            const puladas = (cfg.catchRouteSkipped || []).length;
+            $('#pg-dn-catch-unskip').hidden = !puladas;
+            $('#pg-dn-catch-unskip').textContent = `Limpar puladas (${puladas})`;
+            $('#pg-dn-catch-skip').disabled = !catchTarget;
+            const pr = profession;
+            $('#pg-dn-prof-status').innerHTML = pr
+                ? `<span class="k">${escHtml(pr.key || 'sem profissão')}${pr.rank ? ` · rank ${escHtml(pr.rank)}` : ''} ·</span> ${fmtNum(pr.speciesCount)} espécies capturadas${pr.next && pr.next.need ? ` · próximo rank ${escHtml(pr.next.rank || '')}: ${fmtNum(pr.next.have)}/${fmtNum(pr.next.need)}` : ''}`
+                : '<span class="k">Profissão ainda não lida (Atualizar Pokédex).</span>';
+        }
+        onCatchChange = () => { if (!panel.hidden) renderCatch(); };
+        $('#pg-dn-catch-skip').onclick = () => {
+            const slug = skipCatchTarget();
+            renderCatch();
+            flash(slug ? `⏭ ${slug} pulada · ${catchStatus()}` : '⚠ Nenhum alvo no momento.', slug ? 'ok' : 'warn', 6000);
+        };
+        $('#pg-dn-catch-unskip').onclick = () => {
+            cfg.catchRouteSkipped = []; saveCfg(cfg);
+            if (cfg.catchRouteEnabled && huntCatalog) catchNext('puladas liberadas');
+            renderCatch(); flash('✔ Puladas voltaram para a rota.', 'ok', 4000);
+        };
+        $('#pg-dn-catch-refresh').onclick = () => {
+            flash('📥 Lendo Pokédex e profissão…', 'info', 3000);
+            Promise.all([loadHuntCatalog().catch(() => null), refreshPokedex(true).catch(err => { flash(`✖ Pokédex: ${err?.message || err}`, 'error'); }), refreshProfession()])
+                .then(() => { if (cfg.catchRouteEnabled && huntCatalog) catchNext('atualizou'); renderCatch(); });
+        };
+
         // ---- Sistema ----
         function renderReload() {
             $('#pg-dn-reload-status').textContent = cfg.reloadEnabled ? `Recarga ${reloadStatus()}` : 'Recarga desligada';
@@ -2385,7 +2739,7 @@
 
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSellCount(); renderRoute(); renderDaily(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSellCount(); renderRoute(); renderDaily(); renderCatch(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -2420,6 +2774,11 @@
             renderRouteSelect();
             $('#pg-dn-route-name-box').hidden = true;
             renderTeam();
+            $('#pg-dn-catch').checked = Boolean(cfg.catchRouteEnabled);
+            for (const c of panel.querySelectorAll('.pg-dn-catch-area')) c.checked = catchAreas().includes(c.value);
+            $('#pg-dn-catch-max').value = cfg.catchRouteMaxLevel || '';
+            $('#pg-dn-catch-auto').checked = Boolean(cfg.catchRouteAuto);
+            $('#pg-dn-catch-ball').value = cfg.catchRouteBall || 'auto';
             $('#pg-dn-daily').checked = Boolean(cfg.dailyEnabled);
             $('#pg-dn-daily-claim').checked = cfg.dailyClaim !== false;
             $('#pg-dn-daily-return').value = cfg.dailyReturnSlug || '';
@@ -2470,7 +2829,15 @@
             const rotaAntes = JSON.stringify(routeList());
             const recargaAntes = JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]);
             const dailyAntes = JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug]);
+            const capturaAntes = JSON.stringify([cfg.catchRouteEnabled, cfg.catchRouteAreas, cfg.catchRouteMaxLevel]);
+            const ligouCaptura = draft.catchRouteEnabled && !cfg.catchRouteEnabled;
+            const ligouRota = draft.routeEnabled && !cfg.routeEnabled;
             Object.assign(cfg, draft);
+            const exclusivo = [];
+            if (cfg.catchRouteEnabled && cfg.routeEnabled) { // as duas trocam de hunt: fica a que acabou de ser ligada
+                if (ligouCaptura && !ligouRota) { cfg.routeEnabled = false; exclusivo.push('"Seguir a rota" (treino) foi desligada: a rota de captura manda na hunt.'); }
+                else { cfg.catchRouteEnabled = false; exclusivo.push('Rota de captura desligada: a rota de treino manda na hunt.'); }
+            }
             if (JSON.stringify(routeList()) !== rotaAntes) cfg.routeStage = 0; // rota editada: recomeça
             if (routeList().length && !cfg.routeName) cfg.routeName = uniqueRouteName('Rota 1'); // primeira rota ganha nome sozinha (saveCfg espelha)
             // Alvo ou troca mudaram: reavalia o time inteiro (antes, ligar a troca depois do aviso não fazia nada).
@@ -2483,15 +2850,19 @@
             saveHuntProfile();
             if (JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]) !== recargaAntes) scheduleReload(); // faixa mudou: sorteia de novo
             if (JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug]) !== dailyAntes) scheduleDailyCheck(500); // daily mudou: lê a missão já
+            if (JSON.stringify([cfg.catchRouteEnabled, cfg.catchRouteAreas, cfg.catchRouteMaxLevel]) !== capturaAntes) {
+                if (!cfg.catchRouteEnabled) catchTarget = null;
+                else if (huntCatalog) catchNext('salvar'); else startCatchRoute('salvar');
+            }
             cfg.cfgVersion = 2;
             saveCfg(cfg);
             dirty = false;
             fill();
-            const avisos = [];
+            const avisos = exclusivo.map(t => `⚠ ${t}`);
             if (cfg.autoBuy && !cfg.ballsMin) avisos.push('⚠ Compra com limite 0: só compra quando a bola acabar.');
             if (linhasRuins.length) avisos.push(`⚠ Rota: ${linhasRuins.length} linha(s) ignorada(s) (formato "hunt nível"): ${linhasRuins.map(l => `"${l}"`).join(', ')}`);
             if (!cfg.webhookUrl) avisos.push('⚠ Sem canal de Capturas: capturas não serão enviadas.');
-            const usaAlertas = [effectiveBallsMin() > 0 && 'bolas', cfg.sellEnabled && 'venda', routeActive() && 'troca de hunt', cfg.dailyEnabled && 'daily'].filter(Boolean);
+            const usaAlertas = [effectiveBallsMin() > 0 && 'bolas', cfg.sellEnabled && 'venda', routeActive() && 'troca de hunt', cfg.dailyEnabled && 'daily', cfg.catchRouteEnabled && 'rota de captura'].filter(Boolean);
             if (usaAlertas.length && !cfg.webhookAlerts) avisos.push(`⚠ Sem canal de Alertas: avisos de ${usaAlertas.join(', ')} não serão enviados.`);
             if (levelEnabled() && !cfg.webhookLevel) avisos.push('⚠ Sem canal de Nível: avisos de nível/troca de líder não serão enviados.');
             const nivel = levelEnabled() ? ` · conferindo o time para o nível ${levelTarget()}${swapEnabled() ? ' (com troca)' : ''}…` : '';
@@ -2522,7 +2893,7 @@
                 canais.push('alertas');
                 postWebhook('alert', {
                     username: 'Poke Idle World',
-                    embeds: [{ title: 'Teste: canal de alertas', description: 'Aqui chegarão estoque de bolas, compras, vendas, trocas de hunt e a Daily Kill.', color: 0xfee75c }],
+                    embeds: [{ title: 'Teste: canal de alertas', description: 'Aqui chegarão estoque de bolas, compras, vendas, trocas de hunt, Daily Kill e a rota de captura.', color: 0xfee75c }],
                 }, { test: true });
             }
             if (cfg.webhookLevel) {
@@ -2620,6 +2991,8 @@
     setInterval(sellTick, SELL_CHECK_MS);
     setInterval(reloadTick, RELOAD_CHECK_MS);
     setInterval(dailyTick, DAILY_CHECK_MS);
+    setInterval(catchTick, CATCH_TICK_MS);
+    if (cfg.catchRouteEnabled) setTimeout(() => startCatchRoute('carga'), 8000); // depois do socket/retomada da recarga
     if (cfg.dailyEnabled) scheduleDailyCheck(5000); // lê a missão do dia logo na carga (REST, não depende do socket)
 
     console.log(TAG, `v${VERSION} ativo.`, 'Watch list:', cfg.watchList.join(', ') || '(vazia)',
@@ -2629,6 +3002,7 @@
         '| compra auto:', cfg.autoBuy ? `${cfg.autoBuyQty} un.` : 'não',
         '| nível:', levelEnabled() ? `${levelTarget()}${swapEnabled() ? ' + troca' : ''}` : 'não',
         '| rota:', routeActive() ? routeStatus() : 'não',
+        '| captura:', cfg.catchRouteEnabled ? `${catchAreas().join('+')}${cfg.catchRouteMaxLevel ? ` até lv ${cfg.catchRouteMaxLevel}` : ''}${cfg.catchRouteAuto ? ' + bola' : ''}` : 'não',
         '| daily:', cfg.dailyEnabled ? `volta para ${dailyReturnTarget() || 'a hunt anterior'}${cfg.dailyClaim ? ' + resgate' : ''}` : 'não',
         '| venda auto:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens / ${cfg.sellEveryMin}${cfg.sellEveryMaxMin > cfg.sellEveryMin ? `–${cfg.sellEveryMaxMin}` : ''} min` : 'não',
         '| recarga auto:', cfg.reloadEnabled ? `${cfg.reloadEveryMin}${cfg.reloadEveryMaxMin > cfg.reloadEveryMin ? `–${cfg.reloadEveryMaxMin}` : ''} min` : 'não');

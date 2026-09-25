@@ -48,6 +48,17 @@ setTimeout(() => {
         log('treino level.disabled=' + $('#pg-dn-level').disabled + ' value=' + $('#pg-dn-level').value + ' | ' + $('#pg-dn-route-status').textContent + ' | itens=' + $('#pg-dn-route-list').children.length);
         log('team=' + $('#pg-dn-team').textContent);
         log('daily=' + $('#pg-dn-daily-status').textContent + ' | claimPadrao=' + $('#pg-dn-daily-claim').checked);
+        panel.querySelector('.dn-tab[data-tab=profissao]').click();
+        log('profissao=' + $('#pg-dn-catch-status').textContent + ' | areas=' + [...panel.querySelectorAll('.pg-dn-catch-area:checked')].map(c => c.value) + ' | prof=' + $('#pg-dn-prof-status').textContent);
+        $('#pg-dn-catch').checked = true; fire($('#pg-dn-catch'), 'change');
+        panel.querySelector('.pg-dn-catch-area[value=orre]').checked = true; fire(panel.querySelector('.pg-dn-catch-area[value=orre]'), 'change');
+        $('#pg-dn-catch-max').value = 30; fire($('#pg-dn-catch-max'), 'input');
+        log('profissao rascunho badge=' + panel.querySelector('.dn-tab[data-tab=profissao] .b').dataset.state + ' treinoRotaOn=' + $('#pg-dn-route-on').checked);
+        $('#pg-dn-save').click();
+        const cfgC = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+        log('captura salva=' + cfgC.catchRouteEnabled + ' areas=' + cfgC.catchRouteAreas + ' max=' + cfgC.catchRouteMaxLevel + ' rotaTreino=' + cfgC.routeEnabled + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 120));
+        $('#pg-dn-catch').checked = false; fire($('#pg-dn-catch'), 'change'); $('#pg-dn-route-on').checked = true; fire($('#pg-dn-route-on'), 'change'); $('#pg-dn-save').click();
+        panel.querySelector('.dn-tab[data-tab=treino]').click();
         log('sistema=' + $('#pg-dn-reload-status').textContent + ' | ' + $('#pg-dn-socket').textContent);
         $('#pg-dn-ballsmin').value = 50; fire($('#pg-dn-ballsmin'), 'input');
         log('msg=' + $('#pg-dn-msg').textContent + ' saveIdle=' + $('#pg-dn-save').classList.contains('idle') + ' bolasBadge=' + panel.querySelector('.dn-tab[data-tab=bolas] .b').dataset.state + ' dot=' + $('#pg-dn-dot').dataset.state);

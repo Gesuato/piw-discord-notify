@@ -123,6 +123,13 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   hunt da daily, 2 min fora), conta `field-kill` da espécie e, na meta, resgata (`dailyClaim`) e volta via
   `switchHunt(slug, 1, 'daily')` para `dailyReturnSlug` > etapa da rota > `prevHuntSlug` (hunt anterior, guardada em
   `setHunt`/`noteHuntChange` e no registro da recarga). Slug de hunt a partir de nome: `huntSlugFromName()` (global).
+- Rota de captura / Pokédex (v3.10.0, aba Profissão): hunts em `GET /api/game/map-markers` (público, `hunts[{ slug,
+  name, level, area, looktype }]`, level 0 = cidade), espécies em `GET /game/creatures.json` (público, `creatures[{
+  pokeId, name, looktype }]`, pokeId < 10000 = normal), capturadas em `GET /api/game/pokedex` (auth, `species[{ id,
+  caught }]`), profissão em `GET /api/game/professions` (`speciesCount`, `nextStep.species{have,need}`). Espécie da
+  hunt = mesmo `looktype`. O script joga bola com `{ type:'catch', pendingId, ballId }` só com `catchRouteAuto`;
+  respeita `catch-cooldown { leftMs }` e `catch-result.cooldownMs`. `field-init { slug }` define a hunt atual se o
+  script não viu o `enter-hunt`. Rota de captura e rota de treino são excludentes (Salvar desliga a outra).
 - Nome do personagem: `window.__poke.api['/api/characters/me'].character.name` (mesmo caminho
   que o PokeGrid usa para nomear abas). NÃO usar `.phud-name` — é o Pokémon ativo, não a conta.
 
@@ -203,13 +210,15 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
 ## Como testar
 
 - **Testes isolados em Node** (sem DOM): `node test/level.test.js`, `node test/route.test.js`,
-  `node test/reload.test.js` e `node test/daily.test.js`. `test/harness.js` recorta módulos do userscript pelos
-  marcadores (`loadLevelModule`: `// ---- Alerta de nível do líder` até `// ---- Alerta de estoque de bolas`;
-  `loadDailyModule`: `// ---- Daily Kill` até `// ---- Recarga automática do painel`, com `init.api(url, opts)`
-  respondendo o REST; `loadReloadModule`: `// ---- Recarga automática do painel` até `// ---- Log persistente`) e os
-  roda com stubs de `sendGame`, `gameApi`, `postWebhook`, `logEvent`, `saveCfg`, `localStorage`, `location` e timers
-  (curtos rodam na hora; >= 5 s ficam em `state.longTimers`; `clock.now` controla o `Date.now()`). Ao mexer num
-  módulo, rode os quatro; ao criar módulo novo, siga o mesmo padrão (marcadores + stubs).
+  `node test/reload.test.js`, `node test/daily.test.js` e `node test/catch.test.js`. `test/harness.js` recorta módulos
+  do userscript pelos marcadores (`loadLevelModule`: `// ---- Alerta de nível do líder` até `// ---- Alerta de estoque
+  de bolas`; `loadCatchModule`: `// ---- Rota de captura` até `// ---- Daily Kill`, com `init.fetchJson(url)` para os
+  arquivos públicos e `init.api(url)` para o REST; `loadDailyModule`: `// ---- Daily Kill` até `// ---- Recarga
+  automática do painel`, com `init.api(url, opts)`; `loadReloadModule`: `// ---- Recarga automática do painel` até
+  `// ---- Log persistente`) e os roda com stubs de `sendGame`, `gameApi`, `fetch`, `postWebhook`, `logEvent`,
+  `saveCfg`, `localStorage`, `location` e timers (curtos rodam na hora; >= 5 s ficam em `state.longTimers`;
+  `clock.now` controla o `Date.now()`). Ao mexer num módulo, rode os cinco; ao criar módulo novo, siga o mesmo
+  padrão (marcadores + stubs).
 - **Painel (DOM)**: `node test/ui.smoke.js` carrega o userscript inteiro no jsdom com WebSocket/fetch
   falsos, abre o painel, percorre as abas, edita, salva, testa canais, importa e simula hunt/drops/time/estoque
   chegando pelo socket; falha em qualquer erro de runtime. Precisa do jsdom (`npm i -g jsdom` + `NODE_PATH`
