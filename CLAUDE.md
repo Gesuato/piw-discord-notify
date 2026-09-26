@@ -79,13 +79,17 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `set-city` manual após 10 s; volta = `switchHunt(slug, 1, 'viagem')`. `runSellCycle(manual, wantedIds, huntName)`
   recebe a lista congelada (na cidade `huntSlug` é null e `huntLoot` zera). NUNCA chamar `runSellCycle`,
   `runPokeSellCycle` ou `autoBuyBalls` direto de dentro da hunt de novo. Cidades: `CITY_SLUGS` (lista `o4` do bundle).
+  Relógio ÚNICO (v3.15.0): `tripEveryMin`/`tripEveryMaxMin` (`drawTripDelay`/`restartTripCycle`/`tripDueAt`); vencido,
+  `tripTick` leva tudo que `tripAugment` achar, ou só sorteia o próximo horário. Não existem mais intervalos próprios de
+  venda de itens/Pokémon. A faixa `#pg-dn-trip` é um elemento só, movido para a aba ativa (Compras/Venda) em `showTab`;
+  `tripStatus(d)` devolve `{ busy, pct, title, sub }` para ela. Venda = blocos `.dn-blk` (um aberto por vez).
   Chamadas por aba: `docs/chamadas-por-aba.md`.
 - Regra de venda (ver `protectedReason` e `sellWarning`): desde a v3.1.0, a pedido do usuário, só preço 0
   (NPC não compra) e cadeado do jogo bloqueiam; categoria fora de `loot`, `rare` e nome com Pheromone/Stone
   viram aviso ⚠️ na lista, mas podem ser marcados. Lista branca por item em `cfg.sellItems`. Não voltar a
   bloquear sem o usuário pedir.
-- `cfg.sellItems`/`sellEveryMin`/`sellEveryMaxMin` são os valores ATIVOS; `cfg.sellProfiles[slug]` guarda o
-  perfil de cada hunt e sobrescreve os ativos em `setHunt()` (ver `loadHuntProfile`/`saveHuntProfile`).
+- `cfg.sellItems` é a lista ATIVA; `cfg.sellProfiles[slug]` guarda a lista de cada hunt e sobrescreve a ativa em
+  `setHunt()` (ver `loadHuntProfile`/`saveHuntProfile`). Desde a v3.15.0 os perfis não têm mais intervalo próprio.
 - Referências: https://github.com/edulanzarin/piwdex (`src/lib/robo/motor/sessao.ts`, cases
   `catch-result`/`pending`) e https://github.com/luishferreira/poke-standalone-scripts (`AGENTS.md`).
 - Venda de Pokémon (v3.11.0, aba Venda → "Pokémon fora do time"): desde a v3.12.0 UM limite por raridade em

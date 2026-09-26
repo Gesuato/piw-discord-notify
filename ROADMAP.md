@@ -432,6 +432,24 @@ se a tela viajou); Mercado Global entre jogadores (anunciar itens) segue fora do
 
 ---
 
+## ✅ 20. Compras e Venda simples: faixa de viagem, relógio único, blocos recolhíveis (v3.15.0)
+
+**O que faz (mock aprovado em `docs/mockup-viagem-venda.html`):** as abas Compras e Venda ganham a MESMA faixa no
+topo (um elemento só, movido para a aba ativa em `showTab`): "Próxima viagem à cidade em N min (hh:mm)", "Vai levar:
+3 drops, 2 Pokémon, comprar 100 Ultra Ball", botão "Ir agora" e a faixa "A cada 10 a 15 min". Durante a viagem vira
+barra de progresso com a fase. Um relógio só (`tripEveryMin`/`tripEveryMaxMin`, sorteado a cada ciclo): vencido, uma
+viagem leva tudo que houver (`tripAugment`); sem nada, só sorteia o próximo horário sem sair da hunt. Bola zerada é
+urgente (`tripRequest`) e não espera o relógio, só `tripMinGapMin` (3). Compras vira "Bola / Quando ficar abaixo de X
+comprar Y" com "Comprar sozinho" no título. Venda vira dois blocos recolhíveis (`.dn-blk`, um aberto por vez, lembrado
+em `pgDiscordNotifyUi.vendaOpen`) com resumo de uma linha fechados. Sistema só guarda a cidade e o histórico.
+
+**Removido:** `sellEveryMin`/`sellEveryMaxMin`, `pokeSellEveryMin`/`pokeSellEveryMaxMin` (migrados para o relógio da
+viagem em `migrateCfg`; `everyMin` dos perfis por hunt é ignorado), `sellTick`, `pokeSellTick`, os botões "Vender agora"
+por bloco (o "Ir agora" da faixa leva tudo) e o "Ir à cidade agora" de Sistema. `lastTripAt`/`nextTripDelayMs` vão no
+registro da recarga. Testes: `trip.test.js` (relógio, vazio, urgente), `pokesell.test.js`, smoke.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

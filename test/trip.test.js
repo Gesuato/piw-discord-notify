@@ -93,7 +93,7 @@ const MIN = 60 * 1000;
     // 8) relógio único: sem nada a fazer no horário, só sorteia o próximo; com drops marcados, viaja; bola zerada é urgente
     {
         const init = { huntSlug: 'pidgey', wantedNow: [] };
-        const { api, state, clock } = loadTripModule({ sellEnabled: true, tripEveryMin: 10, tripEveryMaxMin: 15 }, init);
+        const { api, state, clock, cfg } = loadTripModule({ sellEnabled: true, tripEveryMin: 10, tripEveryMaxMin: 15 }, init);
         state.onTeleport = () => api.tripOnSetCity();
         for (let i = 0; i < 30; i++) { const ms = api.drawTripDelay(); assert(ms >= 10 * MIN && ms <= 15 * MIN, 'sorteio fora da faixa: ' + ms); }
         api.restartTripCycle();
@@ -105,6 +105,7 @@ const MIN = 60 * 1000;
         await api.tripTick();
         assert(state.switches.length === 0 && api.lastTripAt > t1 && state.logs.some(l => l[0] === 'viagem-vazia'), 'na hora sem nada: só sorteia o próximo, não sai da hunt');
         init.wantedNow = [39, 120];
+        cfg.sellItems = { 39: { keep: 0 }, 120: { keep: 0 } }; state.huntLoot.set(39, { name: 'a', qty: 1 }); state.huntLoot.set(120, { name: 'b', qty: 1 });
         assert(/Vai levar: 2 drops/.test(api.tripStatus().sub), 'faixa mostra o que vai levar: ' + api.tripStatus().sub);
         clock.now += 16 * MIN;
         await api.tripTick();

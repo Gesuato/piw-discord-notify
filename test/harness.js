@@ -363,6 +363,7 @@ function loadTripModule(cfg, init) {
             get lastTripInfo() { return lastTripInfo; },
         };`);
     const api = factory(...Object.values(ctx));
+    state.huntLoot = ctx.huntLoot;
     return { api, state, cfg, clock };
 }
 
