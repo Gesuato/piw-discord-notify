@@ -16,10 +16,13 @@ function loadLevelModule(cfg) {
     if (a < 0 || b < 0) throw new Error('marcadores do módulo de nível não encontrados no script');
     const mod = src.slice(a, b);
 
-    const state = { sent: [], hooks: [], logs: [], longTimers: [], saved: 0 };
+    const state = { sent: [], hooks: [], logs: [], longTimers: [], saved: 0, nudges: [] };
     const ctx = {
         cfg,
         sendGame: (o) => { state.sent.push(o); return true; },
+        lastSocket: { dispatchEvent: (ev) => { state.nudges.push(JSON.parse(ev.data)); return true; } },
+        MessageEvent: class { constructor(type, init) { this.type = type; this.data = init.data; } },
+        huntCatalog: null,
         logEvent: (k, d) => state.logs.push([k, d]),
         postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
         playerName: () => 'Teste',

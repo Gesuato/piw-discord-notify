@@ -18,6 +18,7 @@ m.updateTeam(team([10, 10], 1));                      // todos 10 -> etapa concl
 assert(cfg.routeStage === 1 && state.saved === 1, 'etapa avançou e salvou');
 assert(types() === 'leave-hunt,enter-hunt,pending-get', 'sequência de troca de hunt: ' + types());
 assert(state.sent[1].slug === 'larvitar', 'entra em larvitar');
+assert(state.nudges.length === 1 && state.nudges[0].type === 'hunt-resume' && state.nudges[0].slug === 'larvitar' && state.nudges[0].name === 'Larvitar' && state.nudges[0].synthetic === true, 'tela do jogo recebe hunt-resume sintético: ' + JSON.stringify(state.nudges));
 assert(/Etapa 1 concluída/.test(state.hooks[0].desc) && /larvitar/.test(state.hooks[0].desc), 'aviso de etapa');
 assert(m.levelTarget() === 15, 'alvo agora 15');
 assert(state.longTimers.length === 1, 'timer de confirmação armado');

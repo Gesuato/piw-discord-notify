@@ -95,6 +95,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   Trocar o líder: `{ type:'poke-summon', pokeId }` — é o que o botão "⚔ summon" do time do próprio jogo
   envia (bundle do cliente); o HUD bloqueia durante boss. Confirmar com `pokes-get` (piwdex `trocarLider`). Mover box↔time: `poke-store` /
   `poke-withdraw { pokeId }`. O script só decide pelo frame `pokes`, nunca direto pelo `poke-xp`.
+- A TELA do jogo reafirma a hunt escolhida na mão (`field-none` da antiga e reconexões religam a antiga). Desde a
+  v3.13.5 `switchHunt` injeta no socket um `hunt-resume { slug, name, synthetic: true }` (evento `message` sintético;
+  `nudgeClientToHunt`) logo após o `enter-hunt`: é o handler que o cliente usa para seguir a hunt do servidor
+  (viaja no mapa e reenvia `enter-hunt`). `handleGameMessage` ignora mensagens com `synthetic`.
 - Trocar de hunt (rota, v3.3.0): `leave-hunt` → ~600 ms → `enter-hunt { slug }` + `pending-get`; confirmar
   pela chegada de `field`/`field-init` (piwdex `cacar()`, auto-reconnect). O script guarda `lastFieldAt`.
   Com `routeEnabled`, `levelTarget()` devolve o nível da etapa atual (`cfg.route[cfg.routeStage]`), não

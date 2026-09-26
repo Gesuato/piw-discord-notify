@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.13.4
+// @version      3.13.5
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.13.4';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.13.5';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -547,6 +547,22 @@
         else requestPokes(POKES_MIN_GAP_MS); // rota acabou: só atualiza o painel
     }
 
+    // A TELA do jogo guarda a hunt escolhida na mão e a reafirma sozinha: quando o servidor manda `field-none` da
+    // hunt antiga (acontece ao entrarmos em outra), o cliente religa a antiga; o mesmo em toda reconexão. Visto no
+    // painel 3 (v3.13.5): a conta voltava para larvitar depois de cada troca da rota de captura. O cliente tem um
+    // handler para o servidor mandá-lo seguir a hunt em que a conta está: `hunt-resume { slug, name }` → viaja no
+    // mapa e reenvia `enter-hunt`. Injetamos essa mensagem no socket (evento `message` sintético, marcado com
+    // `synthetic`) logo depois do nosso enter-hunt, e a tela passa a acompanhar o script.
+    function nudgeClientToHunt(slug) {
+        try {
+            if (!lastSocket || typeof lastSocket.dispatchEvent !== 'function' || typeof MessageEvent !== 'function') return false;
+            const h = Array.isArray(huntCatalog) ? huntCatalog.find(x => x.slug === slug) : null;
+            const name = h?.name || slug.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            lastSocket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'hunt-resume', slug, name, synthetic: true }) }));
+            return true;
+        } catch (err) { logEvent('hunt-tela-erro', { slug, erro: String(err?.message || err) }); return false; }
+    }
+
     // origem: 'rota' (padrão), 'recarga' (volta para a hunt depois da recarga automática; a conta já está
     // na cidade, então não manda leave-hunt) ou 'daily' (volta depois da Daily Kill). Recarga e daily avisam
     // a falha no webhook de alertas; a rota, no de nível.
@@ -559,7 +575,8 @@
             if (!huntSwitch || huntSwitch.slug !== slug) return;
             huntSwitch.at = Date.now();
             const ok = sendGame({ type: 'enter-hunt', slug }) && sendGame({ type: 'pending-get' });
-            logEvent('hunt-troca', { slug, tentativa, origem, enviado: ok });
+            const tela = nudgeClientToHunt(slug);
+            logEvent('hunt-troca', { slug, tentativa, origem, enviado: ok, tela });
             huntSwitch.timer = setTimeout(() => confirmHuntSwitch(slug), HUNT_CONFIRM_MS);
         }, HUNT_ENTER_DELAY_MS);
     }
@@ -2035,7 +2052,7 @@
         let message;
         try { message = JSON.parse(rawData); }
         catch { return; }
-        if (!message || typeof message !== 'object') return;
+        if (!message || typeof message !== 'object' || message.synthetic) return;
 
         if (message.type === 'pending' && Array.isArray(message.list)) {
             rememberPending(message.list);
