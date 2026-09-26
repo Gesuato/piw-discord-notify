@@ -191,13 +191,15 @@ function loadCatchModule(cfg, init) {
         CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp'],
         dailyEnabled: () => false,
         dailyOnHunt: () => false,
+        requestPokes: () => { state.pokesReqs = (state.pokesReqs || 0) + 1; },
+        lastPokesReqAt: 0,
         setTimeout: (fn, ms) => { if (ms >= 5000) { state.longTimers.push(fn); return 99; } fn(); return 1; },
         clearTimeout: () => {},
         Date: FakeDate,
     };
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
-            startCatchRoute, catchNext, catchTick, catchOnPending, catchOnResult, catchOnCooldown, catchHuntFailed, skipCatchTarget,
+            startCatchRoute, catchNext, catchTick, catchOnPending, catchOnResult, catchOnCooldown, catchHuntFailed, skipCatchTarget, catchOnPokes, catchOnFamily, speciesDone, speciesSource,
             catchPlan, catchScope, catchProgress, catchStatus, refreshPokedex, refreshProfession,
             setHunt(slug) { huntSlug = slug; },
             get catchTarget() { return catchTarget; },

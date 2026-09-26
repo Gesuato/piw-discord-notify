@@ -133,6 +133,22 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         assert(state.switches.length === 1 && state.switches[0].slug === 'pidgey', 'parado 3 min: volta para pidgey');
     }
 
+    // 8b) Pokémon que a conta já TEM (frame pokes) ou que está no depósito da família contam como feitos, mesmo fora da Pokédex
+    {
+        const { api, state } = loadCatchModule({ catchRouteEnabled: true, catchRouteAreas: ['kanto'] }, ambiente([]));
+        await api.startCatchRoute('t');
+        assert(api.catchTarget.slug === 'pidgey' && state.pokesReqs === 1, 'alvo pidgey; pediu a lista da conta');
+        api.catchOnPokes([{ id: 'x1', speciesId: 16, name: 'Pidgey', team: false }, { id: 'x2', speciesId: 63, name: 'Abra', team: true }]);
+        assert(api.speciesDone(16) && api.speciesDone(63) && !api.speciesDone(19), 'espécies na conta (box e time) contam como feitas');
+        assert(api.speciesSource(16) === 'na conta', 'fonte: na conta');
+        assert(api.catchTarget.slug === 'rattata', 'alvo já na conta: pulou para rattata');
+        assert(api.catchPlan().every(h => h.speciesId !== 63), 'abra (no time) saiu do plano');
+        assert(state.logs.some(l => l[0] === 'captura-alvo' && l[1].motivo === 'já tem na conta'), 'log explica o pulo');
+        api.catchOnFamily([{ id: 'f1', name: 'Rattata', level: 3 }]);
+        assert(api.speciesDone(19) && api.speciesSource(19) === 'família' && api.catchTarget.slug === 'nidoranfe', 'depósito da família conta; alvo passa para nidoranfe');
+        assert(api.catchProgress().feitas === 3 && api.catchProgress().naConta === 2, 'progresso soma as fontes: ' + JSON.stringify(api.catchProgress()));
+    }
+
     // 9) Pokédex com erro: rota não começa, log explica
     {
         const env = ambiente([]); env.api = () => { throw new Error('HTTP 500'); };

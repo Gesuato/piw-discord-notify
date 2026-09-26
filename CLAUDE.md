@@ -138,7 +138,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   name, level, area, looktype }]`, level 0 = cidade), espécies em `GET /game/creatures.json` (público, `creatures[{
   pokeId, name, looktype }]`, pokeId < 10000 = normal), capturadas em `GET /api/game/pokedex` (auth, `species[{ id,
   caught }]`), profissão em `GET /api/game/professions` (`speciesCount`, `nextStep.species{have,need}`). Espécie da
-  hunt = mesmo `looktype`. O script joga bola com `{ type:'catch', pendingId, ballId }` só com `catchRouteAuto`;
+  hunt = mesmo `looktype`. Espécie "feita" (v3.13.2) = `caught` na Pokédex OU exemplar na conta (frame `pokes`, `catchOnPokes`)
+  OU no depósito da família (`catchOnFamily`, por nome): a Pokédex só registra capturas feitas por ela, e o usuário não
+  quer repetir o que já tem (ver `speciesDone`). O script joga bola com `{ type:'catch', pendingId, ballId }` só com `catchRouteAuto`;
   respeita `catch-cooldown { leftMs }` e `catch-result.cooldownMs`. `field-init { slug }` define a hunt atual se o
   script não viu o `enter-hunt`. Rota de captura e rota de treino são excludentes (Salvar desliga a outra).
 - Nome do personagem: `window.__poke.api['/api/characters/me'].character.name` (mesmo caminho

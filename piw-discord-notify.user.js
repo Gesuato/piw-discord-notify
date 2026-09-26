@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.13.1
+// @version      3.13.2
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.13.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.13.2';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -423,7 +423,7 @@
     }
 
     function requestPokes(delayMs) {
-        if (!levelEnabled() && !cfg.pokeSellEnabled) return; // a venda de Pokémon também precisa do frame `pokes`
+        if (!levelEnabled() && !cfg.pokeSellEnabled && !cfg.catchRouteEnabled) return; // venda de Pokémon e rota de captura também usam o frame `pokes`
         clearTimeout(pokesRequestTimer);
         pokesRequestTimer = setTimeout(() => {
             pokesRequestTimer = null;
@@ -1208,8 +1208,11 @@
     //   `{ type:'catch', pendingId, ballId }`; `catch-result { success, speciesName, pendingId, cooldownMs, auto }`;
     //   `catch-cooldown { leftMs }`. `field-init { slug }` confirma a hunt em que a conta está.
     // Espécie de cada hunt: criatura com o mesmo `looktype` (pokeId < 10000; empate = nome igual, senão o menor id).
-    // Plano = hunts das áreas marcadas, até o nível máximo, sem espécie já capturada (Pokédex + capturas desta
-    // rota), sem as puladas e sem as que falharam na entrada nesta sessão; ordem: nível, depois nome. O alvo é a
+    // Plano = hunts das áreas marcadas, até o nível máximo, sem espécie já "feita", sem as puladas e sem as que
+    // falharam na entrada nesta sessão; ordem: nível, depois nome. Espécie feita (v3.13.2) = `caught` na Pokédex OU
+    // capturada por esta rota OU um exemplar na conta (frame `pokes`: box + time) OU no depósito da família (frame
+    // `family.depot.pokes`, casado pelo nome). A Pokédex do jogo só marca capturas registradas por ela; Pokémon
+    // antigos, de troca ou do mercado aparecem só na lista da conta, e o usuário não quer repetir esses. O alvo é a
     // 1ª do plano: o script entra na hunt (switchHunt origem 'captura'); quando um `catch-result` de sucesso da
     // espécie chega (manual, Auto-Catch VIP ou a bola que o script joga com `catchRouteAuto`), marca capturada e
     // segue para a próxima. Sem alvo = rota concluída (avisa e desliga). Excludente com a rota de treino.
@@ -1226,6 +1229,10 @@
 
     let huntCatalog = null;         // [{ slug, name, level, area, speciesId, speciesName }] ordenado por nível
     let dexCaught = new Set();      // speciesId capturados (Pokédex + capturas desta rota)
+    let ownedSpecies = new Set();   // speciesId de todo Pokémon da conta (frame `pokes`: box + time)
+    let familyNames = new Set();    // nomes (normalizados) dos Pokémon no depósito da família
+    let creatureIdByName = new Map(); // nome normalizado -> pokeId (do creatures.json)
+    let dexSig = '';
     let dexTotal = 0;               // espécies normais no catálogo
     let dexFetchedAt = 0;
     let profession = null;          // { name, rank, speciesCount, next:{ rank, have, need } } | null
@@ -1251,6 +1258,7 @@
         const byLook = new Map();
         for (const c of creatures) { const k = Number(c.looktype); if (!byLook.has(k)) byLook.set(k, []); byLook.get(k).push(c); }
         const byName = new Map(creatures.map(c => [normalize(c.name), c]));
+        creatureIdByName = new Map(creatures.filter(c => Number(c.pokeId) < 10000).map(c => [normalize(c.name), Number(c.pokeId)]));
         dexTotal = creatures.filter(c => Number(c.pokeId) < 10000).length;
         huntCatalog = (Array.isArray(mm?.hunts) ? mm.hunts : [])
             .filter(h => h && h.slug && Number(h.level) > 0)
@@ -1271,8 +1279,37 @@
         dexCaught = new Set(list.filter(s => s && s.caught).map(s => Number(s.id)));
         for (const id of (Array.isArray(cfg.catchRouteDone) ? cfg.catchRouteDone : [])) dexCaught.add(Number(id));
         dexFetchedAt = Date.now();
-        logEvent('pokedex', { capturadas: dexCaught.size, listadas: list.length });
+        const ids = [...dexCaught].sort((a, b) => a - b);
+        const sig = ids.join(',');
+        if (sig !== dexSig) { dexSig = sig; logEvent('pokedex', { capturadas: dexCaught.size, listadas: list.length, ids: ids.slice(0, 80), naConta: ownedSpecies.size, familia: familyNames.size }); }
         return dexCaught;
+    }
+    // Espécie já feita por qualquer fonte (ver comentário do módulo).
+    function speciesDone(id) {
+        if (dexCaught.has(id) || ownedSpecies.has(id)) return true;
+        if (!familyNames.size) return false;
+        for (const n of familyNames) if (creatureIdByName.get(n) === id) return true;
+        return false;
+    }
+    function speciesSource(id) {
+        if (dexCaught.has(id)) return 'Pokédex';
+        if (ownedSpecies.has(id)) return 'na conta';
+        return speciesDone(id) ? 'família' : null;
+    }
+    // Frame `pokes` (box + time): tudo que a conta tem conta como feito. Se o alvo já está na conta, pula para o próximo.
+    function catchOnPokes(list) {
+        const novo = new Set((Array.isArray(list) ? list : []).map(p => Number(p?.speciesId)).filter(n => Number.isInteger(n) && n > 0 && n < 10000));
+        const mudou = novo.size !== ownedSpecies.size || [...novo].some(id => !ownedSpecies.has(id));
+        ownedSpecies = novo;
+        if (!mudou) return;
+        logEvent('captura-conta', { especiesNaConta: ownedSpecies.size });
+        if (catchRouteActive() && huntCatalog && catchTarget && speciesDone(catchTarget.speciesId)) catchNext('já tem na conta');
+        else if (onCatchChange) { try { onCatchChange(); } catch { /* painel fechado */ } }
+    }
+    // Frame `family`: os Pokémon no depósito da família (só nome) também contam.
+    function catchOnFamily(pokes) {
+        familyNames = new Set((Array.isArray(pokes) ? pokes : []).map(p => normalize(p?.name)).filter(Boolean));
+        if (catchRouteActive() && huntCatalog && catchTarget && speciesDone(catchTarget.speciesId)) catchNext('já tem na família');
     }
 
     async function refreshProfession() {
@@ -1306,12 +1343,12 @@
     // O que falta: escopo menos capturadas, puladas e falhas desta sessão.
     function catchPlan() {
         const skipped = new Set(Array.isArray(cfg.catchRouteSkipped) ? cfg.catchRouteSkipped : []);
-        return catchScope().filter(h => !dexCaught.has(h.speciesId) && !skipped.has(h.slug) && !catchFailed.has(h.slug));
+        return catchScope().filter(h => !speciesDone(h.speciesId) && !skipped.has(h.slug) && !catchFailed.has(h.slug));
     }
     function catchProgress() {
         const escopo = catchScope();
-        const feitas = escopo.filter(h => dexCaught.has(h.speciesId)).length;
-        return { total: escopo.length, feitas, faltam: catchPlan().length, dex: dexCaught.size, dexTotal };
+        const feitas = escopo.filter(h => speciesDone(h.speciesId)).length;
+        return { total: escopo.length, feitas, faltam: catchPlan().length, dex: dexCaught.size, dexTotal, naConta: ownedSpecies.size };
     }
     function catchBallId() {
         const v = cfg.catchRouteBall;
@@ -1324,7 +1361,7 @@
         const p = catchProgress();
         if (!catchTarget) return p.faltam ? `${p.faltam} espécies faltando · aguardando` : `concluída: ${p.feitas}/${p.total} espécies das áreas marcadas`;
         const onde = normalize(huntSlug || '') === catchTarget.slug ? 'na hunt' : (huntSwitch?.origem === 'captura' ? 'entrando…' : `você está em ${huntSlug || 'cidade'}`);
-        return `alvo ${catchTarget.name} (lv ${catchTarget.level}, ${catchTarget.area}) · ${onde} · ${p.feitas}/${p.total} feitas, faltam ${p.faltam} · Pokédex ${p.dex}/${p.dexTotal}`;
+        return `alvo ${catchTarget.name} (lv ${catchTarget.level}, ${catchTarget.area}) · ${onde} · ${p.feitas}/${p.total} feitas, faltam ${p.faltam} · Pokédex ${p.dex}/${p.dexTotal}${p.naConta ? ` · ${p.naConta} espécies na conta` : ''}`;
     }
 
     // Carrega catálogo + Pokédex e vai para o 1º alvo. `motivo` só para o log.
@@ -1343,6 +1380,7 @@
         }
         catchBusy = false;
         refreshProfession();
+        lastPokesReqAt = 0; requestPokes(0);   // a lista da conta (box + time) também define o que já está feito
         catchNext(motivo);
     }
 
@@ -1354,7 +1392,7 @@
         catchTarget = alvo;
         catchSentFor = null;
         const p = catchProgress();
-        if (trocou) logEvent('captura-alvo', { slug: alvo.slug, level: alvo.level, speciesId: alvo.speciesId, faltam: p.faltam, motivo });
+        if (trocou) logEvent('captura-alvo', { slug: alvo.slug, level: alvo.level, speciesId: alvo.speciesId, faltam: p.faltam, motivo, proximas: catchPlan().slice(1, 6).map(h => h.slug) });
         if (normalize(huntSlug || '') !== alvo.slug && !(huntSwitch && huntSwitch.slug === alvo.slug)) switchHunt(alvo.slug, 1, 'captura');
         if (onCatchChange) { try { onCatchChange(); } catch { /* painel fechado */ } }
     }
@@ -1403,7 +1441,7 @@
         if (!catchRouteActive() || !huntCatalog || !info?.name) return;
         const nome = normalize(info.name);
         const hit = catchScope().find(h => normalize(h.speciesName || h.name) === nome || h.slug === huntSlugFromName(nome));
-        if (!hit || dexCaught.has(hit.speciesId)) return;
+        if (!hit || speciesDone(hit.speciesId)) return;
         dexCaught.add(hit.speciesId);
         cfg.catchRouteDone = [...new Set([...(Array.isArray(cfg.catchRouteDone) ? cfg.catchRouteDone : []), hit.speciesId])];
         saveCfg(cfg);
@@ -1919,6 +1957,7 @@
         const fam = message.family || null;
         const depot = message.depot || {};
         logEvent('familia', { temFamilia: Boolean(fam), movimentos: fam ? `${fam.movesUsed}/${fam.movesCap}` : null, congelado: Boolean(fam?.frozen), pokesNoDeposito: Array.isArray(depot.pokes) ? depot.pokes.length : null });
+        catchOnFamily(depot.pokes);
         if (!familyPending) return;
         const achou = Array.isArray(depot.pokes) && depot.pokes.some(p => String(p?.id) === familyPending.pokeId);
         if (achou) familyPending.resolve({ ok: true });
@@ -1980,7 +2019,7 @@
         }
         if (message.type === 'field-kill') { noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
-        if (message.type === 'pokes' && Array.isArray(message.list)) { updateTeam(message.list); handlePokesList(message.list); pokeSellOnPokes(message.list); return; }
+        if (message.type === 'pokes' && Array.isArray(message.list)) { updateTeam(message.list); handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); return; }
 
         if (message.type !== 'catch-result') return;
 
@@ -2963,9 +3002,13 @@
                 ? `<span class="k">Rota ·</span> ${escHtml(catchStatus())}`
                 : '<span class="k">Rota de captura desligada.</span>';
             const prox = (cfg.catchRouteEnabled && huntCatalog) ? catchPlan().slice(0, 8) : [];
+            const feitas = (cfg.catchRouteEnabled && huntCatalog) ? catchScope().filter(h => speciesDone(h.speciesId)) : [];
+            const fontes = feitas.reduce((m, h) => { const f = speciesSource(h.speciesId) || '?'; m[f] = (m[f] || 0) + 1; return m; }, {});
+            const fontesTxt = feitas.length ? ` Feitas: ${Object.entries(fontes).map(([f, n]) => `${n} ${f}`).join(', ')}.` : '';
             $('#pg-dn-catch-next').textContent = prox.length
                 ? `Próximas: ${prox.map((h, i) => `${i === 0 ? '▶ ' : ''}${h.name} lv${h.level}`).join(' · ')}${catchPlan().length > 8 ? ` (+${catchPlan().length - 8})` : ''}`
                 : (cfg.catchRouteEnabled && huntCatalog ? 'Nada faltando nas áreas marcadas.' : '');
+            $('#pg-dn-catch-next').textContent += fontesTxt;
             const puladas = (cfg.catchRouteSkipped || []).length;
             $('#pg-dn-catch-unskip').hidden = !puladas;
             $('#pg-dn-catch-unskip').textContent = `Limpar puladas (${puladas})`;
