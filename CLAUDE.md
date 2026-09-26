@@ -55,7 +55,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   recém-capturado na lista `pokes` (por `id` do delta ou espécie com `xp === 0`). Sem resposta,
   notifica sem esses campos.
 - Cliente envia `{ type:'catch', pendingId, ballId }` para capturar.
-- `balls` → `{ type:'balls', counts:{ '<ballId>': qty } }`, resposta a `{ type:'balls-get' }`. IDs:
+- `balls` → `{ type:'balls', counts:{ '<ballId>': qty } }`, resposta a `{ type:'balls-get' }`. O frame OMITE as bolas
+  zeradas (CONFIRMADO em 26/09/2026: a Ultra Ball some de `counts` ao acabar); use `ballQty(id)` (ausente = 0 depois
+  do 1º frame), nunca `ballCounts[id]` direto — a compra automática ficou muda por isso até a v3.13.6. IDs:
   Poke Ball 1, Great Ball 2, Super Ball 3, Ultra Ball 4, Idle Ball 6. O `catch-result` traz `ballId`
   e `ballName` da bola em uso (o script usa isso como bola "automática" do alerta de estoque).
 - REST do jogo (usado pela compra automática; confirmado no auto-refill de referência e no piwdex):
@@ -235,7 +237,8 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
 ## Como testar
 
 - **Testes isolados em Node** (sem DOM): `node test/level.test.js`, `node test/route.test.js`,
-  `node test/reload.test.js`, `node test/daily.test.js`, `node test/catch.test.js` e `node test/pokesell.test.js`.
+  `node test/reload.test.js`, `node test/daily.test.js`, `node test/catch.test.js`, `node test/pokesell.test.js` e
+  `node test/balls.test.js` (`loadBallsModule`: módulo de bolas + `checkBallStock`).
   `test/harness.js` recorta módulos do userscript pelos marcadores (`loadLevelModule`: `// ---- Alerta de nível do
   líder` até `// ---- Alerta de estoque de bolas`; `loadPokeSellModule`: `// ---- Venda automática de Pokémon` até
   `// ---- Rota de captura`; `loadCatchModule`: `// ---- Rota de captura` até `// ---- Daily Kill`, com `init.fetchJson(url)` para os

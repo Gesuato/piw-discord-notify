@@ -191,6 +191,7 @@ function loadCatchModule(cfg, init) {
         lastFieldAt: init.lastFieldAt || 0,
         lastBallId: init.lastBallId || null,
         ballCounts: init.ballCounts || {},
+        ballQty: (id) => (init.ballCounts ? (init.ballCounts[id] ?? 0) : null),
         CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp'],
         dailyEnabled: () => false,
         dailyOnHunt: () => false,
@@ -264,4 +265,41 @@ function loadPokeSellModule(cfg, init) {
     return { api, state, cfg, clock };
 }
 
-module.exports = { loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, team, assert };
+// Extrai o módulo "Alerta de estoque de bolas" + a função checkBallStock (que fica na seção de venda) e roda com stubs.
+const B_START = '    // ---- Alerta de estoque de bolas';
+const B_END = '    // ---- Compra automática (REST';
+
+function loadBallsModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(B_START), b = src.indexOf(B_END);
+    const c = src.indexOf('    function checkBallStock() {');
+    const d = src.indexOf('\n    }\n', c) + 7;
+    if (a < 0 || b < 0 || c < 0) throw new Error('marcadores do módulo de bolas não encontrados no script');
+    const mod = src.slice(a, b) + src.slice(c, d);
+
+    const state = { sent: [], hooks: [], logs: [], buys: [] };
+    const ctx = {
+        cfg,
+        sendGame: (o) => { state.sent.push(o); return true; },
+        logEvent: (k, dd) => state.logs.push([k, dd]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
+        autoBuyBalls: (id, qty, min) => { state.buys.push({ id, qty, min }); },
+        autoBuyAttempted: {},
+        playerName: () => 'Teste',
+        setTimeout: (fn) => { fn(); return 1; },
+        clearTimeout: () => {},
+        Date,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            handleBalls, checkBallStock, ballQty, effectiveBallsMin, watchedBallId,
+            setLastBall(id) { lastBallId = id; },
+            get ballCounts() { return ballCounts; },
+            get ballAlerted() { return ballAlerted; },
+        };`);
+    const api = factory(...Object.values(ctx));
+    return { api, state, cfg };
+}
+
+module.exports = { loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, team, assert };

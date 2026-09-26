@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.13.5
+// @version      3.13.6
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.13.5';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.13.6';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -621,6 +621,9 @@
     // ---- Alerta de estoque de bolas -------------------------------------
     //
     //   balls     -> { type:'balls', counts:{ '<ballId>': qty, ... } }   (resposta a balls-get)
+    //                O jogo OMITE do frame as bolas zeradas (visto no painel 2 em 26/09/2026: a Ultra Ball sumiu
+    //                de `counts` ao acabar, e a compra automática esperava `qty == null` como "não listada").
+    //                Depois do 1º frame, bola ausente = 0.
     //   balls-get -> pedido do cliente. O jogo não garante mandar `balls` sozinho,
     //                então pedimos: ao rastrear o socket, logo após cada captura e
     //                a cada BALLS_POLL_MS.
@@ -635,7 +638,9 @@
     const BALLS_AFTER_SOCKET_MS = 3000;
 
     let lastBallId = null;          // bola usada no último catch-result
-    let ballCounts = {};            // ballId -> qty (último frame `balls`)
+    let ballCounts = {};            // ballId -> qty (último frame `balls`); ausente = 0 depois do 1º frame
+    let ballsReceived = false;      // já chegou algum frame `balls` nesta carga
+    function ballQty(id) { return id == null ? null : (ballCounts[id] ?? (ballsReceived ? 0 : null)); }
     let lastBallsLogAt = 0;         // o frame chega a cada captura; logar todos afogava o log
     const ballAlerted = {};         // ballId -> true enquanto estiver abaixo do limite
     let ballsRequestTimer = null;
@@ -671,6 +676,7 @@
             if (Number.isInteger(id) && id > 0) counts[id] = Math.max(0, Number(rawQty) || 0);
         }
         ballCounts = counts;
+        ballsReceived = true;
         const id = watchedBallId();
         if (Date.now() - lastBallsLogAt > 60 * 1000) { lastBallsLogAt = Date.now(); logEvent('balls', { counts, monitorando: id, limite: effectiveBallsMin(), autoBuy: Boolean(cfg.autoBuy) }); } // 1x/min: o log tem 80 linhas
         checkBallStock();
@@ -1019,8 +1025,8 @@
         if (!ballsEnabled()) return;
         const id = watchedBallId();
         if (id == null) return;                 // ainda não sabemos qual bola o autocatch usa
-        const qty = ballCounts[id];
-        if (qty == null) return;                // o jogo não listou essa bola
+        const qty = ballQty(id);
+        if (qty == null) return;                // ainda não chegou nenhum frame `balls`
         const min = effectiveBallsMin();
         if (qty >= min) { ballAlerted[id] = false; autoBuyAttempted[id] = false; return; }
         if (cfg.autoBuy) {
@@ -1457,7 +1463,7 @@
         if (!alvo || catchSentFor === alvo.id) return;
         const ballId = catchBallId();
         if (!ballId) return;
-        if (ballCounts[ballId] === 0) { logEvent('captura-sem-bola', { ballId, name: alvo.name }); return; }
+        if (ballQty(ballId) === 0) { logEvent('captura-sem-bola', { ballId, name: alvo.name }); return; }
         catchSentFor = alvo.id;
         catchSentAt = Date.now();
         const ok = sendGame({ type: 'catch', pendingId: alvo.id, ballId });
@@ -2743,7 +2749,7 @@
             $('#pg-dn-autobuy-warn').hidden = !(d.autoBuy && !min);
             const el = $('#pg-dn-balls-status');
             const id = d.ballsWatch && d.ballsWatch !== 'auto' ? Number(d.ballsWatch) : lastBallId;
-            const qty = id != null ? ballCounts[id] : null;
+            const qty = ballQty(id);
             if (!(min > 0 || d.autoBuy)) el.innerHTML = '<span>🎯</span><span class="k">Alerta desligado.</span>';
             else if (id == null) el.innerHTML = '<span>🎯</span><span class="k">Bola em uso ainda não vista: capture algo.</span>';
             else if (qty == null) el.innerHTML = `<span>🎯</span><span><span class="k">${escHtml(ballName(id))}:</span> estoque ainda não lido</span>`;
