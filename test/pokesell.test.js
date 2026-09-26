@@ -9,6 +9,7 @@ const LISTA = [
     P({ id: 'shiny', name: 'Rattata', shiny: true, ivTotal: 10, quality: 1.0 }),
     P({ id: 'locked', name: 'Dratini', locked: true, ivTotal: 10, quality: 1.7 }),
     P({ id: 'semvalor', name: 'Magikarp', sellValue: 0, ivTotal: 10, quality: 1.0 }),
+    P({ id: 'listed', name: 'Growlithe', listed: true, ivTotal: 10, quality: 1.0 }),
     P({ id: 'semiv', name: 'Zubat', ivTotal: undefined, quality: undefined }),
     P({ id: 'c40', name: 'Rattata', ivTotal: 40, quality: 1.0 }),        // Common 40
     P({ id: 'r120', name: 'Abra', ivTotal: 120, quality: 1.3 }),         // Rare 120
@@ -28,7 +29,7 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         const { api } = loadPokeSellModule(cfg, { api: okApi() });
         const motivos = Object.fromEntries(LISTA.map(p => [p.id, api.pokeSellReason(p, cfg)]));
         assert(motivos.lider === 'no time' && motivos.time2 === 'no time', 'time protegido');
-        assert(motivos.starter === 'inicial' && motivos.shiny === 'shiny' && motivos.locked === 'cadeado' && motivos.semvalor === 'sem valor' && motivos.semiv === 'sem IV', 'proteções fixas: ' + JSON.stringify(motivos));
+        assert(motivos.starter === 'inicial' && motivos.shiny === 'shiny' && motivos.locked === 'cadeado' && motivos.semvalor === 'sem valor' && motivos.semiv === 'sem IV' && motivos.listed === 'anunciado no mercado', 'proteções fixas: ' + JSON.stringify(motivos));
         assert(motivos.c40 === null && motivos.e99 === null && motivos.l90 === null, 'abaixo do limite da raridade vende');
         assert(/poder 120/.test(motivos.r120), 'Rare 120 fica');
         assert(motivos.m170 === 'Mythic sem limite', 'raridade sem limite não vende: ' + motivos.m170);
@@ -133,5 +134,27 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         assert(sb.hooks.length === 1 && /falhou/.test(sb.hooks[0].content) && /HTTP 500/.test(sb.hooks[0].desc), 'erro avisa: ' + sb.hooks[0].desc);
     }
 
-    console.log('OK pokesell.test — limite por raridade, proteções, venda automática/manual, parcial e erro');
+    // 7) lote recusado pelo jogo (um Pokémon não vendável): vende um por um, marca o recusado e não o tenta de novo
+    {
+        const cfg = { pokeSellEnabled: false, pokeSellLimits: REGRAS }; // desligada: a lista entra sem vender sozinha; vende no manual
+        const ruim = 'e99';
+        const api = (url, opts) => {
+            const ids = JSON.parse(opts.body).pokeIds;
+            if (ids.includes(ruim)) return Promise.reject(new Error('Selecione Pokémon vendáveis que NÃO estão na equipe (shiny e anunciados no mercado não podem ser vendidos aqui).'));
+            return Promise.resolve({ gold: 9000, goldGained: 100 * ids.length, sold: ids.length });
+        };
+        const { api: m, state } = loadPokeSellModule(cfg, { api });
+        m.pokeSellOnPokes(LISTA);
+        const r = await m.runPokeSellCycle(true);
+        assert(state.calls.length === 4 && state.calls[0].body.pokeIds.length === 3, 'lote de 3 recusado, depois 3 chamadas de 1: ' + state.calls.map(c => c.body.pokeIds.join('+')).join(','));
+        assert(r.vendidos === 2 && r.ganho === 200 && /1 recusado\(s\) pelo jogo/.test(r.motivo), 'vendeu os 2 bons: ' + JSON.stringify(r));
+        assert(state.logs.some(l => l[0] === 'venda-pokes-recusado' && l[1].id === ruim && l[1].chaves.includes('ivTotal')), 'recusado logado com os campos');
+        assert(/recusado pelo jogo/.test(m.pokeSellReason(LISTA.find(p => p.id === ruim), cfg)), 'recusado não volta a ser candidato');
+        assert(/venda parcial/.test(state.hooks[0].content) && /1 recusado/.test(state.hooks[0].desc), 'aviso diz que foi parcial: ' + state.hooks[0].desc);
+        state.calls.length = 0;
+        const r2 = await m.runPokeSellCycle(true);
+        assert(!r2.ok && /nenhum Pokémon/.test(r2.motivo) && state.calls.length === 0, 'nada sobrou para vender');
+    }
+
+    console.log('OK pokesell.test — limite por raridade, proteções, venda automática/manual, parcial, erro e lote recusado');
 })().catch(e => { console.error(e); process.exit(1); });

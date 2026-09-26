@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.13.0
+// @version      3.13.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.13.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.13.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -619,6 +619,7 @@
 
     let lastBallId = null;          // bola usada no último catch-result
     let ballCounts = {};            // ballId -> qty (último frame `balls`)
+    let lastBallsLogAt = 0;         // o frame chega a cada captura; logar todos afogava o log
     const ballAlerted = {};         // ballId -> true enquanto estiver abaixo do limite
     let ballsRequestTimer = null;
     let onBallsChange = null;       // callback do painel para redesenhar o estoque
@@ -654,7 +655,7 @@
         }
         ballCounts = counts;
         const id = watchedBallId();
-        logEvent('balls', { counts, monitorando: id, limite: effectiveBallsMin(), autoBuy: Boolean(cfg.autoBuy) });
+        if (Date.now() - lastBallsLogAt > 60 * 1000) { lastBallsLogAt = Date.now(); logEvent('balls', { counts, monitorando: id, limite: effectiveBallsMin(), autoBuy: Boolean(cfg.autoBuy) }); } // 1x/min: o log tem 80 linhas
         checkBallStock();
         if (onBallsChange) { try { onBallsChange(); } catch { /* painel fechado */ } }
     }
@@ -1037,6 +1038,8 @@
     let nextPokeSellDelayMs = 0;    // sorteado a cada ciclo dentro da faixa
     let lastPokeSellAskAt = 0;      // último pokes-get pedido pelo tique
     const recentCaptureIds = new Map();   // id -> quando chegou o poke-delta
+    const pokeSellRejected = new Map();   // id -> motivo que o jogo deu ao recusar (não volta a entrar no lote nesta sessão)
+    let pokesFieldsLogged = false;
     let onPokeSellChange = null;    // callback do painel
 
     function noteRecentCapture(id) {
@@ -1076,7 +1079,9 @@
         if (p.starter) return 'inicial';
         if (p.shiny) return 'shiny';
         if (p.locked) return 'cadeado';
+        if (p.listed || p.tradeId) return 'anunciado no mercado';   // `listed` = anúncio no mercado (bundle: o depósito também bloqueia)
         if (p.sellValue != null && !(Number(p.sellValue) > 0)) return 'sem valor';
+        if (pokeSellRejected.has(String(p.id))) return `recusado pelo jogo (${pokeSellRejected.get(String(p.id))})`;
         const at = recentCaptureIds.get(String(p.id));
         if (at && Date.now() - at < POKE_SELL_RECENT_MS) return 'capturado agora';
         const tier = qualityTier(Number(p.quality));
@@ -1108,18 +1113,35 @@
         const conta = who ? `Conta: ${who}\n` : '';
         let vendidos = [], ganho = 0, gold = null, motivo = null;
         try {
-            for (let i = 0; i < cand.length; i += POKE_SELL_BATCH) {
-                const lote = cand.slice(i, i + POKE_SELL_BATCH);
-                let r;
-                try { r = await gameApi(POKE_SELL_URL, { method: 'POST', body: JSON.stringify({ pokeIds: lote.map(p => p.id) }) }); }
-                catch (err) { motivo = `erro na venda: ${err?.message || err}`; break; }
+            const vender = async (lote) => {
+                const r = await gameApi(POKE_SELL_URL, { method: 'POST', body: JSON.stringify({ pokeIds: lote.map(p => p.id) }) });
                 const n = Number(r?.sold);
                 vendidos = vendidos.concat(Number.isFinite(n) && n < lote.length ? lote.slice(0, n) : lote);
                 ganho += Number(r?.goldGained) || 0;
                 if (Number.isFinite(Number(r?.gold))) gold = Number(r.gold);
-                if (Number.isFinite(n) && n < lote.length) { motivo = 'o jogo vendeu só parte do lote'; break; }
+                if (Number.isFinite(n) && n < lote.length) motivo = 'o jogo vendeu só parte do lote';
+            };
+            // O jogo recusa o lote INTEIRO se um Pokémon não for vendável (ex.: anunciado no mercado). Lote recusado:
+            // tenta um por um, guarda quem foi recusado (com os campos, para diagnóstico) e segue com o resto.
+            const recusados = [];
+            const recusar = (p, err) => {
+                const msg = String(err?.message || err);
+                pokeSellRejected.set(String(p.id), msg.slice(0, 60));
+                recusados.push(p);
+                logEvent('venda-pokes-recusado', { id: p.id, name: p.name, level: p.level, erro: msg, campos: { team: p.team, leader: p.leader, starter: p.starter, shiny: p.shiny, locked: p.locked, listed: p.listed, tradeId: p.tradeId ?? null, sellValue: p.sellValue, ivTotal: p.ivTotal, quality: p.quality }, chaves: Object.keys(p) });
+            };
+            for (let i = 0; i < cand.length; i += POKE_SELL_BATCH) {
+                const lote = cand.slice(i, i + POKE_SELL_BATCH);
+                try { await vender(lote); continue; }
+                catch (err) { if (lote.length === 1) { recusar(lote[0], err); continue; } logEvent('venda-pokes-lote', { tam: lote.length, erro: String(err?.message || err), acao: 'um por um' }); }
+                for (const p of lote) {
+                    try { await vender([p]); }
+                    catch (err) { recusar(p, err); }
+                }
             }
-        } finally { pokeSellRunning = false; }
+            if (recusados.length) motivo = `${recusados.length} recusado(s) pelo jogo (${pokeSellRejected.get(String(recusados[0].id))})${motivo ? `; ${motivo}` : ''}`;
+        } catch (err) { motivo = `erro na venda: ${err?.message || err}`; }
+        finally { pokeSellRunning = false; }
         const ids = new Set(vendidos.map(p => String(p.id)));
         lastPokesList = lastPokesList.filter(p => !ids.has(String(p.id)));
         logEvent('venda-pokes', { candidatos: cand.length, vendidos: vendidos.length, ganho, gold, motivo, lista: vendidos.slice(0, 20).map(pokeLabel) });
@@ -1150,6 +1172,11 @@
     function pokeSellOnPokes(list) {
         lastPokesList = Array.isArray(list) ? list.filter(p => p && typeof p === 'object') : [];
         lastPokesAt = Date.now();
+        if (!pokesFieldsLogged && lastPokesList.length) {
+            pokesFieldsLogged = true;
+            const fora = lastPokesList.find(p => !p.team) || lastPokesList[0];
+            logEvent('pokes-campos', { total: lastPokesList.length, foraDoTime: lastPokesList.filter(p => !p.team).length, chaves: Object.keys(fora), exemplo: { name: fora.name, team: fora.team, starter: fora.starter, shiny: fora.shiny, locked: fora.locked, listed: fora.listed, sellValue: fora.sellValue, ivTotal: fora.ivTotal, quality: fora.quality } });
+        }
         if (onPokeSellChange) { try { onPokeSellChange(); } catch { /* painel fechado */ } }
         if (!cfg.pokeSellEnabled || pokeSellRunning) return;
         if (!pokeSellDue()) return;
@@ -1740,7 +1767,7 @@
     // "Copiar log" do painel copia tudo como JSON.
 
     const LOG_KEY = 'pgDiscordNotifyLog';
-    const LOG_MAX = 40;
+    const LOG_MAX = 80;
 
     function logEvent(kind, data) {
         if (cfg.debug) console.log(TAG, kind, data);

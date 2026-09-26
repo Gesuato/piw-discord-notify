@@ -83,7 +83,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `docs/mockup-venda-pokemon.html`, alternativa B; `migrateCfg` converte as duas faixas antigas). Ver `pokeSellReason`;
   `migrateCfg` roda ANTES de `TIERS` existir (TDZ), por isso não usa `tierByKey`. Intervalo sorteado em
   `pokeSellEveryMin`–`pokeSellEveryMaxMin` (v3.13.0, padrão 10–15 min; `restartPokeSellCycle` na carga, no Salvar e
-  após cada venda; `pokeSellTick` pede `pokes-get` quando vence). Nunca vende time/líder, inicial, shiny, `locked`, `sellValue` 0, sem IV ou
+  após cada venda; `pokeSellTick` pede `pokes-get` quando vence). Lote recusado pelo jogo (ex.: "anunciados no mercado",
+  flag `listed` na lista) é retentado um por um; recusados ficam em `pokeSellRejected` na sessão (log `venda-pokes-recusado`
+  com os campos; `pokes-campos` registra as chaves do frame na 1ª leitura). Nunca vende time/líder, inicial, shiny, `locked`, `listed`, `sellValue` 0, sem IV ou
   capturado há < 2 min (`recentCaptureIds`, alimentado pelo `poke-delta`). Usa o frame `pokes` (por isso
   `requestPokes` roda mesmo sem alvo de nível quando `pokeSellEnabled`) e `POST /api/game/pokemon/sell { pokeIds }`.
   A aba de id `bolas` chama-se "🛒 Compras" desde a v3.11.0 (id mantido por causa do `pgDiscordNotifyUi`).
@@ -144,7 +146,7 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
 
 ## Diagnóstico sem console
 
-- O script guarda os últimos 40 eventos em `localStorage.pgDiscordNotifyLog` (socket rastreado,
+- O script guarda os últimos 80 eventos em `localStorage.pgDiscordNotifyLog` (v3.13.1; `balls` no máximo 1x/min; socket rastreado,
   `catch-result` recebidos, decisão dos filtros, cooldown, resposta do webhook). A URL do socket é
   gravada SEM a query string (ela carrega o JWT da sessão). O botão
   **Copiar log** do painel copia esse JSON.
