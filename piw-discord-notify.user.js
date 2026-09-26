@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.13.2
+// @version      3.13.3
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.13.2';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.13.3';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -885,6 +885,7 @@
         huntSlug = novo;
         huntLoot.clear();
         noteHuntChange(novo);
+        catchOnHuntChange(novo);
         loadHuntProfile();
         logEvent('hunt', { slug: huntSlug });
         if (onHuntLootChange) onHuntLootChange();
@@ -1225,6 +1226,7 @@
     const CATCH_TICK_MS = 60 * 1000;
     const CATCH_IDLE_REENTER_MS = 2 * 60 * 1000;   // fora de hunt há tanto tempo: volta para a hunt do alvo
     const CATCH_SEND_GAP_MS = 1500;                 // intervalo mínimo entre bolas jogadas pelo script
+    const CATCH_REENTER_MS = 8000;                  // o jogo entrou em outra hunt: espera isto e volta para a do alvo
     const DEX_REFRESH_MIN_MS = 30 * 1000;
 
     let huntCatalog = null;         // [{ slug, name, level, area, speciesId, speciesName }] ordenado por nível
@@ -1243,6 +1245,7 @@
     let catchSentAt = 0;
     const catchFailed = new Set();  // slugs cuja entrada falhou nesta sessão (não persiste)
     let onCatchChange = null;       // callback do painel
+    let catchReenterTimer = null;
 
     function catchRouteActive() { return Boolean(cfg.catchRouteEnabled); }
     function catchAreas() {
@@ -1481,16 +1484,36 @@
         if (onCatchChange) { try { onCatchChange(); } catch { /* painel fechado */ } }
     }
 
-    // Tique: conta parada fora de hunt (ex.: teleporte para a cidade) volta para a hunt do alvo.
+    // A rota manda na hunt (v3.13.3): a tela do jogo guarda a última hunt escolhida na mão e a reenvia sozinha em toda
+    // reconexão do socket e após `hunt-cooldown` (visto no painel 3: a conta voltava para larvitar enquanto o alvo era
+    // poliwag). Por isso, com a rota ligada, entrar em qualquer hunt que não seja a do alvo dispara a volta em
+    // CATCH_REENTER_MS (chamado por setHunt). Para caçar na mão, desligue a rota. Exceção: a hunt da Daily Kill.
+    function catchOnHuntChange(slug) {
+        clearTimeout(catchReenterTimer); catchReenterTimer = null;
+        if (!catchRouteActive() || !catchTarget || !huntCatalog) return;
+        const h = normalize(slug || '');
+        if (!h || CITY_SLUGS.includes(h) || h === catchTarget.slug) return;
+        if (dailyEnabled() && dailyOnHunt()) return;
+        catchReenterTimer = setTimeout(() => {
+            catchReenterTimer = null;
+            if (!catchRouteActive() || !catchTarget || huntSwitch || catchBusy) return;
+            const atual = normalize(huntSlug || '');
+            if (!atual || atual === catchTarget.slug || (dailyEnabled() && dailyOnHunt())) return;
+            logEvent('captura-reentrada', { de: atual, slug: catchTarget.slug, motivo: 'o jogo entrou em outra hunt' });
+            switchHunt(catchTarget.slug, 1, 'captura');
+        }, CATCH_REENTER_MS);
+    }
+    // Tique (60 s): fora de hunt há 2 min (ex.: teleporte para a cidade) ou em outra hunt: volta para a do alvo.
     function catchTick() {
         if (!catchRouteActive()) return;
         if (!huntCatalog) { startCatchRoute('tique'); return; }
-        if (!catchTarget || huntSwitch || catchBusy) return;
+        if (!catchTarget || huntSwitch || catchBusy || catchReenterTimer) return;
         const h = normalize(huntSlug || '');
-        if (h && !CITY_SLUGS.includes(h)) return;                       // está em alguma hunt (a do alvo ou escolha do usuário)
+        if (h === catchTarget.slug) return;
         if (dailyEnabled() && dailyOnHunt()) return;
-        if (Date.now() - lastFieldAt < CATCH_IDLE_REENTER_MS) return;   // combate recente: não mexe
-        logEvent('captura-reentrada', { slug: catchTarget.slug });
+        const emHunt = h && !CITY_SLUGS.includes(h);
+        if (!emHunt && Date.now() - lastFieldAt < CATCH_IDLE_REENTER_MS) return;   // fora de hunt há pouco: espera
+        logEvent('captura-reentrada', { de: h || null, slug: catchTarget.slug, motivo: emHunt ? 'em outra hunt' : 'parado fora de hunt' });
         switchHunt(catchTarget.slug, 1, 'captura');
     }
 

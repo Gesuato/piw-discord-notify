@@ -199,9 +199,9 @@ function loadCatchModule(cfg, init) {
     };
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
-            startCatchRoute, catchNext, catchTick, catchOnPending, catchOnResult, catchOnCooldown, catchHuntFailed, skipCatchTarget, catchOnPokes, catchOnFamily, speciesDone, speciesSource,
+            startCatchRoute, catchNext, catchTick, catchOnPending, catchOnResult, catchOnCooldown, catchHuntFailed, skipCatchTarget, catchOnPokes, catchOnFamily, speciesDone, speciesSource, catchOnHuntChange,
             catchPlan, catchScope, catchProgress, catchStatus, refreshPokedex, refreshProfession,
-            setHunt(slug) { huntSlug = slug; },
+            setHunt(slug) { huntSlug = slug; catchOnHuntChange(slug); },
             get catchTarget() { return catchTarget; },
             get dexCaught() { return dexCaught; },
             get profession() { return profession; },

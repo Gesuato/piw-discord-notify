@@ -369,7 +369,10 @@ Pokédex 88/410"), próximas 8, botões Pular esta / Atualizar Pokédex / Limpar
 capturadas, próximo rank). Teste: `node test/catch.test.js`.
 
 **Pendências:** confirmar ao vivo `field-init.slug`, o `error` de hunt recusada e se hunts de nível alto exigem
-nível do treinador (hoje a falha só pula). Não escolhe a profissão nem sobe de rank.
+nível do treinador (hoje a falha só pula). Não escolhe a profissão nem sobe de rank. Visto ao vivo (v3.13.3): a tela
+do jogo reenvia `enter-hunt` da última hunt escolhida na mão a cada reconexão do socket, por isso a rota agora
+reassume a hunt do alvo 8 s depois de qualquer entrada em outra hunt (`catchOnHuntChange`); a tela pode seguir
+mostrando a hunt antiga.
 
 ---
 

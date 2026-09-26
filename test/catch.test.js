@@ -117,20 +117,28 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         assert(/Auto-Catch/.test(state.hooks[0].desc), 'marca captura pelo Auto-Catch');
     }
 
-    // 8) tique: parado fora de hunt há 2 min volta para o alvo; em hunt não mexe
+    // 8) a rota manda na hunt: o jogo entrou em outra hunt -> volta para a do alvo em 8 s; parado fora de hunt há 2 min também
     {
         const { api, state, clock } = loadCatchModule({ catchRouteEnabled: true, catchRouteAreas: ['kanto'] }, ambiente([], { lastFieldAt: Date.now() })); // combate recente
         await api.startCatchRoute('t');
         state.switches.length = 0;
-        api.setHunt('abra');                 // usuário foi para outra hunt na mão
+        api.setHunt('pidgey');               // entrou na hunt do alvo: nada
+        assert(state.longTimers.length === 0 && state.switches.length === 0, 'na hunt do alvo não arma nada');
+        api.setHunt('larvitar');             // o jogo reenviou a hunt antiga (reconexão)
+        assert(state.longTimers.length === 1 && state.switches.length === 0, 'arma a volta em 8 s');
         api.catchTick();
-        assert(state.switches.length === 0, 'em outra hunt não mexe');
+        assert(state.switches.length === 0, 'tique espera o timer');
+        state.longTimers.shift()();
+        assert(state.switches.length === 1 && state.switches[0].slug === 'pidgey' && state.switches[0].origem === 'captura', 'voltou para pidgey');
+        assert(state.logs.some(l => l[0] === 'captura-reentrada' && l[1].de === 'larvitar' && /outra hunt/.test(l[1].motivo)), 'log explica');
+        api.catchTick();                     // ainda em larvitar (a troca não confirmou): o tique cobre
+        assert(state.switches.length === 2, 'tique também volta quando está em outra hunt');
         api.setHunt(null);
         api.catchTick();
-        assert(state.switches.length === 0, 'fora de hunt há pouco tempo: espera');
+        assert(state.switches.length === 2, 'fora de hunt há pouco tempo: espera');
         clock.now += 3 * 60 * 1000;
         api.catchTick();
-        assert(state.switches.length === 1 && state.switches[0].slug === 'pidgey', 'parado 3 min: volta para pidgey');
+        assert(state.switches.length === 3 && state.switches[2].slug === 'pidgey', 'parado 3 min: volta para pidgey');
     }
 
     // 8b) Pokémon que a conta já TEM (frame pokes) ou que está no depósito da família contam como feitos, mesmo fora da Pokédex
