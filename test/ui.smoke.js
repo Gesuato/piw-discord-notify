@@ -136,7 +136,7 @@ setTimeout(() => {
         panel.querySelector('.dn-tab[data-tab=venda]').click();
         $('#pg-dn-psell-common').value = 100; fire($('#pg-dn-psell-common'), 'input');
         $('#pg-dn-psell-legendary').value = 150; fire($('#pg-dn-psell-legendary'), 'input');
-        log('psell previa=' + $('#pg-dn-psell-status').textContent.trim() + ' | ' + [...$('#pg-dn-psell-list').querySelectorAll('tr')].map(tr => tr.textContent.replace(/\s+/g, ' ').trim()).join(' || ') + ' | btn=' + $('#pg-dn-psell-now').textContent);
+        log('psell previa=' + $('#pg-dn-psell-status').textContent.trim() + ' | ' + [...$('#pg-dn-psell-list').querySelectorAll('tr')].map(tr => tr.textContent.replace(/\s+/g, ' ').trim()).join(' || '));
         $('#pg-dn-psell').checked = true; fire($('#pg-dn-psell'), 'change'); $('#pg-dn-save').click();
         const cfgP = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
         log('psell salvo=' + cfgP.pokeSellEnabled + ' limites=' + JSON.stringify(cfgP.pokeSellLimits) + ' viagem=' + cfgP.tripEveryMin + '-' + cfgP.tripEveryMaxMin + ' badge=' + panel.querySelector('.dn-tab[data-tab=venda] .b').dataset.state + ' | faixa=' + $('#pg-dn-trip-sub').textContent + ' | sum=' + $('#pg-dn-sum-pokes').textContent);
