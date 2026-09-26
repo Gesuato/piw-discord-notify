@@ -156,5 +156,38 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         assert(!r2.ok && /nenhum Pokémon/.test(r2.motivo) && state.calls.length === 0, 'nada sobrou para vender');
     }
 
-    console.log('OK pokesell.test — limite por raridade, proteções, venda automática/manual, parcial, erro e lote recusado');
+    // 8) guarda de venda do PokeGrid: desligada só durante o POST (pelo interruptor `window.__pgSellGuardOn`) e
+    //    religada depois; sem guarda (Tampermonkey) nada é tocado
+    {
+        const cfg = { pokeSellEnabled: false, pokeSellLimits: REGRAS };
+        const win = { __pgSellGuard: true, __pgSellGuardOn: true };
+        const vistos = [];
+        const api = (url, opts) => { vistos.push(win.__pgSellGuardOn); return okApi()(url, opts); };
+        const { api: m, state } = loadPokeSellModule(cfg, { api, window: win });
+        m.pokeSellOnPokes(LISTA);
+        const r = await m.runPokeSellCycle(true);
+        assert(r.vendidos === 3 && vistos.length === 1 && vistos[0] === false, 'guarda desligada durante a venda: ' + JSON.stringify(vistos));
+        assert(win.__pgSellGuardOn === true, 'guarda volta a ligada depois da venda');
+        assert(state.logs.some(l => l[0] === 'venda-pokes' && l[1].guardaPokeGrid === true), 'log registra que havia guarda');
+        // guarda existente mas já desligada pelo usuário: fica desligada
+        const win2 = { __pgSellGuard: true, __pgSellGuardOn: false };
+        const { api: m2 } = loadPokeSellModule(cfg, { api: okApi(), window: win2 });
+        m2.pokeSellOnPokes(LISTA);
+        await m2.runPokeSellCycle(true);
+        assert(win2.__pgSellGuardOn === false, 'guarda já desligada continua desligada');
+        // erro no POST também religa
+        const win3 = { __pgSellGuard: true, __pgSellGuardOn: true };
+        const { api: m3 } = loadPokeSellModule(cfg, { api: () => Promise.reject(new Error('HTTP 500')), window: win3 });
+        m3.pokeSellOnPokes(LISTA);
+        await m3.runPokeSellCycle(true);
+        assert(win3.__pgSellGuardOn === true, 'guarda religada mesmo com erro');
+        // sem PokeGrid: window intocada
+        const win4 = {};
+        const { api: m4 } = loadPokeSellModule(cfg, { api: okApi(), window: win4 });
+        m4.pokeSellOnPokes(LISTA);
+        await m4.runPokeSellCycle(true);
+        assert(!('__pgSellGuardOn' in win4), 'sem guarda nada é criado em window');
+    }
+
+    console.log('OK pokesell.test — limite por raridade, proteções, venda automática/manual, parcial, erro, lote recusado e guarda do PokeGrid');
 })().catch(e => { console.error(e); process.exit(1); });

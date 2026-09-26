@@ -219,11 +219,16 @@ function loadPokeSellModule(cfg, init) {
     const src = fs.readFileSync(SCRIPT, 'utf8');
     const a = src.indexOf(P_START), b = src.indexOf(P_END);
     if (a < 0 || b < 0) throw new Error('marcadores do módulo de venda de Pokémon não encontrados no script');
-    const mod = src.slice(a, b);
+    // O helper da guarda de venda do PokeGrid mora junto do gameApi (fora do módulo): entra inteiro, para o teste
+    // cobrir o liga/desliga real de `window.__pgSellGuardOn`.
+    const g = src.indexOf('    // Guarda de venda do PokeGrid');
+    const gEnd = src.indexOf('\n    }\n', src.indexOf('async function withoutPokeGridSellGuard', g)) + 7;
+    if (g < 0 || gEnd < 7) throw new Error('helper withoutPokeGridSellGuard não encontrado no script');
+    const mod = src.slice(g, gEnd) + src.slice(a, b);
 
     const clock = { now: Date.now() };
     const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
-    const state = { calls: [], hooks: [], logs: [], pokesReqs: 0, awaiting: init.awaiting || [] };
+    const state = { calls: [], hooks: [], logs: [], pokesReqs: 0, awaiting: init.awaiting || [], window: init.window || {} };
     const TIERS = [[4.0, 'Divine'], [3.0, 'Ancient'], [2.0, 'Mythic'], [1.7, 'Legendary'], [1.5, 'Epic'], [1.3, 'Rare'], [1.1, 'Uncommon'], [1.0, 'Common'], [-Infinity, 'Weak']]
         .map(([min, name], i, arr) => ({ min, name, key: name.toLowerCase(), rank: arr.length - 1 - i }));
     const ctx = {
@@ -240,6 +245,7 @@ function loadPokeSellModule(cfg, init) {
         IV_MAX: 192,
         awaitingDetails: state.awaiting,
         TIERS,
+        window: state.window,
         setTimeout: (fn, ms) => { fn(); return 1; },
         clearTimeout: () => {},
         Date: FakeDate,

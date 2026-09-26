@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.13.3
+// @version      3.13.4
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.13.3';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.13.4';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -719,6 +719,20 @@
         return body;
     }
 
+    // Guarda de venda do PokeGrid (index.html, SELLGUARD): ele embrulha o `fetch` do painel e, num POST de venda
+    // com shiny/qualidade Lendária+ (>= 1.7) ou item travado (Strange Pheromone, Rare Pokémon Picture e os da
+    // engrenagem), abre um `window.confirm` nativo — que trava a página e fica esperando alguém clicar. Nas vendas
+    // do script quem manda são as regras do painel (o usuário escolheu o limite por raridade e a lista de itens),
+    // então a guarda é desligada SÓ durante a chamada, pelo interruptor oficial dela (`window.__pgSellGuardOn`),
+    // e volta ao que era. Fora do PokeGrid (Tampermonkey) não existe guarda e nada muda.
+    async function withoutPokeGridSellGuard(fn) {
+        if (!window.__pgSellGuard) return fn();
+        const antes = window.__pgSellGuardOn;
+        window.__pgSellGuardOn = false;
+        try { return await fn(); }
+        finally { if (window.__pgSellGuardOn === false) window.__pgSellGuardOn = antes; }
+    }
+
     // Compra `qty` da bola `id`. Devolve { ok, bought, spent, gold, motivo }.
     async function buyBalls(id, qty) {
         const shop = await gameApi(SHOP_URL);
@@ -946,7 +960,7 @@
             }
             if (!lote.length) { logEvent('venda-nada', { hunt: huntSlug, marcados: wanted }); return { ok: false, motivo: 'nada acima da reserva para vender' }; }
 
-            const r = await gameApi(SHOP_SELL_URL, { method: 'POST', body: JSON.stringify({ items: lote.map(({ itemId, qty }) => ({ itemId, qty })) }) });
+            const r = await withoutPokeGridSellGuard(() => gameApi(SHOP_SELL_URL, { method: 'POST', body: JSON.stringify({ items: lote.map(({ itemId, qty }) => ({ itemId, qty })) }) }));
             const ok = r?.ok !== false;
             const ganho = Number.isFinite(Number(r?.goldGained)) ? Number(r.goldGained) : lote.reduce((a, i) => a + i.qty * i.price, 0);
             const gold = Number.isFinite(Number(r?.gold)) ? Number(r.gold) : null;
@@ -1115,7 +1129,7 @@
         let vendidos = [], ganho = 0, gold = null, motivo = null;
         try {
             const vender = async (lote) => {
-                const r = await gameApi(POKE_SELL_URL, { method: 'POST', body: JSON.stringify({ pokeIds: lote.map(p => p.id) }) });
+                const r = await withoutPokeGridSellGuard(() => gameApi(POKE_SELL_URL, { method: 'POST', body: JSON.stringify({ pokeIds: lote.map(p => p.id) }) }));
                 const n = Number(r?.sold);
                 vendidos = vendidos.concat(Number.isFinite(n) && n < lote.length ? lote.slice(0, n) : lote);
                 ganho += Number(r?.goldGained) || 0;
@@ -1145,7 +1159,7 @@
         finally { pokeSellRunning = false; }
         const ids = new Set(vendidos.map(p => String(p.id)));
         lastPokesList = lastPokesList.filter(p => !ids.has(String(p.id)));
-        logEvent('venda-pokes', { candidatos: cand.length, vendidos: vendidos.length, ganho, gold, motivo, lista: vendidos.slice(0, 20).map(pokeLabel) });
+        logEvent('venda-pokes', { candidatos: cand.length, vendidos: vendidos.length, ganho, gold, motivo, guardaPokeGrid: Boolean(window.__pgSellGuard), lista: vendidos.slice(0, 20).map(pokeLabel) });
         if (onPokeSellChange) { try { onPokeSellChange(); } catch { /* painel fechado */ } }
         if (vendidos.length) {
             const nomes = vendidos.slice(0, 15).map(pokeLabel).join('\n');
@@ -2437,7 +2451,7 @@
                     </div>
                     <div class="dn-section">
                         <h3>Pokémon fora do time <span class="spacer"></span><label class="dn-toggle"><input id="pg-dn-psell" type="checkbox"><span class="sw"></span>Vender sozinho</label></h3>
-                        <p class="dn-help">Nunca vende: no time, inicial, shiny, com cadeado 🔒 ou capturado nos últimos 2 min. Roda a cada leitura do time (5 min e após capturas). Aviso no canal de Alertas.</p>
+                        <p class="dn-help">Nunca vende: no time, inicial, shiny, com cadeado 🔒 ou capturado nos últimos 2 min. Roda a cada leitura do time (5 min e após capturas). Aviso no canal de Alertas. A proteção de venda do PokeGrid não pergunta nas vendas do script: quem manda são os limites abaixo.</p>
                         <div class="dn-tiers">${TIERS_ASC.map(t => `<label for="pg-dn-psell-${t.key}"><span class="dn-chip" style="--c:#${t.color.toString(16).padStart(6, '0')}">${t.name}</span></label><span class="dn-inline">poder &lt; <input id="pg-dn-psell-${t.key}" class="dn-input dn-input--sm pg-dn-psell-lim" data-tier="${t.key}" type="number" min="0" max="${IV_MAX}" step="1" placeholder="—"></span>`).join('')}</div>
                         <p class="dn-help">Poder = 0 a ${IV_MAX}. Vazio = essa raridade não vende.</p>
                         <div class="dn-inline">Vender a cada <input id="pg-dn-psell-min" class="dn-input dn-input--sm" type="number" min="1" step="1"> a <input id="pg-dn-psell-max" class="dn-input dn-input--sm" type="number" min="0" step="1"> min <span class="dn-hint">(sorteado na faixa; segundo vazio = fixo)</span></div>

@@ -145,6 +145,12 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   alvo 8 s depois de qualquer entrada em outra hunt, exceto a da Daily. O script joga bola com `{ type:'catch', pendingId, ballId }` só com `catchRouteAuto`;
   respeita `catch-cooldown { leftMs }` e `catch-result.cooldownMs`. `field-init { slug }` define a hunt atual se o
   script não viu o `enter-hunt`. Rota de captura e rota de treino são excludentes (Salvar desliga a outra).
+- Guarda de venda do PokeGrid (v3.13.4): o `index.html` do PokeGrid injeta `SELLGUARD`, que embrulha o `fetch` do
+  painel e abre `window.confirm` ("PokeGrid: voce esta vendendo coisas valiosas") em `POST /api/game/pokemon/sell` com
+  shiny ou qualidade ≥ 1.7 e em `POST /api/game/shop/sell` com item travado (Strange Pheromone, Rare Pokémon Picture e
+  os da engrenagem). O confirm nativo trava a página. O script desliga a guarda SÓ durante os POSTs de venda via
+  `withoutPokeGridSellGuard()` (interruptor oficial `window.__pgSellGuardOn`, restaurado no `finally`); nas vendas
+  do script quem manda são as regras do painel. Marcador de presença: `window.__pgSellGuard`.
 - Nome do personagem: `window.__poke.api['/api/characters/me'].character.name` (mesmo caminho
   que o PokeGrid usa para nomear abas). NÃO usar `.phud-name` — é o Pokémon ativo, não a conta.
 
