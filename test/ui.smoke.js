@@ -45,7 +45,8 @@ setTimeout(() => {
         for (const t of panel.querySelectorAll('.dn-tab')) { t.click(); log('aba ' + t.dataset.tab + ' badge=' + t.querySelector('.b').dataset.state + ' paneVisivel=' + !panel.querySelector('[data-pane=' + t.dataset.tab + ']').hidden); }
         log('bolas=' + $('#pg-dn-balls-status').textContent.trim() + ' | warn0=' + !$('#pg-dn-autobuy-warn').hidden);
         log('venda=' + $('#pg-dn-sell-hunt').textContent.trim() + ' | ' + $('#pg-dn-sell-count').textContent + ' | lista=' + $('#pg-dn-sell-list').textContent.trim());
-        log('psell=' + $('#pg-dn-psell-status').textContent.trim() + ' | campos=' + panel.querySelectorAll('.pg-dn-psell-lim').length + ' btnOff=' + $('#pg-dn-psell-now').disabled);
+        log('psell=' + $('#pg-dn-psell-status').textContent.trim() + ' | campos=' + panel.querySelectorAll('.pg-dn-psell-lim').length + ' | faixa=' + $('#pg-dn-trip-title').textContent + ' / ' + $('#pg-dn-trip-sub').textContent + ' | faixaNaAba=' + ($('#pg-dn-trip').parentElement.dataset.pane) + ' blkAberto=' + [...panel.querySelectorAll('.dn-blk.open')].map(b => b.dataset.blk));
+        $('#pg-dn-blk-pokes').querySelector('h3').click(); log('clicou pokes: aberto=' + [...panel.querySelectorAll('.dn-blk.open')].map(b => b.dataset.blk) + ' ui=' + window.localStorage.getItem('pgDiscordNotifyUi'));
         log('treino level.disabled=' + $('#pg-dn-level').disabled + ' value=' + $('#pg-dn-level').value + ' | ' + $('#pg-dn-route-status').textContent + ' | itens=' + $('#pg-dn-route-list').children.length);
         log('team=' + $('#pg-dn-team').textContent);
         log('daily=' + $('#pg-dn-daily-status').textContent + ' | claimPadrao=' + $('#pg-dn-daily-claim').checked);
@@ -138,9 +139,9 @@ setTimeout(() => {
         log('psell previa=' + $('#pg-dn-psell-status').textContent.trim() + ' | ' + [...$('#pg-dn-psell-list').querySelectorAll('tr')].map(tr => tr.textContent.replace(/\s+/g, ' ').trim()).join(' || ') + ' | btn=' + $('#pg-dn-psell-now').textContent);
         $('#pg-dn-psell').checked = true; fire($('#pg-dn-psell'), 'change'); $('#pg-dn-save').click();
         const cfgP = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
-        log('psell salvo=' + cfgP.pokeSellEnabled + ' limites=' + JSON.stringify(cfgP.pokeSellLimits) + ' faixa=' + cfgP.pokeSellEveryMin + '-' + cfgP.pokeSellEveryMaxMin + ' badge=' + panel.querySelector('.dn-tab[data-tab=venda] .b').dataset.state + ' | next=' + $('#pg-dn-psell-next').textContent);
-        fetchCalls.length = 0; $('#pg-dn-psell-now').click();
-        log('psell vender agora: fetch=' + fetchCalls.filter(c => c.includes('pokemon/sell')).join(' | ').slice(0, 160) + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 60));
+        log('psell salvo=' + cfgP.pokeSellEnabled + ' limites=' + JSON.stringify(cfgP.pokeSellLimits) + ' viagem=' + cfgP.tripEveryMin + '-' + cfgP.tripEveryMaxMin + ' badge=' + panel.querySelector('.dn-tab[data-tab=venda] .b').dataset.state + ' | faixa=' + $('#pg-dn-trip-sub').textContent + ' | sum=' + $('#pg-dn-sum-pokes').textContent);
+        $('#pg-dn-trip-now').click();
+        log('ir agora: msg=' + $('#pg-dn-msg').textContent.slice(0, 80) + ' | faixa=' + $('#pg-dn-trip-title').textContent + ' busy=' + $('#pg-dn-trip').classList.contains('busy'));
         panel.querySelector('.dn-tab[data-tab=bolas]').click(); log('bolas=' + $('#pg-dn-balls-status').textContent.trim());
         panel.querySelector('.dn-tab[data-tab=sistema]').click(); log('socket=' + $('#pg-dn-socket').textContent);
         log('enviados=' + ws.sent.map(x => JSON.parse(x).type).join(','));

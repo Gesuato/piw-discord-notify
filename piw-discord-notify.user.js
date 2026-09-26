@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.14.0
+// @version      3.15.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.14.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.15.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -63,7 +63,9 @@
         dailyClaim: true,       // ...e resgatar a recompensa sozinho (POST /api/game/daily-kill/claim)
         dailyReturnSlug: '',    // hunt fixa para voltar; vazio = etapa da rota, senão a hunt anterior à daily
         tripCity: 'cerulean',   // v3.14.0: cidade da viagem de venda/compra (regra do jogo: nada de venda/compra na hunt)
-        tripMinGapMin: 3,       // intervalo mínimo entre duas viagens à cidade (minutos)
+        tripMinGapMin: 3,       // intervalo mínimo entre duas viagens à cidade (minutos; só para viagens urgentes, ex.: bola zerada)
+        tripEveryMin: 10,       // v3.15.0: relógio ÚNICO das viagens (vendas de itens e Pokémon, compras): mínimo em minutos
+        tripEveryMaxMin: 15,    // máximo; 0 ou <= mínimo = fixo. Sorteado a cada ciclo. Substitui sellEveryMin/pokeSellEveryMin
         reloadEnabled: false,   // recarregar este painel sozinho (igual ao "⟳ Atualizar tudo" do PokeGrid)
         reloadEveryMin: 60,     // intervalo mínimo da recarga (minutos)
         reloadEveryMaxMin: 0,   // intervalo máximo; 0 ou <= mínimo = fixo. Entre os dois é sorteado
@@ -85,6 +87,12 @@
     // Rotas nomeadas (v3.9.0): cfg.route/routeStage são a rota ATIVA e cfg.routes[nome] guarda cada rota com a
     // etapa em que parou (mesmo padrão de sellItems/sellProfiles). Config antiga (só `route`) vira "Rota 1".
     function migrateCfg(cfg) {
+        // v3.15.0: os intervalos separados de venda de itens e de Pokémon viram o relógio único da viagem.
+        if (cfg.tripEveryMin == null) {
+            cfg.tripEveryMin = Math.max(1, Number(cfg.sellEveryMin) || 10);
+            cfg.tripEveryMaxMin = Math.max(0, Number(cfg.sellEveryMaxMin) || 15);
+        }
+        delete cfg.sellEveryMin; delete cfg.sellEveryMaxMin; delete cfg.pokeSellEveryMin; delete cfg.pokeSellEveryMaxMin;
         // Venda de Pokémon (v3.11.x): duas faixas (pokeSellTier/pokeSellIvLow/pokeSellIvHigh) viram um limite por raridade.
         if (!cfg.pokeSellLimits || typeof cfg.pokeSellLimits !== 'object' || Array.isArray(cfg.pokeSellLimits)) cfg.pokeSellLimits = {};
         if ('pokeSellIvLow' in cfg || 'pokeSellIvHigh' in cfg || 'pokeSellTier' in cfg) {
@@ -852,19 +860,7 @@
     let itemsCatalog = null;        // Map id -> item do catálogo
     let sellRunning = false;
     let lastSellAt = 0;
-    let nextSellDelayMs = 0;        // sorteado a cada ciclo dentro de [sellEveryMin, sellEveryMaxMin]
-
-    function sellIntervalRange() {
-        const min = Math.max(1, Number(cfg.sellEveryMin) || 10);
-        const max = Math.max(min, Number(cfg.sellEveryMaxMin) || 0);
-        return { min, max };
-    }
-    function drawSellDelay() {
-        const { min, max } = sellIntervalRange();
-        const minutos = min + Math.random() * (max - min);
-        nextSellDelayMs = Math.round(minutos * 60 * 1000);
-        return nextSellDelayMs;
-    }
+    // Desde a v3.15.0 a venda de itens não tem relógio próprio: vai na viagem à cidade (relógio único, módulo "Viagem").
     let onHuntLootChange = null;    // callback do painel para redesenhar a lista
 
     function loadItemsCatalog() {
@@ -902,22 +898,15 @@
         if (!huntSlug) return;
         const prof = cfg.sellProfiles?.[huntSlug];
         if (!prof) { logEvent('perfil', { slug: huntSlug, salvo: false }); return; }
-        cfg.sellItems = Object.assign({}, prof.items || {});
-        if (prof.everyMin) cfg.sellEveryMin = Math.max(1, Number(prof.everyMin) || 10);
-        cfg.sellEveryMaxMin = Math.max(0, Number(prof.everyMaxMin) || 0);
-        drawSellDelay();
+        cfg.sellItems = Object.assign({}, prof.items || {});   // (everyMin/everyMaxMin dos perfis antigos são ignorados desde a v3.15.0)
         saveCfg(cfg);
-        logEvent('perfil', { slug: huntSlug, salvo: true, itens: Object.keys(cfg.sellItems).length, faixa: [cfg.sellEveryMin, cfg.sellEveryMaxMin] });
+        logEvent('perfil', { slug: huntSlug, salvo: true, itens: Object.keys(cfg.sellItems).length });
     }
 
     function saveHuntProfile() {
         if (!huntSlug) return;
         if (!cfg.sellProfiles || typeof cfg.sellProfiles !== 'object') cfg.sellProfiles = {};
-        cfg.sellProfiles[huntSlug] = {
-            items: Object.assign({}, cfg.sellItems || {}),
-            everyMin: cfg.sellEveryMin,
-            everyMaxMin: cfg.sellEveryMaxMin || 0,
-        };
+        cfg.sellProfiles[huntSlug] = { items: Object.assign({}, cfg.sellItems || {}) };
     }
 
     function setHunt(slug) {
@@ -964,7 +953,6 @@
         if (!wanted.length) return { ok: false, motivo: huntSlug ? 'nenhum item marcado caiu nesta hunt' : 'fora de hunt' };
         sellRunning = true;
         lastSellAt = Date.now();
-        drawSellDelay();
         const who = playerName();
         const conta = who ? `Conta: ${who}\n` : '';
         try {
@@ -1022,15 +1010,6 @@
 
     function huntSlugAtual() { return huntSlug; }
     function sellWantedNow() { return Object.keys(cfg.sellItems || {}).map(Number).filter(id => huntLoot.has(id)); }
-    // Venceu o intervalo: pede a viagem com a lista congelada (a venda em si acontece na cidade).
-    function sellTick() {
-        if (!cfg.sellEnabled) return;
-        if (!nextSellDelayMs) drawSellDelay();
-        if (Date.now() - lastSellAt < nextSellDelayMs) return;
-        const wanted = sellWantedNow();
-        if (!wanted.length) return;
-        tripRequest('itens', { wanted, hunt: huntSlug }, 'intervalo da venda de itens');
-    }
 
     function checkBallStock() {
         if (!ballsEnabled()) return;
@@ -1071,9 +1050,8 @@
     // raridade em `pokeSellLimits[tier.key]`: vende se ivTotal < limite; raridade sem limite (vazio/0) não vende.
     // Nunca vende: no time/líder, inicial, shiny, com cadeado do jogo (o 🔒 de "guardar o avisado" entra aqui),
     // sem valor de venda, sem IV/qualidade na lista, ou capturado nos últimos POKE_SELL_RECENT_MS (dá tempo do
-    // aviso/cadeado da captura acontecer antes). Intervalo (v3.13.0): sorteado em [pokeSellEveryMin, pokeSellEveryMaxMin]
-    // a cada ciclo, contado a partir da carga/ativação e da última venda; vencido, `pokeSellTick` pede a lista ao
-    // jogo e o frame `pokes` que chega faz a venda. Nunca vende com captura esperando detalhes.
+    // aviso/cadeado da captura acontecer antes). Desde a v3.15.0 não há relógio próprio: a venda vai na viagem à
+    // cidade (relógio único do módulo "Viagem"); o frame `pokes` só atualiza a lista e a prévia do painel.
 
     const POKE_SELL_URL = '/api/game/pokemon/sell';
     const POKE_SELL_TICK_MS = 30 * 1000;
@@ -1083,9 +1061,7 @@
     let lastPokesList = [];         // último frame `pokes` (para a prévia do painel e a venda)
     let lastPokesAt = 0;
     let pokeSellRunning = false;
-    let lastPokeSellAt = 0;         // início do ciclo atual (carga/ativação ou última venda)
-    let nextPokeSellDelayMs = 0;    // sorteado a cada ciclo dentro da faixa
-    let lastPokeSellAskAt = 0;      // último pokes-get pedido pelo tique
+    let lastPokeSellAt = 0;         // última venda de Pokémon (só informativo; a recarga restaura)
     const recentCaptureIds = new Map();   // id -> quando chegou o poke-delta
     const pokeSellRejected = new Map();   // id -> motivo que o jogo deu ao recusar (não volta a entrar no lote nesta sessão)
     let pokesFieldsLogged = false;
@@ -1095,27 +1071,6 @@
         if (id == null) return;
         recentCaptureIds.set(String(id), Date.now());
         for (const [k, at] of recentCaptureIds) if (Date.now() - at > POKE_SELL_RECENT_MS) recentCaptureIds.delete(k);
-    }
-    function pokeSellIntervalRange(d) {
-        d = d || cfg;
-        const min = Math.max(1, Number(d.pokeSellEveryMin) || 10);
-        const max = Math.max(min, Number(d.pokeSellEveryMaxMin) || 0);
-        return { min, max };
-    }
-    function drawPokeSellDelay() {
-        const { min, max } = pokeSellIntervalRange();
-        nextPokeSellDelayMs = Math.round((min + Math.random() * (max - min)) * 60 * 1000);
-        return nextPokeSellDelayMs;
-    }
-    // (Re)começa a contagem: na carga, ao ligar/mudar a faixa no Salvar e depois de cada venda.
-    function restartPokeSellCycle() { lastPokeSellAt = Date.now(); drawPokeSellDelay(); }
-    function pokeSellDueAt() { return lastPokeSellAt + (nextPokeSellDelayMs || drawPokeSellDelay()); }
-    function pokeSellDue() { return Date.now() >= pokeSellDueAt(); }
-    function pokeSellStatus() {
-        if (!cfg.pokeSellEnabled) return 'desligada';
-        const ms = pokeSellDueAt() - Date.now();
-        if (ms <= 0) return 'próxima venda na próxima leitura da lista';
-        return `próxima venda em ${Math.max(1, Math.round(ms / 60000))} min (${new Date(pokeSellDueAt()).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })})`;
     }
     function pokeSellLimit(d, tierKey) { return Math.min(IV_MAX, Math.max(0, Number(((d || cfg).pokeSellLimits || {})[tierKey]) || 0)); }
     function pokeSellHasRules(d) { return TIERS.some(t => pokeSellLimit(d, t.key) > 0); }
@@ -1157,7 +1112,7 @@
         const cand = pokeSellCandidates(cfg);
         if (!cand.length) return { ok: false, motivo: 'nenhum Pokémon dentro das regras' };
         pokeSellRunning = true;
-        restartPokeSellCycle();
+        lastPokeSellAt = Date.now();
         const who = playerName();
         const conta = who ? `Conta: ${who}\n` : '';
         let vendidos = [], ganho = 0, gold = null, motivo = null;
@@ -1227,20 +1182,6 @@
             logEvent('pokes-campos', { total: lastPokesList.length, foraDoTime: lastPokesList.filter(p => !p.team).length, chaves: Object.keys(fora), exemplo: { name: fora.name, team: fora.team, starter: fora.starter, shiny: fora.shiny, locked: fora.locked, listed: fora.listed, sellValue: fora.sellValue, ivTotal: fora.ivTotal, quality: fora.quality } });
         }
         if (onPokeSellChange) { try { onPokeSellChange(); } catch { /* painel fechado */ } }
-        if (!cfg.pokeSellEnabled || pokeSellRunning) return;
-        if (!pokeSellDue()) return;
-        if (awaitingDetails.length) return;
-        if (!pokeSellCandidates(cfg).length) { restartPokeSellCycle(); return; } // nada a vender: espera o próximo ciclo
-        tripRequest('pokes', null, 'intervalo da venda de Pokémon');
-    }
-
-    // Tique (30 s): venceu o intervalo -> pede a lista ao jogo (no máximo 1x/min); o frame `pokes` vende.
-    function pokeSellTick() {
-        if (!cfg.pokeSellEnabled || pokeSellRunning || !pokeSellDue()) return;
-        if (Date.now() - lastPokeSellAskAt < 60 * 1000) return;
-        lastPokeSellAskAt = Date.now();
-        lastPokesReqAt = 0;
-        requestPokes(0);
     }
 
     // ---- Rota de captura (aba Profissão): capturar todas as espécies, da hunt de menor nível à maior ----
@@ -1783,12 +1724,43 @@
     let lastTripAt = 0;
     let lastTripInfo = null;        // { at, motivo, tarefas:[{ key, ok, motivo }], volta, seg }
     let tripCityArrived = false;
+    let nextTripDelayMs = 0;        // relógio único (v3.15.0): sorteado em [tripEveryMin, tripEveryMaxMin] a cada ciclo
     let onTripChange = null;        // callback do painel
 
     const tripRnd = (par) => par[0] + Math.floor(Math.random() * (par[1] - par[0] + 1));
     const tripWait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     function tripCity() { const c = normalize(cfg.tripCity || ''); return CITY_SLUGS.includes(c) ? c : 'cerulean'; }
     function tripMinGapMs() { return Math.max(1, Number(cfg.tripMinGapMin) || TRIP_MIN_GAP_DEFAULT_MIN) * 60 * 1000; }
+    function tripIntervalRange(d) {
+        d = d || cfg;
+        const min = Math.max(1, Number(d.tripEveryMin) || 10);
+        const max = Math.max(min, Number(d.tripEveryMaxMin) || 0);
+        return { min, max };
+    }
+    function drawTripDelay() {
+        const { min, max } = tripIntervalRange();
+        nextTripDelayMs = Math.round((min + Math.random() * (max - min)) * 60 * 1000);
+        return nextTripDelayMs;
+    }
+    // (Re)começa o relógio: na carga, ao mudar a faixa no Salvar e depois de cada viagem (ou de um horário sem nada a fazer).
+    function restartTripCycle() { lastTripAt = Date.now(); drawTripDelay(); tripNotify(); }
+    function tripDueAt() { return lastTripAt + (nextTripDelayMs || drawTripDelay()); }
+    // O que a próxima viagem levaria agora (d = cfg ou rascunho do painel): { drops, pokes, bolas:{id,qty,min}|null }.
+    function tripLoad(d) {
+        d = d || cfg;
+        const drops = d.sellEnabled ? Object.keys(d.sellItems || {}).map(Number).filter(id => huntLoot.has(id)).length : 0;
+        const pokes = d.pokeSellEnabled ? pokeSellCandidates(d).length : 0;
+        let bolas = null;
+        if (d.autoBuy) { const id = watchedBallId(); const q = ballQty(id); const min = (Number(d.ballsMin) || 0) > 0 ? Number(d.ballsMin) : 1; if (id != null && q != null && q < min) bolas = { id, qty: q, min }; }
+        return { drops, pokes, bolas, nada: !drops && !pokes && !bolas };
+    }
+    function tripLoadText(l) {
+        const p = [];
+        if (l.drops) p.push(`${l.drops} ${l.drops === 1 ? 'drop' : 'drops'}`);
+        if (l.pokes) p.push(`${l.pokes} Pokémon`);
+        if (l.bolas) p.push(`comprar ${Number(cfg.autoBuyQty) || 100} ${ballName(l.bolas.id)}`);
+        return p.length ? `Vai levar: ${p.join(', ')}` : 'Nada para levar por enquanto';
+    }
     function tripNotify() { if (onTripChange) { try { onTripChange(); } catch { /* painel fechado */ } } }
 
     // Registra uma necessidade; a viagem sai no próximo tique livre.
@@ -1806,13 +1778,26 @@
         if (st?.slug) return st.slug;
         return lastRealHunt || null;
     }
-    function tripStatus() {
-        if (tripRunning) return `viagem em andamento (${tripPhase || '…'})`;
+    const TRIP_PHASE_PCT = { 'indo para a cidade': 15, 'na cidade': 50, 'voltando': 90 };
+    function tripLastText() {
+        if (!lastTripInfo) return '';
+        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas' };
+        return `Última ${new Date(lastTripInfo.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}: ${lastTripInfo.tarefas.map(t => `${nome[t.key] || t.key} ${t.ok ? '✔' : '✖'}`).join(' · ')}`;
+    }
+    // Estado para a faixa do painel: { busy, pct, title, sub }.
+    function tripStatus(d) {
+        if (tripRunning) {
+            const fase = tripPhase || 'indo para a cidade';
+            const titulo = fase === 'indo para a cidade' ? 'Indo à cidade…' : fase === 'na cidade' ? 'Na cidade: vendendo e comprando…' : `Voltando para ${tripReturnSlug() || 'a hunt'}…`;
+            return { busy: true, pct: TRIP_PHASE_PCT[fase] || 30, title: titulo, sub: 'A tela acompanha; espere terminar.' };
+        }
+        const load = tripLoad(d);
         const pend = [...tripNeeds.keys()];
-        const gap = tripMinGapMs() - (Date.now() - lastTripAt);
-        if (pend.length) return `pendente: ${pend.join(', ')}${gap > 0 ? ` · sai em ${Math.max(1, Math.ceil(gap / 60000))} min` : ' · sai no próximo tique'}`;
-        if (lastTripInfo) return `última ${new Date(lastTripInfo.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}: ${lastTripInfo.tarefas.map(t => `${t.key} ${t.ok ? '✔' : '✖'}`).join(', ')} (${lastTripInfo.seg} s)`;
-        return 'nenhuma viagem ainda';
+        const ms = tripDueAt() - Date.now();
+        const hora = new Date(tripDueAt()).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        const title = pend.length ? 'Viagem à cidade sai no próximo minuto' : `Próxima viagem à cidade em ${Math.max(1, Math.ceil(ms / 60000))} min (${hora})`;
+        const sub = tripLoadText(load) + (lastTripInfo ? ` · ${tripLastText()}` : '');
+        return { busy: false, pct: 0, title, sub, load };
     }
 
     // A tela do jogo viaja para a cidade com o mesmo handler que o servidor usa para teleportar (`field-teleport-city`).
@@ -1874,6 +1859,7 @@
             tripRunning = false;
             tripPhase = '';
             lastTripAt = Date.now();
+            drawTripDelay();
             lastTripInfo = { at: lastTripAt, motivo, tarefas: res, volta, seg: Math.round((lastTripAt - t0) / 1000) };
             logEvent('viagem', { fase: 'fim', motivo, tarefas: res, volta, seg: lastTripInfo.seg });
             tripNotify();
@@ -1893,15 +1879,20 @@
         return needs;
     }
 
-    // Tique (30 s): há pedidos, passou o intervalo mínimo e nada crítico em andamento -> uma viagem com tudo.
+    // Tique (30 s), relógio único (v3.15.0): venceu o horário sorteado -> uma viagem com tudo que houver para fazer
+    // (nada a fazer = só sorteia o próximo horário, sem sair da hunt). Pedido urgente (ex.: bola zerada) não espera o
+    // relógio, só o intervalo mínimo entre viagens. Nunca com troca de hunt/líder ou captura em andamento.
     function tripTick() {
-        if (tripRunning || !tripNeeds.size) return;
-        if (Date.now() - lastTripAt < tripMinGapMs()) return;
+        if (tripRunning) return;
         if (huntSwitch || swapPending || awaitingDetails.length) return;
+        const urgente = tripNeeds.size > 0;
+        const venceu = Date.now() >= tripDueAt();
+        if (!urgente && !venceu) return;
+        if (urgente && !venceu && Date.now() - lastTripAt < tripMinGapMs()) return;
         const needs = tripAugment([...tripNeeds.entries()]);
         tripNeeds.clear();
-        tripNotify();
-        return cityTrip(`auto: ${needs.map(([k]) => k).join('+')}`, tripTasksFor(needs));
+        if (!needs.length) { logEvent('viagem-vazia', { motivo: 'nada para levar' }); restartTripCycle(); return; }
+        return cityTrip(`${urgente ? 'urgente' : 'relógio'}: ${needs.map(([k]) => k).join('+')}`, tripTasksFor(needs));
     }
 
     // ---- Recarga automática do painel -------------------------------------
@@ -1970,6 +1961,8 @@
             prevSlug: prevHuntSlug,
             lastSellAt,
             lastPokeSellAt,
+            lastTripAt,
+            nextTripDelayMs,
             ballAlerted: Object.assign({}, ballAlerted),
             autoBuyAttempted: Object.assign({}, autoBuyAttempted),
             levelAlerted: Array.from(levelAlerted),
@@ -2000,6 +1993,7 @@
         if (idade < 0 || idade > RESUME_MAX_AGE_MS) { logEvent('recarga-ignorada', { idadeMin: Math.round(idade / 60000) }); return; }
         if (Number(rec.lastSellAt) > 0) lastSellAt = Number(rec.lastSellAt);
         if (Number(rec.lastPokeSellAt) > 0) lastPokeSellAt = Number(rec.lastPokeSellAt);
+        if (Number(rec.lastTripAt) > 0) { lastTripAt = Number(rec.lastTripAt); nextTripDelayMs = Number(rec.nextTripDelayMs) || 0; }
         Object.assign(ballAlerted, rec.ballAlerted || {});
         Object.assign(autoBuyAttempted, rec.autoBuyAttempted || {});
         for (const id of (Array.isArray(rec.levelAlerted) ? rec.levelAlerted : [])) levelAlerted.add(String(id));
@@ -2388,6 +2382,24 @@
 #pg-dn-panel .dn-inline{display:flex;align-items:center;gap:6px;font-size:13px}
 #pg-dn-panel .dn-route-bar .dn-select{flex:1;min-width:0}
 #pg-dn-panel .dn-toggle--sm{font-size:12px;margin:0 6px 0 0}
+#pg-dn-panel .dn-trip{background:var(--dn-bg-0);border:1px solid var(--dn-border);border-radius:var(--dn-radius);padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+#pg-dn-panel .dn-trip .top{display:flex;align-items:center;gap:10px}
+#pg-dn-panel .dn-trip .ico{font-size:20px;flex:none}
+#pg-dn-panel .dn-trip .txt{flex:1;min-width:0}
+#pg-dn-panel .dn-trip .txt b{display:block;font-size:13px}
+#pg-dn-panel .dn-trip .txt span{color:var(--dn-muted);font-size:12px}
+#pg-dn-panel .dn-trip .bar{height:4px;border-radius:2px;background:var(--dn-bg-3);overflow:hidden}
+#pg-dn-panel .dn-trip .bar i{display:block;height:100%;width:0;background:var(--dn-accent);transition:width .4s}
+#pg-dn-panel .dn-trip.busy .bar i{background:var(--dn-warn)}
+#pg-dn-panel .dn-trip .cfg{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;color:var(--dn-muted)}
+#pg-dn-panel .dn-blk>h3{cursor:pointer;user-select:none}
+#pg-dn-panel .dn-blk>h3 .chev{color:var(--dn-muted);font-size:11px;transition:transform .15s}
+#pg-dn-panel .dn-blk.open>h3 .chev{transform:rotate(90deg)}
+#pg-dn-panel .dn-blk>h3 .sum{color:var(--dn-muted);font-weight:400;font-size:12px}
+#pg-dn-panel .dn-blk>.in{display:none;flex-direction:column;gap:8px}
+#pg-dn-panel .dn-blk.open>.in{display:flex}
+#pg-dn-panel .dn-blk.open>h3 .sum{display:none}
+@media (prefers-reduced-motion:reduce){#pg-dn-panel .dn-trip .bar i,#pg-dn-panel .dn-blk>h3 .chev{transition:none}}
 #pg-dn-panel .dn-tiers{display:grid;grid-template-columns:1fr auto;gap:4px 10px;align-items:center;font-size:12px}
 #pg-dn-panel .dn-chip{display:inline-block;font-size:11px;font-weight:600;padding:1px 8px;border-radius:10px;color:var(--c);border:1px solid color-mix(in srgb,var(--c) 60%,transparent);background:color-mix(in srgb,var(--c) 12%,var(--dn-bg-0))}
 #pg-dn-panel .dn-prev{width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}
@@ -2523,7 +2535,7 @@
         return [
             `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
             `Bolas: ${moduleState('bolas', d) === 'off' ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}`,
-            `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} itens / ${d.sellEveryMin}${d.sellEveryMaxMin > d.sellEveryMin ? `–${d.sellEveryMaxMin}` : ''} min` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades) / ${d.pokeSellEveryMin}${d.pokeSellEveryMaxMin > d.pokeSellEveryMin ? `–${d.pokeSellEveryMaxMin}` : ''} min` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
+            `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades)` : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
             `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? 'daily' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : 'desligada'}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
@@ -2604,48 +2616,40 @@
                     </div>
                 </section>
                 <section class="dn-pane" data-pane="bolas" hidden>
-                    <div class="dn-section">
-                        <h3>Estoque de bolas</h3>
-                        <div class="dn-status" id="pg-dn-balls-status"></div>
-                        <label class="dn-field"><span>Bola</span>
-                            <select id="pg-dn-ball" class="dn-select"><option value="auto">A que estiver em uso (último catch)</option>${Object.entries(BALL_NAMES).map(([id, n]) => `<option value="${id}">${n}</option>`).join('')}</select></label>
-                        <label class="dn-field"><span>Avisar abaixo de</span><input id="pg-dn-ballsmin" class="dn-input" type="number" min="0" step="1" placeholder="0 = desligado"><span class="dn-help">Checa após cada captura e a cada 5 min. Avisa uma vez; rearma ao repor. Vai para o canal de Alertas.</span></label>
+                    <div class="dn-trip" id="pg-dn-trip">
+                        <div class="top"><span class="ico">🏙</span><div class="txt"><b id="pg-dn-trip-title"></b><span id="pg-dn-trip-sub"></span></div><button type="button" class="dn-btn dn-btn--sm" id="pg-dn-trip-now" title="Sai da hunt, vende e compra tudo que estiver pendente no NPC da cidade e volta.">Ir agora</button></div>
+                        <div class="bar"><i id="pg-dn-trip-bar"></i></div>
+                        <div class="cfg">Sai da hunt, vende e compra no NPC, volta. A cada <input id="pg-dn-trip-min" class="dn-input dn-input--sm" type="number" min="1" step="1" aria-label="mínimo"> a <input id="pg-dn-trip-max" class="dn-input dn-input--sm" type="number" min="0" step="1" aria-label="máximo"> min</div>
                     </div>
                     <div class="dn-section">
-                        <h3>Compra automática</h3>
-                        <label class="dn-toggle"><input id="pg-dn-autobuy" type="checkbox"><span class="sw"></span>Comprar automaticamente</label>
-                        <p class="dn-help">Compra na loja do NPC com o gold da conta quando ficar abaixo do limite. A compra acontece numa <b>viagem à cidade</b> (regra do jogo: nada de compra na hunt; ver Sistema).</p>
+                        <h3>Bolas <span class="spacer"></span><label class="dn-toggle"><input id="pg-dn-autobuy" type="checkbox"><span class="sw"></span>Comprar sozinho</label></h3>
+                        <div class="dn-inline">Bola <select id="pg-dn-ball" class="dn-select" style="flex:1;min-width:120px"><option value="auto">A que estiver em uso (último catch)</option>${Object.entries(BALL_NAMES).map(([id, n]) => `<option value="${id}">${n}</option>`).join('')}</select></div>
+                        <div class="dn-inline">Quando ficar abaixo de <input id="pg-dn-ballsmin" class="dn-input dn-input--sm" type="number" min="0" step="1" placeholder="0"> comprar <input id="pg-dn-autobuy-qty" class="dn-input dn-input--sm" type="number" min="1" max="${BUY_MAX_QTY}" step="1" placeholder="100"></div>
+                        <div class="dn-status" id="pg-dn-balls-status"></div>
                         <p class="dn-help warn" id="pg-dn-autobuy-warn" hidden>⚠ Limite 0: compra só quando a bola acabar.</p>
-                        <label class="dn-field"><span>Quantidade por compra</span><input id="pg-dn-autobuy-qty" class="dn-input" type="number" min="1" max="${BUY_MAX_QTY}" step="1" placeholder="100"></label>
-                        <p class="dn-help">Uma tentativa por vez; se faltar gold, avisa e espera repor ou salvar.</p>
+                        <p class="dn-help">Sem "Comprar sozinho", só avisa no Discord quando ficar abaixo do limite (0 = sem aviso). A compra vai na viagem à cidade; bola zerada pede viagem na hora.</p>
                     </div>
                 </section>
                 <section class="dn-pane" data-pane="venda" hidden>
-                    <div class="dn-section">
-                        <h3>Itens: venda automática dos drops</h3>
-                        <label class="dn-toggle"><input id="pg-dn-sell" type="checkbox"><span class="sw"></span>Vender os drops marcados automaticamente</label>
-                        <div class="dn-inline">A cada <input id="pg-dn-sell-min" class="dn-input dn-input--sm" type="number" min="1" step="1"> a <input id="pg-dn-sell-max" class="dn-input dn-input--sm" type="number" min="0" step="1"> min</div>
-                        <p class="dn-help">Sorteado na faixa. Segundo vazio = fixo. Aviso no canal de Alertas. Vencido o intervalo, o script vai à cidade vender no NPC e volta para a hunt (regra do jogo; ver Sistema).</p>
-                        <div class="dn-status" id="pg-dn-sell-hunt"></div>
+                    <div class="dn-section dn-blk" id="pg-dn-blk-itens" data-blk="itens">
+                        <h3><span class="chev">▶</span>Drops da hunt <span class="sum" id="pg-dn-sum-itens"></span><span class="spacer"></span><label class="dn-toggle"><input id="pg-dn-sell" type="checkbox"><span class="sw"></span>Vender sozinho</label></h3>
+                        <div class="in">
+                            <div class="dn-status" id="pg-dn-sell-hunt"></div>
+                            <div class="dn-items" id="pg-dn-sell-list"></div>
+                            <p class="dn-help">Marcado = vendido na viagem. "Manter" = quantidade que fica na mochila. ⚠ = raro, pedra/feromônio ou outra categoria: confira. 🔒 = o jogo não deixa vender. A lista é desta hunt; cada hunt guarda a sua. <span class="dn-badge" id="pg-dn-sell-count"></span></p>
+                        </div>
                     </div>
-                    <div class="dn-section">
-                        <h3>Drops desta hunt <span class="spacer"></span><span class="dn-badge" id="pg-dn-sell-count"></span></h3>
-                        <div class="dn-items" id="pg-dn-sell-list"></div>
-                        <p class="dn-help">Marcado = vendido. ⚠ = raro, pedra/feromônio ou outra categoria: confira. 🔒 = o jogo não deixa vender. "Manter" = quantidade que fica na mochila.</p>
-                        <div class="dn-actions"><button type="button" class="dn-btn" id="pg-dn-sell-now" title="Salva a lista e vende os marcados.">Vender agora</button></div>
-                    </div>
-                    <div class="dn-section">
-                        <h3>Pokémon fora do time <span class="spacer"></span><label class="dn-toggle"><input id="pg-dn-psell" type="checkbox"><span class="sw"></span>Vender sozinho</label></h3>
-                        <p class="dn-help">Nunca vende: no time, inicial, shiny, com cadeado 🔒 ou capturado nos últimos 2 min. Roda a cada leitura do time (5 min e após capturas). Aviso no canal de Alertas. A proteção de venda do PokeGrid não pergunta nas vendas do script: quem manda são os limites abaixo.</p>
+                    <div class="dn-section dn-blk" id="pg-dn-blk-pokes" data-blk="pokes">
+                        <h3><span class="chev">▶</span>Pokémon fora do time <span class="sum" id="pg-dn-sum-pokes"></span><span class="spacer"></span><label class="dn-toggle"><input id="pg-dn-psell" type="checkbox"><span class="sw"></span>Vender sozinho</label></h3>
+                        <div class="in">
+                        <p class="dn-help">Nunca vende: no time, inicial, shiny, com cadeado 🔒, anunciado no mercado ou capturado há menos de 2 min. Vazio = essa raridade não vende. A proteção de venda do PokeGrid não pergunta nas vendas do script.</p>
                         <div class="dn-tiers">${TIERS_ASC.map(t => `<label for="pg-dn-psell-${t.key}"><span class="dn-chip" style="--c:#${t.color.toString(16).padStart(6, '0')}">${t.name}</span></label><span class="dn-inline">poder &lt; <input id="pg-dn-psell-${t.key}" class="dn-input dn-input--sm pg-dn-psell-lim" data-tier="${t.key}" type="number" min="0" max="${IV_MAX}" step="1" placeholder="—"></span>`).join('')}</div>
-                        <p class="dn-help">Poder = 0 a ${IV_MAX}. Vazio = essa raridade não vende. A venda acontece numa viagem à cidade (regra do jogo).</p>
-                        <div class="dn-inline">Vender a cada <input id="pg-dn-psell-min" class="dn-input dn-input--sm" type="number" min="1" step="1"> a <input id="pg-dn-psell-max" class="dn-input dn-input--sm" type="number" min="0" step="1"> min <span class="dn-hint">(sorteado na faixa; segundo vazio = fixo)</span></div>
-                        <div class="dn-status"><span>⏱</span><span id="pg-dn-psell-next"></span></div>
+                        <p class="dn-help">Poder = 0 a ${IV_MAX}.</p>
                         <div class="dn-status col">
-                            <div class="dn-inline"><b id="pg-dn-psell-status"></b><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm r" id="pg-dn-psell-refresh" title="Pede a lista de Pokémon ao jogo.">Atualizar lista</button></div>
+                            <div class="dn-inline"><b id="pg-dn-psell-status"></b><span class="k">prévia</span><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm r" id="pg-dn-psell-refresh" title="Pede a lista de Pokémon ao jogo.">Atualizar lista</button></div>
                             <table class="dn-prev" aria-label="Prévia da venda"><thead><tr><th>Pokémon</th><th>Raridade</th><th class="n">Poder</th><th>Decisão</th></tr></thead><tbody id="pg-dn-psell-list"></tbody></table>
                         </div>
-                        <div class="dn-actions"><button type="button" class="dn-btn" id="pg-dn-psell-now" title="Salva os limites e vende os que estão dentro das regras agora.">Vender agora</button></div>
+                        </div>
                     </div>
                 </section>
                 <section class="dn-pane" data-pane="treino" hidden>
@@ -2724,12 +2728,10 @@
                         <div class="dn-actions"><button type="button" class="dn-btn" id="pg-dn-reload-now" title="Guarda a hunt e volta.">Recarregar agora</button></div>
                     </div>
                     <div class="dn-section">
-                        <h3>Viagem à cidade (vendas e compras)</h3>
-                        <p class="dn-help">Regra do jogo: não se vende nem compra durante a hunt. Quando uma venda de itens, venda de Pokémon ou compra de bolas vence, o script sai da hunt, vai à cidade, faz tudo que estiver pendente com pausas e volta para a hunt. A tela acompanha.</p>
+                        <h3>Viagem à cidade</h3>
+                        <p class="dn-help">Regra do jogo: não se vende nem compra durante a hunt. As viagens são configuradas na faixa das abas Compras e Venda; aqui só a cidade e o histórico.</p>
                         <label class="dn-field"><span>Cidade</span><select id="pg-dn-trip-city" class="dn-select">${['cerulean', 'pewter', 'viridian', 'goldenrod'].map(c => `<option value="${c}">${c[0].toUpperCase()}${c.slice(1)}</option>`).join('')}</select></label>
-                        <div class="dn-inline">Intervalo mínimo entre viagens <input id="pg-dn-trip-gap" class="dn-input dn-input--sm" type="number" min="1" step="1"> min</div>
                         <div class="dn-status"><span>🏙</span><span id="pg-dn-trip-status"></span></div>
-                        <div class="dn-actions"><button type="button" class="dn-btn" id="pg-dn-trip-now" title="Faz agora tudo que estiver pendente (itens marcados, Pokémon dentro das regras, bolas abaixo do limite).">Ir à cidade agora</button></div>
                     </div>
                     <div class="dn-section">
                         <h3>Ferramentas</h3>
@@ -2767,9 +2769,25 @@
             if (!TABS.some(t => t.id === name)) name = 'avisos';
             for (const t of panel.querySelectorAll('.dn-tab')) t.setAttribute('aria-selected', String(t.dataset.tab === name));
             for (const p of panel.querySelectorAll('.dn-pane')) p.hidden = p.dataset.pane !== name;
+            if (name === 'bolas' || name === 'venda') { // a faixa da viagem é um elemento só: vai para a aba ativa
+                const pane = panel.querySelector(`.dn-pane[data-pane="${name}"]`);
+                const trip = $('#pg-dn-trip');
+                if (trip && pane.firstElementChild !== trip) pane.insertBefore(trip, pane.firstElementChild);
+            }
             saveUi({ tab: name });
         }
         for (const t of panel.querySelectorAll('.dn-tab')) t.onclick = () => showTab(t.dataset.tab);
+        // blocos recolhíveis da aba Venda: um aberto por vez (lembra qual em pgDiscordNotifyUi)
+        function openBlk(which) {
+            for (const b of panel.querySelectorAll('.dn-blk')) b.classList.toggle('open', b.dataset.blk === which);
+            saveUi({ vendaOpen: which || '' });
+        }
+        for (const h of panel.querySelectorAll('.dn-blk > h3')) h.addEventListener('click', (e) => {
+            if (e.target.closest('label, input, button')) return;
+            const blk = h.parentElement;
+            openBlk(blk.classList.contains('open') ? '' : blk.dataset.blk);
+        });
+        openBlk(loadUi().vendaOpen != null ? loadUi().vendaOpen : 'itens');
 
         // ---- rodapé: mensagens por tipo e indicador de não salvo ----
         function renderDirty() {
@@ -2854,15 +2872,12 @@
                 cooldownSeconds: Math.max(0, parseInt($('#pg-dn-cooldown').value, 10) || 0),
                 debug: $('#pg-dn-debug').checked,
                 sellEnabled: $('#pg-dn-sell').checked,
-                sellEveryMin: Math.max(1, parseInt($('#pg-dn-sell-min').value, 10) || 10),
-                sellEveryMaxMin: Math.max(0, parseInt($('#pg-dn-sell-max').value, 10) || 0),
                 sellItems: readSellList(),
                 pokeSellEnabled: $('#pg-dn-psell').checked,
-                pokeSellEveryMin: Math.max(1, parseInt($('#pg-dn-psell-min').value, 10) || 10),
-                pokeSellEveryMaxMin: Math.max(0, parseInt($('#pg-dn-psell-max').value, 10) || 0),
+                tripEveryMin: Math.max(1, parseInt($('#pg-dn-trip-min').value, 10) || 10),
+                tripEveryMaxMin: Math.max(0, parseInt($('#pg-dn-trip-max').value, 10) || 0),
                 pokeSellLimits: Object.fromEntries([...panel.querySelectorAll('.pg-dn-psell-lim')].map(i => [i.dataset.tier, Math.min(IV_MAX, Math.max(0, parseInt(i.value, 10) || 0))]).filter(([, v]) => v > 0)),
                 tripCity: $('#pg-dn-trip-city').value || 'cerulean',
-                tripMinGapMin: Math.max(1, parseInt($('#pg-dn-trip-gap').value, 10) || 3),
                 reloadEnabled: $('#pg-dn-reload').checked,
                 reloadEveryMin: Math.max(1, parseInt($('#pg-dn-reload-min').value, 10) || 60),
                 reloadEveryMaxMin: Math.max(0, parseInt($('#pg-dn-reload-max').value, 10) || 0),
@@ -2934,13 +2949,8 @@
             const box = $('#pg-dn-sell-list');
             const info = $('#pg-dn-sell-hunt');
             sel = sel || cfg.sellItems || {};
-            let proxima = '';
-            if (cfg.sellEnabled) {
-                if (!lastSellAt || !nextSellDelayMs) proxima = 'próxima venda na próxima checagem';
-                else proxima = `próxima venda em ${Math.max(0, Math.round((lastSellAt + nextSellDelayMs - Date.now()) / 60000))} min`;
-            }
             info.innerHTML = huntSlug
-                ? `<span>💰</span><span><span class="k">Hunt:</span> ${escHtml(huntSlug)} · ${hasHuntProfile() ? 'perfil salvo' : 'sem perfil (Salvar cria)'}</span>${proxima ? `<span class="k r">${proxima}</span>` : ''}`
+                ? `<span>💰</span><span><span class="k">Hunt:</span> ${escHtml(huntSlug)} · ${hasHuntProfile() ? 'perfil salvo' : 'sem perfil (Salvar cria)'}</span>`
                 : '<span>💰</span><span class="k">Fora de hunt. Entre numa hunt e cace: os drops aparecem aqui.</span>';
             const ids = [...huntLoot.keys()];
             if (!ids.length) {
@@ -2972,45 +2982,32 @@
             const b = $('#pg-dn-sell-count');
             b.textContent = n ? `${n} marcados` : 'nenhum marcado';
             b.dataset.state = n ? 'on' : ($('#pg-dn-sell').checked ? 'warn' : '');
+            $('#pg-dn-sum-itens').textContent = `· ${n ? `${n} marcados` : 'nenhum marcado'}${huntSlug ? ` · ${huntSlug}` : ''}${$('#pg-dn-sell').checked ? '' : ' · desligado'}`;
         }
         // Drop novo chega com o painel aberto: redesenha sem perder o que o usuário marcou e ainda não salvou.
         onHuntLootChange = () => { if (!panel.hidden) renderSellList(dirty ? readSellList() : null); };
         // Pokémon fora do time: prévia com as regras da tela (o que seria vendido agora)
         function renderPokeSell() {
             const d = current();
-            const st = $('#pg-dn-psell-status'), ls = $('#pg-dn-psell-list'), btn = $('#pg-dn-psell-now');
-            $('#pg-dn-psell-next').textContent = cfg.pokeSellEnabled ? `Venda automática: ${pokeSellStatus()}` : 'Venda automática desligada (o "Vender agora" continua funcionando).';
-            if (!lastPokesList.length) { st.textContent = 'Lista de Pokémon ainda não lida.'; ls.innerHTML = ''; btn.textContent = 'Vender agora'; btn.disabled = true; return; }
+            const st = $('#pg-dn-psell-status'), ls = $('#pg-dn-psell-list');
+            const nLim = TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length;
+            const sum = $('#pg-dn-sum-pokes');
+            if (!lastPokesList.length) { st.textContent = 'Lista de Pokémon ainda não lida.'; ls.innerHTML = ''; sum.textContent = `· ${nLim} raridades com limite${d.pokeSellEnabled ? '' : ' · desligado'}`; return; }
             const fora = lastPokesList.filter(p => !p.team && !p.leader);
             const linhas = fora.map(p => ({ p, motivo: pokeSellReason(p, d), t: qualityTier(Number(p.quality)) }))
                 .sort((a, b) => (a.motivo ? 1 : 0) - (b.motivo ? 1 : 0) || (b.t?.rank ?? -1) - (a.t?.rank ?? -1));
             const cand = linhas.filter(l => !l.motivo);
             const gold = cand.reduce((s, l) => s + (Number(l.p.sellValue) || 0), 0);
             st.textContent = `${fora.length} fora do time · ${cand.length} ${d.pokeSellEnabled ? 'serão vendidos' : 'dentro das regras (desligado)'}${gold ? ` · ~${fmtNum(gold)} gold` : ''}`;
+            sum.textContent = `· ${nLim} raridades com limite · ${cand.length} ${cand.length === 1 ? 'seria vendido' : 'seriam vendidos'}${d.pokeSellEnabled ? '' : ' · desligado'}`;
             ls.innerHTML = linhas.slice(0, 40).map(l => `<tr class="${l.motivo ? 'keep' : 'sell'}"><td>${escHtml(l.p.name || '?')} <span class="k">lv${Number(l.p.level) || 0}</span></td><td style="color:#${(l.t?.color ?? 0x9aa4b2).toString(16).padStart(6, '0')}">${l.t ? l.t.name : '?'}</td><td class="n">${Number.isFinite(Number(l.p.ivTotal)) ? Number(l.p.ivTotal) : '?'}</td><td class="why">${l.motivo ? escHtml(l.motivo) : '✔ vende'}</td></tr>`).join('')
                 + (linhas.length > 40 ? `<tr class="keep"><td colspan="4">… e mais ${linhas.length - 40}</td></tr>` : '');
-            btn.textContent = cand.length ? `Vender ${cand.length} agora` : 'Vender agora';
-            btn.disabled = !cand.length;
         }
         onPokeSellChange = () => { if (!panel.hidden) renderPokeSell(); };
         $('#pg-dn-psell-refresh').onclick = () => {
             lastPokesReqAt = 0;
             const ok = sendGame({ type: 'pokes-get' });
             flash(ok ? '📥 Pedi a lista de Pokémon ao jogo…' : '✖ Sem socket do jogo ainda. Recarregue o painel.', ok ? 'info' : 'error', 3000);
-        };
-        $('#pg-dn-psell-now').onclick = () => {
-            const { draft } = readForm();
-            cfg.pokeSellLimits = draft.pokeSellLimits;
-            saveCfg(cfg);
-            const n = pokeSellCandidates(cfg).length;
-            if (!n) { flash('⚠ Nenhum Pokémon dentro das regras agora.', 'warn'); return; }
-            flash(`⏳ Limites salvos. Indo à cidade vender ${n} Pokémon…`, 'info', 90000);
-            cityTrip('manual: pokes', tripTasksFor([['pokes', {}]])).then(res => {
-                const r = res.tarefas?.[0]?.r || { motivo: res.tarefas?.[0]?.motivo || res.motivo };
-                if (r.vendidos) flash(`✔ Vendeu ${r.vendidos} Pokémon · +${fmtNum(r.ganho)} gold${r.motivo ? ` (${r.motivo})` : ''}${res.volta ? ` · voltando para ${res.volta}` : ''}`, r.ok ? 'ok' : 'warn', 8000);
-                else flash(`✖ Não vendeu: ${r.motivo}`, 'error');
-                renderPokeSell();
-            });
         };
 
         // ---- Treino ----
@@ -3270,22 +3267,32 @@
 
         // ---- Viagem à cidade ----
         function renderTrip() {
-            $('#pg-dn-trip-status').textContent = `Viagens: ${tripStatus()}`;
-            $('#pg-dn-trip-now').disabled = tripRunning;
+            const s = tripStatus(current());
+            const box = $('#pg-dn-trip');
+            box.classList.toggle('busy', s.busy);
+            $('#pg-dn-trip-title').textContent = s.title;
+            $('#pg-dn-trip-sub').textContent = s.sub;
+            $('#pg-dn-trip-bar').style.width = `${s.pct}%`;
+            $('#pg-dn-trip-now').disabled = s.busy;
+            $('#pg-dn-trip-status').textContent = tripRunning ? s.title : (lastTripInfo ? tripLastText() : 'Nenhuma viagem ainda.');
         }
         onTripChange = () => { if (!panel.hidden) { renderTrip(); renderSellList(dirty ? readSellList() : null); renderPokeSell(); } };
+        // "Ir agora": salva o que está na tela (a viagem usa as regras salvas) e leva tudo que houver.
         $('#pg-dn-trip-now').onclick = () => {
-            const needs = [];
-            const wanted = sellWantedNow();
-            if (cfg.sellEnabled && wanted.length) needs.push(['itens', { dados: { wanted, hunt: huntSlug } }]);
-            if (cfg.pokeSellEnabled && pokeSellCandidates(cfg).length) needs.push(['pokes', {}]);
-            const bid = watchedBallId(), bq = ballQty(bid);
-            if (cfg.autoBuy && bid != null && bq != null && bq < effectiveBallsMin()) needs.push(['bolas', { dados: { id: bid, qty: bq, min: effectiveBallsMin() } }]);
-            if (!needs.length) { flash('⚠ Nada pendente: nenhum item marcado nesta hunt, nenhum Pokémon nas regras e bolas acima do limite.', 'warn'); return; }
-            flash(`🏙 Indo à cidade: ${needs.map(n => n[0]).join(', ')}…`, 'info', 90000);
+            if (dirty) $('#pg-dn-save').click();
+            const needs = tripAugment([]);
+            if (!needs.length) { flash('⚠ Nada para levar: nenhum drop marcado nesta hunt, nenhum Pokémon nas regras e bolas acima do limite.', 'warn'); return; }
+            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas' };
+            flash(`🏙 Indo à cidade: ${needs.map(n => nome[n[0]]).join(', ')}…`, 'info', 90000);
             tripNeeds.clear();
             cityTrip('manual: ' + needs.map(n => n[0]).join('+'), tripTasksFor(needs)).then(r => {
-                flash(`${r.ok ? '✔' : '⚠'} Viagem: ${r.tarefas.map(t => `${t.key} ${t.ok ? '✔' : `✖ ${t.motivo || ''}`}`).join(' · ')}${r.volta ? ` · voltando para ${r.volta}` : ''}`, r.ok ? 'ok' : 'warn', 10000);
+                const linha = r.tarefas.map(t => {
+                    const x = t.r || {};
+                    if (t.key === 'itens') return `drops ${t.ok ? `✔ ${x.total ?? ''} por ${fmtNum(x.ganho || 0)} gold` : `✖ ${t.motivo || ''}`}`;
+                    if (t.key === 'pokes') return `Pokémon ${t.ok ? `✔ ${x.vendidos ?? ''} por ${fmtNum(x.ganho || 0)} gold` : `✖ ${t.motivo || ''}`}`;
+                    return `bolas ${t.ok ? `✔ ${x.bought ?? ''}` : `✖ ${t.motivo || ''}`}`;
+                }).join(' · ');
+                flash(`${r.ok ? '✔' : '⚠'} Viagem: ${linha}${r.volta ? ` · voltando para ${r.volta}` : ''}`, r.ok ? 'ok' : 'warn', 12000);
             });
         };
 
@@ -3327,11 +3334,10 @@
             $('#pg-dn-autobuy').checked = Boolean(cfg.autoBuy);
             $('#pg-dn-autobuy-qty').value = cfg.autoBuyQty || 100;
             $('#pg-dn-sell').checked = Boolean(cfg.sellEnabled);
-            $('#pg-dn-sell-min').value = cfg.sellEveryMin || 10;
-            $('#pg-dn-sell-max').value = cfg.sellEveryMaxMin || '';
+
             $('#pg-dn-psell').checked = Boolean(cfg.pokeSellEnabled);
-            $('#pg-dn-psell-min').value = cfg.pokeSellEveryMin || 10;
-            $('#pg-dn-psell-max').value = cfg.pokeSellEveryMaxMin || '';
+            $('#pg-dn-trip-min').value = cfg.tripEveryMin || 10;
+            $('#pg-dn-trip-max').value = cfg.tripEveryMaxMin || '';
             for (const i of panel.querySelectorAll('.pg-dn-psell-lim')) i.value = pokeSellLimit(cfg, i.dataset.tier) || '';
             loadItemsCatalog().then(() => { if (!panel.hidden) renderSellList(dirty ? readSellList() : null); });
             renderSellList();
@@ -3352,7 +3358,6 @@
             $('#pg-dn-daily-claim').checked = cfg.dailyClaim !== false;
             $('#pg-dn-daily-return').value = cfg.dailyReturnSlug || '';
             $('#pg-dn-trip-city').value = ['cerulean', 'pewter', 'viridian', 'goldenrod'].includes(cfg.tripCity) ? cfg.tripCity : 'cerulean';
-            $('#pg-dn-trip-gap').value = cfg.tripMinGapMin || 3;
             $('#pg-dn-reload').checked = Boolean(cfg.reloadEnabled);
             $('#pg-dn-reload-min').value = cfg.reloadEveryMin || 60;
             $('#pg-dn-reload-max').value = cfg.reloadEveryMaxMin || '';
@@ -3401,7 +3406,7 @@
             const recargaAntes = JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]);
             const dailyAntes = JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug]);
             const capturaAntes = JSON.stringify([cfg.catchRouteEnabled, cfg.catchRouteAreas, cfg.catchRouteMaxLevel]);
-            const pokeSellAntes = JSON.stringify([cfg.pokeSellEnabled, cfg.pokeSellEveryMin, cfg.pokeSellEveryMaxMin]);
+            const viagemAntes = JSON.stringify([cfg.tripEveryMin, cfg.tripEveryMaxMin]);
             const ligouCaptura = draft.catchRouteEnabled && !cfg.catchRouteEnabled;
             const ligouRota = draft.routeEnabled && !cfg.routeEnabled;
             Object.assign(cfg, draft);
@@ -3418,8 +3423,7 @@
             for (const k of Object.keys(ballAlerted)) delete ballAlerted[k]; // limite mudou: rearma
             for (const k of Object.keys(autoBuyAttempted)) delete autoBuyAttempted[k];
             requestBalls(0);
-            drawSellDelay(); // faixa mudou: sorteia de novo
-            if (JSON.stringify([cfg.pokeSellEnabled, cfg.pokeSellEveryMin, cfg.pokeSellEveryMaxMin]) !== pokeSellAntes) restartPokeSellCycle(); // venda de Pokémon: conta de novo a partir de agora
+            if (JSON.stringify([cfg.tripEveryMin, cfg.tripEveryMaxMin]) !== viagemAntes) restartTripCycle(); // faixa da viagem mudou: sorteia de novo
             saveHuntProfile();
             if (JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]) !== recargaAntes) scheduleReload(); // faixa mudou: sorteia de novo
             if (JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug]) !== dailyAntes) scheduleDailyCheck(500); // daily mudou: lê a missão já
@@ -3534,7 +3538,7 @@
             saveCfg(cfg);
             for (const k of Object.keys(ballAlerted)) delete ballAlerted[k];
             for (const k of Object.keys(autoBuyAttempted)) delete autoBuyAttempted[k];
-            drawSellDelay();
+            restartTripCycle();
             scheduleReload();
             loadHuntProfile();
             dirty = false;
@@ -3542,20 +3546,6 @@
             flash('✔ Config importada e salva.', 'ok', 4000);
         };
 
-        $('#pg-dn-sell-now').onclick = () => {
-            cfg.sellItems = readSellList();
-            saveHuntProfile();
-            saveCfg(cfg);
-            const wanted = sellWantedNow();
-            if (!wanted.length) { flash(huntSlug ? '⚠ Nenhum item marcado caiu nesta hunt.' : '⚠ Fora de hunt: nada para vender.', 'warn'); return; }
-            flash('⏳ Lista salva. Indo à cidade vender…', 'info', 90000);
-            cityTrip('manual: itens', tripTasksFor([['itens', { dados: { wanted, hunt: huntSlug } }]])).then(r => {
-                const t = r.tarefas?.[0];
-                if (t?.ok) flash(`✔ Vendeu ${t.r?.total ?? ''} itens · +${fmtNum(t.r?.ganho || 0)} gold${r.volta ? ` · voltando para ${r.volta}` : ''}`, 'ok', 8000);
-                else flash(`✖ Não vendeu: ${t?.motivo || r.motivo}`, 'error');
-                renderSellList(dirty ? readSellList() : null);
-            });
-        };
 
         renderState();
     }
@@ -3565,13 +3555,11 @@
     buildUI();
     setInterval(() => requestBalls(0), BALLS_POLL_MS);
     setInterval(() => requestPokes(0), POKES_POLL_MS);
-    setInterval(sellTick, SELL_CHECK_MS);
     setInterval(reloadTick, RELOAD_CHECK_MS);
     setInterval(dailyTick, DAILY_CHECK_MS);
     setInterval(catchTick, CATCH_TICK_MS);
-    setInterval(pokeSellTick, POKE_SELL_TICK_MS);
     setInterval(tripTick, TRIP_TICK_MS);
-    if (cfg.pokeSellEnabled && !lastPokeSellAt) restartPokeSellCycle(); // 1ª venda só depois de um intervalo inteiro (a recarga restaura o ciclo)
+    if (!lastTripAt) restartTripCycle(); // 1ª viagem só depois de um intervalo inteiro (a recarga restaura o relógio)
     if (cfg.catchRouteEnabled) setTimeout(() => startCatchRoute('carga'), 8000); // depois do socket/retomada da recarga
     if (cfg.dailyEnabled) scheduleDailyCheck(5000); // lê a missão do dia logo na carga (REST, não depende do socket)
 
@@ -3584,7 +3572,8 @@
         '| rota:', routeActive() ? routeStatus() : 'não',
         '| captura:', cfg.catchRouteEnabled ? `${catchAreas().join('+')}${cfg.catchRouteMaxLevel ? ` até lv ${cfg.catchRouteMaxLevel}` : ''}${cfg.catchRouteAuto ? ' + bola' : ''}` : 'não',
         '| daily:', cfg.dailyEnabled ? `volta para ${dailyReturnTarget() || 'a hunt anterior'}${cfg.dailyClaim ? ' + resgate' : ''}` : 'não',
-        '| venda pokes:', cfg.pokeSellEnabled ? `${TIERS_ASC.filter(t => pokeSellLimit(cfg, t.key) > 0).map(t => `${t.name}<${pokeSellLimit(cfg, t.key)}`).join(' ') || 'sem limites'} / ${cfg.pokeSellEveryMin}${cfg.pokeSellEveryMaxMin > cfg.pokeSellEveryMin ? `–${cfg.pokeSellEveryMaxMin}` : ''} min` : 'não',
-        '| venda auto:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens / ${cfg.sellEveryMin}${cfg.sellEveryMaxMin > cfg.sellEveryMin ? `–${cfg.sellEveryMaxMin}` : ''} min` : 'não',
+        '| venda pokes:', cfg.pokeSellEnabled ? TIERS_ASC.filter(t => pokeSellLimit(cfg, t.key) > 0).map(t => `${t.name}<${pokeSellLimit(cfg, t.key)}`).join(' ') || 'sem limites' : 'não',
+        '| venda drops:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens` : 'não',
+        '| viagem à cidade:', `${cfg.tripCity} a cada ${cfg.tripEveryMin}${cfg.tripEveryMaxMin > cfg.tripEveryMin ? `–${cfg.tripEveryMaxMin}` : ''} min`,
         '| recarga auto:', cfg.reloadEnabled ? `${cfg.reloadEveryMin}${cfg.reloadEveryMaxMin > cfg.reloadEveryMin ? `–${cfg.reloadEveryMaxMin}` : ''} min` : 'não');
 })();

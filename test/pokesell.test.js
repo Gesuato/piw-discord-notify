@@ -46,50 +46,18 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         assert(api.pokeSellLimit({ pokeSellLimits: { common: 999 } }, 'common') === 192, 'limite corta em 192');
     }
 
-    // 3) frame pokes com a venda ligada: vende os candidatos, avisa, respeita o intervalo sorteado (10–15 min)
+    // 3) frame pokes só atualiza a lista e a prévia (desde a v3.15.0 a venda vai na viagem à cidade); a venda em si funciona
     {
-        const cfg = { pokeSellEnabled: true, pokeSellLimits: REGRAS, pokeSellEveryMin: 10, pokeSellEveryMaxMin: 15 };
-        const { api, state, clock } = loadPokeSellModule(cfg, { api: okApi() });
-        const r = api.pokeSellIntervalRange();
-        assert(r.min === 10 && r.max === 15, 'faixa 10–15');
-        for (let i = 0; i < 30; i++) { const ms = api.drawPokeSellDelay(); assert(ms >= 10 * 60000 && ms <= 15 * 60000, 'sorteio fora da faixa: ' + ms); }
-        api.restartPokeSellCycle();
+        const cfg = { pokeSellEnabled: true, pokeSellLimits: REGRAS };
+        const { api, state } = loadPokeSellModule(cfg, { api: okApi() });
         api.pokeSellOnPokes(LISTA);
-        await flush();
-        assert(state.calls.length === 0 && /próxima venda em 1[0-5] min/.test(api.pokeSellStatus()), 'ciclo recém-iniciado não vende: ' + api.pokeSellStatus());
-        api.pokeSellTick();
-        assert(state.pokesReqs === 0, 'tique antes da hora não pede a lista');
-        clock.now += 15 * 60000 + 1000;
-        api.pokeSellTick();
-        assert(state.pokesReqs === 1 && /próxima leitura/.test(api.pokeSellStatus()), 'vencido: tique pede a lista');
-        api.pokeSellTick();
-        assert(state.pokesReqs === 1, 'não repete o pedido dentro de 1 min');
-        api.pokeSellOnPokes(LISTA);
-        assert(state.calls.length === 0 && state.trips.length === 1 && state.trips[0].key === 'pokes', 'vencido: pede a viagem em vez de vender na hunt');
+        assert(state.calls.length === 0 && !state.trips && api.lastPokesList.length === LISTA.length, 'frame pokes: nem vende nem pede viagem');
         await api.runPokeSellCycle(true);                      // a viagem executa na cidade
         assert(state.calls.length === 1 && state.calls[0].url.endsWith('/pokemon/sell') && state.calls[0].body.pokeIds.join(',') === 'c40,e99,l90', 'POST com os 3 ids: ' + JSON.stringify(state.calls));
         assert(state.hooks.length === 1 && /vendeu \*\*3 Pokémon\*\* por 300 gold/.test(state.hooks[0].content), 'aviso: ' + state.hooks[0].content);
         assert(/Rattata lv5 Common 40\/192/.test(state.hooks[0].desc) && /Gold agora: 9000/.test(state.hooks[0].desc), 'embed lista os vendidos: ' + state.hooks[0].desc);
-        assert(state.pokesReqs === 2, 'pede a lista nova');
+        assert(state.pokesReqs === 1, 'pede a lista nova');
         assert(api.lastPokesList.length === LISTA.length - 3, 'vendidos saem da lista local');
-        assert(api.lastPokeSellAt === clock.now, 'ciclo recomeça na venda');
-        api.pokeSellOnPokes(LISTA);
-        assert(state.trips.length === 1, 'dentro do intervalo não pede viagem de novo');
-        clock.now += 9 * 60000;
-        api.pokeSellOnPokes(LISTA);
-        assert(state.trips.length === 1, '9 min: ainda não');
-        clock.now += 6 * 60000 + 1000;
-        api.pokeSellOnPokes(LISTA);
-        assert(state.trips.length === 2, 'passado o intervalo pede viagem de novo');
-    }
-    // 3b) faixa fixa (máximo vazio) e mínimo inválido; sem candidatos o ciclo recomeça sem vender
-    {
-        const cfg = { pokeSellEnabled: true, pokeSellLimits: { mythic: 5 }, pokeSellEveryMin: 0, pokeSellEveryMaxMin: 0 };
-        const { api, state, clock } = loadPokeSellModule(cfg, { api: okApi() });
-        assert(api.pokeSellIntervalRange().min === 10 && api.pokeSellIntervalRange().max === 10, 'padrão 10 fixo');
-        api.pokeSellOnPokes(LISTA);
-        await flush();
-        assert(state.calls.length === 0 && api.lastPokeSellAt === clock.now, 'sem candidatos: não vende e recomeça o ciclo');
     }
 
     // 4) desligada: só guarda a lista; manual vende mesmo desligada
@@ -111,9 +79,8 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         assert(api.pokeSellReason(LISTA.find(p => p.id === 'c40'), cfg) === 'capturado agora', 'recém-capturado protegido');
         clock.now += 3 * 60 * 1000;
         assert(api.pokeSellReason(LISTA.find(p => p.id === 'c40'), cfg) === null, 'depois de 2 min volta a valer a regra');
-        state.awaiting.push({});
         api.pokeSellOnPokes(LISTA);
-        assert(!state.trips, 'captura aguardando detalhes: nem pede viagem');
+        state.awaiting.push({});
         const r = await api.runPokeSellCycle(true);
         assert(!r.ok && /aguardando/.test(r.motivo), 'manual também espera');
     }

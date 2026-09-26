@@ -83,6 +83,8 @@ function loadReloadModule(cfg, init) {
         sellRunning: Boolean(init.sellRunning),
         lastSellAt: init.lastSellAt || 0,
         lastPokeSellAt: init.lastPokeSellAt || 0,
+        lastTripAt: 0,
+        nextTripDelayMs: 0,
         tripRunning: false,
         huntSwitch: null,
         swapPending: null,
@@ -260,7 +262,6 @@ function loadPokeSellModule(cfg, init) {
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
             pokeSellReason, pokeSellCandidates, runPokeSellCycle, pokeSellOnPokes, noteRecentCapture, pokeSellLimit, pokeSellHasRules, pokeLabel,
-            pokeSellIntervalRange, drawPokeSellDelay, restartPokeSellCycle, pokeSellDue, pokeSellStatus, pokeSellTick,
             get lastPokesList() { return lastPokesList; },
             get lastPokeSellAt() { return lastPokeSellAt; },
         };`);
@@ -339,7 +340,9 @@ function loadTripModule(cfg, init) {
         lastSocket: { dispatchEvent: (ev) => { state.nudges.push(JSON.parse(ev.data)); if (state.onTeleport) state.onTeleport(); return true; } },
         MessageEvent: class { constructor(type, i) { this.type = type; this.data = i.data; } },
         sellWantedNow: () => init.wantedNow || [],
+        huntLoot: new Map((init.wantedNow || []).map(id => [id, { name: 'x', qty: 1 }])),
         pokeSellCandidates: () => init.pokeCands || [],
+        ballName: (id) => ({ 1: 'Poke Ball', 4: 'Ultra Ball' }[id] || `Ball ${id}`),
         watchedBallId: () => (init.ballId != null ? init.ballId : null),
         ballQty: () => (init.ballQty != null ? init.ballQty : null),
         effectiveBallsMin: () => init.ballsMin || 0,
@@ -352,6 +355,8 @@ function loadTripModule(cfg, init) {
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
             tripRequest, tripTick, cityTrip, tripTasksFor, tripStatus, tripReturnSlug, tripOnSetCity, tripCity,
+            tripIntervalRange, drawTripDelay, restartTripCycle, tripDueAt, tripLoad, tripLoadText,
+            get lastTripAt() { return lastTripAt; },
             setHunt(slug) { huntSlug = slug; },
             get tripRunning() { return tripRunning; },
             get tripNeeds() { return tripNeeds; },
