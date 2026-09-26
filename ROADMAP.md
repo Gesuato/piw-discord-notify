@@ -409,6 +409,29 @@ sem esses campos o script só confia em `team`/`shiny`/IV.
 
 ---
 
+## ✅ 19. Viagem à cidade para vender e comprar (regra nova do jogo, v3.14.0)
+
+**Por quê:** anúncio do jogo em 26/09/2026: não é mais permitido comprar/vender itens no NPC Mark, vender Pokémon,
+usar o Mercado Global nem o Depot durante a hunt. Até a v3.13.6 o script fazia tudo isso por REST de dentro da hunt.
+
+**O que faz:** toda venda de itens, venda de Pokémon e compra de bolas vira uma viagem: `leave-hunt` + `field-teleport-city`
+sintético no socket (a tela viaja para a cidade e manda `set-city` sozinha; sem `set-city` em 10 s o script manda),
+pausa "andar até o NPC" (4–9 s), tarefas em sequência com 2–5 s entre elas, pausa (3–8 s) e volta por
+`switchHunt(slug, 1, 'viagem')` (`enter-hunt` + `hunt-resume` sintético). Quem pede a viagem: `sellTick` (lista de itens
+congelada na hunt, porque `huntLoot` zera ao sair), `pokeSellOnPokes` e `checkBallStock`; os pedidos acumulam em
+`tripNeeds` e `tripTick` (30 s) faz UMA viagem com tudo, levando de carona quem já tem o que fazer (`tripAugment`).
+Intervalo mínimo entre viagens `tripMinGapMin` (3). Sem hunt para voltar (já na cidade), só faz as tarefas. Durante a
+viagem a rota de captura não reassume a hunt e a recarga espera.
+
+**Config/UI:** `tripCity` (cerulean/pewter/viridian/goldenrod), `tripMinGapMin`; seção "Viagem à cidade" na aba
+Sistema com status (pendentes, próxima, última) e "Ir à cidade agora"; os botões "Vender agora" das abas viram viagem.
+Levantamento de chamadas por aba em `docs/chamadas-por-aba.md`. Teste: `node test/trip.test.js`.
+
+**Pendências:** confirmar ao vivo que o servidor aceita as vendas/compras depois do `set-city` (o log `viagem` diz
+se a tela viajou); Mercado Global entre jogadores (anunciar itens) segue fora do escopo.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

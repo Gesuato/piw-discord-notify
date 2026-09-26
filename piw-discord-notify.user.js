@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.13.6
+// @version      3.14.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.13.6';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.14.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -62,6 +62,8 @@
         dailyEnabled: false,    // Daily Kill: ao bater a meta da missão do dia, voltar para a hunt de antes
         dailyClaim: true,       // ...e resgatar a recompensa sozinho (POST /api/game/daily-kill/claim)
         dailyReturnSlug: '',    // hunt fixa para voltar; vazio = etapa da rota, senão a hunt anterior à daily
+        tripCity: 'cerulean',   // v3.14.0: cidade da viagem de venda/compra (regra do jogo: nada de venda/compra na hunt)
+        tripMinGapMin: 3,       // intervalo mínimo entre duas viagens à cidade (minutos)
         reloadEnabled: false,   // recarregar este painel sozinho (igual ao "⟳ Atualizar tudo" do PokeGrid)
         reloadEveryMin: 60,     // intervalo mínimo da recarga (minutos)
         reloadEveryMaxMin: 0,   // intervalo máximo; 0 ou <= mínimo = fixo. Entre os dois é sorteado
@@ -569,7 +571,7 @@
     function switchHunt(slug, tentativa, origem) {
         origem = origem || 'rota';
         if (huntSwitch?.timer) clearTimeout(huntSwitch.timer);
-        if (origem !== 'recarga') sendGame({ type: 'leave-hunt' });
+        if (origem !== 'recarga' && origem !== 'viagem') sendGame({ type: 'leave-hunt' }); // recarga/viagem: a conta já está na cidade
         huntSwitch = { slug, at: 0, tries: tentativa, timer: null, origem };
         huntSwitch.timer = setTimeout(() => {
             if (!huntSwitch || huntSwitch.slug !== slug) return;
@@ -600,6 +602,7 @@
             rota: { verbo: 'entrar na', quando: 'rota', titulo: `Rota: entrada em ${slug} não confirmou`, dica: 'Confira o nome da hunt (é o mesmo que aparece em "Hunt atual") e entre na mão; a rota continua da etapa atual.' },
             painel: { verbo: 'entrar na', quando: 'botão do painel', titulo: `Painel: entrada em ${slug} não confirmou`, dica: 'Confira o nome da hunt da etapa e entre na mão.' },
             captura: { verbo: 'entrar na', quando: 'rota de captura', titulo: `Rota de captura: entrada em ${slug} não confirmou`, dica: 'Essa hunt foi pulada nesta sessão; a rota segue para a próxima espécie.' },
+            viagem: { verbo: 'voltar para a', quando: 'depois da viagem à cidade', titulo: `Viagem: volta para ${slug} não confirmou`, dica: 'A conta deve estar na cidade: entre na hunt na mão.' },
         }[origem] || { verbo: 'entrar na', quando: origem, titulo: `Entrada em ${slug} não confirmou`, dica: 'Entre na hunt na mão.' };
         postWebhook(origem === 'rota' ? 'level' : 'alert', {
             content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: não consegui ${t.verbo} hunt **${slug}** (${t.quando})`,
@@ -821,6 +824,7 @@
             }, { evento: 'compra-falhou', ballId: id, qty });
         }
         requestBalls(1000); // confirma o estoque novo
+        return { ok: r.bought > 0 && r.ok, motivo: r.motivo, bought: r.bought, gold: r.gold };
     }
 
     // ---- Venda automática de drops da hunt atual ------------------------
@@ -934,7 +938,7 @@
         try { m = JSON.parse(data); } catch { return; }
         if (m?.type === 'enter-hunt') setHunt(m.slug);
         else if (m?.type === 'leave-hunt') setHunt(null);
-        else if (m?.type === 'set-city') armResume(RESUME_AFTER_CITY_MS); // SPA montou na cidade: hora de voltar pra hunt
+        else if (m?.type === 'set-city') { tripOnSetCity(); armResume(RESUME_AFTER_CITY_MS); } // SPA na cidade: viagem chegou / hora de voltar pra hunt
     }
 
     function handleFieldKill(message) {
@@ -951,10 +955,12 @@
     }
 
     // Vende o excedente dos itens marcados que caem na hunt atual. `manual` ignora sellEnabled.
-    async function runSellCycle(manual) {
+    // `wantedIds`/`huntName` (v3.14.0): a viagem congela a lista na hunt, porque na cidade `huntSlug` é null e `huntLoot` zera.
+    async function runSellCycle(manual, wantedIds, huntName) {
         if (sellRunning) return { ok: false, motivo: 'venda já em andamento' };
         if (!manual && !cfg.sellEnabled) return { ok: false, motivo: 'desligada' };
-        const wanted = Object.keys(cfg.sellItems || {}).map(Number).filter(id => huntLoot.has(id));
+        const huntSlug = huntName || huntSlugAtual();
+        const wanted = Array.isArray(wantedIds) ? wantedIds.map(Number) : sellWantedNow();
         if (!wanted.length) return { ok: false, motivo: huntSlug ? 'nenhum item marcado caiu nesta hunt' : 'fora de hunt' };
         sellRunning = true;
         lastSellAt = Date.now();
@@ -1014,11 +1020,16 @@
         }
     }
 
+    function huntSlugAtual() { return huntSlug; }
+    function sellWantedNow() { return Object.keys(cfg.sellItems || {}).map(Number).filter(id => huntLoot.has(id)); }
+    // Venceu o intervalo: pede a viagem com a lista congelada (a venda em si acontece na cidade).
     function sellTick() {
         if (!cfg.sellEnabled) return;
         if (!nextSellDelayMs) drawSellDelay();
         if (Date.now() - lastSellAt < nextSellDelayMs) return;
-        runSellCycle(false);
+        const wanted = sellWantedNow();
+        if (!wanted.length) return;
+        tripRequest('itens', { wanted, hunt: huntSlug }, 'intervalo da venda de itens');
     }
 
     function checkBallStock() {
@@ -1032,7 +1043,7 @@
         if (cfg.autoBuy) {
             if (autoBuyAttempted[id]) return;   // uma tentativa por episódio
             autoBuyAttempted[id] = true;
-            autoBuyBalls(id, qty, min);
+            tripRequest('bolas', { id, qty, min }, `${ballName(id)} com ${qty}`);
             return;
         }
         if (ballAlerted[id]) return;            // já avisado; espera repor
@@ -1220,7 +1231,7 @@
         if (!pokeSellDue()) return;
         if (awaitingDetails.length) return;
         if (!pokeSellCandidates(cfg).length) { restartPokeSellCycle(); return; } // nada a vender: espera o próximo ciclo
-        runPokeSellCycle(false);
+        tripRequest('pokes', null, 'intervalo da venda de Pokémon');
     }
 
     // Tique (30 s): venceu o intervalo -> pede a lista ao jogo (no máximo 1x/min); o frame `pokes` vende.
@@ -1527,7 +1538,7 @@
     // CATCH_REENTER_MS (chamado por setHunt). Para caçar na mão, desligue a rota. Exceção: a hunt da Daily Kill.
     function catchOnHuntChange(slug) {
         clearTimeout(catchReenterTimer); catchReenterTimer = null;
-        if (!catchRouteActive() || !catchTarget || !huntCatalog) return;
+        if (!catchRouteActive() || !catchTarget || !huntCatalog || tripRunning) return;
         const h = normalize(slug || '');
         if (!h || CITY_SLUGS.includes(h) || h === catchTarget.slug) return;
         if (dailyEnabled() && dailyOnHunt()) return;
@@ -1544,7 +1555,7 @@
     function catchTick() {
         if (!catchRouteActive()) return;
         if (!huntCatalog) { startCatchRoute('tique'); return; }
-        if (!catchTarget || huntSwitch || catchBusy || catchReenterTimer) return;
+        if (!catchTarget || huntSwitch || catchBusy || catchReenterTimer || tripRunning) return;
         const h = normalize(huntSlug || '');
         if (h === catchTarget.slug) return;
         if (dailyEnabled() && dailyOnHunt()) return;
@@ -1743,6 +1754,156 @@
         }, { evento: 'daily-pronta', missao: d.name, volta: volta ? dest : null });
     }
 
+    // ---- Viagem à cidade: vender e comprar no NPC FORA da hunt (regra do jogo) ----------
+    // Anúncio do jogo (26/09/2026, colado pelo usuário): não é mais permitido comprar/vender itens no NPC Mark,
+    // vender Pokémon, usar o Mercado Global nem o Depot DURANTE a hunt. Toda venda/compra do script passa a ser
+    // uma viagem: sair da hunt, ir à cidade (padrão Cerulean, onde ficam o Mark e o Mercado), fazer as tarefas
+    // com pausas humanas e voltar à hunt.
+    //   ida   : `leave-hunt` + `field-teleport-city` sintético no socket (o cliente viaja para Cerulean e manda
+    //           `set-city` sozinho, encerrando a hunt no servidor; se não vier em TRIP_CITY_WAIT_MS, mandamos o
+    //           `set-city` nós mesmos); espera "andar até o NPC".
+    //   tarefas: venda de itens (lista congelada na hora do pedido, porque `huntLoot` zera ao sair da hunt), venda
+    //           de Pokémon e compra de bolas — as mesmas funções de antes, só que executadas na cidade.
+    //   volta : switchHunt(slug, 1, 'viagem') → `enter-hunt` + `hunt-resume` sintético (a tela acompanha).
+    // Quem PEDE viagem: sellTick, pokeSellOnPokes, checkBallStock e os botões do painel. Os pedidos acumulam em
+    // `tripNeeds`; `tripTick` (30 s) faz UMA viagem com tudo que estiver pendente, respeitando `tripMinGapMin`
+    // entre viagens e sem troca de hunt/líder ou captura em andamento. Durante a viagem, rota de captura e recarga
+    // não trocam de hunt. Sem hunt para voltar (conta já na cidade), só faz as tarefas.
+
+    const TRIP_TICK_MS = 30 * 1000;
+    const TRIP_CITY_WAIT_MS = 10 * 1000;    // espera pelo set-city do cliente depois do teleporte
+    const TRIP_WALK_MS = [4000, 9000];      // "andar até o NPC"
+    const TRIP_BETWEEN_MS = [2000, 5000];   // entre tarefas
+    const TRIP_BEFORE_BACK_MS = [3000, 8000];
+    const TRIP_MIN_GAP_DEFAULT_MIN = 3;
+
+    let tripRunning = false;
+    let tripPhase = '';
+    const tripNeeds = new Map();    // tarefa -> { dados, motivo, at }
+    let lastTripAt = 0;
+    let lastTripInfo = null;        // { at, motivo, tarefas:[{ key, ok, motivo }], volta, seg }
+    let tripCityArrived = false;
+    let onTripChange = null;        // callback do painel
+
+    const tripRnd = (par) => par[0] + Math.floor(Math.random() * (par[1] - par[0] + 1));
+    const tripWait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    function tripCity() { const c = normalize(cfg.tripCity || ''); return CITY_SLUGS.includes(c) ? c : 'cerulean'; }
+    function tripMinGapMs() { return Math.max(1, Number(cfg.tripMinGapMin) || TRIP_MIN_GAP_DEFAULT_MIN) * 60 * 1000; }
+    function tripNotify() { if (onTripChange) { try { onTripChange(); } catch { /* painel fechado */ } } }
+
+    // Registra uma necessidade; a viagem sai no próximo tique livre.
+    function tripRequest(key, dados, motivo) {
+        const novo = !tripNeeds.has(key);
+        tripNeeds.set(key, { dados: dados || null, motivo: motivo || '', at: tripNeeds.get(key)?.at || Date.now() });
+        if (novo) logEvent('viagem-pedida', { tarefa: key, motivo: motivo || '' });
+        tripNotify();
+    }
+    function tripReturnSlug() {
+        const h = normalize(huntSlug || '');
+        if (h && !CITY_SLUGS.includes(h)) return h;
+        if (catchRouteActive() && catchTarget) return catchTarget.slug;
+        const st = routeStep();
+        if (st?.slug) return st.slug;
+        return lastRealHunt || null;
+    }
+    function tripStatus() {
+        if (tripRunning) return `viagem em andamento (${tripPhase || '…'})`;
+        const pend = [...tripNeeds.keys()];
+        const gap = tripMinGapMs() - (Date.now() - lastTripAt);
+        if (pend.length) return `pendente: ${pend.join(', ')}${gap > 0 ? ` · sai em ${Math.max(1, Math.ceil(gap / 60000))} min` : ' · sai no próximo tique'}`;
+        if (lastTripInfo) return `última ${new Date(lastTripInfo.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}: ${lastTripInfo.tarefas.map(t => `${t.key} ${t.ok ? '✔' : '✖'}`).join(', ')} (${lastTripInfo.seg} s)`;
+        return 'nenhuma viagem ainda';
+    }
+
+    // A tela do jogo viaja para a cidade com o mesmo handler que o servidor usa para teleportar (`field-teleport-city`).
+    function nudgeClientToCity() {
+        try {
+            if (!lastSocket || typeof lastSocket.dispatchEvent !== 'function' || typeof MessageEvent !== 'function') return false;
+            lastSocket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'field-teleport-city', synthetic: true }) }));
+            return true;
+        } catch (err) { logEvent('viagem-tela-erro', { erro: String(err?.message || err) }); return false; }
+    }
+    function tripOnSetCity() { tripCityArrived = true; }
+
+    // Monta as tarefas a partir das necessidades registradas.
+    function tripTasksFor(needs) {
+        const tarefas = [];
+        for (const [key, n] of needs) {
+            if (key === 'itens') tarefas.push({ key, run: () => runSellCycle(true, n.dados?.wanted, n.dados?.hunt) });
+            else if (key === 'pokes') tarefas.push({ key, run: () => runPokeSellCycle(true) });
+            else if (key === 'bolas' && n.dados) tarefas.push({ key, run: () => autoBuyBalls(n.dados.id, n.dados.qty, n.dados.min) });
+        }
+        return tarefas;
+    }
+
+    async function cityTrip(motivo, tarefas) {
+        if (tripRunning) return { ok: false, motivo: 'viagem em andamento' };
+        if (!tarefas.length) return { ok: false, motivo: 'nada a fazer' };
+        tripRunning = true;
+        const t0 = Date.now();
+        const volta = tripReturnSlug();
+        const emHunt = Boolean(normalize(huntSlug || '')) && !CITY_SLUGS.includes(normalize(huntSlug || ''));
+        const res = [];
+        tripNotify();
+        try {
+            tripPhase = 'indo para a cidade';
+            tripCityArrived = false;
+            let tela = null;
+            if (emHunt) {
+                sendGame({ type: 'leave-hunt' });
+                tela = nudgeClientToCity();
+                const limite = Date.now() + TRIP_CITY_WAIT_MS;
+                while (!tripCityArrived && Date.now() < limite) await tripWait(500);
+                if (!tripCityArrived) sendGame({ type: 'set-city', slug: tripCity() }); // a tela não viajou: avisa o servidor nós mesmos
+            }
+            logEvent('viagem', { fase: 'cidade', motivo, cidade: tripCity(), estavaEmHunt: emHunt, pelaTela: tripCityArrived, tela, volta, tarefas: tarefas.map(t => t.key) });
+            tripPhase = 'na cidade';
+            tripNotify();
+            await tripWait(tripRnd(TRIP_WALK_MS));
+            for (const t of tarefas) {
+                let r;
+                try { r = await t.run(); } catch (err) { r = { ok: false, motivo: String(err?.message || err) }; }
+                res.push({ key: t.key, ok: Boolean(r?.ok), motivo: r?.motivo || null, r });
+                await tripWait(tripRnd(TRIP_BETWEEN_MS));
+            }
+            tripPhase = 'voltando';
+            tripNotify();
+            await tripWait(tripRnd(TRIP_BEFORE_BACK_MS));
+            if (volta) switchHunt(volta, 1, 'viagem');
+        } finally {
+            tripRunning = false;
+            tripPhase = '';
+            lastTripAt = Date.now();
+            lastTripInfo = { at: lastTripAt, motivo, tarefas: res, volta, seg: Math.round((lastTripAt - t0) / 1000) };
+            logEvent('viagem', { fase: 'fim', motivo, tarefas: res, volta, seg: lastTripInfo.seg });
+            tripNotify();
+        }
+        return { ok: res.length > 0 && res.every(r => r.ok), tarefas: res, volta };
+    }
+
+    // Aproveita a viagem: quem já tem o que fazer vai junto ("carona"), mesmo sem ter vencido o próprio intervalo.
+    function tripAugment(needs) {
+        const has = (k) => needs.some(([key]) => key === k);
+        if (!has('itens') && cfg.sellEnabled) { const wanted = sellWantedNow(); if (wanted.length) needs.push(['itens', { dados: { wanted, hunt: huntSlug }, motivo: 'carona' }]); }
+        if (!has('pokes') && cfg.pokeSellEnabled && pokeSellCandidates(cfg).length) needs.push(['pokes', { dados: null, motivo: 'carona' }]);
+        if (!has('bolas') && cfg.autoBuy) {
+            const id = watchedBallId(), q = ballQty(id), min = effectiveBallsMin();
+            if (id != null && q != null && q < min) needs.push(['bolas', { dados: { id, qty: q, min }, motivo: 'carona' }]);
+        }
+        return needs;
+    }
+
+    // Tique (30 s): há pedidos, passou o intervalo mínimo e nada crítico em andamento -> uma viagem com tudo.
+    function tripTick() {
+        if (tripRunning || !tripNeeds.size) return;
+        if (Date.now() - lastTripAt < tripMinGapMs()) return;
+        if (huntSwitch || swapPending || awaitingDetails.length) return;
+        const needs = tripAugment([...tripNeeds.entries()]);
+        tripNeeds.clear();
+        tripNotify();
+        return cityTrip(`auto: ${needs.map(([k]) => k).join('+')}`, tripTasksFor(needs));
+    }
+
     // ---- Recarga automática do painel -------------------------------------
     // Faz o que o botão "⟳ Atualizar tudo" do PokeGrid faz (reload do webview), mas só neste painel e em
     // intervalo sorteado dentro de [reloadEveryMin, reloadEveryMaxMin] minutos. O PokeGrid injeta o script
@@ -1763,7 +1924,7 @@
     const RESUME_MAX_AGE_MS = 5 * 60 * 1000;
     const RESUME_AFTER_CITY_MS = 3000;
     const RESUME_AFTER_SOCKET_MS = 12000;
-    const CITY_SLUGS = ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp'];
+    const CITY_SLUGS = ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping']; // lista `o4` do bundle (26/09/2026)
 
     let nextReloadAt = 0;           // quando recarregar (ms); 0 = ainda não sorteado
     let reloadDueSince = 0;         // desde quando a recarga está adiada por algo em andamento
@@ -1788,6 +1949,7 @@
     }
     function reloadBusyReason() {
         if (sellRunning) return 'venda em andamento';
+        if (tripRunning) return 'viagem à cidade em andamento';
         if (huntSwitch) return 'troca de hunt em andamento';
         if (swapPending) return 'troca de líder em andamento';
         if (awaitingDetails.length) return 'captura aguardando detalhes';
@@ -2452,7 +2614,7 @@
                     <div class="dn-section">
                         <h3>Compra automática</h3>
                         <label class="dn-toggle"><input id="pg-dn-autobuy" type="checkbox"><span class="sw"></span>Comprar automaticamente</label>
-                        <p class="dn-help">Compra na loja do NPC com o gold da conta quando ficar abaixo do limite.</p>
+                        <p class="dn-help">Compra na loja do NPC com o gold da conta quando ficar abaixo do limite. A compra acontece numa <b>viagem à cidade</b> (regra do jogo: nada de compra na hunt; ver Sistema).</p>
                         <p class="dn-help warn" id="pg-dn-autobuy-warn" hidden>⚠ Limite 0: compra só quando a bola acabar.</p>
                         <label class="dn-field"><span>Quantidade por compra</span><input id="pg-dn-autobuy-qty" class="dn-input" type="number" min="1" max="${BUY_MAX_QTY}" step="1" placeholder="100"></label>
                         <p class="dn-help">Uma tentativa por vez; se faltar gold, avisa e espera repor ou salvar.</p>
@@ -2463,7 +2625,7 @@
                         <h3>Itens: venda automática dos drops</h3>
                         <label class="dn-toggle"><input id="pg-dn-sell" type="checkbox"><span class="sw"></span>Vender os drops marcados automaticamente</label>
                         <div class="dn-inline">A cada <input id="pg-dn-sell-min" class="dn-input dn-input--sm" type="number" min="1" step="1"> a <input id="pg-dn-sell-max" class="dn-input dn-input--sm" type="number" min="0" step="1"> min</div>
-                        <p class="dn-help">Sorteado na faixa. Segundo vazio = fixo. Aviso no canal de Alertas.</p>
+                        <p class="dn-help">Sorteado na faixa. Segundo vazio = fixo. Aviso no canal de Alertas. Vencido o intervalo, o script vai à cidade vender no NPC e volta para a hunt (regra do jogo; ver Sistema).</p>
                         <div class="dn-status" id="pg-dn-sell-hunt"></div>
                     </div>
                     <div class="dn-section">
@@ -2476,7 +2638,7 @@
                         <h3>Pokémon fora do time <span class="spacer"></span><label class="dn-toggle"><input id="pg-dn-psell" type="checkbox"><span class="sw"></span>Vender sozinho</label></h3>
                         <p class="dn-help">Nunca vende: no time, inicial, shiny, com cadeado 🔒 ou capturado nos últimos 2 min. Roda a cada leitura do time (5 min e após capturas). Aviso no canal de Alertas. A proteção de venda do PokeGrid não pergunta nas vendas do script: quem manda são os limites abaixo.</p>
                         <div class="dn-tiers">${TIERS_ASC.map(t => `<label for="pg-dn-psell-${t.key}"><span class="dn-chip" style="--c:#${t.color.toString(16).padStart(6, '0')}">${t.name}</span></label><span class="dn-inline">poder &lt; <input id="pg-dn-psell-${t.key}" class="dn-input dn-input--sm pg-dn-psell-lim" data-tier="${t.key}" type="number" min="0" max="${IV_MAX}" step="1" placeholder="—"></span>`).join('')}</div>
-                        <p class="dn-help">Poder = 0 a ${IV_MAX}. Vazio = essa raridade não vende.</p>
+                        <p class="dn-help">Poder = 0 a ${IV_MAX}. Vazio = essa raridade não vende. A venda acontece numa viagem à cidade (regra do jogo).</p>
                         <div class="dn-inline">Vender a cada <input id="pg-dn-psell-min" class="dn-input dn-input--sm" type="number" min="1" step="1"> a <input id="pg-dn-psell-max" class="dn-input dn-input--sm" type="number" min="0" step="1"> min <span class="dn-hint">(sorteado na faixa; segundo vazio = fixo)</span></div>
                         <div class="dn-status"><span>⏱</span><span id="pg-dn-psell-next"></span></div>
                         <div class="dn-status col">
@@ -2560,6 +2722,14 @@
                         <p class="dn-help">Guarda a hunt e volta pra ela após recarregar. Espera venda, troca e captura terminarem. <span title="O mesmo que o ⟳ Atualizar tudo do PokeGrid, só neste painel. A tela pode seguir mostrando a cidade enquanto o servidor farma. Cada painel sorteia o próprio horário." style="cursor:help">ⓘ</span></p>
                         <div class="dn-status"><span>⟳</span><span id="pg-dn-reload-status"></span></div>
                         <div class="dn-actions"><button type="button" class="dn-btn" id="pg-dn-reload-now" title="Guarda a hunt e volta.">Recarregar agora</button></div>
+                    </div>
+                    <div class="dn-section">
+                        <h3>Viagem à cidade (vendas e compras)</h3>
+                        <p class="dn-help">Regra do jogo: não se vende nem compra durante a hunt. Quando uma venda de itens, venda de Pokémon ou compra de bolas vence, o script sai da hunt, vai à cidade, faz tudo que estiver pendente com pausas e volta para a hunt. A tela acompanha.</p>
+                        <label class="dn-field"><span>Cidade</span><select id="pg-dn-trip-city" class="dn-select">${['cerulean', 'pewter', 'viridian', 'goldenrod'].map(c => `<option value="${c}">${c[0].toUpperCase()}${c.slice(1)}</option>`).join('')}</select></label>
+                        <div class="dn-inline">Intervalo mínimo entre viagens <input id="pg-dn-trip-gap" class="dn-input dn-input--sm" type="number" min="1" step="1"> min</div>
+                        <div class="dn-status"><span>🏙</span><span id="pg-dn-trip-status"></span></div>
+                        <div class="dn-actions"><button type="button" class="dn-btn" id="pg-dn-trip-now" title="Faz agora tudo que estiver pendente (itens marcados, Pokémon dentro das regras, bolas abaixo do limite).">Ir à cidade agora</button></div>
                     </div>
                     <div class="dn-section">
                         <h3>Ferramentas</h3>
@@ -2691,6 +2861,8 @@
                 pokeSellEveryMin: Math.max(1, parseInt($('#pg-dn-psell-min').value, 10) || 10),
                 pokeSellEveryMaxMin: Math.max(0, parseInt($('#pg-dn-psell-max').value, 10) || 0),
                 pokeSellLimits: Object.fromEntries([...panel.querySelectorAll('.pg-dn-psell-lim')].map(i => [i.dataset.tier, Math.min(IV_MAX, Math.max(0, parseInt(i.value, 10) || 0))]).filter(([, v]) => v > 0)),
+                tripCity: $('#pg-dn-trip-city').value || 'cerulean',
+                tripMinGapMin: Math.max(1, parseInt($('#pg-dn-trip-gap').value, 10) || 3),
                 reloadEnabled: $('#pg-dn-reload').checked,
                 reloadEveryMin: Math.max(1, parseInt($('#pg-dn-reload-min').value, 10) || 60),
                 reloadEveryMaxMin: Math.max(0, parseInt($('#pg-dn-reload-max').value, 10) || 0),
@@ -2832,9 +3004,10 @@
             saveCfg(cfg);
             const n = pokeSellCandidates(cfg).length;
             if (!n) { flash('⚠ Nenhum Pokémon dentro das regras agora.', 'warn'); return; }
-            flash(`⏳ Limites salvos. Vendendo ${n} Pokémon…`, 'info', 30000);
-            runPokeSellCycle(true).then(r => {
-                if (r.vendidos) flash(`✔ Vendeu ${r.vendidos} Pokémon · +${fmtNum(r.ganho)} gold${r.motivo ? ` (${r.motivo})` : ''}`, r.ok ? 'ok' : 'warn', 6000);
+            flash(`⏳ Limites salvos. Indo à cidade vender ${n} Pokémon…`, 'info', 90000);
+            cityTrip('manual: pokes', tripTasksFor([['pokes', {}]])).then(res => {
+                const r = res.tarefas?.[0]?.r || { motivo: res.tarefas?.[0]?.motivo || res.motivo };
+                if (r.vendidos) flash(`✔ Vendeu ${r.vendidos} Pokémon · +${fmtNum(r.ganho)} gold${r.motivo ? ` (${r.motivo})` : ''}${res.volta ? ` · voltando para ${res.volta}` : ''}`, r.ok ? 'ok' : 'warn', 8000);
                 else flash(`✖ Não vendeu: ${r.motivo}`, 'error');
                 renderPokeSell();
             });
@@ -3095,6 +3268,27 @@
                 .then(() => { if (cfg.catchRouteEnabled && huntCatalog) catchNext('atualizou'); renderCatch(); });
         };
 
+        // ---- Viagem à cidade ----
+        function renderTrip() {
+            $('#pg-dn-trip-status').textContent = `Viagens: ${tripStatus()}`;
+            $('#pg-dn-trip-now').disabled = tripRunning;
+        }
+        onTripChange = () => { if (!panel.hidden) { renderTrip(); renderSellList(dirty ? readSellList() : null); renderPokeSell(); } };
+        $('#pg-dn-trip-now').onclick = () => {
+            const needs = [];
+            const wanted = sellWantedNow();
+            if (cfg.sellEnabled && wanted.length) needs.push(['itens', { dados: { wanted, hunt: huntSlug } }]);
+            if (cfg.pokeSellEnabled && pokeSellCandidates(cfg).length) needs.push(['pokes', {}]);
+            const bid = watchedBallId(), bq = ballQty(bid);
+            if (cfg.autoBuy && bid != null && bq != null && bq < effectiveBallsMin()) needs.push(['bolas', { dados: { id: bid, qty: bq, min: effectiveBallsMin() } }]);
+            if (!needs.length) { flash('⚠ Nada pendente: nenhum item marcado nesta hunt, nenhum Pokémon nas regras e bolas acima do limite.', 'warn'); return; }
+            flash(`🏙 Indo à cidade: ${needs.map(n => n[0]).join(', ')}…`, 'info', 90000);
+            tripNeeds.clear();
+            cityTrip('manual: ' + needs.map(n => n[0]).join('+'), tripTasksFor(needs)).then(r => {
+                flash(`${r.ok ? '✔' : '⚠'} Viagem: ${r.tarefas.map(t => `${t.key} ${t.ok ? '✔' : `✖ ${t.motivo || ''}`}`).join(' · ')}${r.volta ? ` · voltando para ${r.volta}` : ''}`, r.ok ? 'ok' : 'warn', 10000);
+            });
+        };
+
         // ---- Sistema ----
         function renderReload() {
             $('#pg-dn-reload-status').textContent = cfg.reloadEnabled ? `Recarga ${reloadStatus()}` : 'Recarga desligada';
@@ -3110,7 +3304,7 @@
 
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderCatch(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderCatch(); renderTrip(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -3157,6 +3351,8 @@
             $('#pg-dn-daily').checked = Boolean(cfg.dailyEnabled);
             $('#pg-dn-daily-claim').checked = cfg.dailyClaim !== false;
             $('#pg-dn-daily-return').value = cfg.dailyReturnSlug || '';
+            $('#pg-dn-trip-city').value = ['cerulean', 'pewter', 'viridian', 'goldenrod'].includes(cfg.tripCity) ? cfg.tripCity : 'cerulean';
+            $('#pg-dn-trip-gap').value = cfg.tripMinGapMin || 3;
             $('#pg-dn-reload').checked = Boolean(cfg.reloadEnabled);
             $('#pg-dn-reload-min').value = cfg.reloadEveryMin || 60;
             $('#pg-dn-reload-max').value = cfg.reloadEveryMaxMin || '';
@@ -3350,10 +3546,13 @@
             cfg.sellItems = readSellList();
             saveHuntProfile();
             saveCfg(cfg);
-            flash('⏳ Lista salva. Vendendo…', 'info', 30000);
-            runSellCycle(true).then(r => {
-                if (r.ok) flash(`✔ Vendeu ${r.total} itens · +${fmtNum(r.ganho)} gold`, 'ok', 6000);
-                else flash(`✖ Não vendeu: ${r.motivo}`, 'error');
+            const wanted = sellWantedNow();
+            if (!wanted.length) { flash(huntSlug ? '⚠ Nenhum item marcado caiu nesta hunt.' : '⚠ Fora de hunt: nada para vender.', 'warn'); return; }
+            flash('⏳ Lista salva. Indo à cidade vender…', 'info', 90000);
+            cityTrip('manual: itens', tripTasksFor([['itens', { dados: { wanted, hunt: huntSlug } }]])).then(r => {
+                const t = r.tarefas?.[0];
+                if (t?.ok) flash(`✔ Vendeu ${t.r?.total ?? ''} itens · +${fmtNum(t.r?.ganho || 0)} gold${r.volta ? ` · voltando para ${r.volta}` : ''}`, 'ok', 8000);
+                else flash(`✖ Não vendeu: ${t?.motivo || r.motivo}`, 'error');
                 renderSellList(dirty ? readSellList() : null);
             });
         };
@@ -3371,6 +3570,7 @@
     setInterval(dailyTick, DAILY_CHECK_MS);
     setInterval(catchTick, CATCH_TICK_MS);
     setInterval(pokeSellTick, POKE_SELL_TICK_MS);
+    setInterval(tripTick, TRIP_TICK_MS);
     if (cfg.pokeSellEnabled && !lastPokeSellAt) restartPokeSellCycle(); // 1ª venda só depois de um intervalo inteiro (a recarga restaura o ciclo)
     if (cfg.catchRouteEnabled) setTimeout(() => startCatchRoute('carga'), 8000); // depois do socket/retomada da recarga
     if (cfg.dailyEnabled) scheduleDailyCheck(5000); // lê a missão do dia logo na carga (REST, não depende do socket)

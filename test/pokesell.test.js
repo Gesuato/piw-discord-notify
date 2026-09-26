@@ -65,7 +65,8 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         api.pokeSellTick();
         assert(state.pokesReqs === 1, 'não repete o pedido dentro de 1 min');
         api.pokeSellOnPokes(LISTA);
-        await flush();
+        assert(state.calls.length === 0 && state.trips.length === 1 && state.trips[0].key === 'pokes', 'vencido: pede a viagem em vez de vender na hunt');
+        await api.runPokeSellCycle(true);                      // a viagem executa na cidade
         assert(state.calls.length === 1 && state.calls[0].url.endsWith('/pokemon/sell') && state.calls[0].body.pokeIds.join(',') === 'c40,e99,l90', 'POST com os 3 ids: ' + JSON.stringify(state.calls));
         assert(state.hooks.length === 1 && /vendeu \*\*3 Pokémon\*\* por 300 gold/.test(state.hooks[0].content), 'aviso: ' + state.hooks[0].content);
         assert(/Rattata lv5 Common 40\/192/.test(state.hooks[0].desc) && /Gold agora: 9000/.test(state.hooks[0].desc), 'embed lista os vendidos: ' + state.hooks[0].desc);
@@ -73,16 +74,13 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         assert(api.lastPokesList.length === LISTA.length - 3, 'vendidos saem da lista local');
         assert(api.lastPokeSellAt === clock.now, 'ciclo recomeça na venda');
         api.pokeSellOnPokes(LISTA);
-        await flush();
-        assert(state.calls.length === 1, 'dentro do intervalo não vende de novo');
+        assert(state.trips.length === 1, 'dentro do intervalo não pede viagem de novo');
         clock.now += 9 * 60000;
         api.pokeSellOnPokes(LISTA);
-        await flush();
-        assert(state.calls.length === 1, '9 min: ainda não');
+        assert(state.trips.length === 1, '9 min: ainda não');
         clock.now += 6 * 60000 + 1000;
         api.pokeSellOnPokes(LISTA);
-        await flush();
-        assert(state.calls.length === 2, 'passado o intervalo vende de novo');
+        assert(state.trips.length === 2, 'passado o intervalo pede viagem de novo');
     }
     // 3b) faixa fixa (máximo vazio) e mínimo inválido; sem candidatos o ciclo recomeça sem vender
     {
@@ -115,8 +113,7 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         assert(api.pokeSellReason(LISTA.find(p => p.id === 'c40'), cfg) === null, 'depois de 2 min volta a valer a regra');
         state.awaiting.push({});
         api.pokeSellOnPokes(LISTA);
-        await flush();
-        assert(state.calls.length === 0, 'captura aguardando detalhes: não vende');
+        assert(!state.trips, 'captura aguardando detalhes: nem pede viagem');
         const r = await api.runPokeSellCycle(true);
         assert(!r.ok && /aguardando/.test(r.motivo), 'manual também espera');
     }
@@ -126,11 +123,11 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         const cfg = { pokeSellEnabled: true, pokeSellLimits: REGRAS };
         const { api, state } = loadPokeSellModule(cfg, { api: okApi(1) });
         api.pokeSellOnPokes(LISTA);
-        await flush();
+        await api.runPokeSellCycle(true);
         assert(state.hooks.length === 1 && /venda parcial/.test(state.hooks[0].content) && /só parte do lote/.test(state.hooks[0].desc), 'parcial avisa: ' + state.hooks[0].content);
         const { api: b, state: sb } = loadPokeSellModule(cfg, { api: () => Promise.reject(new Error('HTTP 500')) });
         b.pokeSellOnPokes(LISTA);
-        await flush();
+        await b.runPokeSellCycle(true);
         assert(sb.hooks.length === 1 && /falhou/.test(sb.hooks[0].content) && /HTTP 500/.test(sb.hooks[0].desc), 'erro avisa: ' + sb.hooks[0].desc);
     }
 

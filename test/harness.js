@@ -83,6 +83,7 @@ function loadReloadModule(cfg, init) {
         sellRunning: Boolean(init.sellRunning),
         lastSellAt: init.lastSellAt || 0,
         lastPokeSellAt: init.lastPokeSellAt || 0,
+        tripRunning: false,
         huntSwitch: null,
         swapPending: null,
         awaitingDetails: init.awaitingDetails || [],
@@ -197,6 +198,7 @@ function loadCatchModule(cfg, init) {
         dailyOnHunt: () => false,
         requestPokes: () => { state.pokesReqs = (state.pokesReqs || 0) + 1; },
         lastPokesReqAt: 0,
+        tripRunning: false,
         setTimeout: (fn, ms) => { if (ms >= 5000) { state.longTimers.push(fn); return 99; } fn(); return 1; },
         clearTimeout: () => {},
         Date: FakeDate,
@@ -242,6 +244,7 @@ function loadPokeSellModule(cfg, init) {
         postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
         requestPokes: () => { state.pokesReqs++; },
         lastPokesReqAt: 0,
+        tripRequest: (key, dados, motivo) => { state.trips = state.trips || []; state.trips.push({ key, motivo }); },
         playerName: () => 'Teste',
         fmtNum: (n) => String(n),
         qualityTier: (q) => (typeof q === 'number' && Number.isFinite(q)) ? TIERS.find(t => q >= t.min) : null,
@@ -285,6 +288,7 @@ function loadBallsModule(cfg, init) {
         logEvent: (k, dd) => state.logs.push([k, dd]),
         postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
         autoBuyBalls: (id, qty, min) => { state.buys.push({ id, qty, min }); },
+        tripRequest: (key, dados, motivo) => { state.buys.push({ id: dados.id, qty: dados.qty, min: dados.min, viagem: key, motivo }); },
         autoBuyAttempted: {},
         playerName: () => 'Teste',
         setTimeout: (fn) => { fn(); return 1; },
@@ -302,4 +306,59 @@ function loadBallsModule(cfg, init) {
     return { api, state, cfg };
 }
 
-module.exports = { loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, team, assert };
+// Extrai o módulo "Viagem à cidade" e roda com stubs. Timers avançam o relógio falso e rodam na hora; o socket falso
+// registra as mensagens sintéticas e chama `state.onTeleport` (o teste usa para simular o set-city da tela).
+const T_START = '    // ---- Viagem à cidade';
+const T_END = '    // ---- Recarga automática do painel';
+
+function loadTripModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(T_START), b = src.indexOf(T_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo de viagem não encontrados no script');
+    const mod = src.slice(a, b);
+
+    const clock = { now: Date.now() };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const state = { sent: [], switches: [], logs: [], nudges: [], tasks: [], onTeleport: null };
+    const ctx = {
+        cfg,
+        sendGame: (o) => { state.sent.push(o); return true; },
+        logEvent: (k, d) => state.logs.push([k, d]),
+        switchHunt: (slug, tentativa, origem) => state.switches.push({ slug, tentativa, origem }),
+        normalize: (v) => String(v || '').toLowerCase().trim(),
+        CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'],
+        huntSlug: init.huntSlug != null ? init.huntSlug : null,
+        catchRouteActive: () => Boolean(init.catchTarget),
+        catchTarget: init.catchTarget || null,
+        routeStep: () => init.routeStep || null,
+        lastRealHunt: init.lastRealHunt || null,
+        huntSwitch: init.huntSwitch || null,
+        swapPending: null,
+        awaitingDetails: init.awaiting || [],
+        lastSocket: { dispatchEvent: (ev) => { state.nudges.push(JSON.parse(ev.data)); if (state.onTeleport) state.onTeleport(); return true; } },
+        MessageEvent: class { constructor(type, i) { this.type = type; this.data = i.data; } },
+        sellWantedNow: () => init.wantedNow || [],
+        pokeSellCandidates: () => init.pokeCands || [],
+        watchedBallId: () => (init.ballId != null ? init.ballId : null),
+        ballQty: () => (init.ballQty != null ? init.ballQty : null),
+        effectiveBallsMin: () => init.ballsMin || 0,
+        runSellCycle: (manual, wanted, hunt) => { state.tasks.push(['itens', { manual, wanted, hunt }]); return Promise.resolve(init.itens || { ok: true, total: 3, ganho: 90 }); },
+        runPokeSellCycle: (manual) => { state.tasks.push(['pokes', { manual }]); return Promise.resolve(init.pokes || { ok: true, vendidos: 2, ganho: 200 }); },
+        autoBuyBalls: (id, qty, min) => { state.tasks.push(['bolas', { id, qty, min }]); return Promise.resolve(init.bolas || { ok: true, bought: 100 }); },
+        setTimeout: (fn, ms) => { clock.now += ms; fn(); return 1; },
+        Date: FakeDate,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            tripRequest, tripTick, cityTrip, tripTasksFor, tripStatus, tripReturnSlug, tripOnSetCity, tripCity,
+            setHunt(slug) { huntSlug = slug; },
+            get tripRunning() { return tripRunning; },
+            get tripNeeds() { return tripNeeds; },
+            get lastTripInfo() { return lastTripInfo; },
+        };`);
+    const api = factory(...Object.values(ctx));
+    return { api, state, cfg, clock };
+}
+
+module.exports = { loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

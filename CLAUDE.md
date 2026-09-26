@@ -72,6 +72,14 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   category,npcPrice,rare,icon}] }` (667 itens; categorias: loot, stone, heal, revive, clan, misc, card,
   addon, tm, berry, held). `field-kill` → `{ speciesName, shiny, xpGained, level, loot:[{itemId,name,qty}] }`.
   Cliente envia `enter-hunt {slug}` / `leave-hunt`.
+- **REGRA DO JOGO (anúncio de 26/09/2026): não comprar/vender no NPC Mark, vender Pokémon, usar o Mercado Global nem o
+  Depot DURANTE a hunt.** Toda venda/compra do script passa pela viagem à cidade (módulo "Viagem à cidade", v3.14.0):
+  `tripRequest(key, dados, motivo)` acumula, `tripTick` faz uma viagem só (`cityTrip`), com carona (`tripAugment`).
+  Ida = `leave-hunt` + `field-teleport-city` sintético (a tela viaja e manda `set-city`; `tripOnSetCity` confirma) ou
+  `set-city` manual após 10 s; volta = `switchHunt(slug, 1, 'viagem')`. `runSellCycle(manual, wantedIds, huntName)`
+  recebe a lista congelada (na cidade `huntSlug` é null e `huntLoot` zera). NUNCA chamar `runSellCycle`,
+  `runPokeSellCycle` ou `autoBuyBalls` direto de dentro da hunt de novo. Cidades: `CITY_SLUGS` (lista `o4` do bundle).
+  Chamadas por aba: `docs/chamadas-por-aba.md`.
 - Regra de venda (ver `protectedReason` e `sellWarning`): desde a v3.1.0, a pedido do usuário, só preço 0
   (NPC não compra) e cadeado do jogo bloqueiam; categoria fora de `loot`, `rare` e nome com Pheromone/Stone
   viram aviso ⚠️ na lista, mas podem ser marcados. Lista branca por item em `cfg.sellItems`. Não voltar a
@@ -238,7 +246,8 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
 
 - **Testes isolados em Node** (sem DOM): `node test/level.test.js`, `node test/route.test.js`,
   `node test/reload.test.js`, `node test/daily.test.js`, `node test/catch.test.js`, `node test/pokesell.test.js` e
-  `node test/balls.test.js` (`loadBallsModule`: módulo de bolas + `checkBallStock`).
+  `node test/balls.test.js` (`loadBallsModule`: módulo de bolas + `checkBallStock`) e `node test/trip.test.js`
+  (`loadTripModule`: `// ---- Viagem à cidade` até `// ---- Recarga automática do painel`; timers avançam o relógio falso).
   `test/harness.js` recorta módulos do userscript pelos marcadores (`loadLevelModule`: `// ---- Alerta de nível do
   líder` até `// ---- Alerta de estoque de bolas`; `loadPokeSellModule`: `// ---- Venda automática de Pokémon` até
   `// ---- Rota de captura`; `loadCatchModule`: `// ---- Rota de captura` até `// ---- Daily Kill`, com `init.fetchJson(url)` para os
