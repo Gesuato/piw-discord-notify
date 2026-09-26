@@ -138,7 +138,7 @@ setTimeout(() => {
         log('psell previa=' + $('#pg-dn-psell-status').textContent.trim() + ' | ' + [...$('#pg-dn-psell-list').querySelectorAll('tr')].map(tr => tr.textContent.replace(/\s+/g, ' ').trim()).join(' || ') + ' | btn=' + $('#pg-dn-psell-now').textContent);
         $('#pg-dn-psell').checked = true; fire($('#pg-dn-psell'), 'change'); $('#pg-dn-save').click();
         const cfgP = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
-        log('psell salvo=' + cfgP.pokeSellEnabled + ' limites=' + JSON.stringify(cfgP.pokeSellLimits) + ' badge=' + panel.querySelector('.dn-tab[data-tab=venda] .b').dataset.state);
+        log('psell salvo=' + cfgP.pokeSellEnabled + ' limites=' + JSON.stringify(cfgP.pokeSellLimits) + ' faixa=' + cfgP.pokeSellEveryMin + '-' + cfgP.pokeSellEveryMaxMin + ' badge=' + panel.querySelector('.dn-tab[data-tab=venda] .b').dataset.state + ' | next=' + $('#pg-dn-psell-next').textContent);
         fetchCalls.length = 0; $('#pg-dn-psell-now').click();
         log('psell vender agora: fetch=' + fetchCalls.filter(c => c.includes('pokemon/sell')).join(' | ').slice(0, 160) + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 60));
         panel.querySelector('.dn-tab[data-tab=bolas]').click(); log('bolas=' + $('#pg-dn-balls-status').textContent.trim());

@@ -79,6 +79,7 @@ function loadReloadModule(cfg, init) {
         huntSlug: init.huntSlug != null ? init.huntSlug : null,
         sellRunning: Boolean(init.sellRunning),
         lastSellAt: init.lastSellAt || 0,
+        lastPokeSellAt: init.lastPokeSellAt || 0,
         huntSwitch: null,
         swapPending: null,
         awaitingDetails: init.awaitingDetails || [],
@@ -229,6 +230,7 @@ function loadPokeSellModule(cfg, init) {
         logEvent: (k, d) => state.logs.push([k, d]),
         postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
         requestPokes: () => { state.pokesReqs++; },
+        lastPokesReqAt: 0,
         playerName: () => 'Teste',
         fmtNum: (n) => String(n),
         qualityTier: (q) => (typeof q === 'number' && Number.isFinite(q)) ? TIERS.find(t => q >= t.min) : null,
@@ -243,7 +245,9 @@ function loadPokeSellModule(cfg, init) {
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
             pokeSellReason, pokeSellCandidates, runPokeSellCycle, pokeSellOnPokes, noteRecentCapture, pokeSellLimit, pokeSellHasRules, pokeLabel,
+            pokeSellIntervalRange, drawPokeSellDelay, restartPokeSellCycle, pokeSellDue, pokeSellStatus, pokeSellTick,
             get lastPokesList() { return lastPokesList; },
+            get lastPokeSellAt() { return lastPokeSellAt; },
         };`);
     const api = factory(...Object.values(ctx));
     return { api, state, cfg, clock };

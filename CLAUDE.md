@@ -81,7 +81,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
 - Venda de Pokémon (v3.11.0, aba Venda → "Pokémon fora do time"): desde a v3.12.0 UM limite por raridade em
   `cfg.pokeSellLimits[tierKey]` (vende se ivTotal < limite; ausente = não vende; escolhido pelo usuário no mock
   `docs/mockup-venda-pokemon.html`, alternativa B; `migrateCfg` converte as duas faixas antigas). Ver `pokeSellReason`;
-  `migrateCfg` roda ANTES de `TIERS` existir (TDZ), por isso não usa `tierByKey`. Nunca vende time/líder, inicial, shiny, `locked`, `sellValue` 0, sem IV ou
+  `migrateCfg` roda ANTES de `TIERS` existir (TDZ), por isso não usa `tierByKey`. Intervalo sorteado em
+  `pokeSellEveryMin`–`pokeSellEveryMaxMin` (v3.13.0, padrão 10–15 min; `restartPokeSellCycle` na carga, no Salvar e
+  após cada venda; `pokeSellTick` pede `pokes-get` quando vence). Nunca vende time/líder, inicial, shiny, `locked`, `sellValue` 0, sem IV ou
   capturado há < 2 min (`recentCaptureIds`, alimentado pelo `poke-delta`). Usa o frame `pokes` (por isso
   `requestPokes` roda mesmo sem alvo de nível quando `pokeSellEnabled`) e `POST /api/game/pokemon/sell { pokeIds }`.
   A aba de id `bolas` chama-se "🛒 Compras" desde a v3.11.0 (id mantido por causa do `pgDiscordNotifyUi`).

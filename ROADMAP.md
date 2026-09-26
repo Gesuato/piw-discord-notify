@@ -396,7 +396,10 @@ e `pokeSellLimits: { weak..divine: limite }` — um campo "poder <" por raridade
 raridade não vende. Config da v3.11.x (duas faixas `pokeSellTier`/`pokeSellIvLow`/`pokeSellIvHigh`) é migrada em
 `migrateCfg` para um limite por raridade. Prévia em tabela (Pokémon, raridade, poder, decisão: "✔ vende", "poder 130 ≥
 100", "cadeado", "Mythic sem limite"…) calculada com os campos da tela, gold estimado no resumo, botão "Vender N agora"
-(salva só os limites) e "Atualizar lista". Teste: `node test/pokesell.test.js`.
+(salva só os limites) e "Atualizar lista". Intervalo (v3.13.0): `pokeSellEveryMin`/`pokeSellEveryMaxMin` (padrão
+10–15 min, sorteado a cada ciclo como a venda de itens); o ciclo conta a partir da carga/ativação e da última venda,
+`pokeSellTick` (30 s) pede a lista ao jogo quando vence e o frame `pokes` vende; sem candidatos o ciclo recomeça.
+O início do ciclo sobrevive à recarga automática (`lastPokeSellAt` no registro). Teste: `node test/pokesell.test.js`.
 
 **Pendências:** confirmar no log que o frame `pokes` traz `starter`/`locked`/`sellValue` (levantado do bundle, v3.6.0);
 sem esses campos o script só confia em `team`/`shiny`/IV.
