@@ -41,7 +41,10 @@ setTimeout(() => {
         btn.click();
         log('aberto=' + !panel.hidden + ' aba=' + panel.querySelector('.dn-tab[aria-selected=true]').dataset.tab + ' chanBoxHidden=' + $('#pg-dn-chan-box').hidden);
         log('resumoCanais=' + $('#pg-dn-chan-summary').textContent.trim());
+        window.navigator.clipboard = { readText: () => Promise.resolve('https://discord.com/api/webhooks/77/colado'), writeText: () => Promise.reject(new Error('negado')) };
+        $('#pg-dn-hook-alerts').value = ''; $('#pg-dn-hook-alerts').dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
         log('qualidade=' + $('#pg-dn-q-summary').textContent);
+        log('colar botao direito: alerts=' + $('#pg-dn-hook-alerts').value + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 40));
         for (const t of panel.querySelectorAll('.dn-tab')) { t.click(); log('aba ' + t.dataset.tab + ' badge=' + t.querySelector('.b').dataset.state + ' paneVisivel=' + !panel.querySelector('[data-pane=' + t.dataset.tab + ']').hidden); }
         log('bolas=' + $('#pg-dn-balls-status').textContent.trim() + ' | warn0=' + !$('#pg-dn-autobuy-warn').hidden);
         log('venda=' + $('#pg-dn-sell-hunt').textContent.trim() + ' | ' + $('#pg-dn-sell-count').textContent + ' | lista=' + $('#pg-dn-sell-list').textContent.trim());
@@ -103,7 +106,8 @@ setTimeout(() => {
         $('#pg-dn-hook').value = 'https://discord.com/api/webhooks/1/x'; fire($('#pg-dn-hook'), 'input');
         $('#pg-dn-test').click(); log('testar2=' + $('#pg-dn-msg').textContent);
         $('#pg-dn-import').click(); $('#pg-dn-import-text').value = JSON.stringify({ webhookUrl: 'https://discord.com/api/webhooks/2/y', watchList: ['bagon'] }); $('#pg-dn-import-apply').click();
-        log('import msg=' + $('#pg-dn-msg').textContent + ' lista=' + $('#pg-dn-list').value + ' importBoxHidden=' + $('#pg-dn-import-box').hidden);
+        log('import msg=' + $('#pg-dn-msg').textContent.slice(0, 160) + ' lista=' + $('#pg-dn-list').value + ' importBoxHidden=' + $('#pg-dn-import-box').hidden);
+        $('#pg-dn-import').click(); $('#pg-dn-import-paste').click();
         d.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); log('fechouEsc=' + panel.hidden + ' ui=' + window.localStorage.getItem('pgDiscordNotifyUi'));
         btn.click(); log('reabriu aba=' + panel.querySelector('.dn-tab[aria-selected=true]').dataset.tab);
         // venda: marcar item e ver "manter" aparecer, depois drop novo com painel aberto mantém marcação não salva

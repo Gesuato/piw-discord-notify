@@ -224,6 +224,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   avisos do mesmo Pokémon; padrão 0 = avisar todas. Configs anteriores a `cfgVersion: 2` tinham 30s
   fixos e são migradas para 0 no `loadCfg()`.
 - Comparações de nome sempre via `normalize()` (minúsculas, sem acento).
+- Colar com o botão direito (v3.15.1): o webview do PokeGrid não tem menu de contexto e o jogo captura teclas, então
+  `pasteInto(el)` (contextmenu em qualquer input de texto/textarea do painel, e o botão "📋 Colar" do Importar) tenta
+  `navigator.clipboard.readText()`, depois `execCommand('paste')`, senão avisa. Exportar carimba `_versao/_exportadoEm/
+  _conta`; Importar apaga toda chave `_*`, e o `flash` resume o que entrou (round-trip testado em jsdom: sem perdas).
 - Idioma: comentários, UI e mensagens em pt-BR (o usuário é brasileiro).
 
 ## Decisão: sem config compartilhada automática

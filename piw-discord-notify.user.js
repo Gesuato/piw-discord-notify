@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.15.0
+// @version      3.15.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.15.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.15.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -2743,7 +2743,7 @@
                         <div id="pg-dn-import-box" class="dn-section" hidden>
                             <textarea id="pg-dn-import-text" class="dn-textarea" rows="3" placeholder="Cole a config exportada"></textarea>
                             <label class="dn-toggle"><input id="pg-dn-import-keephooks" type="checkbox"><span class="sw"></span>Manter os canais deste painel</label>
-                            <div class="dn-actions"><button type="button" class="dn-btn dn-btn--primary" id="pg-dn-import-apply">Aplicar</button></div>
+                            <div class="dn-actions"><button type="button" class="dn-btn" id="pg-dn-import-paste" title="Cola o que está na área de transferência (o mesmo que o botão direito no campo).">📋 Colar</button><button type="button" class="dn-btn dn-btn--primary" id="pg-dn-import-apply">Aplicar</button></div>
                         </div>
                         <label class="dn-toggle"><input id="pg-dn-debug" type="checkbox"><span class="sw"></span>Debug no console</label>
                         <div class="dn-status"><span class="k">v${VERSION}</span><span class="r" id="pg-dn-socket"></span></div>
@@ -3378,6 +3378,33 @@
         };
         panel.querySelector('.dn-body').addEventListener('input', onEdit);
         panel.querySelector('.dn-body').addEventListener('change', onEdit);
+        // ---- colar com o botão direito (v3.15.1): o webview do PokeGrid não tem menu de contexto e o Ctrl+V nem
+        // sempre chega ao campo (o jogo captura teclas). Tenta a área de transferência; se o webview negar, tenta o
+        // comando nativo de colar; se nada funcionar, avisa.
+        async function pasteInto(el) {
+            let txt = '';
+            try { txt = await navigator.clipboard.readText(); } catch { txt = ''; }
+            if (!txt) {
+                try { el.focus(); if (document.execCommand('paste')) { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true; } } catch { /* segue */ }
+                return false;
+            }
+            const a = el.selectionStart ?? el.value.length, b = el.selectionEnd ?? el.value.length;
+            el.value = el.value.slice(0, a) + txt + el.value.slice(b);
+            const pos = a + txt.length;
+            try { el.setSelectionRange(pos, pos); } catch { /* campo sem seleção */ }
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+        }
+        function pasteFlash(ok) { flash(ok ? '📋 Colado.' : '⚠ Não consegui ler a área de transferência aqui. Clique no campo e use Ctrl+V.', ok ? 'ok' : 'warn', ok ? 2000 : 0); }
+        panel.addEventListener('contextmenu', (e) => {
+            const el = e.target.closest('input:not([type=number]):not([type=checkbox]), textarea');
+            if (!el || el.disabled) return;
+            e.preventDefault(); e.stopPropagation();
+            pasteInto(el).then(pasteFlash);
+        });
+        $('#pg-dn-import-paste').onclick = () => pasteInto($('#pg-dn-import-text')).then(pasteFlash);
+
         panel.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') { e.stopPropagation(); togglePanel(false); return; }
             if (e.key === 'Enter' && e.target.matches('input:not([type=checkbox])')) { e.preventDefault(); $('#pg-dn-save').click(); }
@@ -3513,7 +3540,7 @@
 
         // ---- Exportar / importar configuração (para copiar entre contas/painéis) ----
         $('#pg-dn-export').onclick = () => {
-            const txt = JSON.stringify(Object.assign({ _piwDiscordNotify: cfg.cfgVersion || 2 }, cfg));
+            const txt = JSON.stringify(Object.assign({ _piwDiscordNotify: cfg.cfgVersion || 2, _versao: VERSION, _exportadoEm: new Date().toISOString(), _conta: playerName() || null }, cfg));
             copyText(txt).then(ok => {
                 if (ok) flash('✔ Config copiada (inclui os canais). Na outra conta: Sistema → Importar config.', 'ok', 7000);
                 else { $('#pg-dn-import-box').hidden = false; $('#pg-dn-import-text').value = txt; flash('⚠ Não copiou; a config apareceu na caixa abaixo — copie de lá.', 'warn'); }
@@ -3529,7 +3556,8 @@
             try { data = JSON.parse($('#pg-dn-import-text').value.trim()); }
             catch { flash('✖ Não é uma config válida.', 'error'); return; }
             if (!data || typeof data !== 'object' || Array.isArray(data) || !('webhookUrl' in data)) { flash('✖ Isso não parece uma config deste script.', 'error'); return; }
-            delete data._piwDiscordNotify;
+            const origem = { versao: data._versao, conta: data._conta, em: data._exportadoEm };
+            for (const k of Object.keys(data)) if (k.startsWith('_')) delete data[k];
             const keepHooks = $('#pg-dn-import-keephooks').checked;
             const mine = { webhookUrl: cfg.webhookUrl, webhookShiny: cfg.webhookShiny, webhookAlerts: cfg.webhookAlerts, webhookLevel: cfg.webhookLevel };
             cfg = migrateCfg(Object.assign({}, DEFAULTS, data));
@@ -3543,7 +3571,19 @@
             loadHuntProfile();
             dirty = false;
             fill();
-            flash('✔ Config importada e salva.', 'ok', 4000);
+            const canais = ['webhookUrl', 'webhookShiny', 'webhookAlerts', 'webhookLevel'].filter(k => (cfg[k] || '').trim()).length;
+            const resumo = [
+                `${canais} ${canais === 1 ? 'canal' : 'canais'}${keepHooks ? ' (mantidos deste painel)' : ''}`,
+                cfg.notifyEveryCapture ? 'avisa toda captura' : `lista com ${(cfg.watchList || []).length}`,
+                `bolas ${cfg.autoBuy ? `compra ${cfg.autoBuyQty} abaixo de ${cfg.ballsMin || 1}` : (cfg.ballsMin ? `avisa abaixo de ${cfg.ballsMin}` : 'desligado')}`,
+                `drops ${cfg.sellEnabled ? 'ligado' : 'desligado'}, perfis de ${Object.keys(cfg.sellProfiles || {}).length} hunts`,
+                `Pokémon ${cfg.pokeSellEnabled ? 'ligado' : 'desligado'}, ${Object.keys(cfg.pokeSellLimits || {}).length} raridades com limite`,
+                `viagem ${cfg.tripEveryMin}${cfg.tripEveryMaxMin > cfg.tripEveryMin ? `–${cfg.tripEveryMaxMin}` : ''} min (${cfg.tripCity})`,
+                `${Object.keys(cfg.routes || {}).length} rotas de treino${cfg.routeName ? ` (ativa: ${cfg.routeName})` : ''}`,
+                `captura ${cfg.catchRouteEnabled ? 'ligada' : 'desligada'}`, `daily ${cfg.dailyEnabled ? 'ligada' : 'desligada'}`, `recarga ${cfg.reloadEnabled ? 'ligada' : 'desligada'}`,
+            ].join(' · ');
+            logEvent('config-importada', { origem, resumo });
+            flash(`✔ Config importada${origem.conta ? ` de ${origem.conta}` : ''}${origem.versao ? ` (v${origem.versao})` : ''}: ${resumo}`, 'ok', 20000);
         };
 
 
