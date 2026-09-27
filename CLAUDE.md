@@ -157,6 +157,11 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   nível e entra via `switchHunt(slug, 1, 'daily-ida')`; origem e líder em `localStorage.pgDiscordNotifyDaily`
   (`dailyRun`); na meta devolve o líder (`dailyRestoreLeader`) e volta para `dailyRun.from`. `dailyHoldsLeader()` pausa
   `checkLeaderLevel` enquanto a ida vale (guardado com `typeof`, porque o harness do nível não tem o módulo da daily).
+- Clã (v3.17.0, aba Profissão, ROADMAP #22, módulo `// ---- Clã` antes da Viagem): `GET /api/game/clans` (tarefa em
+  `nextTask`: items/caught/kills), `POST /clans/rankup`, `/clans/change { clan, targetRank }` (só a 1ª entrada, grátis;
+  NUNCA trocar de clã, custa diamante), `POST /api/game/convert { baseItemId, packs }` (100 base = 1 item de clã, mapa
+  `CLAN_CONVERT`), mochila pelo frame `inventory` do `inv-get`. Converter e subir de rank só na viagem (tarefa `cla`); a
+  venda de itens e de Pokémon respeita `clanKeepsItem`/`clanKeepsSpecies`. `clanRoute` é a 3ª rota excludente do Salvar.
 - Rota de captura / Pokédex (v3.10.0, aba Profissão): hunts em `GET /api/game/map-markers` (público, `hunts[{ slug,
   name, level, area, looktype }]`, level 0 = cidade), espécies em `GET /game/creatures.json` (público, `creatures[{
   pokeId, name, looktype }]`, pokeId < 10000 = normal), capturadas em `GET /api/game/pokedex` (auth, `species[{ id,
@@ -259,6 +264,7 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
 
 - **Testes isolados em Node** (sem DOM): `node test/level.test.js`, `node test/route.test.js`,
   `node test/reload.test.js`, `node test/daily.test.js`, `node test/catch.test.js`, `node test/pokesell.test.js` e
+  `node test/clan.test.js` (`loadClanModule`: `// ---- Clã: subir de rank` até `// ---- Viagem à cidade`),
   `node test/dailyauto.test.js` (daily sozinha, mesmo `loadDailyModule` com `init.team`/`init.huntCatalog`/`init.store`) e
   `node test/balls.test.js` (`loadBallsModule`: módulo de bolas + `checkBallStock`) e `node test/trip.test.js`
   (`loadTripModule`: `// ---- Viagem à cidade` até `// ---- Recarga automática do painel`; timers avançam o relógio falso).

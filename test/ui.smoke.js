@@ -63,6 +63,16 @@ setTimeout(() => {
         const cfgC = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
         log('captura salva=' + cfgC.catchRouteEnabled + ' areas=' + cfgC.catchRouteAreas + ' max=' + cfgC.catchRouteMaxLevel + ' rotaTreino=' + cfgC.routeEnabled + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 120));
         $('#pg-dn-catch').checked = false; fire($('#pg-dn-catch'), 'change'); $('#pg-dn-route-on').checked = true; fire($('#pg-dn-route-on'), 'change'); $('#pg-dn-save').click();
+        // Clã (v3.17.0): ligar "Caçar o que falta" desliga a rota de treino; depois volta como estava
+        panel.querySelector('.dn-tab[data-tab=profissao]').click();
+        $('#pg-dn-clan').checked = true; fire($('#pg-dn-clan'), 'change'); $('#pg-dn-clan-route').checked = true; fire($('#pg-dn-clan-route'), 'change');
+        log('cla rascunho=' + $('#pg-dn-clan-status').textContent + ' | ' + $('#pg-dn-clan-plan').textContent);
+        $('#pg-dn-save').click();
+        const cfgK = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+        log('cla salvo=' + cfgK.clanEnabled + ' rota=' + cfgK.clanRoute + ' chave=' + cfgK.clanKey + ' rotaTreino=' + cfgK.routeEnabled + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 140));
+        if (!(cfgK.clanEnabled && cfgK.clanRoute && cfgK.clanKey === 'orebound' && !cfgK.routeEnabled)) errors.push('clã: Salvar não gravou ou não desligou a rota de treino');
+        $('#pg-dn-clan').checked = false; fire($('#pg-dn-clan'), 'change'); $('#pg-dn-clan-route').checked = false; fire($('#pg-dn-clan-route'), 'change');
+        $('#pg-dn-route-on').checked = true; fire($('#pg-dn-route-on'), 'change'); $('#pg-dn-save').click();
         panel.querySelector('.dn-tab[data-tab=treino]').click();
         log('sistema=' + $('#pg-dn-reload-status').textContent + ' | ' + $('#pg-dn-socket').textContent);
         $('#pg-dn-ballsmin').value = 50; fire($('#pg-dn-ballsmin'), 'input');

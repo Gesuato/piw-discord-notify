@@ -474,6 +474,30 @@ Só o time entra na conta (o box não). Não usa `/reroll`.
 
 ---
 
+## ✅ 22. Clã sozinho: Orebound (e os outros), do rank 1 ao 5 (v3.17.0)
+
+**O que faz (aba Profissão → Clã, `cfg.clanEnabled`):** sem clã, entra no escolhido (`clanKey`, padrão `orebound`; a 1ª
+entrada é grátis, trocar custa diamante e o script nunca troca). Lê a tarefa do próximo rank, não vende o item base nem o
+item de clã que ela pede (`clanKeepsItem` no `runSellCycle`) nem o Pokémon da espécie a capturar (`clanKeepsSpecies` em
+`pokeSellReason`), e na viagem à cidade (tarefa `cla`, `clanCityWork`) converte 100 do item base em 1 item de clã e sobe de
+rank (`clanRankup`). Tarefa pronta = viagem urgente. Com `clanRoute` ("Caçar o que falta"): vai para a hunt da espécie a
+capturar (joga a bola da rota de captura quando ela entra na fila) e depois para a de maior fração da tarefa por abate
+(itens base esperados pelo loot do `creatures.json` + tipos que faltam derrotar; só hunts até o nível do melhor do time;
+fica na atual enquanto render ≥ 80% da melhor). Acabou (rank máximo ou nada ao alcance): volta para a hunt de antes.
+Excludente com a rota de treino e a de captura; a Daily tem prioridade.
+
+**Como o jogo faz (bundle, 27/09/2026):** `GET /api/game/clans` → `{ clan, clanRank, level, diamonds, canJoin, joinLevel,
+nextTask:{ rank, name, level, levelOk, items:[{ itemId, name, have, need }], caught:[{ speciesId, name, have, need }],
+kills:[{ type, have, need }], rewardXp, ok, goldOk, goldCost } }`; `POST /api/game/clans/rankup {}`; `POST /clans/skip {}`
+(não usado); `POST /clans/change { clan, targetRank }`; `POST /api/game/convert { baseItemId, packs }` → `{ converted,
+toName }` (mapa base→clã do inventário: Small Stone→Big Stone, Earth Ball→Solid Earth Piece, ...); mochila por `inv-get`
+→ frame `inventory { items:[{ itemId, quantity }] }`. Pokepedia: entra no nível 80; ranks 2..5 pedem 90/100/110/120.
+
+**Pendências:** confirmar no log (`cla`, `cla-converteu`, `cla-rank`) o formato real da tarefa e da resposta do convert;
+não troca o líder para a hunt do clã (dá para reaproveitar a escolha por tipo da daily). Teste: `node test/clan.test.js`.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

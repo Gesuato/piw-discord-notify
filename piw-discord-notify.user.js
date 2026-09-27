@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.16.0
+// @version      3.17.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.16.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.17.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -63,6 +63,10 @@
         dailyClaim: true,       // ...e resgatar a recompensa sozinho (POST /api/game/daily-kill/claim)
         dailyReturnSlug: '',    // hunt fixa para voltar; vazio = etapa da rota, senão a hunt anterior à daily
         dailyAuto: false,       // v3.16.0: fazer a daily sozinho (escolhe missão e Pokémon do time, vai e volta)
+        clanEnabled: false,     // v3.17.0 Clã (aba Profissão): acompanhar a tarefa de rank, guardar os itens base, converter na viagem
+        clanKey: 'orebound',    // clã em que o script entra sozinho se a conta não tiver nenhum (1ª entrada é grátis)
+        clanRankup: true,       // ...subir de rank sozinho quando a tarefa fechar (na viagem à cidade)
+        clanRoute: false,       // ...ir sozinho para a hunt que mais adianta a tarefa (e jogar bola na espécie pedida)
         tripCity: 'cerulean',   // v3.14.0: cidade da viagem de venda/compra (regra do jogo: nada de venda/compra na hunt)
         tripMinGapMin: 3,       // intervalo mínimo entre duas viagens à cidade (minutos; só para viagens urgentes, ex.: bola zerada)
         tripEveryMin: 10,       // v3.15.0: relógio ÚNICO das viagens (vendas de itens e Pokémon, compras): mínimo em minutos
@@ -434,7 +438,7 @@
     }
 
     function requestPokes(delayMs) {
-        if (!levelEnabled() && !cfg.pokeSellEnabled && !cfg.catchRouteEnabled && !(cfg.dailyEnabled && cfg.dailyAuto)) return; // venda de Pokémon, rota de captura e daily sozinha também usam o frame `pokes`
+        if (!levelEnabled() && !cfg.pokeSellEnabled && !cfg.catchRouteEnabled && !(cfg.dailyEnabled && cfg.dailyAuto) && !(cfg.clanEnabled && cfg.clanRoute)) return; // venda de Pokémon, rota de captura e daily sozinha também usam o frame `pokes`
         clearTimeout(pokesRequestTimer);
         pokesRequestTimer = setTimeout(() => {
             pokesRequestTimer = null;
@@ -608,6 +612,7 @@
         huntSwitch = null;
         const t = {
             recarga: { verbo: 'voltar para a', quando: 'depois da recarga automática', titulo: `Recarga: volta para ${slug} não confirmou`, dica: 'A conta deve estar na cidade: entre na hunt na mão.' },
+            cla: { verbo: 'entrar na', quando: 'rota do clã', titulo: `Clã: entrada em ${slug} não confirmou`, dica: 'Essa hunt foi pulada nesta sessão; a rota do clã segue para a próxima melhor.' },
             'daily-ida': { verbo: 'entrar na', quando: 'Daily Kill sozinha', titulo: `Daily Kill: entrada em ${slug} não confirmou`, dica: 'O script devolveu o líder e voltou para a hunt de antes; faça a daily na mão hoje (o nível da hunt pode ser alto demais).' },
             daily: { verbo: 'voltar para a', quando: 'depois da Daily Kill', titulo: `Daily Kill: volta para ${slug} não confirmou`, dica: 'Confira o nome da hunt em "Voltar para" (ou entre na hunt na mão).' },
             rota: { verbo: 'entrar na', quando: 'rota', titulo: `Rota: entrada em ${slug} não confirmou`, dica: 'Confira o nome da hunt (é o mesmo que aparece em "Hunt atual") e entre na mão; a rota continua da etapa atual.' },
@@ -626,6 +631,7 @@
         }, { evento: 'hunt-falhou', slug, origem });
         if (origem === 'captura') catchHuntFailed(slug);
         if (origem === 'daily-ida') dailyGoFailed(slug);
+        if (origem === 'cla') clanHuntFailed(slug);
     }
 
     function handlePokeXp(message) {
@@ -974,6 +980,7 @@
                 if (locked.has(id)) continue;
                 const item = catalog.get(id) || inv;
                 if (protectedReason(item)) continue;
+                if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) continue;   // item base/de clã que a tarefa ainda pede
                 const keep = Math.max(0, Number(cfg.sellItems[id]?.keep) || 0);
                 const qty = Math.floor(Number(inv.quantity) || 0) - keep;
                 if (qty <= 0) continue;
@@ -1092,6 +1099,7 @@
         if (pokeSellRejected.has(String(p.id))) return `recusado pelo jogo (${pokeSellRejected.get(String(p.id))})`;
         const at = recentCaptureIds.get(String(p.id));
         if (at && Date.now() - at < POKE_SELL_RECENT_MS) return 'capturado agora';
+        if (typeof clanKeepsSpecies === 'function' && clanKeepsSpecies(Number(p.speciesId))) return 'tarefa do clã';
         const tier = qualityTier(Number(p.quality));
         const iv = Number(p.ivTotal);
         if (!tier || !Number.isFinite(iv)) return 'sem IV';
@@ -1228,6 +1236,7 @@
     let familyNames = new Set();    // nomes (normalizados) dos Pokémon no depósito da família
     let creatureIdByName = new Map(); // nome normalizado -> pokeId (do creatures.json)
     let creatureTypes = new Map();  // pokeId -> [type1, type2] em maiúsculas (do creatures.json; daily sozinha)
+    let creatureLoot = new Map();   // pokeId -> [{ name, chance (em 100000), minCount, maxCount }] (do creatures.json; clã)
     let dexSig = '';
     let dexTotal = 0;               // espécies normais no catálogo
     let dexFetchedAt = 0;
@@ -1257,6 +1266,7 @@
         const byName = new Map(creatures.map(c => [normalize(c.name), c]));
         creatureIdByName = new Map(creatures.filter(c => Number(c.pokeId) < 10000).map(c => [normalize(c.name), Number(c.pokeId)]));
         creatureTypes = new Map(creatures.map(c => [Number(c.pokeId), [String(c.type1 || '').toUpperCase(), String(c.type2 || '').toUpperCase()]]));
+        creatureLoot = new Map(creatures.map(c => [Number(c.pokeId), Array.isArray(c.loot) ? c.loot : []]));
         dexTotal = creatures.filter(c => Number(c.pokeId) < 10000).length;
         huntCatalog = (Array.isArray(mm?.hunts) ? mm.hunts : [])
             .filter(h => h && h.slug && Number(h.level) > 0)
@@ -1654,6 +1664,7 @@
         const run = activeDailyRun();
         if (run?.from) return run.from;                              // daily sozinha: a hunt de onde ela saiu
         if (catchRouteActive() && catchTarget) return catchTarget.slug;
+        if (typeof clanRouteOn === 'function' && clanRouteOn() && clanTarget) return clanTarget.slug;
         const st = routeStep();
         if (st?.slug) return st.slug;
         return prevHuntSlug || null;
@@ -1928,6 +1939,398 @@
         }, { evento: 'daily-pronta', missao: d.name, volta: volta ? dest : null });
     }
 
+    // ---- Clã: subir de rank sozinho (Orebound e os outros 9) ------------------------
+    // Levantado no bundle em 27/09/2026 (janela "Clãs" e mochila) e na pokepedia (systems/clans):
+    //   GET  /api/game/clans -> { clan, clanRank, level, diamonds, canJoin, joinLevel, nextTask } ; nextTask (null = rank
+    //        máximo) = { rank, name, level, levelOk, items:[{ itemId, name, icon, have, need }], caught:[{ speciesId, name,
+    //        have, need }], kills:[{ type, have, need }], rewardXp, ok, goldOk, goldCost }
+    //   POST /api/game/clans/rankup {} -> estado novo · POST /api/game/clans/skip {} (paga goldCost; o script NÃO usa)
+    //   POST /api/game/clans/change { clan, targetRank } -> entrar (1ª vez grátis, rank 1) ou trocar (diamantes; NUNCA usado)
+    //   POST /api/game/convert { baseItemId, packs } -> { converted, toName }: 100 do item base viram 1 item de clã
+    //   `inv-get` (socket) -> `inventory { items:[{ itemId, quantity }] }`: a mochila, de onde a conversão tira o item base
+    // Regras: entra no nível 80; ranks 2..5 pedem nível 90/100/110/120; itens entregues são consumidos; capturar uma
+    // espécie; derrotar N por elemento. O script: lê a tarefa (2 min; 1 min com a rota), pede a mochila, entra no clã
+    // escolhido se a conta não tiver nenhum, não vende item base/de clã nem Pokémon da espécie que a tarefa pede, converte
+    // e sobe de rank NA VIAGEM À CIDADE (tarefa 'cla'). Com `clanRoute`, vai para a hunt que mais adianta a tarefa: primeiro
+    // a da espécie a capturar (jogando a bola da rota de captura), depois a de maior fração da tarefa por abate
+    // (itens base esperados pelo loot do creatures.json + tipos que faltam derrotar). Terminou ou travou: volta para a hunt
+    // de antes. Excludente com a rota de treino e a de captura (Salvar desliga a outra); a Daily tem prioridade.
+
+    const CLAN_URL = '/api/game/clans';
+    const CLAN_RANKUP_URL = '/api/game/clans/rankup';
+    const CLAN_CHANGE_URL = '/api/game/clans/change';
+    const CONVERT_URL = '/api/game/convert';
+    const CLAN_POLL_MS = 2 * 60 * 1000;
+    const CLAN_POLL_ROUTE_MS = 60 * 1000;
+    const CLAN_TICK_MS = 60 * 1000;
+    const CLAN_PACK = 100;                   // itens base por item de clã
+    const CLAN_KEEP_RATIO = 0.8;             // a hunt atual segue alvo enquanto render >= 80% da melhor (evita pular de hunt)
+    // Item base -> item de clã (mapa do inventário no bundle).
+    const CLAN_CONVERT = {
+        'Screw': 'Big Screw', 'Band Aid': 'Injection', 'Bug Gosme': 'Big Bug Gosme', 'Bottles of Poison': 'Big Poison Bottle',
+        'Dark Gem': 'Solid Dark Gem', 'Dragon Scale': 'Dragon Scale Collection', 'Earth Ball': 'Solid Earth Piece',
+        'Enchanted Gem': 'Big Enchanted Gem', 'Essence of Fire': 'Compressed Fire', 'Ghost Essence': 'Compressed Ghost Essence',
+        'Piece of Steel': 'Compressed Steel', 'Rubber Ball': 'Solid Rubber Ball', 'Seed': 'Pile of Seed', 'Small Stone': 'Big Stone',
+        'Snowball': 'Solid Ice Cube', 'Straw': 'Compressed Straw', 'Water Gem': 'Solid Water Gem',
+    };
+    const CLAN_BASE_OF = Object.fromEntries(Object.entries(CLAN_CONVERT).map(([b, c]) => [c.toLowerCase(), b]));
+    const CLAN_INFO = {
+        ironhard: { name: 'Ironhard', types: ['STEEL'], ranks: ['Smither', 'Forge', 'Hammer', 'Metal', 'Titan'] },
+        naturia: { name: 'Naturia', types: ['GRASS', 'BUG'], ranks: ['Seed', 'Sprout', 'Webhead', 'Woodtrunk', 'Keeper'] },
+        seavell: { name: 'Seavell', types: ['WATER', 'ICE'], ranks: ['Drop', 'Icelake', 'Waterfall', 'Frost', 'Master'] },
+        malefic: { name: 'Malefic', types: ['GHOST', 'POISON', 'DARK'], ranks: ['Troublemaker', 'Venomancer', 'Spectre', 'Nightwalker', 'Lord'] },
+        orebound: { name: 'Orebound', types: ['GROUND', 'ROCK'], ranks: ['Sand', 'Rock', 'Solid', 'Hardskin', 'Hero'] },
+        psycraft: { name: 'Psycraft', types: ['PSYCHIC', 'FAIRY'], ranks: ['Mind', 'Brain', 'Scholar', 'Telepath', 'Medium'] },
+        raibolt: { name: 'Raibolt', types: ['ELECTRIC'], ranks: ['Shock', 'Watt', 'Electrician', 'Overcharge', 'Legend'] },
+        volcanic: { name: 'Volcanic', types: ['FIRE'], ranks: ['Spark', 'Flame', 'Firetamer', 'Pyromancer', 'Master'] },
+        gardestrike: { name: 'Gardestrike', types: ['FIGHTING', 'NORMAL'], ranks: ['Fist', 'Tamer', 'Fighter', 'Deathand', 'Champion'] },
+        wingeon: { name: 'Wingeon', types: ['FLYING', 'DRAGON'], ranks: ['Cloud', 'Wind', 'Sky', 'Falcon', 'Dragon'] },
+    };
+
+    let clanState = null;           // ver parseClan
+    let clanFetchedAt = 0;
+    let clanBusy = false;
+    let clanSig = '';
+    let clanJoinTried = false;
+    let clanReadyAsked = 0;         // rank cuja tarefa pronta já pediu viagem urgente
+    const bag = new Map();          // itemId -> quantidade na mochila (frame `inventory`)
+    let bagAt = 0;
+    let clanTarget = null;          // { slug, name, level, motivo } hunt escolhida pela rota do clã
+    let clanFrom = null;            // hunt de antes da rota do clã (para onde voltar)
+    const clanFailed = new Set();   // slugs cuja entrada falhou nesta sessão
+    let onClanChange = null;        // callback do painel
+
+    function clanOn() { return Boolean(cfg.clanEnabled); }
+    function clanRouteOn() { return Boolean(cfg.clanEnabled && cfg.clanRoute); }
+    function clanNotify() { if (onClanChange) { try { onClanChange(); } catch { /* painel fechado */ } } }
+    function clanName(key) { return CLAN_INFO[key]?.name || (key ? String(key) : '?'); }
+
+    function parseClan(s) {
+        const t = s?.nextTask || null;
+        const arr = (a) => Array.isArray(a) ? a : [];
+        const n = (v) => Math.max(0, Number(v) || 0);
+        return {
+            clan: s?.clan ? String(s.clan) : null, rank: n(s?.clanRank), level: n(s?.level),
+            canJoin: Boolean(s?.canJoin), joinLevel: n(s?.joinLevel) || 80,
+            task: t ? {
+                rank: n(t.rank), name: String(t.name || ''), level: n(t.level), levelOk: t.levelOk !== false,
+                items: arr(t.items).map(i => ({ itemId: n(i?.itemId), name: String(i?.name || ''), have: n(i?.have), need: n(i?.need) })),
+                caught: arr(t.caught).map(c => ({ speciesId: n(c?.speciesId), name: String(c?.name || ''), have: n(c?.have), need: n(c?.need) })),
+                kills: arr(t.kills).map(k => ({ type: String(k?.type || '').toUpperCase(), have: n(k?.have), need: n(k?.need) })),
+                rewardXp: n(t.rewardXp), ok: Boolean(t.ok), goldCost: n(t.goldCost),
+            } : null,
+        };
+    }
+    function bagQty(id) { return bag.get(Number(id)) || 0; }
+    function clanItemIdByName(name) {
+        const k = normalize(name);
+        if (typeof itemsCatalog !== 'undefined' && itemsCatalog) for (const [id, it] of itemsCatalog) if (normalize(it?.name) === k) return id;
+        return null;
+    }
+    // O que falta da tarefa. Itens: em unidades do item de clã e do item base (descontando o que já está na mochila).
+    function clanMissing() {
+        const t = clanState?.task;
+        if (!t) return null;
+        const items = t.items.filter(i => i.have < i.need).map(i => {
+            const falta = i.need - i.have;
+            const baseName = CLAN_BASE_OF[normalize(i.name)] || null;
+            const baseId = baseName ? clanItemIdByName(baseName) : null;
+            const baseHave = baseId ? bagQty(baseId) : 0;
+            return { itemId: i.itemId, name: i.name, falta, base: baseName ? { name: baseName, id: baseId, have: baseHave, falta: Math.max(0, falta * CLAN_PACK - baseHave) } : null };
+        });
+        const kills = t.kills.filter(k => k.have < k.need).map(k => ({ type: k.type, falta: k.need - k.have }));
+        const caught = t.caught.filter(c => c.have < c.need).map(c => ({ speciesId: c.speciesId, name: c.name, falta: c.need - c.have }));
+        return { items, kills, caught, levelOk: t.levelOk, nada: !items.length && !kills.length && !caught.length };
+    }
+    // Não vender: o item de clã e o item base que a tarefa ainda pede.
+    function clanKeepsItem(id) {
+        const m = clanOn() ? clanMissing() : null;
+        if (!m) return false;
+        id = Number(id);
+        return m.items.some(i => i.itemId === id || (i.base && i.base.id === id));
+    }
+    function clanKeepsSpecies(speciesId) {
+        const m = clanOn() ? clanMissing() : null;
+        return Boolean(m && speciesId && m.caught.some(c => c.speciesId === speciesId));
+    }
+    // Viagem à cidade tem o que fazer pelo clã: rank pronto, ou item base suficiente para converter.
+    function clanWantsCity(d) {
+        d = d || cfg;
+        if (!d.clanEnabled || !clanState) return false;
+        if (!clanState.clan) return false;
+        const t = clanState.task;
+        if (!t) return false;
+        if (t.ok && d.clanRankup) return true;
+        const m = clanMissing();
+        return Boolean(m && m.items.some(i => i.base && i.base.id && i.base.have >= CLAN_PACK));
+    }
+    // Tudo pronto menos a conversão (que a mochila já cobre): vale uma viagem urgente.
+    function clanReadyForCity() {
+        const t = clanState?.task, m = clanMissing();
+        if (!t || !m || !cfg.clanRankup || !t.levelOk) return false;
+        if (t.ok) return true;
+        return !m.kills.length && !m.caught.length && m.items.every(i => i.base && i.base.id && i.base.falta === 0);
+    }
+
+    function clanOnInventory(items) {
+        bag.clear();
+        for (const it of items) { const id = Number(it?.itemId ?? it?.id); if (id > 0) bag.set(id, Math.max(0, Number(it.quantity) || 0)); }
+        bagAt = Date.now();
+        clanNotify();
+    }
+    function requestBag() { if (clanOn()) sendGame({ type: 'inv-get' }); }
+    // Pede a mochila e espera o frame (até `ms`); resolve true se chegou.
+    function refreshBag(ms) {
+        const antes = bagAt;
+        sendGame({ type: 'inv-get' });
+        const t0 = Date.now();
+        return new Promise(res => {
+            (function loop() {
+                if (bagAt !== antes) return res(true);
+                if (Date.now() - t0 >= ms) return res(false);
+                setTimeout(loop, 250);
+            })();
+        });
+    }
+
+    // field-kill: soma o loot na mochila e o abate no tipo (só para o status; a leitura do jogo corrige).
+    function noteClanKill(message) {
+        if (!clanOn() || !clanState?.task) return;
+        let mudou = false;
+        for (const l of Array.isArray(message.loot) ? message.loot : []) {
+            const id = Number(l?.itemId);
+            if (id > 0 && (bag.has(id) || clanKeepsItem(id))) { bag.set(id, bagQty(id) + (Number(l.qty) || 0)); mudou = true; }
+        }
+        const sid = typeof creatureIdByName !== 'undefined' ? creatureIdByName.get(normalize(message.speciesName || '')) : null;
+        const tipos = sid && typeof creatureTypes !== 'undefined' ? (creatureTypes.get(sid) || []) : [];
+        for (const k of clanState.task.kills) if (k.have < k.need && tipos.includes(k.type)) { k.have++; mudou = true; }
+        if (mudou) clanNotify();
+    }
+
+    async function refreshClan(force) {
+        if (clanBusy) return;
+        const gap = clanRouteOn() ? CLAN_POLL_ROUTE_MS : CLAN_POLL_MS;
+        if (!force && clanFetchedAt && Date.now() - clanFetchedAt < gap) return;
+        clanBusy = true;
+        try {
+            clanState = parseClan(await gameApi(CLAN_URL));
+            requestBag();
+            const t = clanState.task;
+            const sig = JSON.stringify([clanState.clan, clanState.rank, t && [t.rank, t.ok, t.levelOk, t.items.map(i => i.have), t.caught.map(c => c.have)]]);
+            if (sig !== clanSig) {
+                clanSig = sig;
+                logEvent('cla', { cla: clanState.clan, rank: clanState.rank, nivel: clanState.level, tarefa: t ? { rank: t.rank, nivel: t.level, nivelOk: t.levelOk, ok: t.ok, itens: t.items.map(i => `${i.name} ${i.have}/${i.need}`), captura: t.caught.map(c => `${c.name} ${c.have}/${c.need}`), abates: t.kills.map(k => `${k.type} ${k.have}/${k.need}`) } : null });
+            }
+        } catch (err) {
+            logEvent('cla-erro', { erro: String(err?.message || err) });
+        } finally {
+            clanFetchedAt = Date.now();
+            clanBusy = false;
+            clanNotify();
+        }
+    }
+
+    // Sem clã e já pode entrar: entra no escolhido (1ª entrada é grátis). Trocar de clã (diamantes) nunca.
+    async function clanAutoJoin(manual) {
+        const key = cfg.clanKey || 'orebound';
+        if (!clanState || clanState.clan || !clanState.canJoin || !CLAN_INFO[key]) return { ok: false, motivo: clanState?.clan ? 'já está num clã' : 'ainda não pode entrar' };
+        if (clanJoinTried && !manual) return { ok: false, motivo: 'já tentei nesta sessão' };
+        clanJoinTried = true;
+        try {
+            await gameApi(CLAN_CHANGE_URL, { method: 'POST', body: JSON.stringify({ clan: key, targetRank: 1 }) });
+            logEvent('cla-entrou', { cla: key });
+            const who = playerName();
+            postWebhook('alert', {
+                content: `🛡️ ${who ? `**${who}**` : 'Sua conta'} entrou no clã **${clanName(key)}**`,
+                username: 'Poke Idle World',
+                embeds: [{ title: `Clã: ${clanName(key)}`, description: (who ? `Conta: ${who}\n` : '') + `Rank 1 (${CLAN_INFO[key].ranks[0]}). O script segue para a tarefa do rank 2.\nEm ${new Date().toLocaleString('pt-BR')}`, color: 0x57f287 }],
+            }, { evento: 'cla-entrou', cla: key });
+            await refreshClan(true);
+            return { ok: true };
+        } catch (err) {
+            logEvent('cla-erro', { acao: 'entrar', erro: String(err?.message || err) });
+            return { ok: false, motivo: String(err?.message || err) };
+        }
+    }
+
+    // Na cidade (tarefa 'cla' da viagem): converte o item base que a mochila já tem e sobe de rank se a tarefa fechou.
+    async function clanCityWork() {
+        if (!clanOn()) return { ok: false, motivo: 'desligado' };
+        await refreshClan(true);
+        if (!clanState?.clan || !clanState.task) return { ok: false, motivo: clanState?.clan ? 'rank máximo' : 'sem clã' };
+        await loadItemsCatalog();
+        await refreshBag(4000);
+        const feito = [];
+        for (const i of clanMissing().items) {
+            if (!i.base?.id) continue;
+            const packs = Math.min(i.falta, Math.floor(bagQty(i.base.id) / CLAN_PACK));
+            if (packs < 1) continue;
+            try {
+                const r = await gameApi(CONVERT_URL, { method: 'POST', body: JSON.stringify({ baseItemId: i.base.id, packs }) });
+                const n = Number(r?.converted) || packs;
+                feito.push(`${n}x ${r?.toName || i.name}`);
+                bag.set(i.base.id, Math.max(0, bagQty(i.base.id) - n * CLAN_PACK));
+                logEvent('cla-converteu', { base: i.base.name, packs, convertido: n, para: r?.toName || i.name });
+            } catch (err) { logEvent('cla-erro', { acao: 'converter', base: i.base.name, packs, erro: String(err?.message || err) }); }
+        }
+        if (feito.length) await refreshClan(true);
+        const t = clanState.task;
+        let subiu = null;
+        if (t && t.ok && cfg.clanRankup) {
+            try {
+                const r = await gameApi(CLAN_RANKUP_URL, { method: 'POST', body: '{}' });
+                subiu = { de: clanState.rank, para: Number(r?.clanRank) || t.rank, xp: t.rewardXp };
+                logEvent('cla-rank', subiu);
+                const who = playerName();
+                const mention = cfg.mentionUserId ? `<@${cfg.mentionUserId}> ` : '';
+                const nomeRank = CLAN_INFO[clanState.clan]?.ranks[subiu.para - 1] || '';
+                postWebhook('alert', {
+                    content: `${mention}🛡️ ${who ? `**${who}**` : 'Sua conta'} subiu para o rank **${subiu.para}${nomeRank ? ` (${nomeRank})` : ''}** do clã ${clanName(clanState.clan)}`,
+                    username: 'Poke Idle World',
+                    embeds: [{ title: `Clã ${clanName(clanState.clan)}: rank ${subiu.para}`, description: (who ? `Conta: ${who}\n` : '') + `+${fmtNum(subiu.xp)} XP${feito.length ? `\nConvertido: ${feito.join(', ')}` : ''}\nEm ${new Date().toLocaleString('pt-BR')}`, color: 0x57f287 }],
+                }, { evento: 'cla-rank', rank: subiu.para });
+                clanTarget = null;
+                await refreshClan(true);
+            } catch (err) { logEvent('cla-erro', { acao: 'rankup', erro: String(err?.message || err) }); }
+        }
+        clanNotify();
+        return { ok: true, motivo: feito.length || subiu ? null : 'nada para converter', convertido: feito, subiu };
+    }
+
+    // ---- rota do clã ----
+    function clanLevelCap() {
+        const time = team.length ? Math.max(...team.map(p => Number(p.level) || 0)) : 0;
+        return time || clanState?.level || 9999;
+    }
+    function lootPerKill(speciesId, itemName) {
+        const loot = typeof creatureLoot !== 'undefined' ? (creatureLoot.get(Number(speciesId)) || []) : [];
+        const k = normalize(itemName);
+        return loot.filter(l => normalize(l?.name) === k).reduce((a, l) => a + (Number(l.chance) || 0) / 100000 * ((Number(l.minCount) || 1) + (Number(l.maxCount) || Number(l.minCount) || 1)) / 2, 0);
+    }
+    // Hunts ordenadas pelo quanto adiantam a tarefa: captura primeiro; depois fração da tarefa por abate.
+    function clanPlan() {
+        const m = clanMissing();
+        if (!m || m.nada || !Array.isArray(huntCatalog)) return [];
+        const cap = clanLevelCap();
+        const hs = huntCatalog.filter(h => h.speciesId && h.level <= cap && !clanFailed.has(h.slug));
+        const out = [];
+        for (const c of m.caught) {
+            const h = hs.find(x => x.speciesId === c.speciesId) || hs.find(x => normalize(x.speciesName || x.name) === normalize(c.name));
+            if (h) out.push({ hunt: h, nota: Infinity, motivo: `capturar ${c.name}` });
+        }
+        const bases = m.items.filter(i => i.base && i.base.falta > 0);
+        const rest = [];
+        for (const h of hs) {
+            const tipos = typeof creatureTypes !== 'undefined' ? (creatureTypes.get(h.speciesId) || []) : [];
+            let nota = 0;
+            const por = [];
+            for (const i of bases) { const e = lootPerKill(h.speciesId, i.base.name); if (e > 0) { nota += e / i.base.falta; por.push(`${i.base.name} ~${Math.round(e * 10) / 10}/abate`); } }
+            for (const k of m.kills) if (tipos.includes(k.type)) { nota += 1 / k.falta; por.push(`derrotar ${k.type}`); }
+            if (nota > 0) rest.push({ hunt: h, nota, motivo: por.join(', ') });
+        }
+        rest.sort((a, b) => b.nota - a.nota || a.hunt.level - b.hunt.level);
+        return out.concat(rest);
+    }
+    // Onde cada item base cai (as 3 melhores hunts ao alcance), para o painel.
+    function clanDropHints() {
+        const m = clanMissing();
+        if (!m || !Array.isArray(huntCatalog)) return [];
+        const cap = clanLevelCap();
+        return m.items.filter(i => i.base).map(i => {
+            const top = huntCatalog.filter(h => h.speciesId && h.level <= cap)
+                .map(h => ({ h, e: lootPerKill(h.speciesId, i.base.name) })).filter(x => x.e > 0)
+                .sort((a, b) => b.e - a.e || a.h.level - b.h.level).slice(0, 3);
+            return { base: i.base.name, top: top.map(x => `${x.h.slug} lv${x.h.level} (~${Math.round(x.e * 10) / 10}/abate)`) };
+        });
+    }
+
+    function clanHuntFailed(slug) {
+        clanFailed.add(slug);
+        if (clanTarget?.slug === slug) clanTarget = null;
+        logEvent('cla-hunt-falhou', { slug });
+    }
+    function clanReturn(motivo) {
+        const volta = clanFrom;
+        const atual = normalize(huntSlug || '');
+        clanTarget = null; clanFrom = null;
+        logEvent('cla-volta', { motivo, volta });
+        if (volta && volta !== atual) switchHunt(volta, 1, 'cla');
+    }
+
+    // Tique (60 s): lê a tarefa, entra no clã, pede a viagem se o rank estiver pronto e (com a rota) escolhe a hunt.
+    async function clanTick() {
+        if (!clanOn()) return;
+        await refreshClan(false);
+        if (!clanState) return;
+        if (!clanState.clan) { if (clanState.canJoin) await clanAutoJoin(false); return; }
+        if (clanReadyForCity() && clanReadyAsked !== clanState.task.rank && typeof tripRequest === 'function') {
+            clanReadyAsked = clanState.task.rank;
+            tripRequest('cla', null, 'tarefa do clã pronta');
+        }
+        if (!clanRouteOn()) return;
+        if (!Array.isArray(huntCatalog)) { try { await loadHuntCatalog(); } catch { return; } }
+        await loadItemsCatalog();
+        if (tripRunning || huntSwitch || swapPending) return;
+        if (dailyEnabled() && (dailyOnHunt() || dailyHoldsLeader())) return;   // a Daily vem primeiro
+        const plano = clanPlan();
+        const atual = normalize(huntSlug || '');
+        if (!plano.length) { if (clanTarget) clanReturn(clanState.task ? (clanMissing()?.nada ? 'tarefa feita' : 'nada ao alcance') : 'rank máximo'); return; }
+        let alvo = plano[0];
+        const aqui = plano.find(x => x.hunt.slug === atual);
+        if (aqui && alvo.nota !== Infinity && aqui.nota >= alvo.nota * CLAN_KEEP_RATIO) alvo = aqui; // não troca por pouco
+        if (!clanTarget || clanTarget.slug !== alvo.hunt.slug) {
+            clanTarget = { slug: alvo.hunt.slug, name: alvo.hunt.name, level: alvo.hunt.level, motivo: alvo.motivo };
+            logEvent('cla-alvo', clanTarget);
+            clanNotify();
+        }
+        if (atual === alvo.hunt.slug) return;
+        if (!clanFrom && atual && !CITY_SLUGS.includes(atual)) clanFrom = atual;
+        switchHunt(alvo.hunt.slug, 1, 'cla');
+    }
+
+    // Fila `pending` na hunt da captura da tarefa: joga a bola (a mesma da rota de captura).
+    function clanOnPending(list) {
+        if (!clanRouteOn() || catchRouteActive()) return;
+        const m = clanMissing();
+        if (!m || !m.caught.length) return;
+        if (Date.now() < catchCooldownUntil || Date.now() - catchSentAt < CATCH_SEND_GAP_MS) return;
+        const alvo = list.find(p => p && p.id != null && m.caught.some(c => Number(p.pokeId) === c.speciesId || normalize(p.name) === normalize(c.name)));
+        if (!alvo || catchSentFor === alvo.id) return;
+        const ballId = catchBallId();
+        if (!ballId || ballQty(ballId) === 0) { logEvent('cla-sem-bola', { ballId, name: alvo.name }); return; }
+        catchSentFor = alvo.id;
+        catchSentAt = Date.now();
+        const ok = sendGame({ type: 'catch', pendingId: alvo.id, ballId });
+        logEvent('cla-bola', { pendingId: alvo.id, name: alvo.name, ballId, enviado: ok });
+        setTimeout(() => refreshClan(true), 5000);   // confere o "capturar" da tarefa
+    }
+
+    // Texto do painel: { head, reqs:[linha], dicas:[linha], rota }.
+    function clanStatus(d) {
+        d = d || cfg;
+        if (!d.clanEnabled) return { head: 'Clã desligado', reqs: [], dicas: [], rota: '' };
+        const c = clanState;
+        if (!c) return { head: clanFetchedAt ? 'não consegui ler o clã (veja o log)' : 'ainda não lido', reqs: [], dicas: [], rota: '' };
+        if (!c.clan) return { head: c.canJoin ? `Sem clã · entrando em ${clanName(d.clanKey)} (1ª entrada é grátis)` : `Sem clã · entra no nível ${c.joinLevel} (você: ${c.level})`, reqs: [], dicas: [], rota: '' };
+        const info = CLAN_INFO[c.clan];
+        const nomeRank = info?.ranks[c.rank - 1] || '';
+        const t = c.task;
+        if (!t) return { head: `${clanName(c.clan)} rank ${c.rank}${nomeRank ? ` (${nomeRank})` : ''} · rank máximo ⭐`, reqs: [], dicas: [], rota: '' };
+        const m = clanMissing();
+        const reqs = [];
+        for (const i of t.items) {
+            const mi = m.items.find(x => x.itemId === i.itemId);
+            reqs.push(`${i.have >= i.need ? '✔' : '•'} Entregar ${i.name} ${fmtNum(Math.min(i.have, i.need))}/${fmtNum(i.need)}${mi?.base ? ` · ${mi.base.name} na mochila ${fmtNum(mi.base.have)}${mi.base.falta ? ` (faltam ${fmtNum(mi.base.falta)})` : ' ✔ (converte na viagem)'}` : ''}`);
+        }
+        for (const x of t.caught) reqs.push(`${x.have >= x.need ? '✔' : '•'} Capturar ${x.name} ${x.have}/${x.need}`);
+        for (const k of t.kills) reqs.push(`${k.have >= k.need ? '✔' : '•'} Derrotar ${k.type} ${fmtNum(Math.min(k.have, k.need))}/${fmtNum(k.need)}`);
+        const nivel = t.levelOk ? `nível ${t.level} ✔` : `nível ${t.level} ✖ (você: ${c.level})`;
+        const pronto = t.ok ? ' · pronto para subir' + (d.clanRankup ? ' (na próxima viagem)' : ' (suba no jogo)') : '';
+        const dicas = clanDropHints().map(x => `${x.base}: ${x.top.length ? x.top.join(' · ') : 'nenhuma hunt ao alcance'}`);
+        const rota = !d.clanRoute ? 'Rota do clã desligada' : clanTarget ? `▶ ${clanTarget.slug} lv${clanTarget.level} (${clanTarget.motivo})${clanFrom ? ` · volta para ${clanFrom}` : ''}` : (m.nada ? 'Nada a caçar' : 'escolhendo a hunt…');
+        return { head: `${clanName(c.clan)} rank ${c.rank}${nomeRank ? ` (${nomeRank})` : ''} → ${t.rank}${t.name ? ` ${t.name}` : ''} · ${nivel} · +${fmtNum(t.rewardXp)} XP${pronto}`, reqs, dicas, rota };
+    }
+
     // ---- Viagem à cidade: vender e comprar no NPC FORA da hunt (regra do jogo) ----------
     // Anúncio do jogo (26/09/2026, colado pelo usuário): não é mais permitido comprar/vender itens no NPC Mark,
     // vender Pokémon, usar o Mercado Global nem o Depot DURANTE a hunt. Toda venda/compra do script passa a ser
@@ -1985,13 +2388,15 @@
         const pokes = d.pokeSellEnabled ? pokeSellCandidates(d).length : 0;
         let bolas = null;
         if (d.autoBuy) { const id = watchedBallId(); const q = ballQty(id); const min = (Number(d.ballsMin) || 0) > 0 ? Number(d.ballsMin) : 1; if (id != null && q != null && q < min) bolas = { id, qty: q, min }; }
-        return { drops, pokes, bolas, nada: !drops && !pokes && !bolas };
+        const cla = typeof clanWantsCity === 'function' && clanWantsCity(d);
+        return { drops, pokes, bolas, cla, nada: !drops && !pokes && !bolas && !cla };
     }
     function tripLoadText(l) {
         const p = [];
         if (l.drops) p.push(`${l.drops} ${l.drops === 1 ? 'drop' : 'drops'}`);
         if (l.pokes) p.push(`${l.pokes} Pokémon`);
         if (l.bolas) p.push(`comprar ${Number(cfg.autoBuyQty) || 100} ${ballName(l.bolas.id)}`);
+        if (l.cla) p.push('clã (converter/subir de rank)');
         return p.length ? `Vai levar: ${p.join(', ')}` : 'Nada para levar por enquanto';
     }
     function tripNotify() { if (onTripChange) { try { onTripChange(); } catch { /* painel fechado */ } } }
@@ -2014,7 +2419,7 @@
     const TRIP_PHASE_PCT = { 'indo para a cidade': 15, 'na cidade': 50, 'voltando': 90 };
     function tripLastText() {
         if (!lastTripInfo) return '';
-        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas' };
+        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', cla: 'clã' };
         return `Última ${new Date(lastTripInfo.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}: ${lastTripInfo.tarefas.map(t => `${nome[t.key] || t.key} ${t.ok ? '✔' : '✖'}`).join(' · ')}`;
     }
     // Estado para a faixa do painel: { busy, pct, title, sub }.
@@ -2050,6 +2455,7 @@
             if (key === 'itens') tarefas.push({ key, run: () => runSellCycle(true, n.dados?.wanted, n.dados?.hunt) });
             else if (key === 'pokes') tarefas.push({ key, run: () => runPokeSellCycle(true) });
             else if (key === 'bolas' && n.dados) tarefas.push({ key, run: () => autoBuyBalls(n.dados.id, n.dados.qty, n.dados.min) });
+            else if (key === 'cla') tarefas.push({ key, run: () => clanCityWork() });
         }
         return tarefas;
     }
@@ -2109,6 +2515,7 @@
             const id = watchedBallId(), q = ballQty(id), min = effectiveBallsMin();
             if (id != null && q != null && q < min) needs.push(['bolas', { dados: { id, qty: q, min }, motivo: 'carona' }]);
         }
+        if (!has('cla') && typeof clanWantsCity === 'function' && clanWantsCity()) needs.push(['cla', { dados: null, motivo: 'carona' }]);
         return needs;
     }
 
@@ -2453,6 +2860,7 @@
             rememberPending(message.list);
             if (cfg.debug) console.log(TAG, 'Fila pending:', message.list);
             catchOnPending(message.list);
+            clanOnPending(message.list);
             return;
         }
         if (message.type === 'catch-cooldown') { catchOnCooldown(message); return; }
@@ -2466,7 +2874,8 @@
             if (message.type === 'field-init' && message.slug && !huntSlug) setHunt(message.slug); // script carregou depois do enter-hunt
             return;
         }
-        if (message.type === 'field-kill') { noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); return; }
+        if (message.type === 'field-kill') { noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); return; }
+        if (message.type === 'inventory' && Array.isArray(message.items)) { clanOnInventory(message.items); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
         if (message.type === 'pokes' && Array.isArray(message.list)) { updateTeam(message.list); handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); return; }
 
@@ -2756,7 +3165,7 @@
                 return 'on';
             }
             case 'profissao':
-                if (!d.catchRouteEnabled) return 'off';
+                if (!d.catchRouteEnabled && !d.clanEnabled) return 'off';
                 return temAlertas ? 'on' : 'warn';
             case 'sistema': return d.reloadEnabled ? 'on' : 'off';
         }
@@ -2770,7 +3179,7 @@
             `Bolas: ${moduleState('bolas', d) === 'off' ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}`,
             `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades)` : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
             `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? 'daily sozinha' : 'daily') : ''].filter(Boolean).join(' + ') || 'desligado'}`,
-            `Profissão: ${d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : 'desligada'}`,
+            `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
         ].join(' · ');
     }
@@ -2947,6 +3356,16 @@
                         </div>
                     </div>
                     <div class="dn-section">
+                        <h3>Clã</h3>
+                        <label class="dn-toggle"><input id="pg-dn-clan" type="checkbox"><span class="sw"></span>Fazer o clã sozinho <span class="dn-hint">(guarda os drops da tarefa, converte e entrega na viagem à cidade)</span></label>
+                        <label class="dn-field"><span>Clã</span><select id="pg-dn-clan-key" class="dn-select">${Object.entries(CLAN_INFO).map(([k, c]) => `<option value="${k}">${c.name} (${c.types.join('/')})</option>`).join('')}</select></label>
+                        <label class="dn-toggle"><input id="pg-dn-clan-rankup" type="checkbox"><span class="sw"></span>Subir de rank sozinho quando a tarefa fechar</label>
+                        <label class="dn-toggle"><input id="pg-dn-clan-route" type="checkbox"><span class="sw"></span>Caçar o que falta <span class="dn-hint">(vai para a melhor hunt; joga a bola da rota de captura na espécie pedida)</span></label>
+                        <p class="dn-help">Sem clã, o script entra no escolhido (a 1ª entrada é grátis; trocar de clã custa diamante e ele nunca faz). Os itens de clã saem de 100 do item base (ex.: 100 Small Stone = 1 Big Stone): o script não vende esses drops nem o Pokémon da espécie pedida. Converter e subir de rank vão na viagem à cidade. "Caçar o que falta" desliga a rota de treino e a de captura; a Daily tem prioridade.</p>
+                        <div class="dn-status col"><div id="pg-dn-clan-status"></div><ul id="pg-dn-clan-reqs" class="dn-help"></ul><div id="pg-dn-clan-hints" class="dn-help"></div><div id="pg-dn-clan-plan" class="dn-help"></div></div>
+                        <div class="dn-actions"><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-clan-refresh" title="Relê o clã e a mochila no jogo.">Atualizar clã</button></div>
+                    </div>
+                    <div class="dn-section">
                         <h3>Profissão</h3>
                         <div class="dn-status"><span>🎓</span><span id="pg-dn-prof-status"></span></div>
                         <p class="dn-help">"Espécies diferentes capturadas" é requisito de rank no jogo; a rota acima serve para isso. Os dados vêm de Profissões e da Pokédex do jogo.</p>
@@ -3090,6 +3509,10 @@
                 dailyEnabled: $('#pg-dn-daily').checked,
                 dailyClaim: $('#pg-dn-daily-claim').checked,
                 dailyAuto: $('#pg-dn-daily-auto').checked,
+                clanEnabled: $('#pg-dn-clan').checked,
+                clanKey: $('#pg-dn-clan-key').value || 'orebound',
+                clanRankup: $('#pg-dn-clan-rankup').checked,
+                clanRoute: $('#pg-dn-clan-route').checked,
                 dailyReturnSlug: huntSlugFromName($('#pg-dn-daily-return').value),
                 watchList: $('#pg-dn-list').value.split(',').map(normalize).filter(Boolean),
                 notifyShiny: $('#pg-dn-shiny').checked,
@@ -3484,6 +3907,20 @@
                 : '<span class="k">Profissão ainda não lida (Atualizar Pokédex).</span>';
         }
         onCatchChange = () => { if (!panel.hidden) renderCatch(); };
+        function renderClan() {
+            const st = clanStatus(current());
+            $('#pg-dn-clan-status').innerHTML = `<span class="k">Clã ·</span> ${escHtml(st.head)}`;
+            $('#pg-dn-clan-reqs').innerHTML = st.reqs.map(r => `<li>${escHtml(r)}</li>`).join('');
+            $('#pg-dn-clan-hints').textContent = st.dicas.length ? `Onde cai: ${st.dicas.join(' | ')}` : '';
+            $('#pg-dn-clan-plan').textContent = st.rota ? `Rota: ${st.rota}` : '';
+        }
+        onClanChange = () => { if (!panel.hidden) renderClan(); };
+        $('#pg-dn-clan-refresh').onclick = () => {
+            flash('📥 Lendo o clã e a mochila…', 'info', 3000);
+            Promise.all([loadHuntCatalog().catch(() => null), loadItemsCatalog()])
+                .then(() => refreshClan(true)).then(() => { requestBag(); renderClan(); });
+        };
+        ['#pg-dn-clan', '#pg-dn-clan-route', '#pg-dn-clan-rankup', '#pg-dn-clan-key'].forEach(sel => $(sel).addEventListener('change', renderClan));
         $('#pg-dn-catch-skip').onclick = () => {
             const slug = skipCatchTarget();
             renderCatch();
@@ -3517,7 +3954,7 @@
             if (dirty) $('#pg-dn-save').click();
             const needs = tripAugment([]);
             if (!needs.length) { flash('⚠ Nada para levar: nenhum drop marcado nesta hunt, nenhum Pokémon nas regras e bolas acima do limite.', 'warn'); return; }
-            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas' };
+            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', cla: 'clã' };
             flash(`🏙 Indo à cidade: ${needs.map(n => nome[n[0]]).join(', ')}…`, 'info', 90000);
             tripNeeds.clear();
             cityTrip('manual: ' + needs.map(n => n[0]).join('+'), tripTasksFor(needs)).then(r => {
@@ -3546,7 +3983,7 @@
 
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderCatch(); renderTrip(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderCatch(); renderClan(); renderTrip(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -3592,6 +4029,10 @@
             $('#pg-dn-daily').checked = Boolean(cfg.dailyEnabled);
             $('#pg-dn-daily-claim').checked = cfg.dailyClaim !== false;
             $('#pg-dn-daily-auto').checked = Boolean(cfg.dailyAuto);
+            $('#pg-dn-clan').checked = Boolean(cfg.clanEnabled);
+            $('#pg-dn-clan-key').value = CLAN_INFO[cfg.clanKey] ? cfg.clanKey : 'orebound';
+            $('#pg-dn-clan-rankup').checked = cfg.clanRankup !== false;
+            $('#pg-dn-clan-route').checked = Boolean(cfg.clanRoute);
             $('#pg-dn-daily-return').value = cfg.dailyReturnSlug || '';
             $('#pg-dn-trip-city').value = ['cerulean', 'pewter', 'viridian', 'goldenrod'].includes(cfg.tripCity) ? cfg.tripCity : 'cerulean';
             $('#pg-dn-reload').checked = Boolean(cfg.reloadEnabled);
@@ -3676,11 +4117,20 @@
             const viagemAntes = JSON.stringify([cfg.tripEveryMin, cfg.tripEveryMaxMin]);
             const ligouCaptura = draft.catchRouteEnabled && !cfg.catchRouteEnabled;
             const ligouRota = draft.routeEnabled && !cfg.routeEnabled;
+            const ligouCla = draft.clanEnabled && draft.clanRoute && !(cfg.clanEnabled && cfg.clanRoute);
+            const clanAntes = JSON.stringify([cfg.clanEnabled, cfg.clanRoute, cfg.clanKey]);
             Object.assign(cfg, draft);
             const exclusivo = [];
-            if (cfg.catchRouteEnabled && cfg.routeEnabled) { // as duas trocam de hunt: fica a que acabou de ser ligada
-                if (ligouCaptura && !ligouRota) { cfg.routeEnabled = false; exclusivo.push('"Seguir a rota" (treino) foi desligada: a rota de captura manda na hunt.'); }
-                else { cfg.catchRouteEnabled = false; exclusivo.push('Rota de captura desligada: a rota de treino manda na hunt.'); }
+            // Rota de treino, de captura e do clã trocam de hunt: fica a que acabou de ser ligada.
+            const rotas = [
+                { on: () => cfg.routeEnabled, off: () => { cfg.routeEnabled = false; }, ligou: ligouRota, nome: '"Seguir a rota" (treino)' },
+                { on: () => cfg.catchRouteEnabled, off: () => { cfg.catchRouteEnabled = false; }, ligou: ligouCaptura, nome: 'Rota de captura' },
+                { on: () => cfg.clanEnabled && cfg.clanRoute, off: () => { cfg.clanRoute = false; }, ligou: ligouCla, nome: '"Caçar o que falta" (clã)' },
+            ];
+            const ligadas = rotas.filter(r => r.on());
+            if (ligadas.length > 1) {
+                const fica = ligadas.find(r => r.ligou) || ligadas[0];
+                for (const r of ligadas) if (r !== fica) { r.off(); exclusivo.push(`${r.nome} desligada: ${fica.nome} manda na hunt.`); }
             }
             if (JSON.stringify(routeList()) !== rotaAntes) cfg.routeStage = 0; // rota editada: recomeça
             if (routeList().length && !cfg.routeName) cfg.routeName = uniqueRouteName('Rota 1'); // primeira rota ganha nome sozinha (saveCfg espelha)
@@ -3694,6 +4144,10 @@
             saveHuntProfile();
             if (JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]) !== recargaAntes) scheduleReload(); // faixa mudou: sorteia de novo
             if (JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug, cfg.dailyAuto]) !== dailyAntes) scheduleDailyCheck(500); // daily mudou: lê a missão já
+            if (JSON.stringify([cfg.clanEnabled, cfg.clanRoute, cfg.clanKey]) !== clanAntes) {
+                if (!(cfg.clanEnabled && cfg.clanRoute) && clanTarget) clanReturn('rota do clã desligada');
+                if (cfg.clanEnabled) setTimeout(() => clanTick(), 500);
+            }
             if (JSON.stringify([cfg.catchRouteEnabled, cfg.catchRouteAreas, cfg.catchRouteMaxLevel]) !== capturaAntes) {
                 if (!cfg.catchRouteEnabled) catchTarget = null;
                 else if (huntCatalog) catchNext('salvar'); else startCatchRoute('salvar');
@@ -3839,8 +4293,10 @@
     setInterval(dailyTick, DAILY_CHECK_MS);
     setInterval(catchTick, CATCH_TICK_MS);
     setInterval(tripTick, TRIP_TICK_MS);
+    setInterval(clanTick, CLAN_TICK_MS);
     if (!lastTripAt) restartTripCycle(); // 1ª viagem só depois de um intervalo inteiro (a recarga restaura o relógio)
     if (cfg.catchRouteEnabled) setTimeout(() => startCatchRoute('carga'), 8000); // depois do socket/retomada da recarga
+    if (cfg.clanEnabled) setTimeout(clanTick, 8000);   // lê o clã logo na carga (REST) e pede a mochila
     if (cfg.dailyEnabled) scheduleDailyCheck(5000); // lê a missão do dia logo na carga (REST, não depende do socket)
 
     console.log(TAG, `v${VERSION} ativo.`, 'Watch list:', cfg.watchList.join(', ') || '(vazia)',

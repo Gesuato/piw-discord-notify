@@ -378,4 +378,64 @@ function loadTripModule(cfg, init) {
     return { api, state, cfg, clock };
 }
 
-module.exports = { loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+// Extrai o módulo "Clã" (v3.17.0) e o executa com stubs. `init.api(url, opts)` responde o REST (clans, convert, rankup,
+// change); `init.bag` é a mochila devolvida ao `inv-get`; `init.huntCatalog`/`init.creatures` fazem o papel do catálogo.
+const K_START = '    // ---- Clã: subir de rank';
+const K_END = '    // ---- Viagem à cidade';
+
+function loadClanModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(K_START), b = src.indexOf(K_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo do clã não encontrados no script');
+    const mod = src.slice(a, b);
+    const clock = { now: Date.now() };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const state = { calls: [], sent: [], switches: [], hooks: [], logs: [], trips: [], hook: null };
+    const normalize = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+    const cr = init.creatures || [];
+    const ctx = {
+        cfg,
+        gameApi: (url, opts) => { state.calls.push({ url, opts }); return Promise.resolve().then(() => init.api(url, opts)); },
+        sendGame: (m) => { state.sent.push(m); if (m.type === 'inv-get' && init.bag && state.hook) state.hook(init.bag); return true; },
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        normalize,
+        fmtNum: (n) => String(n),
+        switchHunt: (slug, tentativa, origem) => state.switches.push({ slug, tentativa, origem }),
+        huntSlug: init.huntSlug != null ? init.huntSlug : null,
+        CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'],
+        team: init.team || [],
+        huntCatalog: init.huntCatalog || null,
+        loadHuntCatalog: () => Promise.resolve(init.huntCatalog || null),
+        itemsCatalog: new Map((init.items || []).map(i => [i.id, i])),
+        loadItemsCatalog: () => Promise.resolve(),
+        creatureTypes: new Map(cr.map(c => [c.pokeId, [c.type1 || '', c.type2 || '']])),
+        creatureLoot: new Map(cr.map(c => [c.pokeId, c.loot || []])),
+        creatureIdByName: new Map(cr.map(c => [normalize(c.name), c.pokeId])),
+        tripRunning: false, huntSwitch: null, swapPending: null,
+        dailyEnabled: () => Boolean(init.dailyOnHunt),
+        dailyOnHunt: () => Boolean(init.dailyOnHunt),
+        dailyHoldsLeader: () => false,
+        tripRequest: (k, d, m) => state.trips.push({ k, m }),
+        catchRouteActive: () => false,
+        catchCooldownUntil: 0, catchSentAt: 0, catchSentFor: null, CATCH_SEND_GAP_MS: 3000,
+        catchBallId: () => 4,
+        ballQty: () => 50,
+        setTimeout: (fn, ms) => { clock.now += ms; fn(); return 1; },
+        Date: FakeDate,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            clanTick, clanCityWork, clanPlan, clanMissing, clanKeepsItem, clanKeepsSpecies, clanWantsCity, clanOnPending,
+            clanOnInventory, clanStatus, noteClanKill, refreshClan,
+            setHunt(slug) { huntSlug = slug; },
+            get clanTarget() { return clanTarget; }, get clanFrom() { return clanFrom; }, get clanState() { return clanState; },
+        };`);
+    const api = factory(...Object.values(ctx));
+    state.hook = (items) => api.clanOnInventory(items);
+    return { api, state, cfg, clock };
+}
+
+module.exports = { loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

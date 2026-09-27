@@ -82,6 +82,13 @@ e `error { message }` (resposta de ação recusada; o script os trata em `handle
   `GET /api/game/daily-catch` (Daily Catch: capturas premiadas por faixa, `tiers[]`) e `GET /api/game/dailys-summary`
   → `{ tasks:{ ready }, kill:{ locked, claimed, picked, qty, have }, catch:{ used, total } }` existem, não usados.
   `GET /api/game/daily` é o Daily Gift (calendário de 28 dias), outra coisa.
+- Clãs (janela "Clãs", levantado em 27/09/2026; usado pelo módulo Clã, v3.17.0): `GET /api/game/clans` → `{ clan,
+  clanRank, level, diamonds, canJoin, joinLevel, nextTask:{ rank, name, level, levelOk, items:[{ itemId, name, icon, have,
+  need }], caught:[{ speciesId, name, have, need }], kills:[{ type, have, need }], rewardXp, ok, goldOk, goldCost } | null }`;
+  `POST /api/game/clans/rankup {}`, `POST /api/game/clans/skip {}` (paga gold), `POST /api/game/clans/change { clan,
+  targetRank }` (entrar: targetRank 1, grátis na 1ª vez; trocar: 40/60/80 💎 para rank 1/3/5). Conversão da mochila:
+  `POST /api/game/convert { baseItemId, packs }` → `{ converted, toName }` (100 base = 1 item de clã; mapa `aj` do bundle).
+  `inv-get` → frame `inventory { items:[{ itemId, quantity }] }`. Elementos: `CLAN_ELEMENTS` (orebound = GROUND/ROCK).
 - Pokédex e mapa (v3.10.0): `GET /api/game/map-markers` (SEM auth) → `{ map:{ w, h }, hunts:[{ slug, name, level,
   area:'kanto'|'orre'|'outland'|'nightmare', looktype, pixel, range }] }` (454 hunts, level 0 = cidades);
   `GET /game/creatures.json` (público) → `{ creatures:[{ pokeId, name, looktype, type1, type2, rarity, huntLevel,
