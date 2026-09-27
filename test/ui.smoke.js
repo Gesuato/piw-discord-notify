@@ -71,6 +71,16 @@ setTimeout(() => {
         const cfgK = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
         log('cla salvo=' + cfgK.clanEnabled + ' rota=' + cfgK.clanRoute + ' chave=' + cfgK.clanKey + ' rotaTreino=' + cfgK.routeEnabled + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 140));
         if (!(cfgK.clanEnabled && cfgK.clanRoute && cfgK.clanKey === 'orebound' && !cfgK.routeEnabled)) errors.push('clã: Salvar não gravou ou não desligou a rota de treino');
+        // Guardar na cidade (v3.18.0): bloco da aba Venda grava os dois destinos
+        panel.querySelector('.dn-tab[data-tab=venda]').click();
+        $('#pg-dn-dep-items').value = 'depot'; fire($('#pg-dn-dep-items'), 'change');
+        $('#pg-dn-dep-pokes').value = 'family'; fire($('#pg-dn-dep-pokes'), 'change');
+        log('guardar rascunho=' + $('#pg-dn-sum-guardar').textContent + ' | ' + $('#pg-dn-dep-status').textContent);
+        $('#pg-dn-save').click();
+        const cfgG = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+        if (!(cfgG.depositItems === 'depot' && cfgG.depositPokes === 'family' && cfgG.depositPokesRare === false)) errors.push('guardar: Salvar não gravou os destinos');
+        $('#pg-dn-dep-items').value = ''; fire($('#pg-dn-dep-items'), 'change'); $('#pg-dn-dep-pokes').value = ''; fire($('#pg-dn-dep-pokes'), 'change');
+        panel.querySelector('.dn-tab[data-tab=profissao]').click();
         $('#pg-dn-clan').checked = false; fire($('#pg-dn-clan'), 'change'); $('#pg-dn-clan-route').checked = false; fire($('#pg-dn-clan-route'), 'change');
         $('#pg-dn-route-on').checked = true; fire($('#pg-dn-route-on'), 'change'); $('#pg-dn-save').click();
         panel.querySelector('.dn-tab[data-tab=treino]').click();

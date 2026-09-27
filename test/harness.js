@@ -438,4 +438,56 @@ function loadClanModule(cfg, init) {
     return { api, state, cfg, clock };
 }
 
-module.exports = { loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+// Extrai o módulo "Guardar na cidade" (v3.18.0). `init.api(url, opts)` responde depot/move; `init.family` é o frame da
+// família devolvido ao `family-get` (null = sem família); `init.pokes` a lista do `pokes-get`; `init.familyResp(payload)`
+// decide o resultado de cada family-action (padrão ok).
+const G_START = '    // ---- Guardar na cidade';
+const G_END = '    // ---- Viagem à cidade';
+
+function loadDepositModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(G_START), b = src.indexOf(G_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo de guardar não encontrados no script');
+    const mod = src.slice(a, b);
+    const clock = { now: Date.now() };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const state = { calls: [], sent: [], hooks: [], logs: [], family: [], store: Object.assign({}, init.store || {}), set: null };
+    const ctx = {
+        cfg,
+        gameApi: (url, opts) => { state.calls.push({ url, opts }); return Promise.resolve().then(() => init.api(url, opts)); },
+        sendGame: (m) => {
+            state.sent.push(m);
+            if (m.type === 'family-get' && state.set) state.set.family(init.family === undefined ? { movesUsed: 0, movesCap: 50, frozen: false } : init.family);
+            if (m.type === 'pokes-get' && state.set) state.set.pokes(init.pokes || []);
+            return true;
+        },
+        familyDeposit: (pokeId, name) => { state.family.push({ kind: 'poke', pokeId, name }); return Promise.resolve(init.familyResp ? init.familyResp({ kind: 'poke', pokeId }) : { ok: true }); },
+        familyItemDeposit: (itemId, qty, name) => { state.family.push({ kind: 'item', itemId, qty, name }); return Promise.resolve(init.familyResp ? init.familyResp({ kind: 'item', itemId }) : { ok: true }); },
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        loadItemsCatalog: () => Promise.resolve(new Map((init.items || []).map(i => [i.id, i]))),
+        DEPOT_URL: '/api/game/depot',
+        recentCaptureIds: new Map(init.recent || []),
+        POKE_SELL_RECENT_MS: 2 * 60 * 1000,
+        pokeSellReason: init.pokeSellReason || (() => 'sem regra'),
+        pokeLabel: (p) => `${p.name} ${p.ivTotal}`,
+        clanKeepsItem: init.clanKeepsItem || (() => false),
+        clanKeepsSpecies: () => false,
+        localStorage: { getItem: (k) => (k in state.store ? state.store[k] : null), setItem: (k, v) => { state.store[k] = String(v); }, removeItem: (k) => { delete state.store[k]; } },
+        setTimeout: (fn, ms) => { clock.now += ms; fn(); return 1; },
+        Date: FakeDate,
+    };
+    const factory = new Function(...Object.keys(ctx), 'let lastFamily = null, lastFamilyAt = 0, lastPokesList = [], lastPokesAt = 0;\n' + mod + `
+        return {
+            depositCityWork, depositPokeCandidates, depositItemReason, depositWanted, depositStatus, noteDepositDrop,
+            _set: { family(f) { lastFamily = f; lastFamilyAt++; }, pokes(l) { lastPokesList = l; lastPokesAt++; } },
+            get droppedIds() { return droppedIds; },
+        };`);
+    const api = factory(...Object.values(ctx));
+    state.set = api._set;
+    return { api, state, cfg, clock };
+}
+
+module.exports = { loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

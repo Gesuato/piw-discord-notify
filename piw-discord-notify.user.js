@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.17.0
+// @version      3.18.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.17.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.18.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -67,6 +67,9 @@
         clanKey: 'orebound',    // clã em que o script entra sozinho se a conta não tiver nenhum (1ª entrada é grátis)
         clanRankup: true,       // ...subir de rank sozinho quando a tarefa fechar (na viagem à cidade)
         clanRoute: false,       // ...ir sozinho para a hunt que mais adianta a tarefa (e jogar bola na espécie pedida)
+        depositItems: '',       // v3.18.0 Guardar na cidade: drops que sobraram -> '' (mochila) | 'depot' | 'family'
+        depositPokes: '',       // ...Pokémon fora do time que a venda não vende -> '' (box) | 'family'
+        depositPokesRare: false, // ...incluir shiny e 🔒 no depósito da família
         tripCity: 'cerulean',   // v3.14.0: cidade da viagem de venda/compra (regra do jogo: nada de venda/compra na hunt)
         tripMinGapMin: 3,       // intervalo mínimo entre duas viagens à cidade (minutos; só para viagens urgentes, ex.: bola zerada)
         tripEveryMin: 10,       // v3.15.0: relógio ÚNICO das viagens (vendas de itens e Pokémon, compras): mínimo em minutos
@@ -2331,6 +2334,181 @@
         return { head: `${clanName(c.clan)} rank ${c.rank}${nomeRank ? ` (${nomeRank})` : ''} → ${t.rank}${t.name ? ` ${t.name}` : ''} · ${nivel} · +${fmtNum(t.rewardXp)} XP${pronto}`, reqs, dicas, rota };
     }
 
+    // ---- Guardar na cidade: o que sobrou da venda vai para o Depot comum ou para a família ---------
+    // Levantado no bundle em 27/09/2026 (janelas Depot e Família):
+    //   GET  /api/game/depot -> { inventory:[{ id, name, quantity, npcPrice, category }] (mochila), depot:[...] }
+    //   POST /api/game/depot/move { itemId, dir:'store'|'withdraw' } -> mesmo formato; move a PILHA inteira ({ all:true } = tudo)
+    //   family-action { action:'item', dir:'deposit', itemId, quantity } e { action:'poke', dir:'deposit', capturedId } pelo
+    //        socket -> frame `family` ou `error`. Limite diário: 50 movimentos + 50 por membro VIP (máx. 250). O que entra
+    //        passa a ser DA FAMÍLIA (qualquer membro retira).
+    //   Pokémon no "Depot comum" = o box: todo Pokémon fora do time já está lá (`poke-store` só tira do time). Por isso o
+    //   destino dos Pokémon é só a família.
+    // Roda como ÚLTIMA tarefa de toda viagem à cidade (depois de vender, comprar e do clã) e nunca pede viagem sozinho.
+    // Itens: só os que já caíram em hunt (ids vistos em `field-kill`, em localStorage.pgDiscordNotifyDrops), menos
+    //   suprimento (heal/revive/ball), os marcados para venda (ficam na mochila: vendidos ou "Manter") e os que a tarefa
+    //   do clã pede (a conversão usa a mochila).
+    // Pokémon: fora do time que a venda NÃO vende (regras da aba Venda), menos inicial, anunciado no mercado, capturado há
+    //   menos de 2 min, da tarefa do clã e, sem `depositPokesRare`, shiny e 🔒.
+
+    const DEPOT_MOVE_URL = '/api/game/depot/move';
+    const DROPS_KEY = 'pgDiscordNotifyDrops';
+    const DEPOSIT_SKIP_CATS = ['heal', 'revive', 'ball'];
+    const DEPOSIT_WAIT_MS = 5000;
+    const DEPOSIT_GAP_MS = [300, 700];        // pausa entre movimentos (sorteada)
+    const droppedIds = loadDropped();         // ids de item que já caíram em hunt
+    let lastDeposit = null;                   // { at, itens, pokes, erros } da última viagem
+    let depositRunning = false;
+
+    function loadDropped() {
+        try { const a = JSON.parse(localStorage.getItem(DROPS_KEY) || '[]'); return new Set(Array.isArray(a) ? a.map(Number).filter(n => n > 0) : []); }
+        catch { return new Set(); }
+    }
+    function saveDropped() {
+        try { localStorage.setItem(DROPS_KEY, JSON.stringify([...droppedIds].slice(-500))); } catch { /* sem localStorage */ }
+    }
+    function noteDepositDrop(message) {
+        let novo = false;
+        for (const l of Array.isArray(message?.loot) ? message.loot : []) {
+            const id = Number(l?.itemId);
+            if (id > 0 && !droppedIds.has(id)) { droppedIds.add(id); novo = true; }
+        }
+        if (novo) saveDropped();
+    }
+    function depositWanted(d) { d = d || cfg; return Boolean(d.depositItems || d.depositPokes); }
+    // Motivo para um item da mochila NÃO ir para o depósito, ou null se vai.
+    function depositItemReason(inv, item) {
+        const id = Number(inv?.id ?? inv?.itemId);
+        if (!(Math.floor(Number(inv?.quantity) || 0) > 0)) return 'vazio';
+        if (!droppedIds.has(id)) return 'não é drop de hunt';
+        if (DEPOSIT_SKIP_CATS.includes(String(inv?.category || item?.category || ''))) return 'suprimento';
+        if (cfg.sellEnabled && cfg.sellItems && cfg.sellItems[id]) return 'marcado para venda';
+        if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) return 'tarefa do clã';
+        return null;
+    }
+    // Motivo para um Pokémon NÃO ir para a família, ou null se vai.
+    function depositPokeReason(p, d) {
+        d = d || cfg;
+        if (!p || typeof p !== 'object') return 'inválido';
+        if (p.team || p.leader || String(p.id).startsWith('team-')) return 'no time';
+        if (p.starter) return 'inicial';
+        if (p.listed || p.tradeId) return 'anunciado no mercado';
+        if (!d.depositPokesRare && p.shiny) return 'shiny';
+        if (!d.depositPokesRare && p.locked) return 'cadeado';
+        const at = recentCaptureIds.get(String(p.id));
+        if (at && Date.now() - at < POKE_SELL_RECENT_MS) return 'capturado agora';
+        if (typeof clanKeepsSpecies === 'function' && clanKeepsSpecies(Number(p.speciesId))) return 'tarefa do clã';
+        if (d.pokeSellEnabled && !pokeSellReason(p, d)) return 'vai ser vendido';
+        return null;
+    }
+    function depositPokeCandidates(d, list) { return (Array.isArray(list) ? list : lastPokesList).filter(p => !depositPokeReason(p, d)); }
+
+    function depositSleep() { return new Promise(r => setTimeout(r, DEPOSIT_GAP_MS[0] + Math.random() * (DEPOSIT_GAP_MS[1] - DEPOSIT_GAP_MS[0]))); }
+    // Manda `send()` e espera `getAt()` mudar (frame novo) por até `ms`.
+    function waitFrame(getAt, send, ms) {
+        const antes = getAt();
+        send();
+        const t0 = Date.now();
+        return new Promise(res => {
+            (function loop() {
+                if (getAt() !== antes) return res(true);
+                if (Date.now() - t0 >= ms) return res(false);
+                setTimeout(loop, 250);
+            })();
+        });
+    }
+    const FAMILY_STOP = /limite|congelad|família|familia/i;   // motivo que encerra os depósitos na família desta viagem
+
+    async function depositCityWork() {
+        if (!depositWanted()) return { ok: false, motivo: 'desligado' };
+        if (depositRunning) return { ok: false, motivo: 'já guardando' };
+        depositRunning = true;
+        const res = { itens: [], pokes: [], erros: [] };
+        let destinoItens = cfg.depositItems, movs = Infinity;
+        try {
+            if (cfg.depositItems === 'family' || cfg.depositPokes === 'family') {
+                await waitFrame(() => lastFamilyAt, () => sendGame({ type: 'family-get' }), DEPOSIT_WAIT_MS);
+                if (!lastFamily) { res.erros.push('a conta não está numa família'); movs = 0; }
+                else if (lastFamily.frozen) { res.erros.push('depósito da família congelado'); movs = 0; }
+                else movs = Math.max(0, lastFamily.movesCap - lastFamily.movesUsed);
+                if (lastFamily && !movs && !lastFamily.frozen) res.erros.push(`limite diário da família (${lastFamily.movesUsed}/${lastFamily.movesCap})`);
+            }
+            // Pokémon (só família), com a lista relida depois da venda
+            if (cfg.depositPokes === 'family' && movs > 0) {
+                await waitFrame(() => lastPokesAt, () => sendGame({ type: 'pokes-get' }), DEPOSIT_WAIT_MS);
+                for (const p of depositPokeCandidates(cfg)) {
+                    if (movs <= 0) break;
+                    const r = await familyDeposit(String(p.id), p.name);
+                    if (r.ok) { res.pokes.push(pokeLabel(p)); movs--; }
+                    else { res.erros.push(`${p.name}: ${r.motivo}`); if (FAMILY_STOP.test(r.motivo || '')) { movs = 0; break; } }
+                    await depositSleep();
+                }
+            }
+            // Itens
+            if (destinoItens && !(destinoItens === 'family' && movs <= 0)) {
+                const catalog = await loadItemsCatalog();
+                let dep = null;
+                try { dep = await gameApi(DEPOT_URL); } catch (err) { res.erros.push(`mochila: ${err?.message || err}`); }
+                for (const inv of Array.isArray(dep?.inventory) ? dep.inventory : []) {
+                    const id = Number(inv?.id ?? inv?.itemId);
+                    const item = catalog.get(id) || inv;
+                    if (depositItemReason(inv, item)) continue;
+                    const qty = Math.floor(Number(inv.quantity) || 0);
+                    const nome = inv.name || item.name || `Item ${id}`;
+                    if (destinoItens === 'depot') {
+                        try {
+                            const r = await gameApi(DEPOT_MOVE_URL, { method: 'POST', body: JSON.stringify({ itemId: id, dir: 'store' }) });
+                            const ficou = Array.isArray(r?.inventory) && r.inventory.some(x => Number(x?.id ?? x?.itemId) === id && Number(x.quantity) > 0);
+                            if (ficou) res.erros.push(`${nome}: continuou na mochila`); else res.itens.push(`${qty}x ${nome}`);
+                        } catch (err) { res.erros.push(`${nome}: ${err?.message || err}`); }
+                    } else {
+                        if (movs <= 0) break;
+                        const r = await familyItemDeposit(id, qty, nome);
+                        if (r.ok) { res.itens.push(`${qty}x ${nome}`); movs--; }
+                        else { res.erros.push(`${nome}: ${r.motivo}`); if (FAMILY_STOP.test(r.motivo || '')) break; }
+                    }
+                    await depositSleep();
+                }
+            }
+        } finally {
+            depositRunning = false;
+        }
+        lastDeposit = Object.assign({ at: Date.now() }, res);
+        logEvent('guardar-cidade', { itens: res.itens, pokes: res.pokes, erros: res.erros, destinoItens: cfg.depositItems || null, destinoPokes: cfg.depositPokes || null, movimentosSobrando: Number.isFinite(movs) ? movs : null });
+        if (res.itens.length || res.pokes.length || res.erros.length) {
+            const who = playerName();
+            const onde = { depot: 'no Depot', family: 'na família' };
+            const partes = [];
+            if (res.itens.length) partes.push(`**${res.itens.length} ${res.itens.length === 1 ? 'item' : 'itens'}** ${onde[cfg.depositItems] || ''}`);
+            if (res.pokes.length) partes.push(`**${res.pokes.length} Pokémon** na família`);
+            postWebhook('alert', {
+                content: `📦 ${who ? `**${who}**` : 'Sua conta'} ${partes.length ? `guardou ${partes.join(' e ')}` : 'não conseguiu guardar nada'}`,
+                username: 'Poke Idle World',
+                embeds: [{
+                    title: 'Guardar na cidade',
+                    description: (who ? `Conta: ${who}\n` : '')
+                        + (res.itens.length ? `Itens: ${res.itens.join(', ')}\n` : '')
+                        + (res.pokes.length ? `Pokémon: ${res.pokes.join(', ')}\n` : '')
+                        + (res.erros.length ? `⚠ ${res.erros.slice(0, 6).join(' · ')}\n` : '')
+                        + (lastFamily && (cfg.depositItems === 'family' || cfg.depositPokes === 'family') && Number.isFinite(movs) ? `Movimentos da família sobrando hoje: ${movs}\n` : '')
+                        + `Em ${new Date().toLocaleString('pt-BR')}`,
+                    color: res.erros.length && !(res.itens.length || res.pokes.length) ? 0xed4245 : res.erros.length ? 0xfee75c : 0x57f287,
+                }],
+            }, { evento: 'guardar-cidade', itens: res.itens.length, pokes: res.pokes.length });
+        }
+        return { ok: res.erros.length === 0 || res.itens.length + res.pokes.length > 0, motivo: res.erros[0] || (res.itens.length || res.pokes.length ? null : 'nada para guardar'), ...res };
+    }
+    // Linha do painel.
+    function depositStatus(d) {
+        d = d || cfg;
+        if (!depositWanted(d)) return 'Desligado: o que sobra fica na mochila e no box.';
+        const p = [];
+        if (d.depositPokes === 'family') { const n = depositPokeCandidates(d).length; p.push(`${n} Pokémon iriam para a família agora`); }
+        if (d.depositItems) p.push(`drops ${d.depositItems === 'depot' ? 'para o Depot' : 'para a família'} (${droppedIds.size} tipos de drop conhecidos)`);
+        let txt = `Na próxima viagem: ${p.join(' · ')}.`;
+        if (lastDeposit) txt += ` Última (${new Date(lastDeposit.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}): ${lastDeposit.itens.length} itens, ${lastDeposit.pokes.length} Pokémon${lastDeposit.erros.length ? `, ⚠ ${lastDeposit.erros[0]}` : ''}.`;
+        return txt;
+    }
+
     // ---- Viagem à cidade: vender e comprar no NPC FORA da hunt (regra do jogo) ----------
     // Anúncio do jogo (26/09/2026, colado pelo usuário): não é mais permitido comprar/vender itens no NPC Mark,
     // vender Pokémon, usar o Mercado Global nem o Depot DURANTE a hunt. Toda venda/compra do script passa a ser
@@ -2397,6 +2575,7 @@
         if (l.pokes) p.push(`${l.pokes} Pokémon`);
         if (l.bolas) p.push(`comprar ${Number(cfg.autoBuyQty) || 100} ${ballName(l.bolas.id)}`);
         if (l.cla) p.push('clã (converter/subir de rank)');
+        if (p.length && typeof depositWanted === 'function' && depositWanted()) p.push('guardar o resto');
         return p.length ? `Vai levar: ${p.join(', ')}` : 'Nada para levar por enquanto';
     }
     function tripNotify() { if (onTripChange) { try { onTripChange(); } catch { /* painel fechado */ } } }
@@ -2419,7 +2598,7 @@
     const TRIP_PHASE_PCT = { 'indo para a cidade': 15, 'na cidade': 50, 'voltando': 90 };
     function tripLastText() {
         if (!lastTripInfo) return '';
-        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', cla: 'clã' };
+        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', cla: 'clã', guardar: 'guardar' };
         return `Última ${new Date(lastTripInfo.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}: ${lastTripInfo.tarefas.map(t => `${nome[t.key] || t.key} ${t.ok ? '✔' : '✖'}`).join(' · ')}`;
     }
     // Estado para a faixa do painel: { busy, pct, title, sub }.
@@ -2457,6 +2636,8 @@
             else if (key === 'bolas' && n.dados) tarefas.push({ key, run: () => autoBuyBalls(n.dados.id, n.dados.qty, n.dados.min) });
             else if (key === 'cla') tarefas.push({ key, run: () => clanCityWork() });
         }
+        // Guardar na cidade (v3.18.0): última tarefa de toda viagem que tenha outra coisa a fazer.
+        if (tarefas.length && typeof depositWanted === 'function' && depositWanted()) tarefas.push({ key: 'guardar', run: () => depositCityWork() });
         return tarefas;
     }
 
@@ -2790,37 +2971,50 @@
         }
     }
 
-    let familyPending = null;       // { pokeId, name, resolve, timer } depósito aguardando `family`/`error`
-    function familyDeposit(pokeId, name) {
+    let familyPending = null;       // { check, resolve, timer } ação da família aguardando `family`/`error`
+    let lastFamily = null;          // { movesUsed, movesCap, frozen } do último frame `family` (null = sem família)
+    let lastFamilyAt = 0;
+    // Uma ação da família pelo socket; `check(depot)` diz se o frame `family` da resposta confirma o que foi pedido.
+    function familyAction(payload, evento, dados, check) {
         return new Promise((resolve) => {
             if (familyPending) familyPending.resolve({ ok: false, motivo: 'outro depósito em andamento' });
-            const entry = { pokeId, name, timer: null, resolve: null };
+            const entry = { check, timer: null, resolve: null };
             entry.resolve = (r) => {
                 clearTimeout(entry.timer);
                 if (familyPending === entry) familyPending = null;
-                logEvent('poke-familia', { name, pokeId, ok: r.ok, motivo: r.motivo || null });
+                logEvent(evento, Object.assign({}, dados, { ok: r.ok, motivo: r.motivo || null }));
                 resolve(r);
             };
             familyPending = entry;
-            if (!sendGame({ type: 'family-action', action: 'poke', dir: 'deposit', capturedId: pokeId })) {
+            if (!sendGame(Object.assign({ type: 'family-action' }, payload))) {
                 entry.resolve({ ok: false, motivo: 'socket do jogo não rastreado' });
                 return;
             }
             entry.timer = setTimeout(() => entry.resolve({ ok: false, motivo: 'sem resposta do jogo' }), KEEP_TIMEOUT_MS);
         });
     }
+    function familyDeposit(pokeId, name) {
+        return familyAction({ action: 'poke', dir: 'deposit', capturedId: pokeId }, 'poke-familia', { name, pokeId },
+            (depot) => Array.isArray(depot.pokes) && depot.pokes.some(p => String(p?.id) === pokeId));
+    }
+    function familyItemDeposit(itemId, quantity, name) {
+        return familyAction({ action: 'item', dir: 'deposit', itemId, quantity }, 'item-familia', { name, itemId, quantity },
+            (depot) => Array.isArray(depot.items) && depot.items.some(i => Number(i?.itemId ?? i?.id) === itemId));
+    }
     function handleFamily(message) {
         const fam = message.family || null;
         const depot = message.depot || {};
         logEvent('familia', { temFamilia: Boolean(fam), movimentos: fam ? `${fam.movesUsed}/${fam.movesCap}` : null, congelado: Boolean(fam?.frozen), pokesNoDeposito: Array.isArray(depot.pokes) ? depot.pokes.length : null });
         catchOnFamily(depot.pokes);
+        lastFamily = fam ? { movesUsed: Number(fam.movesUsed) || 0, movesCap: Number(fam.movesCap) || 0, frozen: Boolean(fam.frozen) } : null;
+        lastFamilyAt = Date.now();
         if (!familyPending) return;
-        const achou = Array.isArray(depot.pokes) && depot.pokes.some(p => String(p?.id) === familyPending.pokeId);
+        const achou = familyPending.check(depot);
         if (achou) familyPending.resolve({ ok: true });
         else if (!fam) familyPending.resolve({ ok: false, motivo: 'a conta não está numa família' });
         else if (fam.frozen) familyPending.resolve({ ok: false, motivo: 'depósito da família congelado' });
         else if (Number(fam.movesUsed) >= Number(fam.movesCap)) familyPending.resolve({ ok: false, motivo: `limite diário de movimentos (${fam.movesUsed}/${fam.movesCap})` });
-        else familyPending.resolve({ ok: false, motivo: 'o jogo respondeu sem o Pokémon no depósito' });
+        else familyPending.resolve({ ok: false, motivo: 'o jogo respondeu sem ele no depósito' });
     }
     function handleGameError(message) {
         logEvent('erro-jogo', { message: message.message || null });
@@ -2874,7 +3068,7 @@
             if (message.type === 'field-init' && message.slug && !huntSlug) setHunt(message.slug); // script carregou depois do enter-hunt
             return;
         }
-        if (message.type === 'field-kill') { noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); return; }
+        if (message.type === 'field-kill') { noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteDepositDrop(message); return; }
         if (message.type === 'inventory' && Array.isArray(message.items)) { clanOnInventory(message.items); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
         if (message.type === 'pokes' && Array.isArray(message.list)) { updateTeam(message.list); handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); return; }
@@ -3150,7 +3344,7 @@
             }
             case 'venda': {
                 const itens = d.sellEnabled, pokes = d.pokeSellEnabled;
-                if (!itens && !pokes) return 'off';
+                if (!itens && !pokes && !depositWanted(d)) return 'off';
                 if (!temAlertas) return 'warn';
                 if (itens && !Object.keys(d.sellItems || {}).length) return 'warn';
                 if (pokes && !pokeSellHasRules(d)) return 'warn';
@@ -3177,7 +3371,7 @@
         return [
             `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
             `Bolas: ${moduleState('bolas', d) === 'off' ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}`,
-            `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades)` : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
+            `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades)` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
             `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? 'daily sozinha' : 'daily') : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
@@ -3291,6 +3485,16 @@
                             <div class="dn-inline"><b id="pg-dn-psell-status"></b><span class="k">prévia</span><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm r" id="pg-dn-psell-refresh" title="Pede a lista de Pokémon ao jogo.">Atualizar lista</button></div>
                             <table class="dn-prev" aria-label="Prévia da venda"><thead><tr><th>Pokémon</th><th>Raridade</th><th class="n">Poder</th><th>Decisão</th></tr></thead><tbody id="pg-dn-psell-list"></tbody></table>
                         </div>
+                        </div>
+                    </div>
+                    <div class="dn-section dn-blk" id="pg-dn-blk-guardar" data-blk="guardar">
+                        <h3><span class="chev">▶</span>Guardar na cidade <span class="sum" id="pg-dn-sum-guardar"></span></h3>
+                        <div class="in">
+                            <label class="dn-field"><span>Drops que sobraram</span><select id="pg-dn-dep-items" class="dn-select"><option value="">Deixar na mochila</option><option value="depot">Depot comum</option><option value="family">Depósito da família</option></select></label>
+                            <label class="dn-field"><span>Pokémon que não foram vendidos</span><select id="pg-dn-dep-pokes" class="dn-select"><option value="">Deixar no box (é o Depot comum)</option><option value="family">Depósito da família</option></select></label>
+                            <label class="dn-toggle"><input id="pg-dn-dep-rare" type="checkbox"><span class="sw"></span>Mandar também shiny e 🔒 para a família</label>
+                            <p class="dn-help">Última etapa de toda viagem à cidade (depois de vender e comprar); sozinho não gera viagem. Drops: só o que já caiu em hunt; ficam na mochila poções/revives, os marcados para venda e o que o clã pede. Pokémon: os de fora do time que a venda não vende; nunca inicial, anunciado ou capturado há menos de 2 min. No Depot comum o Pokémon já está (o box é o Depot), por isso o destino dele é só a família. O que entra na família passa a ser DA FAMÍLIA; limite de 50 movimentos por dia (+50 por VIP).</p>
+                            <div class="dn-status" id="pg-dn-dep-status"></div>
                         </div>
                     </div>
                 </section>
@@ -3510,6 +3714,9 @@
                 dailyClaim: $('#pg-dn-daily-claim').checked,
                 dailyAuto: $('#pg-dn-daily-auto').checked,
                 clanEnabled: $('#pg-dn-clan').checked,
+                depositItems: $('#pg-dn-dep-items').value || '',
+                depositPokes: $('#pg-dn-dep-pokes').value || '',
+                depositPokesRare: $('#pg-dn-dep-rare').checked,
                 clanKey: $('#pg-dn-clan-key').value || 'orebound',
                 clanRankup: $('#pg-dn-clan-rankup').checked,
                 clanRoute: $('#pg-dn-clan-route').checked,
@@ -3915,6 +4122,13 @@
             $('#pg-dn-clan-plan').textContent = st.rota ? `Rota: ${st.rota}` : '';
         }
         onClanChange = () => { if (!panel.hidden) renderClan(); };
+        function renderDeposit() {
+            const d = current();
+            $('#pg-dn-dep-status').textContent = depositStatus(d);
+            const on = { depot: 'Depot', family: 'família' };
+            $('#pg-dn-sum-guardar').textContent = depositWanted(d) ? `· ${[d.depositItems ? `drops → ${on[d.depositItems]}` : '', d.depositPokes ? 'Pokémon → família' : ''].filter(Boolean).join(' · ')}` : '· desligado';
+        }
+        ['#pg-dn-dep-items', '#pg-dn-dep-pokes', '#pg-dn-dep-rare'].forEach(sel => $(sel).addEventListener('change', renderDeposit));
         $('#pg-dn-clan-refresh').onclick = () => {
             flash('📥 Lendo o clã e a mochila…', 'info', 3000);
             Promise.all([loadHuntCatalog().catch(() => null), loadItemsCatalog()])
@@ -3954,7 +4168,7 @@
             if (dirty) $('#pg-dn-save').click();
             const needs = tripAugment([]);
             if (!needs.length) { flash('⚠ Nada para levar: nenhum drop marcado nesta hunt, nenhum Pokémon nas regras e bolas acima do limite.', 'warn'); return; }
-            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', cla: 'clã' };
+            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', cla: 'clã', guardar: 'guardar' };
             flash(`🏙 Indo à cidade: ${needs.map(n => nome[n[0]]).join(', ')}…`, 'info', 90000);
             tripNeeds.clear();
             cityTrip('manual: ' + needs.map(n => n[0]).join('+'), tripTasksFor(needs)).then(r => {
@@ -3983,7 +4197,7 @@
 
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderCatch(); renderClan(); renderTrip(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -4030,6 +4244,9 @@
             $('#pg-dn-daily-claim').checked = cfg.dailyClaim !== false;
             $('#pg-dn-daily-auto').checked = Boolean(cfg.dailyAuto);
             $('#pg-dn-clan').checked = Boolean(cfg.clanEnabled);
+            $('#pg-dn-dep-items').value = ['depot', 'family'].includes(cfg.depositItems) ? cfg.depositItems : '';
+            $('#pg-dn-dep-pokes').value = cfg.depositPokes === 'family' ? 'family' : '';
+            $('#pg-dn-dep-rare').checked = Boolean(cfg.depositPokesRare);
             $('#pg-dn-clan-key').value = CLAN_INFO[cfg.clanKey] ? cfg.clanKey : 'orebound';
             $('#pg-dn-clan-rankup').checked = cfg.clanRankup !== false;
             $('#pg-dn-clan-route').checked = Boolean(cfg.clanRoute);

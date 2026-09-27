@@ -157,6 +157,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   nível e entra via `switchHunt(slug, 1, 'daily-ida')`; origem e líder em `localStorage.pgDiscordNotifyDaily`
   (`dailyRun`); na meta devolve o líder (`dailyRestoreLeader`) e volta para `dailyRun.from`. `dailyHoldsLeader()` pausa
   `checkLeaderLevel` enquanto a ida vale (guardado com `typeof`, porque o harness do nível não tem o módulo da daily).
+- Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
+  `guardar` no fim de toda viagem; drops → Depot (`POST /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou
+  família (`family-action item`); Pokémon não vendidos → só família (o box JÁ é o Depot comum de Pokémon). Família via
+  `familyAction(payload, evento, dados, check)`; limite diário em `lastFamily.movesCap`. O que entra na família é DELA.
 - Clã (v3.17.0, aba Profissão, ROADMAP #22, módulo `// ---- Clã` antes da Viagem): `GET /api/game/clans` (tarefa em
   `nextTask`: items/caught/kills), `POST /clans/rankup`, `/clans/change { clan, targetRank }` (só a 1ª entrada, grátis;
   NUNCA trocar de clã, custa diamante), `POST /api/game/convert { baseItemId, packs }` (100 base = 1 item de clã, mapa
@@ -264,6 +268,7 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
 
 - **Testes isolados em Node** (sem DOM): `node test/level.test.js`, `node test/route.test.js`,
   `node test/reload.test.js`, `node test/daily.test.js`, `node test/catch.test.js`, `node test/pokesell.test.js` e
+  `node test/deposit.test.js` (`loadDepositModule`: `// ---- Guardar na cidade` até `// ---- Viagem à cidade`),
   `node test/clan.test.js` (`loadClanModule`: `// ---- Clã: subir de rank` até `// ---- Viagem à cidade`),
   `node test/dailyauto.test.js` (daily sozinha, mesmo `loadDailyModule` com `init.team`/`init.huntCatalog`/`init.store`) e
   `node test/balls.test.js` (`loadBallsModule`: módulo de bolas + `checkBallStock`) e `node test/trip.test.js`

@@ -65,6 +65,7 @@ da Pokédex. Fora disso, nada.
 
 | O quê | Como | Quando |
 |---|---|---|
+| Guardar na cidade | na viagem: `GET /api/game/depot`, `POST .../depot/move` por item; `family-get` + `family-action` (item/poke) + `pokes-get` | só dentro de uma viagem à cidade, como última tarefa |
 | Clã | `GET /api/game/clans` (REST) + `inv-get` (socket); na viagem: `POST /api/game/convert`, `POST .../clans/rankup`; 1x: `POST .../clans/change` (entrar) | a cada 2 min (1 min com "Caçar o que falta"); só com o Clã ligado |
 | Daily Kill | `GET /api/game/daily-kill` (REST); `POST .../claim` na meta; com "sozinho": `POST .../pick` (1x por dia, sem missão escolhida), `poke-summon` na ida e na volta | a cada 30 s na hunt da missão, 2 min fora dela; só com a Daily ligada |
 | Recarga do painel | reload da página + `enter-hunt` na volta | intervalo configurável |

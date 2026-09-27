@@ -498,6 +498,26 @@ não troca o líder para a hunt do clã (dá para reaproveitar a escolha por tip
 
 ---
 
+## ✅ 23. Guardar na cidade: drops que sobraram e Pokémon não vendidos (v3.18.0)
+
+**O que faz (aba Venda → bloco "Guardar na cidade"):** última tarefa de toda viagem à cidade (`guardar`, anexada em
+`tripTasksFor` quando há outra tarefa; sozinha não gera viagem). `depositItems` = '' | 'depot' | 'family': os drops que
+sobraram (ids vistos em `field-kill`, em `localStorage.pgDiscordNotifyDrops`) vão para o Depot comum (`POST
+/api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou para a família (`family-action { action:'item',
+dir:'deposit', itemId, quantity }`); ficam na mochila heal/revive/ball, os marcados para venda e o que o clã pede.
+`depositPokes` = '' | 'family': Pokémon fora do time que a venda NÃO vende vão para a família (`family-action poke`);
+nunca time, inicial, anunciado, capturado há < 2 min, da tarefa do clã e, sem `depositPokesRare`, shiny e 🔒. Pokémon
+no "Depot comum" = o box (já estão lá), por isso não há essa opção para eles.
+
+**Família:** `family-get` antes (estado em `lastFamily`), respeita `movesCap` (50 + 50 por VIP, máx. 250), Pokémon
+primeiro, para no limite/congelado/sem família. `familyAction` (genérica) substitui o corpo de `familyDeposit`.
+Aviso "📦 guardou…" no canal de Alertas. Teste: `node test/deposit.test.js` (+ passo no smoke).
+
+**Pendências:** confirmar no log (`guardar-cidade`, `item-familia`) se cada depósito de item gasta 1 movimento e o
+formato de `family.depot.items`.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

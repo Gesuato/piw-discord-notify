@@ -71,8 +71,8 @@ e `error { message }` (resposta de ação recusada; o script os trata em `handle
   da loja exclui os travados). Usado pelo script em `lockPokemon`.
 - `POST /api/game/pokemon/sell { pokeIds:[...] }` → `{ gold, goldGained, sold }` — venda em lote da aba "Pokémon"
   da loja; a lista vem do frame `pokes` filtrado por `!team && !starter && !shiny && sellValue > 0 && !locked`.
-- `GET /api/game/depot`, `POST /api/game/depot/move { itemId, dir }` / `{ all:true }` — depósito comum de ITENS
-  (NPC Depot). Pokémon no depósito comum = `poke-store`/`poke-withdraw` pelo socket (é o "box").
+- `GET /api/game/depot` → `{ inventory (mochila), depot }`, `POST /api/game/depot/move { itemId, dir:'store'|'withdraw' }`
+  (pilha inteira) / `{ all:true }` — depósito comum de ITENS (NPC Depot); usado pelo "Guardar na cidade" (v3.18.0). Pokémon no depósito comum = `poke-store`/`poke-withdraw` pelo socket (é o "box").
 - Dailys (menu "Quests, Tasks & Dailys", levantado em 25/09/2026; nada passa pelo socket, a janela repete o GET a
   cada 5 s): `GET /api/game/daily-kill` → `{ locked, minLevel, tierLabel, claimed, pickedIdx (-1 = não escolheu),
   resetAt, reward:{ xp, items:[{ itemId, qty, name, icon }] }, options:[{ name, speciesId, looktype, type1, type2,
