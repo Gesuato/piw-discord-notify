@@ -172,6 +172,7 @@ setTimeout(() => {
         recv({ type: 'catch-result', success: true, speciesName: 'Bagon', shiny: false, ballId: 4, ballName: 'Ultra Ball' });
         recv({ type: 'poke-delta', poke: { id: 'cuid-bagon-1', speciesId: 371, name: 'Bagon', level: 5, shiny: false, xp: 0, ivTotal: 150, quality: 1.4 } });
         setTimeout(() => {
+            log('colar botao direito (assincrono): alerts=' + $('#pg-dn-hook-alerts').value);
             log('apos delta: fetch=' + fetchCalls.map(c => c.split(' ')[0]).join(',') + ' | enviados=' + ws.sent.slice(1).map(x => JSON.parse(x).type + (JSON.parse(x).capturedId ? ':' + JSON.parse(x).capturedId : '')).join(','));
             recv({ type: 'family', family: { name: 'Fam', movesUsed: 3, movesCap: 50, frozen: false, members: [] }, depot: { items: [], pokes: [{ id: 'cuid-bagon-1', name: 'Bagon', level: 5 }] } });
             setTimeout(() => {
