@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.15.1
+// @version      3.15.2
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.15.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.15.2';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -3378,9 +3378,11 @@
         };
         panel.querySelector('.dn-body').addEventListener('input', onEdit);
         panel.querySelector('.dn-body').addEventListener('change', onEdit);
-        // ---- colar com o botão direito (v3.15.1): o webview do PokeGrid não tem menu de contexto e o Ctrl+V nem
-        // sempre chega ao campo (o jogo captura teclas). Tenta a área de transferência; se o webview negar, tenta o
-        // comando nativo de colar; se nada funcionar, avisa.
+        // ---- colar com o botão direito (v3.15.1): tenta a área de transferência; se negarem, tenta o comando nativo;
+        // senão avisa. No PokeGrid (v1.5.23) NÃO funciona e não tem como funcionar daqui: o app nega toda permissão
+        // dos painéis (`setPermissionRequestHandler(cb(false))`, inclusive clipboard-read) e, no clique direito em campo
+        // editável, não faz nada (`params.isEditable` → return). A correção é dele: nesse handler, `contents.paste()`.
+        // Enquanto isso, o Ctrl+V/Ctrl+C/Ctrl+A/Ctrl+X num campo do painel não chega ao jogo (v3.15.2, abaixo).
         async function pasteInto(el) {
             let txt = '';
             try { txt = await navigator.clipboard.readText(); } catch { txt = ''; }
@@ -3396,7 +3398,7 @@
             el.dispatchEvent(new Event('change', { bubbles: true }));
             return true;
         }
-        function pasteFlash(ok) { flash(ok ? '📋 Colado.' : '⚠ Não consegui ler a área de transferência aqui. Clique no campo e use Ctrl+V.', ok ? 'ok' : 'warn', ok ? 2000 : 0); }
+        function pasteFlash(ok) { flash(ok ? '📋 Colado.' : '⚠ O PokeGrid não deixa o painel ler a área de transferência. Clique no campo e use Ctrl+V (funciona; o jogo não captura mais).', ok ? 'ok' : 'warn', ok ? 2000 : 0); }
         panel.addEventListener('contextmenu', (e) => {
             const el = e.target.closest('input:not([type=number]):not([type=checkbox]), textarea');
             if (!el || el.disabled) return;
@@ -3406,6 +3408,8 @@
         $('#pg-dn-import-paste').onclick = () => pasteInto($('#pg-dn-import-text')).then(pasteFlash);
 
         panel.addEventListener('keydown', (e) => {
+            // atalhos de edição num campo do painel são do campo: não deixa o jogo vê-los (o navegador cola/copia normalmente)
+            if ((e.ctrlKey || e.metaKey) && ['v', 'c', 'x', 'a'].includes(String(e.key).toLowerCase()) && e.target.matches('input, textarea')) { e.stopPropagation(); return; }
             if (e.key === 'Escape') { e.stopPropagation(); togglePanel(false); return; }
             if (e.key === 'Enter' && e.target.matches('input:not([type=checkbox])')) { e.preventDefault(); $('#pg-dn-save').click(); }
         });
