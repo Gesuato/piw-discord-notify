@@ -514,6 +514,12 @@ no "Depot comum" = o box (já estão lá), por isso não há essa opção para e
 primeiro, para no limite/congelado/sem família. `familyAction` (genérica) substitui o corpo de `familyDeposit`.
 Aviso "📦 guardou…" no canal de Alertas. Teste: `node test/deposit.test.js` (+ passo no smoke).
 
+**Lista da família (v3.19.0):** `depositFamilyList: [{ id, name, keep }]` — itens escolhidos no painel (autocompletar
+do `items.json` sem consumíveis; ex.: Devoted Token, Bronze Dimensional Key, Strange Pheromone, algumas stones) vão
+SEMPRE para a família na viagem, de qualquer origem (drop, daily, boss), menos a reserva `keep`; vão antes dos Pokémon e
+dos drops. Casa por id ou nome. Consumível listado continua na mochila. Não gera viagem (pedido do usuário: guarda
+quando a conta já foi vender/comprar).
+
 **Pendências:** confirmar no log (`guardar-cidade`, `item-familia`) se cada depósito de item gasta 1 movimento e o
 formato de `family.depot.items`.
 

@@ -109,5 +109,25 @@ const sellRule = (p) => (Number(p.ivTotal) < 30 ? null : 'poder alto');   // "ve
         assert(!r.ok && r.motivo === 'desligado' && !state.sent.length && !state.calls.length, 'desligado não age');
     }
 
-    console.log('OK deposit.test — drops para Depot/família, Pokémon não vendidos para a família, limite de movimentos e sem família');
+    // 7) lista da família: Devoted Token (não é drop) e Strange Pheromone (mantém 1) vão primeiro; poção listada não sai
+    {
+        const bag = [
+            { id: 13115, name: 'Devoted Token', quantity: 3, category: 'loot' },
+            { id: 21287, name: 'Bronze Dimensional Key', quantity: 1, category: 'loot' },
+            { id: 50, name: 'Strange Pheromone', quantity: 4, category: 'loot' },
+            { id: 8, name: 'Super Potion', quantity: 10, category: 'heal' },
+            { id: 7, name: 'Feather', quantity: 30, category: 'loot' },
+        ];
+        const cfg = { depositFamilyList: [{ id: 13115, name: 'Devoted Token' }, { id: 0, name: 'bronze dimensional key' }, { id: 50, name: 'Strange Pheromone', keep: 1 }, { id: 8, name: 'Super Potion' }], depositPokes: 'family' };
+        const { api, state } = loadDepositModule(cfg, { api: depotApi(bag), items: ITEMS, pokes: [POKES[7]], family: { movesUsed: 47, movesCap: 50, frozen: false } });
+        const r = await api.depositCityWork();
+        const it = state.family.filter(f => f.kind === 'item').map(f => [f.itemId, f.qty]);
+        assert(JSON.stringify(it) === JSON.stringify([[13115, 3], [21287, 1], [50, 3]]), 'lista primeiro, por id ou nome, com reserva: ' + JSON.stringify(it));
+        assert(!state.family.some(f => f.kind === 'poke'), 'os 3 movimentos foram da lista; Pokémon ficou para amanhã');
+        assert(!state.family.some(f => f.itemId === 8 || f.itemId === 7), 'poção listada e Feather (fora da lista, drops desligados) ficam');
+        assert(r.itensFamilia.length === 3 && /3 itens\*\* na família/.test(state.hooks[0].content), 'aviso: ' + JSON.stringify(state.hooks));
+        assert(api.depositWanted(cfg) && api.depositWanted({ depositFamilyList: [{ name: 'X' }] }), 'só a lista já liga o guardar');
+    }
+
+    console.log('OK deposit.test — drops para Depot/família, Pokémon não vendidos para a família, limite de movimentos, sem família e lista da família');
 })().catch(e => { console.error(e); process.exit(1); });

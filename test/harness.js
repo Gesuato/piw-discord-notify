@@ -467,6 +467,7 @@ function loadDepositModule(cfg, init) {
         logEvent: (k, d) => state.logs.push([k, d]),
         postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
         playerName: () => 'Teste',
+        normalize: (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim(),
         loadItemsCatalog: () => Promise.resolve(new Map((init.items || []).map(i => [i.id, i]))),
         DEPOT_URL: '/api/game/depot',
         recentCaptureIds: new Map(init.recent || []),

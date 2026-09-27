@@ -159,7 +159,8 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `checkLeaderLevel` enquanto a ida vale (guardado com `typeof`, porque o harness do nível não tem o módulo da daily).
 - Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
   `guardar` no fim de toda viagem; drops → Depot (`POST /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou
-  família (`family-action item`); Pokémon não vendidos → só família (o box JÁ é o Depot comum de Pokémon). Família via
+  família (`family-action item`); Pokémon não vendidos → só família (o box JÁ é o Depot comum de Pokémon). Lista escolhida
+  `depositFamilyList [{ id, name, keep }]` (v3.19.0) vai primeiro, de qualquer origem; o guardar NUNCA gera viagem própria. Família via
   `familyAction(payload, evento, dados, check)`; limite diário em `lastFamily.movesCap`. O que entra na família é DELA.
 - Clã (v3.17.0, aba Profissão, ROADMAP #22, módulo `// ---- Clã` antes da Viagem): `GET /api/game/clans` (tarefa em
   `nextTask`: items/caught/kills), `POST /clans/rankup`, `/clans/change { clan, targetRank }` (só a 1ª entrada, grátis;

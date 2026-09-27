@@ -76,6 +76,7 @@ setTimeout(() => {
         $('#pg-dn-dep-items').value = 'depot'; fire($('#pg-dn-dep-items'), 'change');
         $('#pg-dn-dep-pokes').value = 'family'; fire($('#pg-dn-dep-pokes'), 'change');
         log('guardar rascunho=' + $('#pg-dn-sum-guardar').textContent + ' | ' + $('#pg-dn-dep-status').textContent);
+        $('#pg-dn-famitem').value = 'Devoted Token'; $('#pg-dn-famitem-keep').value = '2'; $('#pg-dn-famitem-add').click(); // assíncrono: conferido abaixo
         $('#pg-dn-save').click();
         const cfgG = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
         if (!(cfgG.depositItems === 'depot' && cfgG.depositPokes === 'family' && cfgG.depositPokesRare === false)) errors.push('guardar: Salvar não gravou os destinos');
@@ -193,6 +194,11 @@ setTimeout(() => {
         recv({ type: 'poke-delta', poke: { id: 'cuid-bagon-1', speciesId: 371, name: 'Bagon', level: 5, shiny: false, xp: 0, ivTotal: 150, quality: 1.4 } });
         setTimeout(() => {
             log('colar botao direito (assincrono): alerts=' + $('#pg-dn-hook-alerts').value);
+            const chip = $('#pg-dn-famlist').textContent;
+            $('#pg-dn-save').click();
+            const lst = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg')).depositFamilyList || [];
+            log('lista familia chip=' + chip + ' salvo=' + JSON.stringify(lst));
+            if (!(/Devoted Token/.test(chip) && lst.length === 1 && lst[0].name === 'Devoted Token' && lst[0].keep === 2)) errors.push('lista da família: item não entrou ou não salvou');
             log('apos delta: fetch=' + fetchCalls.map(c => c.split(' ')[0]).join(',') + ' | enviados=' + ws.sent.slice(1).map(x => JSON.parse(x).type + (JSON.parse(x).capturedId ? ':' + JSON.parse(x).capturedId : '')).join(','));
             recv({ type: 'family', family: { name: 'Fam', movesUsed: 3, movesCap: 50, frozen: false, members: [] }, depot: { items: [], pokes: [{ id: 'cuid-bagon-1', name: 'Bagon', level: 5 }] } });
             setTimeout(() => {
