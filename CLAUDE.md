@@ -148,10 +148,15 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
 - Daily Kill (v3.8.0, bundle em 25/09/2026): missão diária "derrote N de X" (1 de 3 opções), só por REST:
   `GET /api/game/daily-kill` → `{ locked, claimed, pickedIdx, resetAt, reward:{xp,items}, options:[{ name, speciesId,
   have, qty, done, xp }] }`; `POST /api/game/daily-kill/claim` → `{ state, payout:{ xp, level, leveledUp, items:[{label}] } }`.
-  O script NÃO escolhe missão (`/pick`, `/reroll` são do usuário). Com `dailyEnabled`, `dailyTick` consulta (30 s na
+  Sem `dailyAuto` o script NÃO escolhe missão; `/reroll` nunca é usado. Com `dailyEnabled`, `dailyTick` consulta (30 s na
   hunt da daily, 2 min fora), conta `field-kill` da espécie e, na meta, resgata (`dailyClaim`) e volta via
   `switchHunt(slug, 1, 'daily')` para `dailyReturnSlug` > etapa da rota > `prevHuntSlug` (hunt anterior, guardada em
   `setHunt`/`noteHuntChange` e no registro da recarga). Slug de hunt a partir de nome: `huntSlugFromName()` (global).
+  Daily sozinha (v3.16.0, `cfg.dailyAuto`, ROADMAP #21): escolhe a missão (`POST /pick { idx }`) só se o usuário não
+  escolheu, põe de líder o Pokémon do TIME com melhor efetividade (`TYPE_CHART` = `CHART` do Tierlist do PokeGrid) ×
+  nível e entra via `switchHunt(slug, 1, 'daily-ida')`; origem e líder em `localStorage.pgDiscordNotifyDaily`
+  (`dailyRun`); na meta devolve o líder (`dailyRestoreLeader`) e volta para `dailyRun.from`. `dailyHoldsLeader()` pausa
+  `checkLeaderLevel` enquanto a ida vale (guardado com `typeof`, porque o harness do nível não tem o módulo da daily).
 - Rota de captura / Pokédex (v3.10.0, aba Profissão): hunts em `GET /api/game/map-markers` (público, `hunts[{ slug,
   name, level, area, looktype }]`, level 0 = cidade), espécies em `GET /game/creatures.json` (público, `creatures[{
   pokeId, name, looktype }]`, pokeId < 10000 = normal), capturadas em `GET /api/game/pokedex` (auth, `species[{ id,
@@ -254,6 +259,7 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
 
 - **Testes isolados em Node** (sem DOM): `node test/level.test.js`, `node test/route.test.js`,
   `node test/reload.test.js`, `node test/daily.test.js`, `node test/catch.test.js`, `node test/pokesell.test.js` e
+  `node test/dailyauto.test.js` (daily sozinha, mesmo `loadDailyModule` com `init.team`/`init.huntCatalog`/`init.store`) e
   `node test/balls.test.js` (`loadBallsModule`: módulo de bolas + `checkBallStock`) e `node test/trip.test.js`
   (`loadTripModule`: `// ---- Viagem à cidade` até `// ---- Recarga automática do painel`; timers avançam o relógio falso).
   `test/harness.js` recorta módulos do userscript pelos marcadores (`loadLevelModule`: `// ---- Alerta de nível do

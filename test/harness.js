@@ -126,7 +126,7 @@ function loadDailyModule(cfg, init) {
 
     const clock = { now: Date.now() };
     const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
-    const state = { calls: [], switches: [], hooks: [], logs: [], pokesReqs: 0, longTimers: [] };
+    const state = { calls: [], switches: [], hooks: [], logs: [], pokesReqs: 0, longTimers: [], sent: [], store: Object.assign({}, init.store || {}) };
     const normalize = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
     const ctx = {
         cfg,
@@ -144,14 +144,25 @@ function loadDailyModule(cfg, init) {
         catchTarget: init.catchTarget || null,
         huntSlug: init.huntSlug != null ? init.huntSlug : null,
         CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp'],
+        // daily sozinha (v3.16.0): time, catálogo de hunts, socket e localStorage falsos
+        sendGame: (m) => { state.sent.push(m); return true; },
+        team: init.team || [],
+        huntCatalog: init.huntCatalog || null,
+        loadHuntCatalog: () => Promise.resolve(init.huntCatalog || null),
+        creatureTypes: new Map(),
+        huntSwitch: null,
+        swapPending: null,
+        localStorage: { getItem: (k) => (k in state.store ? state.store[k] : null), setItem: (k, v) => { state.store[k] = String(v); }, removeItem: (k) => { delete state.store[k]; } },
         setTimeout: (fn, ms) => { if (ms >= 5000) { state.longTimers.push(fn); return 99; } fn(); return 1; },
         clearTimeout: () => {},
         Date: FakeDate,
     };
-    const factory = new Function(...Object.keys(ctx), mod + `
+    const factory = new Function(...Object.keys(ctx), 'function teamLeader() { return team.find(p => p.leader) || team[0] || null; }\n' + mod + `
         return {
-            dailyTick, noteDailyKill, noteHuntChange, dailyStatus, dailyReturnTarget, dailyOnHunt,
+            dailyTick, noteDailyKill, noteHuntChange, dailyStatus, dailyReturnTarget, dailyOnHunt, dailyHoldsLeader, dailyGoFailed,
             setHunt(slug) { huntSlug = slug; noteHuntChange(slug); },
+            setTeam(t) { team = t; },
+            get dailyRun() { return dailyRun; },
             get daily() { return daily; },
             get prevHuntSlug() { return prevHuntSlug; },
             get dailyHandledReset() { return dailyHandledReset; },

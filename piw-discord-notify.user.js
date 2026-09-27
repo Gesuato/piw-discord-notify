@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.15.2
+// @version      3.16.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.15.2';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.16.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -62,6 +62,7 @@
         dailyEnabled: false,    // Daily Kill: ao bater a meta da missão do dia, voltar para a hunt de antes
         dailyClaim: true,       // ...e resgatar a recompensa sozinho (POST /api/game/daily-kill/claim)
         dailyReturnSlug: '',    // hunt fixa para voltar; vazio = etapa da rota, senão a hunt anterior à daily
+        dailyAuto: false,       // v3.16.0: fazer a daily sozinho (escolhe missão e Pokémon do time, vai e volta)
         tripCity: 'cerulean',   // v3.14.0: cidade da viagem de venda/compra (regra do jogo: nada de venda/compra na hunt)
         tripMinGapMin: 3,       // intervalo mínimo entre duas viagens à cidade (minutos; só para viagens urgentes, ex.: bola zerada)
         tripEveryMin: 10,       // v3.15.0: relógio ÚNICO das viagens (vendas de itens e Pokémon, compras): mínimo em minutos
@@ -433,7 +434,7 @@
     }
 
     function requestPokes(delayMs) {
-        if (!levelEnabled() && !cfg.pokeSellEnabled && !cfg.catchRouteEnabled) return; // venda de Pokémon e rota de captura também usam o frame `pokes`
+        if (!levelEnabled() && !cfg.pokeSellEnabled && !cfg.catchRouteEnabled && !(cfg.dailyEnabled && cfg.dailyAuto)) return; // venda de Pokémon, rota de captura e daily sozinha também usam o frame `pokes`
         clearTimeout(pokesRequestTimer);
         pokesRequestTimer = setTimeout(() => {
             pokesRequestTimer = null;
@@ -465,7 +466,7 @@
     function updateTeam(list) {
         const novo = list
             .filter(p => p && typeof p === 'object' && p.team)
-            .map(p => ({ id: String(p.id ?? ''), name: String(p.name || p.speciesName || '?'), level: Number(p.level) || 0, slot: Number(p.slot) || 0, leader: Boolean(p.leader), shiny: Boolean(p.shiny) }))
+            .map(p => ({ id: String(p.id ?? ''), name: String(p.name || p.speciesName || '?'), level: Number(p.level) || 0, slot: Number(p.slot) || 0, leader: Boolean(p.leader), shiny: Boolean(p.shiny), speciesId: Number(p.speciesId) || 0, t1: String(p.type1 || '').toUpperCase(), t2: String(p.type2 || '').toUpperCase() }))
             .sort((a, b) => a.slot - b.slot);
         team = novo;
         const sig = novo.map(p => `${p.id}:${p.level}:${p.leader ? 1 : 0}`).join('|');
@@ -505,6 +506,7 @@
 
     function checkLeaderLevel() {
         if (!levelEnabled() || swapPending) return;
+        if (typeof dailyHoldsLeader === 'function' && dailyHoldsLeader()) return; // daily sozinha escolheu o líder: treino espera ela acabar
         const alvo = levelTarget();
         const lider = teamLeader();
         if (!lider || !lider.id || lider.level < alvo || levelAlerted.has(lider.id)) return;
@@ -606,6 +608,7 @@
         huntSwitch = null;
         const t = {
             recarga: { verbo: 'voltar para a', quando: 'depois da recarga automática', titulo: `Recarga: volta para ${slug} não confirmou`, dica: 'A conta deve estar na cidade: entre na hunt na mão.' },
+            'daily-ida': { verbo: 'entrar na', quando: 'Daily Kill sozinha', titulo: `Daily Kill: entrada em ${slug} não confirmou`, dica: 'O script devolveu o líder e voltou para a hunt de antes; faça a daily na mão hoje (o nível da hunt pode ser alto demais).' },
             daily: { verbo: 'voltar para a', quando: 'depois da Daily Kill', titulo: `Daily Kill: volta para ${slug} não confirmou`, dica: 'Confira o nome da hunt em "Voltar para" (ou entre na hunt na mão).' },
             rota: { verbo: 'entrar na', quando: 'rota', titulo: `Rota: entrada em ${slug} não confirmou`, dica: 'Confira o nome da hunt (é o mesmo que aparece em "Hunt atual") e entre na mão; a rota continua da etapa atual.' },
             painel: { verbo: 'entrar na', quando: 'botão do painel', titulo: `Painel: entrada em ${slug} não confirmou`, dica: 'Confira o nome da hunt da etapa e entre na mão.' },
@@ -622,6 +625,7 @@
             }],
         }, { evento: 'hunt-falhou', slug, origem });
         if (origem === 'captura') catchHuntFailed(slug);
+        if (origem === 'daily-ida') dailyGoFailed(slug);
     }
 
     function handlePokeXp(message) {
@@ -1223,6 +1227,7 @@
     let ownedSpecies = new Set();   // speciesId de todo Pokémon da conta (frame `pokes`: box + time)
     let familyNames = new Set();    // nomes (normalizados) dos Pokémon no depósito da família
     let creatureIdByName = new Map(); // nome normalizado -> pokeId (do creatures.json)
+    let creatureTypes = new Map();  // pokeId -> [type1, type2] em maiúsculas (do creatures.json; daily sozinha)
     let dexSig = '';
     let dexTotal = 0;               // espécies normais no catálogo
     let dexFetchedAt = 0;
@@ -1251,6 +1256,7 @@
         for (const c of creatures) { const k = Number(c.looktype); if (!byLook.has(k)) byLook.set(k, []); byLook.get(k).push(c); }
         const byName = new Map(creatures.map(c => [normalize(c.name), c]));
         creatureIdByName = new Map(creatures.filter(c => Number(c.pokeId) < 10000).map(c => [normalize(c.name), Number(c.pokeId)]));
+        creatureTypes = new Map(creatures.map(c => [Number(c.pokeId), [String(c.type1 || '').toUpperCase(), String(c.type2 || '').toUpperCase()]]));
         dexTotal = creatures.filter(c => Number(c.pokeId) < 10000).length;
         huntCatalog = (Array.isArray(mm?.hunts) ? mm.hunts : [])
             .filter(h => h && h.slug && Number(h.level) > 0)
@@ -1514,7 +1520,7 @@
     //                                       reward:{ xp, items }, options:[{ name, speciesId, have, qty, done, xp,
     //                                       type1, type2 }], cards, rerollCost, rerollMax, rerolls }
     //   POST /api/game/daily-kill/claim -> { state, payout:{ xp, totalXp, level, leveledUp, items:[{ label }] } }
-    //   POST /api/game/daily-kill/pick { idx } e /reroll existem, mas o script NÃO escolhe a missão (é do usuário).
+    //   POST /api/game/daily-kill/pick { idx } (usado só pela daily sozinha) e /reroll (nunca usado).
     // Fluxo: o usuário escolhe a missão e entra na hunt do Pokémon na mão. O script consulta o estado a cada
     // 30 s enquanto a conta está na hunt da daily (2 min fora dela) e, a cada `field-kill` da espécie da missão,
     // conta o abate e antecipa a consulta quando a meta parece batida. Terminou: resgata (opcional), sai da
@@ -1522,6 +1528,14 @@
     // senão a hunt em que a conta estava antes da daily (`prevHuntSlug`, guardado a cada troca de hunt e no
     // registro da recarga automática). Um tratamento por missão (`dailyHandledReset` = resetAt tratada).
     // Missão já resgatada quando o script a viu pela primeira vez (ex.: depois de um reload) não gera volta.
+    //
+    // Daily sozinha (v3.16.0, `cfg.dailyAuto`): sem missão escolhida, o script escolhe a de melhor nota (POST /pick);
+    // com a missão aberta e a conta fora da hunt dela, escolhe o Pokémon do TIME que mais bate na espécie (tabela de
+    // tipos do jogo, a mesma do Tierlist do PokeGrid, × nível, com desconto se estiver abaixo do nível da hunt),
+    // manda `poke-summon` se ele não for o líder e entra na hunt (switchHunt origem 'daily-ida'). De onde saiu e quem
+    // era o líder ficam em localStorage.pgDiscordNotifyDaily (sobrevivem à recarga). Na meta: resgata, devolve o
+    // líder e volta para a hunt de antes. Enquanto a ida vale, a troca de líder do treino espera (dailyHoldsLeader).
+    // Só o time entra na conta (box não: tirar do box mexe na composição do time).
 
     const DAILY_URL = '/api/game/daily-kill';
     const DAILY_CLAIM_URL = '/api/game/daily-kill/claim';
@@ -1529,6 +1543,32 @@
     const DAILY_POLL_HUNT_MS = 30 * 1000;       // consulta na hunt da daily
     const DAILY_POLL_IDLE_MS = 2 * 60 * 1000;   // consulta fora dela (só para saber se há missão escolhida)
     const DAILY_AFTER_KILL_MS = 2500;           // antecipação da consulta depois do abate que fecha a meta
+    const DAILY_PICK_URL = '/api/game/daily-kill/pick';
+    const DAILY_RUN_KEY = 'pgDiscordNotifyDaily';
+    const DAILY_GO_RETRY_MS = 5 * 60 * 1000;    // saiu da hunt da daily (ex.: na mão): espera isso antes de ir de novo
+    const DAILY_GO_MAX = 3;                     // idas por missão
+    // Dano do tipo do golpe (linha) no tipo do defensor (coluna); ausente = 1. É a tabela do jogo, copiada do
+    // Tierlist do PokeGrid (`CHART` no index.html dele).
+    const TYPE_CHART = {
+        NORMAL: { ROCK: .5, GHOST: 0, STEEL: .5 },
+        FIRE: { FIRE: .5, WATER: .5, GRASS: 2, ICE: 2, BUG: 2, ROCK: .5, DRAGON: .5, STEEL: 2 },
+        WATER: { FIRE: 2, WATER: .5, GRASS: .5, GROUND: 2, ROCK: 2, DRAGON: .5 },
+        ELECTRIC: { WATER: 2, ELECTRIC: .5, GRASS: .5, GROUND: 0, FLYING: 2, DRAGON: .5 },
+        GRASS: { FIRE: .5, WATER: 2, GRASS: .5, POISON: .5, GROUND: 2, FLYING: .5, BUG: .5, ROCK: 2, DRAGON: .5, STEEL: .5 },
+        ICE: { FIRE: .5, WATER: .5, GRASS: 2, ICE: .5, GROUND: 2, FLYING: 2, DRAGON: 2, STEEL: .5 },
+        FIGHTING: { NORMAL: 2, ICE: 2, POISON: .5, FLYING: .5, PSYCHIC: .5, BUG: .5, ROCK: 2, GHOST: 0, DARK: 2, STEEL: 2, FAIRY: .5 },
+        POISON: { GRASS: 2, POISON: .5, GROUND: .5, ROCK: .5, GHOST: .5, STEEL: 0, FAIRY: 2 },
+        GROUND: { FIRE: 2, ELECTRIC: 2, GRASS: .5, POISON: 2, FLYING: 0, BUG: .5, ROCK: 2, STEEL: 2 },
+        FLYING: { ELECTRIC: .5, GRASS: 2, FIGHTING: 2, BUG: 2, ROCK: .5, STEEL: .5 },
+        PSYCHIC: { FIGHTING: 2, POISON: 2, PSYCHIC: .5, DARK: 0, STEEL: .5 },
+        BUG: { FIRE: .5, GRASS: 2, FIGHTING: .5, POISON: .5, FLYING: .5, PSYCHIC: 2, GHOST: .5, DARK: 2, STEEL: .5, FAIRY: .5 },
+        ROCK: { FIRE: 2, ICE: 2, FIGHTING: .5, GROUND: .5, FLYING: 2, BUG: 2, STEEL: .5 },
+        GHOST: { NORMAL: 0, PSYCHIC: 2, GHOST: 2, DARK: .5 },
+        DRAGON: { DRAGON: 2, STEEL: .5, FAIRY: 0 },
+        DARK: { FIGHTING: .5, PSYCHIC: 2, GHOST: 2, DARK: .5, FAIRY: .5 },
+        STEEL: { FIRE: .5, WATER: .5, ELECTRIC: .5, ICE: 2, ROCK: 2, STEEL: .5, FAIRY: 2 },
+        FAIRY: { FIRE: .5, FIGHTING: 2, POISON: .5, DRAGON: 2, DARK: 2, STEEL: .5 },
+    };
 
     let daily = null;               // último estado lido (ver parseDaily)
     let dailyFetchedAt = 0;
@@ -1541,8 +1581,29 @@
     let prevHuntSlug = null;        // hunt (não cidade) anterior à atual: para onde voltar depois da daily
     let lastRealHunt = null;        // última hunt (não cidade) vista
     let onDailyChange = null;       // callback do painel para redesenhar o status
+    let dailyAutoBusy = false;
+    let dailyPickTried = 0;         // resetAt da missão que já tentamos escolher (não repete o POST /pick)
+    let dailyAutoNote = '';         // último motivo de a daily sozinha não ir (status do painel; log só quando muda)
+    let dailyRun = loadDailyRun();  // { resetAt, name, slug, from, leaderId, leaderName, pokeId, pokeName, eff, goes, lastGoAt, over }
 
     function dailyEnabled() { return Boolean(cfg.dailyEnabled); }
+    function dailyAutoOn() { return Boolean(cfg.dailyEnabled && cfg.dailyAuto); }
+    function loadDailyRun() {
+        try { const r = JSON.parse(localStorage.getItem(DAILY_RUN_KEY) || 'null'); return r && typeof r === 'object' ? r : null; }
+        catch { return null; }
+    }
+    function saveDailyRun() {
+        try { if (dailyRun) localStorage.setItem(DAILY_RUN_KEY, JSON.stringify(dailyRun)); else localStorage.removeItem(DAILY_RUN_KEY); }
+        catch { /* sem localStorage: vale só nesta carga */ }
+    }
+    // Ida da daily sozinha em andamento (a missão de hoje, ainda não fechada).
+    function activeDailyRun() {
+        if (!dailyRun || dailyRun.over) return null;
+        if (daily && daily.resetAt && dailyRun.resetAt && daily.resetAt !== dailyRun.resetAt) return null;
+        return dailyRun;
+    }
+    // Chamado pelo módulo de nível: enquanto a daily sozinha escolheu o líder, a troca automática espera.
+    function dailyHoldsLeader() { return dailyAutoOn() && Boolean(activeDailyRun()?.pokeId); }
 
     // Chamado por setHunt() a cada troca de hunt.
     function noteHuntChange(novo) {
@@ -1570,19 +1631,28 @@
             have, qty,
             done: Boolean(m) && (m.done === true || (qty > 0 && have >= qty)),
             xp: Number(s?.reward?.xp) || 0,
+            pickedIdx: m ? idx : -1,
+            options: opts.map((o, i) => ({
+                idx: i, name: String(o?.name || '?'), speciesId: Number(o?.speciesId) || 0,
+                t1: String(o?.type1 || '').toUpperCase(), t2: String(o?.type2 || '').toUpperCase(),
+                have: Math.max(0, Number(o?.have) || 0), qty: Math.max(0, Number(o?.qty) || 0),
+            })),
         };
     }
     function dailyOnHunt() {
         if (!daily?.picked || !huntSlug) return false;
         const h = normalize(huntSlug);
         if (CITY_SLUGS.includes(h)) return false;
-        return h === daily.slug || dailyKillsHere > 0;
+        const run = activeDailyRun();
+        return h === daily.slug || Boolean(run && h === run.slug) || dailyKillsHere > 0;
     }
     // Para onde voltar (d = cfg ou rascunho do painel): campo fixo > etapa da rota > hunt anterior.
     function dailyReturnTarget(d) {
         d = d || cfg;
         const fixo = huntSlugFromName(d.dailyReturnSlug || '');
         if (fixo) return fixo;
+        const run = activeDailyRun();
+        if (run?.from) return run.from;                              // daily sozinha: a hunt de onde ela saiu
         if (catchRouteActive() && catchTarget) return catchTarget.slug;
         const st = routeStep();
         if (st?.slug) return st.slug;
@@ -1593,12 +1663,164 @@
         if (!d.dailyEnabled) return 'desligada';
         if (!daily) return dailyFetchedAt ? 'não consegui ler a missão (veja o log)' : 'ainda não lida';
         if (daily.locked) return 'bloqueada no seu nível';
-        if (!daily.picked) return 'nenhuma missão escolhida (escolha no jogo, em Dailys)';
+        const auto = d.dailyAuto;
+        if (!daily.picked) return auto ? `nenhuma missão escolhida · o script escolhe a melhor${dailyAutoNote ? ` (${dailyAutoNote})` : ''}` : 'nenhuma missão escolhida (escolha no jogo, em Dailys)';
         const meta = `${daily.name} ${fmtNum(daily.have)}/${fmtNum(daily.qty)}`;
         if (daily.claimed) return `${meta} · concluída e resgatada hoje`;
         if (daily.done) return `${meta} · meta batida${d.dailyClaim ? ', resgatando' : ' (resgate no jogo)'}`;
         const dest = dailyReturnTarget(d);
-        return `${meta} · ${dailyOnHunt() ? 'na hunt da daily' : 'fora da hunt da daily'} · volta para ${dest || '? (entre numa hunt antes ou preencha "Voltar para")'}`;
+        const run = activeDailyRun();
+        const com = run?.pokeName ? ` · com ${run.pokeName}${run.eff != null ? ` (${effLabel(run.eff)})` : ''}` : '';
+        const onde = dailyOnHunt() ? 'na hunt da daily' : auto ? (dailyAutoNote ? `fora da hunt da daily (${dailyAutoNote})` : 'indo para a hunt da daily') : 'fora da hunt da daily';
+        return `${meta} · ${onde}${com} · volta para ${dest || '? (entre numa hunt antes ou preencha "Voltar para")'}`;
+    }
+
+    // ---- daily sozinha: escolha da missão e do Pokémon ----
+    function typeMult(atk, t1, t2) {
+        const row = TYPE_CHART[atk] || {};
+        return [t1, t2].filter(Boolean).reduce((m, dfn) => m * (row[dfn] != null ? row[dfn] : 1), 1);
+    }
+    function typesOf(p) {
+        if (p?.t1) return [p.t1, p.t2 || ''];
+        const t = typeof creatureTypes !== 'undefined' ? creatureTypes.get(Number(p?.speciesId) || 0) : null;
+        return t || ['', ''];
+    }
+    // Melhor multiplicador entre os tipos do Pokémon (o golpe de mesmo tipo) contra os tipos da espécie; sem dado = 1.
+    function pokeEffVs(p, t1, t2) {
+        const meus = typesOf(p).filter(Boolean);
+        if (!meus.length || !t1) return 1;
+        return Math.max(...meus.map(a => typeMult(a, t1, t2)));
+    }
+    function effLabel(e) { return `x${Math.round(e * 100) / 100}`; }
+    // Hunt da espécie da missão (a de menor nível: o catálogo vem ordenado por nível).
+    function dailyHuntFor(o) {
+        if (!Array.isArray(huntCatalog) || !o) return null;
+        const nome = normalize(o.name);
+        return huntCatalog.find(h => o.speciesId && h.speciesId === o.speciesId)
+            || huntCatalog.find(h => normalize(h.speciesName || '') === nome || normalize(h.name) === nome || h.slug === huntSlugFromName(o.name))
+            || null;
+    }
+    // Nota de um Pokémon do time para a missão: efetividade × nível, com desconto (quadrático) abaixo do nível da hunt.
+    function dailyBestPoke(o, hunt) {
+        let best = null;
+        const [ot1, ot2] = o.t1 ? [o.t1, o.t2] : typesOf({ speciesId: o.speciesId }); // opção sem tipo: o do creatures.json
+        for (const p of team) {
+            if (!p?.id) continue;
+            const eff = pokeEffVs(p, ot1, ot2);
+            const lv = Math.max(1, Number(p.level) || 1);
+            const hl = Number(hunt?.level) || 0;
+            const score = eff * lv * (hl && lv < hl ? (lv / hl) ** 2 : 1);
+            if (score > 0 && (!best || score > best.score || (score === best.score && p.leader))) best = { p, eff, score };
+        }
+        return best;
+    }
+    // Opções da missão ordenadas pela nota do melhor Pokémon dividida pelos abates que faltam.
+    function dailyRankOptions() {
+        return (daily?.options || [])
+            .map(o => {
+                const hunt = dailyHuntFor(o);
+                const best = hunt ? dailyBestPoke(o, hunt) : null;
+                const falta = Math.max(1, o.qty - o.have);
+                return { o, hunt, best, nota: best ? best.score / falta : 0 };
+            })
+            .filter(x => x.hunt && x.best)
+            .sort((a, b) => b.nota - a.nota);
+    }
+    function noteDailyAuto(motivo, extra) {
+        if (motivo === dailyAutoNote) return;
+        dailyAutoNote = motivo;
+        if (motivo) logEvent('daily-auto-espera', Object.assign({ motivo }, extra || {}));
+        if (onDailyChange) { try { onDailyChange(); } catch { /* painel fechado */ } }
+    }
+    async function dailyAutoStep() {
+        if (!dailyAutoOn() || dailyAutoBusy || !daily || daily.locked || daily.claimed || daily.done) return;
+        if (daily.picked && dailyOnHunt()) { noteDailyAuto(''); return; }
+        if (huntSwitch || tripRunning || swapPending) return;       // outra troca/viagem em andamento: próximo tique
+        dailyAutoBusy = true;
+        try {
+            try { await loadHuntCatalog(); }
+            catch (err) { noteDailyAuto('não consegui ler as hunts do jogo', { erro: String(err?.message || err) }); return; }
+            if (!team.length) { noteDailyAuto('esperando o time'); requestPokes(0); return; }
+            if (!daily.picked) { await dailyAutoPick(); return; }
+            dailyAutoGo();
+        } finally { dailyAutoBusy = false; }
+    }
+    async function dailyAutoPick() {
+        if (dailyPickTried === daily.resetAt) return;
+        const plano = dailyRankOptions();
+        const melhor = plano[0];
+        dailyPickTried = daily.resetAt;
+        if (!melhor) { noteDailyAuto('nenhuma opção com hunt conhecida', { opcoes: daily.options.map(o => o.name) }); return; }
+        try {
+            await gameApi(DAILY_PICK_URL, { method: 'POST', body: JSON.stringify({ idx: melhor.o.idx }) });
+        } catch (err) { noteDailyAuto('o jogo recusou a escolha da missão', { erro: String(err?.message || err) }); return; }
+        logEvent('daily-auto-escolha', { missao: melhor.o.name, idx: melhor.o.idx, hunt: melhor.hunt.slug, pokemon: melhor.best.p.name, eff: melhor.best.eff,
+            opcoes: plano.map(x => ({ nome: x.o.name, pokemon: x.best.p.name, eff: x.best.eff, nota: Math.round(x.nota * 100) / 100 })) });
+        noteDailyAuto('');
+        await refreshDaily();
+        if (daily?.picked && !daily.done && !daily.claimed) dailyAutoGo();
+    }
+    function dailyAutoGo() {
+        const o = daily.options[daily.pickedIdx];
+        const hunt = dailyHuntFor(o);
+        if (!hunt) { noteDailyAuto(`não achei a hunt de ${daily.name}`); return; }
+        let run = dailyRun && dailyRun.resetAt === daily.resetAt ? dailyRun : null;
+        if (run?.over) { noteDailyAuto('a ida de hoje já falhou: faça na mão'); return; }
+        if (run && (run.goes || 0) >= DAILY_GO_MAX) { noteDailyAuto(`já fui ${DAILY_GO_MAX} vezes hoje`); return; }
+        if (run && Date.now() - (run.lastGoAt || 0) < DAILY_GO_RETRY_MS) return;
+        const best = dailyBestPoke(o, hunt);
+        const lider = teamLeader();
+        const atual = huntSlug ? normalize(huntSlug) : null;
+        if (!run) {
+            const aqui = atual && !CITY_SLUGS.includes(atual) && atual !== hunt.slug ? atual : null;
+            const from = aqui || (lastRealHunt && lastRealHunt !== hunt.slug ? lastRealHunt : null) || (prevHuntSlug !== hunt.slug ? prevHuntSlug : null);
+            run = dailyRun = { resetAt: daily.resetAt, name: daily.name, slug: hunt.slug, from, leaderId: lider?.id || null, leaderName: lider?.name || null, goes: 0 };
+        }
+        const escolhido = best?.p || lider;
+        Object.assign(run, { slug: hunt.slug, pokeId: escolhido?.id || null, pokeName: escolhido?.name || null, eff: best ? best.eff : null, goes: (run.goes || 0) + 1, lastGoAt: Date.now() });
+        saveDailyRun();
+        noteDailyAuto('');
+        let summon = false;
+        if (escolhido?.id && lider?.id && escolhido.id !== lider.id) {
+            summon = sendGame({ type: 'poke-summon', pokeId: escolhido.id });
+            requestPokes(1500);
+        }
+        switchHunt(hunt.slug, 1, 'daily-ida');
+        logEvent('daily-auto-ida', { missao: daily.name, have: daily.have, qty: daily.qty, hunt: hunt.slug, nivelHunt: hunt.level, pokemon: escolhido?.name || null, eff: best ? best.eff : null, liderAntes: lider?.name || null, summon, volta: run.from, ida: run.goes });
+        if (run.goes > 1) return;                                      // o aviso sai só na 1ª ida
+        const who = playerName();
+        const trocou = escolhido && lider && escolhido.id !== lider.id;
+        postWebhook('alert', {
+            content: `⚔️ ${who ? `**${who}**` : 'Sua conta'} foi fazer a Daily Kill (**${daily.name}** ${fmtNum(daily.have)}/${fmtNum(daily.qty)})${escolhido ? ` com **${escolhido.name}**` : ''}`,
+            username: 'Poke Idle World',
+            embeds: [{
+                title: `Daily Kill sozinha: ${daily.name}`,
+                description: (who ? `Conta: ${who}\n` : '') + `Hunt: ${hunt.slug} (lv ${hunt.level})\n`
+                    + (escolhido ? `Pokémon: ${escolhido.name} lv ${escolhido.level}${best ? ` · efetividade ${effLabel(best.eff)}` : ''}${trocou ? ` (líder era ${lider.name})` : ' (já era o líder)'}\n` : '')
+                    + `Volta para: ${run.from || '? (preencha "Voltar para")'}\nEm ${new Date().toLocaleString('pt-BR')}`,
+                color: 0x5865f2,
+            }],
+        }, { evento: 'daily-auto-ida', missao: daily.name, hunt: hunt.slug });
+    }
+    // Devolve o líder de antes da daily (se ainda estiver no time e não for o líder atual).
+    function dailyRestoreLeader(run) {
+        if (!run?.leaderId || !team.some(p => p.id === run.leaderId)) return false;
+        if (teamLeader()?.id === run.leaderId) return false;
+        const ok = sendGame({ type: 'poke-summon', pokeId: run.leaderId });
+        requestPokes(1500);
+        logEvent('daily-auto-lider', { para: run.leaderName, enviado: ok });
+        return ok;
+    }
+    // A entrada na hunt da daily não confirmou (switchHunt desistiu): devolve o líder, volta e não tenta mais hoje.
+    function dailyGoFailed(slug) {
+        const run = activeDailyRun();
+        if (!run || run.slug !== slug) return;
+        run.over = true;
+        saveDailyRun();
+        dailyRestoreLeader(run);
+        logEvent('daily-auto-falhou', { hunt: slug, volta: run.from });
+        noteDailyAuto('a ida de hoje falhou: faça na mão');
+        if (run.from) switchHunt(run.from, 1, 'daily');
     }
 
     function scheduleDailyCheck(ms) {
@@ -1622,7 +1844,7 @@
     function dailyTick(force) {
         if (!dailyEnabled() || dailyRunning) return;
         const gap = dailyOnHunt() ? DAILY_POLL_HUNT_MS : DAILY_POLL_IDLE_MS;
-        if (!force && dailyFetchedAt && Date.now() - dailyFetchedAt < gap) return;
+        if (!force && dailyFetchedAt && Date.now() - dailyFetchedAt < gap) return daily ? dailyAutoStep() : undefined;
         return refreshDaily().then(() => (daily ? handleDailyState() : undefined));
     }
 
@@ -1631,7 +1853,14 @@
         try {
             const novo = parseDaily(await gameApi(DAILY_URL));
             if (daily && novo.resetAt !== daily.resetAt) { dailySeenUnclaimed = false; dailyKillsHere = 0; } // virou o dia
+            const velha = dailyRun && !dailyRun.over && dailyRun.resetAt && novo.resetAt && dailyRun.resetAt !== novo.resetAt ? dailyRun : null;
             daily = novo;
+            if (velha) {                                              // virou o dia no meio da ida: desfaz e larga
+                velha.over = true; saveDailyRun();
+                dailyRestoreLeader(velha);
+                logEvent('daily-auto-virou-dia', { missao: velha.name, volta: velha.from });
+                if (velha.from && huntSlug && normalize(huntSlug) === velha.slug) switchHunt(velha.from, 1, 'daily');
+            }
             if (daily.picked && !daily.claimed) dailySeenUnclaimed = true;
             const sig = JSON.stringify([daily.picked, daily.name, daily.done, daily.claimed, daily.locked, daily.resetAt]);
             if (sig !== dailySig) {
@@ -1649,13 +1878,14 @@
 
     async function handleDailyState() {
         const d = daily;
-        if (!d.picked || d.locked) return;
-        if (!(d.done || d.claimed)) return;                       // ainda caçando
+        if (d.locked) return;
+        if (!d.picked || !(d.done || d.claimed)) return dailyAutoStep(); // sem missão / ainda caçando
         const marca = d.resetAt || Math.floor(Date.now() / 86400000);
         if (dailyHandledReset === marca) return;                    // já tratada
         dailyHandledReset = marca;
         const onHunt = dailyOnHunt();
-        if (d.claimed && !dailySeenUnclaimed) {                     // já estava resgatada quando a vimos: não foi a gente
+        const run = dailyAutoOn() ? activeDailyRun() : null;       // a daily sozinha trouxe a conta até aqui
+        if (d.claimed && !dailySeenUnclaimed && !run) {                     // já estava resgatada quando a vimos: não foi a gente
             logEvent('daily-pronta', { missao: d.name, resgatada: true, naHunt: onHunt, acao: 'nada (já estava resgatada)' });
             return;
         }
@@ -1669,11 +1899,13 @@
                 requestPokes(1500);                                 // o XP foi para o líder: reconfere nível/rota
             } catch (err) { erroResgate = String(err?.message || err); }
         }
-        const dest = onHunt ? dailyReturnTarget() : null;
+        const dest = onHunt || run ? dailyReturnTarget() : null;
         const atual = huntSlug ? normalize(huntSlug) : null;
         const volta = Boolean(dest && dest !== atual);
+        const liderDevolvido = run ? dailyRestoreLeader(run) : false;
+        if (run) { run.over = true; saveDailyRun(); }
         if (volta) switchHunt(dest, 1, 'daily');
-        logEvent('daily-pronta', { missao: d.name, have: d.have, qty: d.qty, resgatada: d.claimed, xp: payout ? (Number(payout.xp) || 0) : null, erroResgate, naHunt: onHunt, volta: volta ? dest : null });
+        logEvent('daily-pronta', { missao: d.name, have: d.have, qty: d.qty, resgatada: d.claimed, xp: payout ? (Number(payout.xp) || 0) : null, erroResgate, naHunt: onHunt, volta: volta ? dest : null, sozinha: Boolean(run), lider: liderDevolvido ? run.leaderName : null });
         const who = playerName();
         const mention = cfg.mentionUserId ? `<@${cfg.mentionUserId}> ` : '';
         const itens = Array.isArray(payout?.items) ? payout.items.map(i => i?.label || i?.name).filter(Boolean) : [];
@@ -1682,15 +1914,16 @@
             : erroResgate ? `Resgate falhou: ${erroResgate} — resgate no jogo, em Dailys`
             : d.claimed ? 'Recompensa resgatada no jogo' : 'Resgate automático desligado: resgate no jogo, em Dailys';
         const destino = volta ? `Voltando para a hunt **${dest}**`
-            : onHunt ? 'Não sei para onde voltar: entre na hunt na mão (ou preencha "Voltar para" no painel 🔔)'
+            : onHunt || run ? 'Não sei para onde voltar: entre na hunt na mão (ou preencha "Voltar para" no painel 🔔)'
             : `A conta não estava na hunt da daily (segue em ${atual || 'cidade'})`;
+        const lider = liderDevolvido ? `\nLíder devolvido: ${run.leaderName}` : '';
         postWebhook('alert', {
             content: `${mention}✅ ${who ? `**${who}**` : 'Sua conta'} terminou a Daily Kill (**${d.name}**)${volta ? ` — voltando para **${dest}**` : ''}`,
             username: 'Poke Idle World',
             embeds: [{
                 title: `Daily Kill concluída: ${d.name}`,
-                description: (who ? `Conta: ${who}\n` : '') + `Missão: ${d.name} ${fmtNum(d.have)}/${fmtNum(d.qty)}\n${recompensa}\n${destino}\nEm ${new Date().toLocaleString('pt-BR')}`,
-                color: volta || !onHunt ? 0x57f287 : 0xfee75c,
+                description: (who ? `Conta: ${who}\n` : '') + `Missão: ${d.name} ${fmtNum(d.have)}/${fmtNum(d.qty)}\n${recompensa}\n${destino}${lider}\nEm ${new Date().toLocaleString('pt-BR')}`,
+                color: volta || !(onHunt || run) ? 0x57f287 : 0xfee75c,
             }],
         }, { evento: 'daily-pronta', missao: d.name, volta: volta ? dest : null });
     }
@@ -2536,7 +2769,7 @@
             `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
             `Bolas: ${moduleState('bolas', d) === 'off' ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}`,
             `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades)` : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
-            `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? 'daily' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
+            `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? 'daily sozinha' : 'daily') : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : 'desligada'}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
         ].join(' · ');
@@ -2691,8 +2924,9 @@
                         <h3>Daily Kill</h3>
                         <label class="dn-toggle"><input id="pg-dn-daily" type="checkbox"><span class="sw"></span>Voltar para a hunt quando a missão do dia terminar</label>
                         <label class="dn-toggle"><input id="pg-dn-daily-claim" type="checkbox"><span class="sw"></span>Resgatar a recompensa sozinho</label>
+                        <label class="dn-toggle"><input id="pg-dn-daily-auto" type="checkbox"><span class="sw"></span>Fazer a daily sozinho <span class="dn-hint">(escolhe a missão e o Pokémon do time, vai e volta)</span></label>
                         <label class="dn-field"><span>Voltar para</span><input id="pg-dn-daily-return" class="dn-input" type="text" placeholder="vazio = hunt de antes (ou a etapa da rota)" spellcheck="false"></label>
-                        <p class="dn-help">Escolha a missão em Dailys e entre na hunt do Pokémon no jogo. Quando a meta bater, o script resgata (se marcado), sai da hunt e volta. Aviso no canal de Alertas.</p>
+                        <p class="dn-help">Escolha a missão em Dailys e entre na hunt do Pokémon no jogo. Quando a meta bater, o script resgata (se marcado), sai da hunt e volta. Com "Fazer a daily sozinho", o script escolhe a missão (se você não escolheu), põe de líder o Pokémon do time com mais vantagem de tipo contra ela (tabela do jogo × nível), entra na hunt e, no fim, devolve o líder e volta. Aviso no canal de Alertas.</p>
                         <div class="dn-status"><span>⚔️</span><span id="pg-dn-daily-status"></span></div>
                     </div>
                 </section>
@@ -2855,6 +3089,7 @@
                 catchRouteBall: $('#pg-dn-catch-ball').value || 'auto',
                 dailyEnabled: $('#pg-dn-daily').checked,
                 dailyClaim: $('#pg-dn-daily-claim').checked,
+                dailyAuto: $('#pg-dn-daily-auto').checked,
                 dailyReturnSlug: huntSlugFromName($('#pg-dn-daily-return').value),
                 watchList: $('#pg-dn-list').value.split(',').map(normalize).filter(Boolean),
                 notifyShiny: $('#pg-dn-shiny').checked,
@@ -3356,6 +3591,7 @@
             $('#pg-dn-catch-ball').value = cfg.catchRouteBall || 'auto';
             $('#pg-dn-daily').checked = Boolean(cfg.dailyEnabled);
             $('#pg-dn-daily-claim').checked = cfg.dailyClaim !== false;
+            $('#pg-dn-daily-auto').checked = Boolean(cfg.dailyAuto);
             $('#pg-dn-daily-return').value = cfg.dailyReturnSlug || '';
             $('#pg-dn-trip-city').value = ['cerulean', 'pewter', 'viridian', 'goldenrod'].includes(cfg.tripCity) ? cfg.tripCity : 'cerulean';
             $('#pg-dn-reload').checked = Boolean(cfg.reloadEnabled);
@@ -3435,7 +3671,7 @@
             const alvoAntes = levelTarget(), swapAntes = swapEnabled();
             const rotaAntes = JSON.stringify(routeList());
             const recargaAntes = JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]);
-            const dailyAntes = JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug]);
+            const dailyAntes = JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug, cfg.dailyAuto]);
             const capturaAntes = JSON.stringify([cfg.catchRouteEnabled, cfg.catchRouteAreas, cfg.catchRouteMaxLevel]);
             const viagemAntes = JSON.stringify([cfg.tripEveryMin, cfg.tripEveryMaxMin]);
             const ligouCaptura = draft.catchRouteEnabled && !cfg.catchRouteEnabled;
@@ -3457,7 +3693,7 @@
             if (JSON.stringify([cfg.tripEveryMin, cfg.tripEveryMaxMin]) !== viagemAntes) restartTripCycle(); // faixa da viagem mudou: sorteia de novo
             saveHuntProfile();
             if (JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]) !== recargaAntes) scheduleReload(); // faixa mudou: sorteia de novo
-            if (JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug]) !== dailyAntes) scheduleDailyCheck(500); // daily mudou: lê a missão já
+            if (JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug, cfg.dailyAuto]) !== dailyAntes) scheduleDailyCheck(500); // daily mudou: lê a missão já
             if (JSON.stringify([cfg.catchRouteEnabled, cfg.catchRouteAreas, cfg.catchRouteMaxLevel]) !== capturaAntes) {
                 if (!cfg.catchRouteEnabled) catchTarget = null;
                 else if (huntCatalog) catchNext('salvar'); else startCatchRoute('salvar');
@@ -3615,7 +3851,7 @@
         '| nível:', levelEnabled() ? `${levelTarget()}${swapEnabled() ? ' + troca' : ''}` : 'não',
         '| rota:', routeActive() ? routeStatus() : 'não',
         '| captura:', cfg.catchRouteEnabled ? `${catchAreas().join('+')}${cfg.catchRouteMaxLevel ? ` até lv ${cfg.catchRouteMaxLevel}` : ''}${cfg.catchRouteAuto ? ' + bola' : ''}` : 'não',
-        '| daily:', cfg.dailyEnabled ? `volta para ${dailyReturnTarget() || 'a hunt anterior'}${cfg.dailyClaim ? ' + resgate' : ''}` : 'não',
+        '| daily:', cfg.dailyEnabled ? `${cfg.dailyAuto ? 'sozinha, ' : ''}volta para ${dailyReturnTarget() || 'a hunt anterior'}${cfg.dailyClaim ? ' + resgate' : ''}` : 'não',
         '| venda pokes:', cfg.pokeSellEnabled ? TIERS_ASC.filter(t => pokeSellLimit(cfg, t.key) > 0).map(t => `${t.name}<${pokeSellLimit(cfg, t.key)}`).join(' ') || 'sem limites' : 'não',
         '| venda drops:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens` : 'não',
         '| viagem à cidade:', `${cfg.tripCity} a cada ${cfg.tripEveryMin}${cfg.tripEveryMaxMin > cfg.tripEveryMin ? `–${cfg.tripEveryMaxMin}` : ''} min`,

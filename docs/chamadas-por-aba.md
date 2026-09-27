@@ -65,7 +65,7 @@ da Pokédex. Fora disso, nada.
 
 | O quê | Como | Quando |
 |---|---|---|
-| Daily Kill | `GET /api/game/daily-kill` (REST); `POST .../claim` na meta | a cada 30 s na hunt da missão, 2 min fora dela; só com a Daily ligada |
+| Daily Kill | `GET /api/game/daily-kill` (REST); `POST .../claim` na meta; com "sozinho": `POST .../pick` (1x por dia, sem missão escolhida), `poke-summon` na ida e na volta | a cada 30 s na hunt da missão, 2 min fora dela; só com a Daily ligada |
 | Recarga do painel | reload da página + `enter-hunt` na volta | intervalo configurável |
 | Viagem à cidade | `leave-hunt`, `field-teleport-city` sintético (tela), `set-city` se a tela não viajar, tarefas, `enter-hunt` + `hunt-resume` sintético | quando há venda/compra pendente |
 

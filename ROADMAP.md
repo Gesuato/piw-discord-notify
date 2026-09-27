@@ -311,7 +311,7 @@ por missão (`resetAt`); missão já resgatada quando o script a viu pela primei
 status ("Pidgey 3/5 · na hunt da daily · volta para larvitar"). Teste: `node test/daily.test.js`.
 
 **Pendências:** confirmar ao vivo o formato de `options[].done`/`have` e o payout do claim (levantados só no bundle).
-Não entra na hunt da daily sozinho (o usuário escolhe a missão e entra).
+Entrar na hunt sozinho: ver #21 (v3.16.0).
 
 ---
 
@@ -447,6 +447,30 @@ em `pgDiscordNotifyUi.vendaOpen`) com resumo de uma linha fechados. Sistema só 
 viagem em `migrateCfg`; `everyMin` dos perfis por hunt é ignorado), `sellTick`, `pokeSellTick`, os botões "Vender agora"
 por bloco (o "Ir agora" da faixa leva tudo) e o "Ir à cidade agora" de Sistema. `lastTripAt`/`nextTripDelayMs` vão no
 registro da recarga. Testes: `trip.test.js` (relógio, vazio, urgente), `pokesell.test.js`, smoke.
+
+---
+
+## ✅ 21. Daily Kill sozinha: escolher missão e Pokémon, ir e voltar (v3.16.0)
+
+**O que faz:** com "Fazer a daily sozinho" (aba Treino → Daily Kill, `cfg.dailyAuto`, exige a Daily ligada): se não há
+missão escolhida, o script escolhe uma das 3 (`POST /api/game/daily-kill/pick { idx }`); com a missão aberta e a conta
+fora da hunt dela, põe de líder o Pokémon do TIME com mais vantagem contra a espécie (`poke-summon`), entra na hunt
+(`switchHunt` origem `daily-ida`) e, na meta, resgata, devolve o líder de antes e volta para a hunt de onde saiu.
+
+**Escolha:** efetividade = melhor multiplicador entre os tipos do Pokémon contra `options[].type1/type2` (tabela de
+tipos do jogo, a mesma `CHART` do Tierlist do PokeGrid; o Tierlist roda no app, fora do painel, então o script tem a
+cópia `TYPE_CHART`). Nota do Pokémon = efetividade × nível × (nível/nível da hunt)² quando está abaixo da hunt.
+Missão = maior nota do melhor Pokémon ÷ abates que faltam. Hunt da espécie = a de menor nível no `map-markers`
+(`dailyHuntFor`, por `speciesId`). Tipos do time vêm do frame `pokes` (`type1/type2`) ou do `creatures.json`.
+
+**Estado:** `localStorage.pgDiscordNotifyDaily` = `{ resetAt, slug, from, leaderId, leaderName, pokeId, eff, goes,
+lastGoAt, over }` (sobrevive à recarga). Enquanto a ida vale, `dailyHoldsLeader()` pausa a troca de líder do treino
+(`checkLeaderLevel`) e a rota de captura já respeita `dailyOnHunt()`. Saiu da hunt da daily (na mão): tenta de novo
+depois de 5 min, no máx. 3 idas por missão. Entrada não confirmada: devolve o líder, volta e não tenta mais no dia.
+Virou o dia no meio: desfaz e larga. Aviso no canal de Alertas na ida e na volta. Teste: `node test/dailyauto.test.js`.
+
+**Pendências:** confirmar no log que `pokes.list[]` traz `type1/type2` e que `/pick` aceita `{ idx }` (bundle).
+Só o time entra na conta (o box não). Não usa `/reroll`.
 
 ---
 
