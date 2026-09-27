@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.18.0
+// @version      3.18.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.18.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.18.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -2345,14 +2345,15 @@
     //   destino dos Pokémon é só a família.
     // Roda como ÚLTIMA tarefa de toda viagem à cidade (depois de vender, comprar e do clã) e nunca pede viagem sozinho.
     // Itens: só os que já caíram em hunt (ids vistos em `field-kill`, em localStorage.pgDiscordNotifyDrops), menos
-    //   suprimento (heal/revive/ball), os marcados para venda (ficam na mochila: vendidos ou "Manter") e os que a tarefa
+    //   consumível (DEPOSIT_SKIP_CATS: poção, revive, bola, berry, held, TM, addon...), os marcados para venda (ficam na mochila: vendidos ou "Manter") e os que a tarefa
     //   do clã pede (a conversão usa a mochila).
     // Pokémon: fora do time que a venda NÃO vende (regras da aba Venda), menos inicial, anunciado no mercado, capturado há
     //   menos de 2 min, da tarefa do clã e, sem `depositPokesRare`, shiny e 🔒.
 
     const DEPOT_MOVE_URL = '/api/game/depot/move';
     const DROPS_KEY = 'pgDiscordNotifyDrops';
-    const DEPOSIT_SKIP_CATS = ['heal', 'revive', 'ball'];
+    // Consumíveis nunca saem da mochila (o jogo usa na hunt ou o jogador usa na mão), mesmo que um dia caiam em hunt.
+    const DEPOSIT_SKIP_CATS = ['heal', 'revive', 'ball', 'berry', 'held', 'tm', 'addon', 'pokecard', 'vitamin', 'energy'];
     const DEPOSIT_WAIT_MS = 5000;
     const DEPOSIT_GAP_MS = [300, 700];        // pausa entre movimentos (sorteada)
     const droppedIds = loadDropped();         // ids de item que já caíram em hunt
@@ -2380,7 +2381,7 @@
         const id = Number(inv?.id ?? inv?.itemId);
         if (!(Math.floor(Number(inv?.quantity) || 0) > 0)) return 'vazio';
         if (!droppedIds.has(id)) return 'não é drop de hunt';
-        if (DEPOSIT_SKIP_CATS.includes(String(inv?.category || item?.category || ''))) return 'suprimento';
+        if (DEPOSIT_SKIP_CATS.includes(String(item?.category || inv?.category || ''))) return 'consumível';
         if (cfg.sellEnabled && cfg.sellItems && cfg.sellItems[id]) return 'marcado para venda';
         if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) return 'tarefa do clã';
         return null;
@@ -3493,7 +3494,7 @@
                             <label class="dn-field"><span>Drops que sobraram</span><select id="pg-dn-dep-items" class="dn-select"><option value="">Deixar na mochila</option><option value="depot">Depot comum</option><option value="family">Depósito da família</option></select></label>
                             <label class="dn-field"><span>Pokémon que não foram vendidos</span><select id="pg-dn-dep-pokes" class="dn-select"><option value="">Deixar no box (é o Depot comum)</option><option value="family">Depósito da família</option></select></label>
                             <label class="dn-toggle"><input id="pg-dn-dep-rare" type="checkbox"><span class="sw"></span>Mandar também shiny e 🔒 para a família</label>
-                            <p class="dn-help">Última etapa de toda viagem à cidade (depois de vender e comprar); sozinho não gera viagem. Drops: só o que já caiu em hunt; ficam na mochila poções/revives, os marcados para venda e o que o clã pede. Pokémon: os de fora do time que a venda não vende; nunca inicial, anunciado ou capturado há menos de 2 min. No Depot comum o Pokémon já está (o box é o Depot), por isso o destino dele é só a família. O que entra na família passa a ser DA FAMÍLIA; limite de 50 movimentos por dia (+50 por VIP).</p>
+                            <p class="dn-help">Última etapa de toda viagem à cidade (depois de vender e comprar); sozinho não gera viagem. Drops: só o que já caiu em hunt; poções, revives e outros consumíveis (berry, held, TM, addon) NUNCA saem da mochila, nem os marcados para venda e o que o clã pede. Pokémon: os de fora do time que a venda não vende; nunca inicial, anunciado ou capturado há menos de 2 min. No Depot comum o Pokémon já está (o box é o Depot), por isso o destino dele é só a família. O que entra na família passa a ser DA FAMÍLIA; limite de 50 movimentos por dia (+50 por VIP).</p>
                             <div class="dn-status" id="pg-dn-dep-status"></div>
                         </div>
                     </div>

@@ -504,7 +504,8 @@ não troca o líder para a hunt do clã (dá para reaproveitar a escolha por tip
 `tripTasksFor` quando há outra tarefa; sozinha não gera viagem). `depositItems` = '' | 'depot' | 'family': os drops que
 sobraram (ids vistos em `field-kill`, em `localStorage.pgDiscordNotifyDrops`) vão para o Depot comum (`POST
 /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou para a família (`family-action { action:'item',
-dir:'deposit', itemId, quantity }`); ficam na mochila heal/revive/ball, os marcados para venda e o que o clã pede.
+dir:'deposit', itemId, quantity }`); ficam na mochila os consumíveis (`DEPOSIT_SKIP_CATS`: heal, revive, ball, berry, held, tm, addon, pokecard, vitamin,
+energy; v3.18.1), os marcados para venda e o que o clã pede.
 `depositPokes` = '' | 'family': Pokémon fora do time que a venda NÃO vende vão para a família (`family-action poke`);
 nunca time, inicial, anunciado, capturado há < 2 min, da tarefa do clã e, sem `depositPokesRare`, shiny e 🔒. Pokémon
 no "Depot comum" = o box (já estão lá), por isso não há essa opção para eles.

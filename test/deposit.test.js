@@ -7,6 +7,8 @@ const ITEMS = [
     { id: 8, name: 'Super Potion', category: 'heal' },
     { id: 9, name: 'Iron', category: 'misc' },
     { id: 10, name: 'Bottles of Poison', category: 'loot' },
+    { id: 11, name: 'Revive', category: 'revive' },
+    { id: 12, name: 'Wild Rovia Berry', category: 'berry' },
 ];
 // Mochila (GET /api/game/depot → inventory).
 const BAG = [
@@ -15,8 +17,10 @@ const BAG = [
     { id: 8, name: 'Super Potion', quantity: 10, category: 'heal' },
     { id: 9, name: 'Iron', quantity: 5, category: 'misc' },
     { id: 10, name: 'Bottles of Poison', quantity: 20, category: 'loot' },
+    { id: 11, name: 'Revive', quantity: 5 },                     // mochila sem categoria: vale a do catálogo
+    { id: 12, name: 'Wild Rovia Berry', quantity: 3, category: 'berry' },
 ];
-const DROPS = JSON.stringify([120, 7, 8, 10]);                  // Iron nunca caiu em hunt
+const DROPS = JSON.stringify([120, 7, 8, 10, 11, 12]);          // Iron nunca caiu em hunt; poção/revive/berry "caíram" de propósito
 function depotApi(bag) {
     return (url, opts) => {
         if (url === '/api/game/depot') return Promise.resolve({ inventory: bag.slice(), depot: [] });
@@ -38,7 +42,7 @@ const POKES = [
 const sellRule = (p) => (Number(p.ivTotal) < 30 ? null : 'poder alto');   // "vende se poder < 30"
 
 (async () => {
-    // 1) drops -> Depot comum: só Feather (Small Stone é do clã, poção é suprimento, Iron não caiu, Bottles marcado)
+    // 1) drops -> Depot comum: só Feather (Small Stone é do clã, poção/revive/berry são consumíveis, Iron não caiu, Bottles marcado)
     {
         const bag = BAG.map(x => Object.assign({}, x));
         const cfg = { depositItems: 'depot', sellEnabled: true, sellItems: { 10: { keep: 0 } } };
@@ -89,7 +93,7 @@ const sellRule = (p) => (Number(p.ivTotal) < 30 ? null : 'poder alto');   // "ve
         const { api, state } = loadDepositModule(cfg, { api: depotApi(bag), items: ITEMS, store: { pgDiscordNotifyDrops: DROPS } });
         await api.depositCityWork();
         const it = state.family.filter(f => f.kind === 'item').map(f => [f.itemId, f.qty]);
-        assert(JSON.stringify(it) === JSON.stringify([[120, 450], [7, 30], [10, 20]]), 'itens da família com quantidade: ' + JSON.stringify(it));
+        assert(JSON.stringify(it) === JSON.stringify([[120, 450], [7, 30], [10, 20]]), 'itens da família com quantidade (sem poção/revive/berry): ' + JSON.stringify(it));
 
         const { api: a2, state: s2 } = loadDepositModule({ depositItems: 'family' }, { api: depotApi(BAG.slice()), items: ITEMS, store: { pgDiscordNotifyDrops: DROPS }, family: null });
         const r2 = await a2.depositCityWork();
