@@ -172,6 +172,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   v3.20.5: a rota do clã só espera a Daily enquanto ela está em andamento (`dailyWantsHunt`; feita/resgatada não segura);
   item pedido que já é drop vira `base.direto` (sem conversão); toda espera tem motivo em `clanWait` (painel "parado: …",
   log `cla-espera`), nunca mais "escolhendo a hunt…" mudo.
+  v3.20.6: viagem urgente para subir de rank (`clanAskTrip`) confirma com o jogo antes e é refeita a cada 5 min enquanto
+  a tarefa seguir pronta (máx. 3 por rank; antes era 1 por rank e a subida caía na viagem do relógio). `refreshClan(true)`
+  com leitura em andamento espera e lê de novo. Na cidade, log `cla-cidade { ok, nivelOk, convertido, falta }`.
 - Rota de captura / Pokédex (v3.10.0, aba Profissão): hunts em `GET /api/game/map-markers` (público, `hunts[{ slug,
   name, level, area, looktype }]`, level 0 = cidade), espécies em `GET /game/creatures.json` (público, `creatures[{
   pokeId, name, looktype }]`, pokeId < 10000 = normal), capturadas em `GET /api/game/pokedex` (auth, `species[{ id,

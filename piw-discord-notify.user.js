@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.20.5
+// @version      3.20.6
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.20.5';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.20.6';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -2028,10 +2028,14 @@
 
     let clanState = null;           // ver parseClan
     let clanFetchedAt = 0;
-    let clanBusy = false;
+    let clanBusy = null;            // Promise da leitura em andamento
     let clanSig = '';
     let clanJoinTried = false;
-    let clanReadyAsked = 0;         // rank cuja tarefa pronta já pediu viagem urgente
+    // Viagem urgente para subir de rank: refeita enquanto a tarefa seguir pronta (antes era uma vez por rank; se a
+    // única ida chegasse cedo, a subida ficava para a viagem do relógio). { rank, n, at }
+    let clanReadyAsk = { rank: 0, n: 0, at: 0 };
+    const CLAN_READY_RETRY_MS = 5 * 60 * 1000;
+    const CLAN_READY_MAX_ASKS = 3;           // por rank; depois, só na carona da viagem do relógio
     const bag = new Map();          // itemId -> quantidade na mochila (frame `inventory`)
     let bagAt = 0;
     let clanTarget = null;          // { slug, name, level, motivo } hunt escolhida pela rota do clã
@@ -2156,11 +2160,15 @@
         if (mudou) clanNotify();
     }
 
+    // Leitura em andamento: espera por ela (com `force`, lê de novo depois, para a viagem não decidir com estado velho).
     async function refreshClan(force) {
-        if (clanBusy) return;
+        if (clanBusy) { await clanBusy; if (!force) return; if (clanBusy) return clanBusy; }
         const gap = clanRouteOn() ? CLAN_POLL_ROUTE_MS : CLAN_POLL_MS;
         if (!force && clanFetchedAt && Date.now() - clanFetchedAt < gap) return;
-        clanBusy = true;
+        clanBusy = clanFetch();
+        return clanBusy;
+    }
+    async function clanFetch() {
         try {
             clanState = parseClan(await gameApi(CLAN_URL));
             requestBag();
@@ -2174,7 +2182,7 @@
             logEvent('cla-erro', { erro: String(err?.message || err) });
         } finally {
             clanFetchedAt = Date.now();
-            clanBusy = false;
+            clanBusy = null;
             clanNotify();
         }
     }
@@ -2202,6 +2210,17 @@
         }
     }
 
+    const clanSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    // O que o jogo ainda diz que falta (para o log): ['Solid Earth Piece 3/5', 'ROCK 480/500', 'nível 100'].
+    function clanReqsLeft() {
+        const t = clanState?.task;
+        if (!t) return [];
+        return t.items.filter(i => i.have < i.need).map(i => `${i.name} ${i.have}/${i.need}`)
+            .concat(t.caught.filter(c => c.have < c.need).map(c => `${c.name} ${c.have}/${c.need}`),
+                t.kills.filter(k => k.have < k.need).map(k => `${k.type} ${k.have}/${k.need}`),
+                t.levelOk ? [] : [`nível ${t.level}`]);
+    }
+
     // Na cidade (tarefa 'cla' da viagem): converte o item base que a mochila já tem e sobe de rank se a tarefa fechou.
     async function clanCityWork() {
         if (!clanOn()) return { ok: false, motivo: 'desligado' };
@@ -2223,7 +2242,10 @@
             } catch (err) { logEvent('cla-erro', { acao: 'converter', base: i.base.name, packs, erro: String(err?.message || err) }); }
         }
         if (feito.length) await refreshClan(true);
+        // Tudo entregue pelas nossas contas mas o jogo ainda não marcou `ok` (conversão acabou de entrar): confere de novo.
+        if (feito.length && clanState.task && !clanState.task.ok && cfg.clanRankup && clanMissing()?.nada) { await clanSleep(2000); await refreshClan(true); }
         const t = clanState.task;
+        logEvent('cla-cidade', { ok: Boolean(t?.ok), nivelOk: t ? t.levelOk : null, convertido: feito, falta: t ? clanReqsLeft() : [] });
         let subiu = null;
         if (t && t.ok && cfg.clanRankup) {
             try {
@@ -2325,16 +2347,27 @@
         clanNotify();
     }
 
+    // Tarefa pronta: pede viagem urgente. Confirma antes com o jogo (os abates do painel são estimativa local) e refaz o
+    // pedido a cada CLAN_READY_RETRY_MS enquanto seguir pronta, até CLAN_READY_MAX_ASKS vezes por rank.
+    async function clanAskTrip() {
+        if (typeof tripRequest !== 'function' || !clanReadyForCity()) return;
+        if (tripRunning || (typeof tripNeeds !== 'undefined' && tripNeeds.has('cla'))) return;
+        const rank = clanState.task.rank;
+        if (clanReadyAsk.rank !== rank) clanReadyAsk = { rank, n: 0, at: 0 };
+        if (clanReadyAsk.n >= CLAN_READY_MAX_ASKS || (clanReadyAsk.at && Date.now() - clanReadyAsk.at < CLAN_READY_RETRY_MS)) return;
+        if (Date.now() - clanFetchedAt > 5000) { await refreshClan(true); if (!clanReadyForCity() || clanState.task?.rank !== rank) return; }
+        clanReadyAsk.n++; clanReadyAsk.at = Date.now();
+        tripRequest('cla', null, clanState.task.ok ? 'tarefa do clã pronta: subir de rank' : 'tarefa do clã pronta: converter e subir de rank');
+        if (clanReadyAsk.n === CLAN_READY_MAX_ASKS) logEvent('cla-espera', { motivo: `pedi ${CLAN_READY_MAX_ASKS} viagens para o rank ${rank} e o jogo não deixou subir; agora só na viagem do relógio`, falta: clanReqsLeft() });
+    }
+
     // Tique (60 s): lê a tarefa, entra no clã, pede a viagem se o rank estiver pronto e (com a rota) escolhe a hunt.
     async function clanTick() {
         if (!clanOn()) return;
         await refreshClan(false);
         if (!clanState) return;
         if (!clanState.clan) { if (clanState.canJoin) await clanAutoJoin(false); return; }
-        if (clanReadyForCity() && clanReadyAsked !== clanState.task.rank && typeof tripRequest === 'function') {
-            clanReadyAsked = clanState.task.rank;
-            tripRequest('cla', null, 'tarefa do clã pronta');
-        }
+        await clanAskTrip();
         if (!clanRouteOn()) { clanSetWait(''); return; }
         if (!Array.isArray(huntCatalog)) {
             try { await loadHuntCatalog(); } catch (err) { clanSetWait(`não consegui baixar o mapa de hunts (${String(err?.message || err)})`); return; }

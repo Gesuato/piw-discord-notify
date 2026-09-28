@@ -127,6 +127,27 @@ const cfgBase = () => ({ clanEnabled: true, clanKey: 'orebound', clanRankup: tru
         assert(/nenhuma hunt até lv 70 dá Small Stone/.test(a6.clanStatus().rota), 'motivo no painel: ' + a6.clanStatus().rota);
     }
 
+    // 5d) a 1ª viagem urgente chegou cedo (o jogo ainda contava 499/500): a subida não fica para a viagem do relógio
+    {
+        const s7 = { onix: 1, big: 10, rock: 500 };
+        const { api: a7, state: st7, clock } = loadClanModule(cfgBase(), { api: fakeApi(s7), items: ITEMS, creatures: CREATURES, huntCatalog: CATALOGO, team: TIME, huntSlug: 'onix', bag: [] });
+        await a7.clanTick(); await flush();
+        assert(st7.trips.length === 1, 'pediu a 1ª viagem: ' + JSON.stringify(st7.trips));
+        s7.rock = 499;                                            // na cidade o jogo diz que falta 1
+        let r = await a7.clanCityWork();
+        assert(!r.subiu && !st7.calls.some(c => c.url === '/api/game/clans/rankup'), 'não subiu (jogo não deixou)');
+        assert(st7.logs.some(l => l[0] === 'cla-cidade' && l[1].falta.includes('ROCK 499/500')), 'log diz o que faltou: ' + JSON.stringify(st7.logs.filter(l => l[0] === 'cla-cidade')));
+        s7.rock = 500;
+        clock.now += 60 * 1000;
+        await a7.clanTick(); await flush();
+        assert(st7.trips.length === 1, 'não repete antes de 5 min');
+        clock.now += 5 * 60 * 1000;
+        await a7.clanTick(); await flush();
+        assert(st7.trips.length === 2 && st7.trips[1].k === 'cla', 'pediu de novo: ' + JSON.stringify(st7.trips));
+        r = await a7.clanCityWork();
+        assert(r.subiu && r.subiu.para === 4, 'subiu na 2ª viagem');
+    }
+
     // 6) desligado: não lê nada
     {
         const { api: a3, state: st3 } = loadClanModule({ clanEnabled: false }, { api: fakeApi({}) });
