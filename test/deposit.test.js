@@ -66,13 +66,13 @@ const sellRule = (p) => (Number(p.ivTotal) < 30 ? null : 'poder alto');   // "ve
         assert(r.pokes.length === 1 && !state.calls.length, 'itens desligados: não leu a mochila');
     }
 
-    // 3) com "shiny e 🔒": eles também vão
+    // 3) com "shiny": ele também vai; 🔒 nunca (o jogo recusa travado na família)
     {
         const cfg = { depositPokes: 'family', depositPokesRare: true, pokeSellEnabled: true };
         const { api, state } = loadDepositModule(cfg, { api: depotApi([]), pokes: POKES, pokeSellReason: sellRule });
         await api.depositCityWork();
         const ids = state.family.map(f => f.pokeId).sort();
-        assert(JSON.stringify(ids) === JSON.stringify(['guardado', 'lk', 'sh']), 'shiny e 🔒 incluídos (Geodude poder 20 é vendido): ' + JSON.stringify(ids));
+        assert(JSON.stringify(ids) === JSON.stringify(['guardado', 'sh']), 'shiny incluído, 🔒 fora (Geodude poder 20 é vendido): ' + JSON.stringify(ids));
         assert(!ids.includes('venda') && !ids.includes('ini') && !ids.includes('anun') && !ids.includes('lider'), 'nunca: vendido, inicial, anunciado, time');
     }
 

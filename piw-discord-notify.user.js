@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.19.0
+// @version      3.19.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.19.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.19.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -69,7 +69,7 @@
         clanRoute: false,       // ...ir sozinho para a hunt que mais adianta a tarefa (e jogar bola na espécie pedida)
         depositItems: '',       // v3.18.0 Guardar na cidade: drops que sobraram -> '' (mochila) | 'depot' | 'family'
         depositPokes: '',       // ...Pokémon fora do time que a venda não vende -> '' (box) | 'family'
-        depositPokesRare: false, // ...incluir shiny e 🔒 no depósito da família
+        depositPokesRare: false, // ...incluir shiny no depósito da família (🔒 nunca: o jogo recusa)
         depositFamilyList: [],  // v3.19.0 itens escolhidos que SEMPRE vão para a família na viagem: [{ id, name, keep }]
         tripCity: 'cerulean',   // v3.14.0: cidade da viagem de venda/compra (regra do jogo: nada de venda/compra na hunt)
         tripMinGapMin: 3,       // intervalo mínimo entre duas viagens à cidade (minutos; só para viagens urgentes, ex.: bola zerada)
@@ -2324,7 +2324,8 @@
         const reqs = [];
         for (const i of t.items) {
             const mi = m.items.find(x => x.itemId === i.itemId);
-            reqs.push(`${i.have >= i.need ? '✔' : '•'} Entregar ${i.name} ${fmtNum(Math.min(i.have, i.need))}/${fmtNum(i.need)}${mi?.base ? ` · ${mi.base.name} na mochila ${fmtNum(mi.base.have)}${mi.base.falta ? ` (faltam ${fmtNum(mi.base.falta)})` : ' ✔ (converte na viagem)'}` : ''}`);
+            const vendendo = mi?.base?.id && cfg.sellItems && cfg.sellItems[mi.base.id] ? ' · marcado para venda na aba Venda: o script NÃO vende enquanto a tarefa pedir' : '';
+            reqs.push(`${i.have >= i.need ? '✔' : '•'} Entregar ${i.name} ${fmtNum(Math.min(i.have, i.need))}/${fmtNum(i.need)}${mi?.base ? ` · ${mi.base.name} na mochila ${fmtNum(mi.base.have)}${mi.base.falta ? ` (faltam ${fmtNum(mi.base.falta)})` : ' ✔ (converte na viagem)'}${vendendo}` : ''}`);
         }
         for (const x of t.caught) reqs.push(`${x.have >= x.need ? '✔' : '•'} Capturar ${x.name} ${x.have}/${x.need}`);
         for (const k of t.kills) reqs.push(`${k.have >= k.need ? '✔' : '•'} Derrotar ${k.type} ${fmtNum(Math.min(k.have, k.need))}/${fmtNum(k.need)}`);
@@ -2352,7 +2353,7 @@
     //   consumível (DEPOSIT_SKIP_CATS: poção, revive, bola, berry, held, TM, addon...), os marcados para venda (ficam na mochila: vendidos ou "Manter") e os que a tarefa
     //   do clã pede (a conversão usa a mochila).
     // Pokémon: fora do time que a venda NÃO vende (regras da aba Venda), menos inicial, anunciado no mercado, capturado há
-    //   menos de 2 min, da tarefa do clã e, sem `depositPokesRare`, shiny e 🔒.
+    //   menos de 2 min, com 🔒 (o jogo recusa travado na família), da tarefa do clã e, sem `depositPokesRare`, shiny.
 
     const DEPOT_MOVE_URL = '/api/game/depot/move';
     const DROPS_KEY = 'pgDiscordNotifyDrops';
@@ -2407,8 +2408,8 @@
         if (p.team || p.leader || String(p.id).startsWith('team-')) return 'no time';
         if (p.starter) return 'inicial';
         if (p.listed || p.tradeId) return 'anunciado no mercado';
+        if (p.locked) return 'cadeado';          // o jogo recusa: "Este Pokémon está TRAVADO (cadeado)" (log da conta3, 28/09/2026)
         if (!d.depositPokesRare && p.shiny) return 'shiny';
-        if (!d.depositPokesRare && p.locked) return 'cadeado';
         const at = recentCaptureIds.get(String(p.id));
         if (at && Date.now() - at < POKE_SELL_RECENT_MS) return 'capturado agora';
         if (typeof clanKeepsSpecies === 'function' && clanKeepsSpecies(Number(p.speciesId))) return 'tarefa do clã';
@@ -3550,7 +3551,7 @@
                             </div>
                             <label class="dn-field"><span>Drops que sobraram</span><select id="pg-dn-dep-items" class="dn-select"><option value="">Deixar na mochila</option><option value="depot">Depot comum</option><option value="family">Depósito da família</option></select></label>
                             <label class="dn-field"><span>Pokémon que não foram vendidos</span><select id="pg-dn-dep-pokes" class="dn-select"><option value="">Deixar no box (é o Depot comum)</option><option value="family">Depósito da família</option></select></label>
-                            <label class="dn-toggle"><input id="pg-dn-dep-rare" type="checkbox"><span class="sw"></span>Mandar também shiny e 🔒 para a família</label>
+                            <label class="dn-toggle"><input id="pg-dn-dep-rare" type="checkbox"><span class="sw"></span>Mandar também shiny para a família <span class="dn-hint">(🔒 nunca: o jogo não aceita travado)</span></label>
                             <p class="dn-help">Última etapa de toda viagem à cidade (depois de vender e comprar); sozinho não gera viagem. "Sempre para a família": os itens que você escolher vão todos (menos o "manter"), venham de drop, daily ou boss; vão primeiro. Drops: só o que já caiu em hunt; poções, revives e outros consumíveis (berry, held, TM, addon) NUNCA saem da mochila, nem os marcados para venda e o que o clã pede. Pokémon: os de fora do time que a venda não vende; nunca inicial, anunciado ou capturado há menos de 2 min. No Depot comum o Pokémon já está (o box é o Depot), por isso o destino dele é só a família. O que entra na família passa a ser DA FAMÍLIA; limite de 50 movimentos por dia (+50 por VIP).</p>
                             <div class="dn-status" id="pg-dn-dep-status"></div>
                         </div>
