@@ -89,7 +89,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   viram aviso ⚠️ na lista, mas podem ser marcados. Lista branca por item em `cfg.sellItems`. Não voltar a
   bloquear sem o usuário pedir.
 - `cfg.sellItems` é a lista ATIVA; `cfg.sellProfiles[slug]` guarda a lista de cada hunt e sobrescreve a ativa em
-  `setHunt()` (ver `loadHuntProfile`/`saveHuntProfile`). Desde a v3.15.0 os perfis não têm mais intervalo próprio.
+  `setHunt()` (ver `loadHuntProfile`/`saveHuntProfile`). Desde a v3.20.0 a lista do painel nasce com a tabela de drops do
+  monstro (`huntLootTable`, `creatures.json`) e o campo "Hunt" edita o perfil de outra hunt (`readForm` devolve
+  `sellItems` + `sellProfiles`; rascunhos por hunt em `sellDrafts`). Desde a v3.15.0 os perfis não têm mais intervalo próprio.
 - Referências: https://github.com/edulanzarin/piwdex (`src/lib/robo/motor/sessao.ts`, cases
   `catch-result`/`pending`) e https://github.com/luishferreira/poke-standalone-scripts (`AGENTS.md`).
 - Venda de Pokémon (v3.11.0, aba Venda → "Pokémon fora do time"): desde a v3.12.0 UM limite por raridade em
@@ -269,6 +271,7 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
 
 - **Testes isolados em Node** (sem DOM): `node test/level.test.js`, `node test/route.test.js`,
   `node test/reload.test.js`, `node test/daily.test.js`, `node test/catch.test.js`, `node test/pokesell.test.js` e
+  `node test/huntloot.test.js` (tabela de drops por hunt, via `loadCatchModule`),
   `node test/deposit.test.js` (`loadDepositModule`: `// ---- Guardar na cidade` até `// ---- Viagem à cidade`),
   `node test/clan.test.js` (`loadClanModule`: `// ---- Clã: subir de rank` até `// ---- Viagem à cidade`),
   `node test/dailyauto.test.js` (daily sozinha, mesmo `loadDailyModule` com `init.team`/`init.huntCatalog`/`init.store`) e

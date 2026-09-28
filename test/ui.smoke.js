@@ -20,7 +20,16 @@ window.addEventListener('error', (e) => errors.push('ERRO: ' + (e.error && e.err
 window.WebSocket = class FakeWS extends window.EventTarget { constructor(url) { super(); this.url = url; this.readyState = 1; this.sent = []; } send(d) { this.sent.push(d); } };
 Object.assign(window.WebSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
 const fetchCalls = [];
-window.fetch = (url, opts) => { fetchCalls.push(String(url) + (opts && opts.body ? ' ' + opts.body : '')); return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ items: [{ id: 1, name: 'Pidgey Feather', category: 'loot', npcPrice: 10 }, { id: 2, name: 'Rare Candy', category: 'misc', npcPrice: 0 }] }) }); };
+// map-markers/creatures.json: 2 hunts com tabela de drops (v3.20.0); o resto responde o catálogo de itens
+const FAKE_HUNTS = { hunts: [{ slug: 'pidgey', name: 'Pidgey', level: 5, looktype: 16, area: 'kanto' }, { slug: 'geodude', name: 'Geodude', level: 1, looktype: 74, area: 'kanto' }] };
+const FAKE_CREATURES = { creatures: [{ pokeId: 16, name: 'Pidgey', looktype: 16, loot: [{ name: 'Pidgey Feather', chance: 90000, minCount: 1, maxCount: 3 }] }, { pokeId: 74, name: 'Geodude', looktype: 74, loot: [{ name: 'Small Stone', chance: 95000, minCount: 1, maxCount: 4 }] }] };
+window.fetch = (url, opts) => {
+    fetchCalls.push(String(url) + (opts && opts.body ? ' ' + opts.body : ''));
+    const u = String(url);
+    const body = /map-markers/.test(u) ? FAKE_HUNTS : /creatures\.json/.test(u) ? FAKE_CREATURES
+        : { items: [{ id: 1, name: 'Pidgey Feather', category: 'loot', npcPrice: 10 }, { id: 2, name: 'Rare Candy', category: 'misc', npcPrice: 0 }, { id: 120, name: 'Small Stone', category: 'loot', npcPrice: 10 }] };
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+};
 window.localStorage.setItem('pgDiscordNotifyCfg', JSON.stringify({
     webhookUrl: 'https://discord.com/api/webhooks/1/x', watchList: ['dratini'],
     route: [{ slug: 'pidgey', level: 10 }, { slug: 'larvitar', level: 15 }], routeEnabled: true, routeStage: 1,
@@ -199,6 +208,21 @@ setTimeout(() => {
             const lst = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg')).depositFamilyList || [];
             log('lista familia chip=' + chip + ' salvo=' + JSON.stringify(lst));
             if (!(/Devoted Token/.test(chip) && lst.length === 1 && lst[0].name === 'Devoted Token' && lst[0].keep === 2)) errors.push('lista da família: item não entrou ou não salvou');
+            // venda por hunt (v3.20.0): escolhe outra hunt, marca um drop que ainda não caiu, salva no perfil dela
+            panel.querySelector('.dn-tab[data-tab=venda]').click();
+            const ativoAntes = JSON.stringify(JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg')).sellItems);
+            $('#pg-dn-sell-view').value = 'Geodude'; fire($('#pg-dn-sell-view'), 'change');
+            const linhas = [...panel.querySelectorAll('#pg-dn-sell-list .dn-item')].map(i => i.textContent.replace(/\s+/g, ' ').trim());
+            log('venda outra hunt=' + $('#pg-dn-sell-hunt').textContent.trim().slice(0, 90) + ' | linhas=' + linhas.join(' | '));
+            const pedra = panel.querySelector('#pg-dn-sell-list [data-item-id="120"] .pg-dn-sell-chk');
+            if (!pedra) errors.push('venda por hunt: Small Stone (tabela de drops) não apareceu em geodude');
+            else { pedra.checked = true; fire(pedra, 'change'); }
+            $('#pg-dn-save').click();
+            const cfgV = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+            log('perfil geodude=' + JSON.stringify(cfgV.sellProfiles && cfgV.sellProfiles.geodude) + ' ativo=' + JSON.stringify(cfgV.sellItems));
+            if (!(cfgV.sellProfiles && cfgV.sellProfiles.geodude && cfgV.sellProfiles.geodude.items && cfgV.sellProfiles.geodude.items[120])) errors.push('venda por hunt: perfil de geodude não salvou a Small Stone');
+            if (JSON.stringify(cfgV.sellItems) !== ativoAntes) errors.push('venda por hunt: editar outra hunt mexeu na lista ativa');
+            $('#pg-dn-sell-view-cur').click();
             log('apos delta: fetch=' + fetchCalls.map(c => c.split(' ')[0]).join(',') + ' | enviados=' + ws.sent.slice(1).map(x => JSON.parse(x).type + (JSON.parse(x).capturedId ? ':' + JSON.parse(x).capturedId : '')).join(','));
             recv({ type: 'family', family: { name: 'Fam', movesUsed: 3, movesCap: 50, frozen: false, members: [] }, depot: { items: [], pokes: [{ id: 'cuid-bagon-1', name: 'Bagon', level: 5 }] } });
             setTimeout(() => {

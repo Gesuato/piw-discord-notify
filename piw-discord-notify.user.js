@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.19.1
+// @version      3.20.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.19.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.20.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -1241,6 +1241,7 @@
     let creatureIdByName = new Map(); // nome normalizado -> pokeId (do creatures.json)
     let creatureTypes = new Map();  // pokeId -> [type1, type2] em maiúsculas (do creatures.json; daily sozinha)
     let creatureLoot = new Map();   // pokeId -> [{ name, chance (em 100000), minCount, maxCount }] (do creatures.json; clã)
+    let huntLootBySlug = new Map(); // slug -> loot do monstro da hunt (todas as hunts, inclusive Furious/Ancient/Brave/Orre)
     let dexSig = '';
     let dexTotal = 0;               // espécies normais no catálogo
     let dexFetchedAt = 0;
@@ -1260,6 +1261,24 @@
         return a.length ? a : ['kanto'];
     }
 
+    // Tabela de drops da hunt (loot do monstro no creatures.json, como a wiki mostra), com o id do item pelo nome no
+    // items.json: [{ id, name, chance (0..1; null = o jogo não publica), min, max }], mais provável primeiro.
+    function huntLootTable(slug, itemsCat) {
+        const loot = huntLootBySlug.get(normalize(slug || '')) || [];
+        const idPorNome = new Map();
+        if (itemsCat) for (const [id, it] of itemsCat) { const k = normalize(it?.name); if (k && !idPorNome.has(k)) idPorNome.set(k, Number(id)); }
+        const out = new Map();
+        for (const l of loot) {
+            const id = idPorNome.get(normalize(l?.name));
+            if (!id) continue;
+            const chance = Number(l.chance) > 0 ? Number(l.chance) / 100000 : null;
+            const min = Math.max(1, Number(l.minCount) || 1), max = Math.max(min, Number(l.maxCount) || min);
+            const cur = out.get(id);
+            if (!cur || (chance || 0) > (cur.chance || 0)) out.set(id, { id, name: String(l.name), chance, min, max });
+        }
+        return [...out.values()].sort((a, b) => (b.chance || 0) - (a.chance || 0) || a.name.localeCompare(b.name));
+    }
+
     async function loadHuntCatalog() {
         if (huntCatalog) return huntCatalog;
         const getJson = (url) => fetch(url).then(r => r.ok ? r.json() : Promise.reject(new Error(`${url}: HTTP ${r.status}`)));
@@ -1271,6 +1290,15 @@
         creatureIdByName = new Map(creatures.filter(c => Number(c.pokeId) < 10000).map(c => [normalize(c.name), Number(c.pokeId)]));
         creatureTypes = new Map(creatures.map(c => [Number(c.pokeId), [String(c.type1 || '').toUpperCase(), String(c.type2 || '').toUpperCase()]]));
         creatureLoot = new Map(creatures.map(c => [Number(c.pokeId), Array.isArray(c.loot) ? c.loot : []]));
+        // Monstro de cada hunt pelo nome (445 de 451 em 27/09/2026, inclusive as especiais); o resto pelo looktype.
+        const porNome = new Map();
+        for (const c of creatures) { const k = huntSlugFromName(c.name); if (!porNome.has(k)) porNome.set(k, c); }
+        huntLootBySlug = new Map();
+        for (const h of Array.isArray(mm?.hunts) ? mm.hunts : []) {
+            if (!h?.slug || !(Number(h.level) > 0)) continue;
+            const c = porNome.get(huntSlugFromName(h.name)) || porNome.get(huntSlugFromName(h.slug)) || (byLook.get(Number(h.looktype)) || [])[0] || null;
+            if (c && Array.isArray(c.loot)) huntLootBySlug.set(normalize(h.slug), c.loot);
+        }
         dexTotal = creatures.filter(c => Number(c.pokeId) < 10000).length;
         huntCatalog = (Array.isArray(mm?.hunts) ? mm.hunts : [])
             .filter(h => h && h.slug && Number(h.level) > 0)
@@ -3336,6 +3364,7 @@
 #pg-dn-panel .dn-item .w{color:var(--dn-shiny)}
 #pg-dn-panel .dn-item .keep{display:none;align-items:center;gap:4px;color:var(--dn-muted)}
 #pg-dn-panel .dn-item.on .keep{display:inline-flex}
+#pg-dn-panel .dn-item.faltou .nm{color:var(--dn-muted)}
 #pg-dn-panel .dn-item .keep input{width:52px;min-height:24px;padding:2px 6px}
 #pg-dn-panel .dn-item.locked{color:var(--dn-dim);cursor:default}
 #pg-dn-panel .dn-item.locked:hover{background:transparent}
@@ -3524,9 +3553,11 @@
                     <div class="dn-section dn-blk" id="pg-dn-blk-itens" data-blk="itens">
                         <h3><span class="chev">▶</span>Drops da hunt <span class="sum" id="pg-dn-sum-itens"></span><span class="spacer"></span><label class="dn-toggle"><input id="pg-dn-sell" type="checkbox"><span class="sw"></span>Vender sozinho</label></h3>
                         <div class="in">
+                            <div class="dn-inline"><span class="k">Hunt</span><input id="pg-dn-sell-view" class="dn-input" list="pg-dn-sell-view-dl" type="text" placeholder="a atual (ou escolha outra para configurar antes)" spellcheck="false"><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-sell-view-cur" title="Volta para a hunt em que a conta está.">Hunt atual</button></div>
+                            <datalist id="pg-dn-sell-view-dl"></datalist>
                             <div class="dn-status" id="pg-dn-sell-hunt"></div>
                             <div class="dn-items" id="pg-dn-sell-list"></div>
-                            <p class="dn-help">Marcado = vendido na viagem. "Manter" = quantidade que fica na mochila. ⚠ = raro, pedra/feromônio ou outra categoria: confira. 🔒 = o jogo não deixa vender. A lista é desta hunt; cada hunt guarda a sua. <span class="dn-badge" id="pg-dn-sell-count"></span></p>
+                            <p class="dn-help">A lista traz todos os drops do monstro da hunt (tabela do jogo, com chance e quantidade por abate), mesmo os que ainda não caíram. Marcado = vendido na viagem. "Manter" = quantidade que fica na mochila. ⚠ = raro, pedra/feromônio ou outra categoria: confira. 🔒 = o jogo não deixa vender. Cada hunt guarda a sua lista: escolha outra hunt no campo acima para deixar a venda pronta antes de ir. <span class="dn-badge" id="pg-dn-sell-count"></span></p>
                         </div>
                     </div>
                     <div class="dn-section dn-blk" id="pg-dn-blk-pokes" data-blk="pokes">
@@ -3797,7 +3828,12 @@
                 cooldownSeconds: Math.max(0, parseInt($('#pg-dn-cooldown').value, 10) || 0),
                 debug: $('#pg-dn-debug').checked,
                 sellEnabled: $('#pg-dn-sell').checked,
-                sellItems: readSellList(),
+                ...(() => {
+                    const sd = sellCollect(), cur = sellCurSlug();
+                    const perfis = Object.assign({}, cfg.sellProfiles || {});
+                    for (const [k, v] of Object.entries(sd)) if (k && k !== cur) perfis[k] = Object.assign({}, perfis[k] || {}, { items: v });
+                    return { sellItems: sd[cur] || Object.assign({}, cfg.sellItems || {}), sellProfiles: perfis };
+                })(),
                 pokeSellEnabled: $('#pg-dn-psell').checked,
                 tripEveryMin: Math.max(1, parseInt($('#pg-dn-trip-min').value, 10) || 10),
                 tripEveryMaxMin: Math.max(0, parseInt($('#pg-dn-trip-max').value, 10) || 0),
@@ -3870,47 +3906,101 @@
         onBallsChange = () => { if (!panel.hidden) renderBalls(); };
 
         // ---- Venda ----
+        // Hunt vista na lista de venda ('' = a atual). Outra hunt = edita o perfil dela (cfg.sellProfiles[slug]); marcações
+        // não salvas de cada hunt ficam em sellDrafts até o Salvar, para trocar de hunt na lista sem perder nada.
+        let sellView = '';
+        let sellDrafts = {};
+        let sellCatLoading = false;
+        function sellCurSlug() { return huntSlug ? normalize(huntSlug) : ''; }
+        function sellViewSlug() { return sellView || sellCurSlug(); }
+        function sellIsCurrent(slug) { return !slug || slug === sellCurSlug(); }
+        function sellBase(slug) { return sellIsCurrent(slug) ? (cfg.sellItems || {}) : (cfg.sellProfiles?.[slug]?.items || {}); }
+        function sellCollect() {
+            const out = Object.assign({}, sellDrafts);
+            const v = sellViewSlug();
+            out[v] = readSellList(sellDrafts[v] || sellBase(v));
+            return out;
+        }
+        function rerenderSell() { renderSellList(dirty ? sellCollect()[sellViewSlug()] : null); }
+        function switchSellView(slug) {
+            if (dirty) { const v = sellViewSlug(); sellDrafts[v] = readSellList(sellDrafts[v] || sellBase(v)); }
+            sellView = slug && slug !== sellCurSlug() ? slug : '';
+            $('#pg-dn-sell-view').value = sellView;
+            renderSellList(sellDrafts[sellViewSlug()] || null);
+        }
+        function fillSellViewList() {
+            if (!Array.isArray(huntCatalog) || $('#pg-dn-sell-view-dl').childElementCount) return;
+            $('#pg-dn-sell-view-dl').innerHTML = huntCatalog.map(h => `<option value="${escHtml(h.slug)}">${escHtml(h.name)} · lv ${h.level}</option>`).join('');
+        }
         function renderSellList(sel) {
             const box = $('#pg-dn-sell-list');
             const info = $('#pg-dn-sell-hunt');
-            sel = sel || cfg.sellItems || {};
-            info.innerHTML = huntSlug
-                ? `<span>💰</span><span><span class="k">Hunt:</span> ${escHtml(huntSlug)} · ${hasHuntProfile() ? 'perfil salvo' : 'sem perfil (Salvar cria)'}</span>`
-                : '<span>💰</span><span class="k">Fora de hunt. Entre numa hunt e cace: os drops aparecem aqui.</span>';
-            const ids = [...huntLoot.keys()];
+            const slug = sellViewSlug();
+            const atual = sellIsCurrent(slug);
+            sel = sel || sellDrafts[slug] || sellBase(slug);
+            if ((!Array.isArray(huntCatalog) || !itemsCatalog) && !sellCatLoading) {
+                sellCatLoading = true;
+                Promise.all([loadHuntCatalog().catch(() => null), loadItemsCatalog()])
+                    .then(() => { sellCatLoading = false; fillSellViewList(); if (!panel.hidden) rerenderSell(); });
+            }
+            fillSellViewList();
+            const temPerfil = Boolean(slug && cfg.sellProfiles && cfg.sellProfiles[slug]);
+            info.innerHTML = slug
+                ? `<span>💰</span><span><span class="k">Hunt:</span> ${escHtml(slug)}${atual ? ' (a atual)' : ' · outra hunt: o Salvar grava a lista dela, que vale quando a conta entrar lá'} · ${temPerfil ? 'perfil salvo' : 'sem perfil (Salvar cria)'}</span>`
+                : '<span>💰</span><span class="k">Fora de hunt. Escolha uma hunt no campo acima para montar a lista, ou entre numa.</span>';
+            const tabela = slug && Array.isArray(huntCatalog) && itemsCatalog ? huntLootTable(slug, itemsCatalog) : [];
+            const porId = new Map(tabela.map(t => [t.id, t]));
+            const ids = atual ? [...huntLoot.keys()] : [];
+            for (const t of tabela) if (!ids.includes(t.id)) ids.push(t.id);
+            for (const k of Object.keys(sel)) { const id = Number(k); if (id > 0 && !ids.includes(id)) ids.push(id); } // marcado de antes, fora da tabela
             if (!ids.length) {
-                box.innerHTML = `<p class="dn-help">${huntSlug ? `Nenhum drop visto em ${escHtml(huntSlug)} ainda.` : 'Nenhum drop visto ainda.'}</p>`;
+                box.innerHTML = `<p class="dn-help">${!slug ? 'Nenhuma hunt escolhida.' : sellCatLoading ? 'Carregando a tabela de drops do jogo…' : `Sem tabela de drops para ${escHtml(slug)} e nenhum drop visto ainda.`}</p>`;
                 renderSellCount();
                 return;
             }
             box.innerHTML = ids.map(id => {
-                const loot = huntLoot.get(id);
+                const loot = atual ? huntLoot.get(id) : null;
+                const t = porId.get(id) || null;
                 const item = itemsCatalog?.get(id) || null;
+                const nome = loot?.name || t?.name || item?.name || `Item ${id}`;
                 const motivo = protectedReason(item);
                 const aviso = sellWarning(item);
                 const s = sel[id];
                 const price = item ? Number(item.npcPrice) || 0 : null;
+                const qtd = loot ? `×${fmtNum(loot.qty)}` : (atual ? 'ainda não caiu' : '');
+                const chance = t ? (t.chance != null ? `${Math.round(t.chance * 1000) / 10}% · ${t.min}${t.max > t.min ? `–${t.max}` : ''}/abate` : 'drop raro') : '';
+                const extra = [qtd, chance, price != null ? `${fmtNum(price)} gold` : ''].filter(Boolean).join(' · ');
                 if (motivo) {
-                    return `<div class="dn-item locked" title="Protegido: ${escHtml(motivo)}"><span>🔒</span><span class="nm">${escHtml(loot.name)} <span class="q">×${loot.qty}</span></span><span class="q">${escHtml(motivo)}</span></div>`;
+                    return `<div class="dn-item locked" title="Protegido: ${escHtml(motivo)}"><span>🔒</span><span class="nm">${escHtml(nome)} <span class="q">${escHtml(extra)}</span></span><span class="q">${escHtml(motivo)}</span></div>`;
                 }
-                return `<label class="dn-item${s ? ' on' : ''}" data-item-id="${id}">
+                return `<label class="dn-item${s ? ' on' : ''}${loot || !atual ? '' : ' faltou'}" data-item-id="${id}">
                     <input type="checkbox" class="pg-dn-sell-chk" ${s ? 'checked' : ''}>
-                    <span class="nm">${escHtml(loot.name)} <span class="q">×${loot.qty}${price != null ? ` · ${fmtNum(price)} gold` : ''}</span>${aviso ? ` <span class="w" title="Atenção: ${escHtml(aviso)}">⚠ ${escHtml(aviso)}</span>` : ''}</span>
+                    <span class="nm">${escHtml(nome)} <span class="q">${escHtml(extra)}</span>${aviso ? ` <span class="w" title="Atenção: ${escHtml(aviso)}">⚠ ${escHtml(aviso)}</span>` : ''}</span>
                     <span class="keep" title="Quantidade que fica na mochila">manter <input type="number" class="dn-input pg-dn-sell-keep" min="0" step="1" value="${s ? (Number(s.keep) || 0) : 0}"></span>
                 </label>`;
             }).join('');
             for (const chk of box.querySelectorAll('.pg-dn-sell-chk')) chk.addEventListener('change', () => chk.closest('.dn-item').classList.toggle('on', chk.checked));
             renderSellCount();
         }
+        $('#pg-dn-sell-view').addEventListener('change', () => {
+            const v = $('#pg-dn-sell-view').value.trim();
+            if (!v) { switchSellView(''); return; }
+            const slug = huntSlugFromName(v);
+            const existe = (Array.isArray(huntCatalog) && huntCatalog.some(h => h.slug === slug)) || Boolean(cfg.sellProfiles?.[slug]);
+            if (!existe) { flash(`⚠ Não achei a hunt "${v}". Use o nome ou o slug da lista.`, 'warn', 6000); $('#pg-dn-sell-view').value = sellView; return; }
+            switchSellView(slug);
+        });
+        $('#pg-dn-sell-view').addEventListener('focus', fillSellViewList);
+        $('#pg-dn-sell-view-cur').onclick = () => switchSellView('');
         function renderSellCount() {
             const n = panel.querySelectorAll('.pg-dn-sell-chk:checked').length;
             const b = $('#pg-dn-sell-count');
             b.textContent = n ? `${n} marcados` : 'nenhum marcado';
             b.dataset.state = n ? 'on' : ($('#pg-dn-sell').checked ? 'warn' : '');
-            $('#pg-dn-sum-itens').textContent = `· ${n ? `${n} marcados` : 'nenhum marcado'}${huntSlug ? ` · ${huntSlug}` : ''}${$('#pg-dn-sell').checked ? '' : ' · desligado'}`;
+            $('#pg-dn-sum-itens').textContent = `· ${n ? `${n} marcados` : 'nenhum marcado'}${sellViewSlug() ? ` · ${sellViewSlug()}` : ''}${$('#pg-dn-sell').checked ? '' : ' · desligado'}`;
         }
         // Drop novo chega com o painel aberto: redesenha sem perder o que o usuário marcou e ainda não salvou.
-        onHuntLootChange = () => { if (!panel.hidden) renderSellList(dirty ? readSellList() : null); };
+        onHuntLootChange = () => { if (!panel.hidden) rerenderSell(); };
         // Pokémon fora do time: prévia com as regras da tela (o que seria vendido agora)
         function renderPokeSell() {
             const d = current();
@@ -4263,7 +4353,7 @@
             $('#pg-dn-trip-now').disabled = s.busy;
             $('#pg-dn-trip-status').textContent = tripRunning ? s.title : (lastTripInfo ? tripLastText() : 'Nenhuma viagem ainda.');
         }
-        onTripChange = () => { if (!panel.hidden) { renderTrip(); renderSellList(dirty ? readSellList() : null); renderPokeSell(); } };
+        onTripChange = () => { if (!panel.hidden) { renderTrip(); rerenderSell(); renderPokeSell(); } };
         // "Ir agora": salva o que está na tela (a viagem usa as regras salvas) e leva tudo que houver.
         $('#pg-dn-trip-now').onclick = () => {
             if (dirty) $('#pg-dn-save').click();
@@ -4326,7 +4416,8 @@
             $('#pg-dn-trip-min').value = cfg.tripEveryMin || 10;
             $('#pg-dn-trip-max').value = cfg.tripEveryMaxMin || '';
             for (const i of panel.querySelectorAll('.pg-dn-psell-lim')) i.value = pokeSellLimit(cfg, i.dataset.tier) || '';
-            loadItemsCatalog().then(() => { if (!panel.hidden) renderSellList(dirty ? readSellList() : null); });
+            sellDrafts = {};
+            loadItemsCatalog().then(() => { if (!panel.hidden) rerenderSell(); });
             renderSellList();
             const lv = $('#pg-dn-level');
             lv.disabled = false; lv.value = cfg.levelAlertAt || 0; lv.dataset.own = String(cfg.levelAlertAt || 0);
@@ -4367,7 +4458,7 @@
 
         // qualquer edição marca "não salvo" e recalcula resumos e badges
         const onEdit = (e) => {
-            if (e.target.closest('#pg-dn-import-box, #pg-dn-route-import-box, #pg-dn-route-name-box') || e.target.id === 'pg-dn-route-sel') return;
+            if (e.target.closest('#pg-dn-import-box, #pg-dn-route-import-box, #pg-dn-route-name-box') || e.target.id === 'pg-dn-route-sel' || e.target.id === 'pg-dn-sell-view') return;
             if (!e.target.matches('input, select, textarea')) return;
             dirty = true;
             renderDirty();
@@ -4440,6 +4531,7 @@
             const ligouCla = draft.clanEnabled && draft.clanRoute && !(cfg.clanEnabled && cfg.clanRoute);
             const clanAntes = JSON.stringify([cfg.clanEnabled, cfg.clanRoute, cfg.clanKey]);
             Object.assign(cfg, draft);
+            sellDrafts = {};                                  // listas de venda das outras hunts já foram para cfg.sellProfiles
             const exclusivo = [];
             // Rota de treino, de captura e do clã trocam de hunt: fica a que acabou de ser ligada.
             const rotas = [

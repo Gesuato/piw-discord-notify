@@ -220,6 +220,7 @@ function loadCatchModule(cfg, init) {
         return {
             startCatchRoute, catchNext, catchTick, catchOnPending, catchOnResult, catchOnCooldown, catchHuntFailed, skipCatchTarget, catchOnPokes, catchOnFamily, speciesDone, speciesSource, catchOnHuntChange,
             catchPlan, catchScope, catchProgress, catchStatus, refreshPokedex, refreshProfession,
+            loadHuntCatalog, huntLootTable,
             setHunt(slug) { huntSlug = slug; catchOnHuntChange(slug); },
             get catchTarget() { return catchTarget; },
             get dexCaught() { return dexCaught; },

@@ -525,6 +525,19 @@ formato de `family.depot.items`.
 
 ---
 
+## ✅ 24. Venda por hunt com a tabela de drops desde o começo (v3.20.0)
+
+**O que faz (aba Venda → Drops da hunt):** a lista mostra TODOS os drops do monstro da hunt, como a wiki: loot do
+`creatures.json` (`huntLootTable(slug, itemsCatalog)`: id pelo nome no `items.json`, chance/100000, min–max por abate,
+chance 0 = "drop raro", o jogo não publica), mesmo os que ainda não caíram ("ainda não caiu"). O monstro da hunt sai do
+nome (445 de 451 hunts, inclusive Furious/Ancient/Brave/Psy) ou do looktype (as 6 restantes), em `huntLootBySlug`
+montado no `loadHuntCatalog`. Campo "Hunt" (datalist com as hunts do `map-markers`) escolhe outra hunt: o Salvar grava
+`cfg.sellProfiles[slug]` sem mexer na lista ativa; `loadHuntProfile` aplica quando a conta entra lá. Marcações não
+salvas de cada hunt ficam em `sellDrafts` (trocar de hunt na lista não perde nada). A venda continua vendendo só o que
+caiu na hunt atual (`sellWantedNow`). Teste: `node test/huntloot.test.js` + passo no smoke.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel
