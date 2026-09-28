@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.20.1
+// @version      3.20.2
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.20.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.20.2';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -2918,14 +2918,19 @@
     // Guarda os últimos eventos relevantes em localStorage[LOG_KEY]; o botão
     // "Copiar log" do painel copia tudo como JSON.
 
+    // v3.20.2: com 80 eventos no total, as capturas (catch-result a cada poucos segundos) empurravam para fora em ~5 min
+    // o que importa para diagnóstico (import, viagem, clã...). Agora cada tipo barulhento tem cota própria e o resto dura horas.
     const LOG_KEY = 'pgDiscordNotifyLog';
-    const LOG_MAX = 80;
+    const LOG_MAX = 200;
+    const LOG_NOISY = { 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10 };
 
     function logEvent(kind, data) {
         if (cfg.debug) console.log(TAG, kind, data);
         try {
             const arr = JSON.parse(localStorage.getItem(LOG_KEY) || '[]');
             arr.push({ t: new Date().toISOString(), kind, data });
+            const cota = LOG_NOISY[kind];
+            if (cota) { let n = 0; for (let i = arr.length - 1; i >= 0; i--) if (arr[i].kind === kind && ++n > cota) arr.splice(i, 1); }
             while (arr.length > LOG_MAX) arr.shift();
             localStorage.setItem(LOG_KEY, JSON.stringify(arr));
         } catch { /* localStorage indisponível: ignora */ }
@@ -4732,6 +4737,7 @@
         renderState();
     }
 
+    logEvent('script-carregado', { versao: VERSION, familia: familyList().length, guardar: [cfg.depositItems || '', cfg.depositPokes || ''] }); // /log mostra a versão de cada painel
     loadResume(); // antes do painel e dos timers: restaura o que a carga anterior guardou
     if (cfg.reloadEnabled) scheduleReload();
     buildUI();

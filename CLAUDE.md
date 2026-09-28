@@ -191,7 +191,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
 
 ## Diagnóstico sem console
 
-- O script guarda os últimos 80 eventos em `localStorage.pgDiscordNotifyLog` (v3.13.1; `balls` no máximo 1x/min; socket rastreado,
+- O script guarda até 200 eventos em `localStorage.pgDiscordNotifyLog` (v3.20.2: tipos barulhentos com cota própria em
+  `LOG_NOISY`, ex. `catch-result` 25, para import/viagem/clã durarem horas; `script-carregado { versao }` a cada carga;
+  `balls` no máximo 1x/min; socket rastreado,
   `catch-result` recebidos, decisão dos filtros, cooldown, resposta do webhook). A URL do socket é
   gravada SEM a query string (ela carrega o JWT da sessão). O botão
   **Copiar log** do painel copia esse JSON.
