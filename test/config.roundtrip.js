@@ -87,12 +87,21 @@ setTimeout(() => {
     const msg5b = w5.document.querySelector('#pg-dn-msg').textContent;
     const log5 = JSON.parse(w5.localStorage.getItem('pgDiscordNotifyLog') || '[]').map(e => e.kind);
     console.log('versão nova:', msg5.slice(0, 110), '| cortado:', msg5b.slice(0, 110), '| log:', log5.filter(k => /config/.test(k)).join(','));
+    // colar e clicar de novo em "Importar config" (em vez de Aplicar) também importa; a prévia avisa o que vem
+    const w6 = boot({ webhookUrl: 'https://discord.com/api/webhooks/8/q' });
+    w6.document.querySelector('#pg-dn-btn').click(); w6.document.querySelector('#pg-dn-import').click();
+    const ta6 = w6.document.querySelector('#pg-dn-import-text'); ta6.value = box; ta6.dispatchEvent(new w6.Event('input', { bubbles: true }));
+    const prev6 = w6.document.querySelector('#pg-dn-import-status').textContent;
+    w6.document.querySelector('#pg-dn-import').click();
+    const s6 = JSON.parse(w6.localStorage.getItem('pgDiscordNotifyCfg'));
+    const botaoOk = /Clique em Aplicar/.test(prev6) && /2 itens em "Sempre para a família"/.test(prev6) && (s6.depositFamilyList || []).length === 2 && w6.document.querySelector('#pg-dn-import-box').hidden;
+    console.log('prévia:', prev6.slice(0, 120), '| importou pelo botão Importar:', (s6.depositFamilyList || []).length === 2, '| caixa fechou:', w6.document.querySelector('#pg-dn-import-box').hidden);
     const avisoOk = /v99\.0\.0/.test(msg5) && /Recarregue este painel/.test(msg5) && /cortado/.test(msg5b) && log5.includes('config-import-falhou');
     setTimeout(() => {
     const exp4 = JSON.parse(w4.document.querySelector('#pg-dn-import-text').value || '{}');
     console.log('export com alteração não salva: depositItems =', exp4.depositItems, '| msg:', w4.document.querySelector('#pg-dn-msg').textContent.slice(0, 90));
     const pendenteOk = exp4.depositItems === 'family';
-    if (!somaOk || !dropsOk || !pendenteOk || !avisoOk || faltamNoExport.length || diff.length || !telaOk || diffSalvar.length || semFixture.length || s3.webhookUrl !== 'https://discord.com/api/webhooks/9/z') { console.error('FALHOU config.roundtrip'); process.exit(1); }
+    if (!botaoOk || !somaOk || !dropsOk || !pendenteOk || !avisoOk || faltamNoExport.length || diff.length || !telaOk || diffSalvar.length || semFixture.length || s3.webhookUrl !== 'https://discord.com/api/webhooks/9/z') { console.error('FALHOU config.roundtrip'); process.exit(1); }
     console.log('OK config.roundtrip — exportar/importar sem perdas (tela, salvar depois, drops, alteração não salva, versão nova, texto cortado)');
     process.exit(0);
     }, 50);

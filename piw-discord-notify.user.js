@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.20.3
+// @version      3.20.4
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.20.3';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.20.4';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -3694,6 +3694,7 @@
                         </div>
                         <div id="pg-dn-import-box" class="dn-section" hidden>
                             <textarea id="pg-dn-import-text" class="dn-textarea" rows="3" placeholder="Clique aqui e cole com Ctrl+V a config exportada (no PokeGrid o botão Colar não consegue ler a área de transferência)"></textarea>
+                            <p class="dn-help" id="pg-dn-import-status"></p>
                             <label class="dn-toggle"><input id="pg-dn-import-keephooks" type="checkbox"><span class="sw"></span>Manter os canais deste painel</label>
                             <div class="dn-actions"><button type="button" class="dn-btn" id="pg-dn-import-paste" title="Tenta ler a área de transferência. No PokeGrid a leitura é negada: clique na caixa e use Ctrl+V.">📋 Colar</button><button type="button" class="dn-btn dn-btn--primary" id="pg-dn-import-apply">Aplicar</button></div>
                         </div>
@@ -4673,10 +4674,36 @@
                 }
             });
         };
+        // Prévia do que foi colado (v3.20.4): diz de onde veio e o que entra, e lembra de clicar em Aplicar.
+        function importPreview() {
+            const st = $('#pg-dn-import-status');
+            const bruto = $('#pg-dn-import-text').value.trim();
+            st.classList.remove('warn');
+            if (!bruto) { st.textContent = 'Clique na caixa, cole com Ctrl+V e clique em Aplicar.'; return null; }
+            let data = null;
+            try { data = JSON.parse(bruto); } catch { data = null; }
+            if (!data || typeof data !== 'object' || Array.isArray(data) || !('webhookUrl' in data)) {
+                st.classList.add('warn');
+                st.textContent = data ? '✖ Isso não é uma config deste script.' : `✖ Texto incompleto (${fmtNum(bruto.length)} caracteres): exporte de novo e cole tudo.`;
+                return null;
+            }
+            const n = Object.keys(data.sellProfiles || {}).length, fl = familyList(data).length;
+            st.textContent = `✔ Config de ${data._conta || 'outra conta'}${data._versao ? ` (v${data._versao})` : ''}: listas de venda de ${n} ${n === 1 ? 'hunt' : 'hunts'}, ${fl} ${fl === 1 ? 'item' : 'itens'} em "Sempre para a família". Clique em Aplicar para importar.`;
+            return data;
+        }
+        $('#pg-dn-import-text').addEventListener('input', importPreview);
+        // "Importar config" com uma config já colada APLICA (antes fechava a caixa e o texto se perdia sem aviso).
         $('#pg-dn-import').onclick = () => {
             const box = $('#pg-dn-import-box');
+            const bruto = $('#pg-dn-import-text').value.trim();
+            if (!box.hidden && bruto) {
+                logEvent('config-import-botao', { acao: 'Importar config com texto na caixa: aplica', tamanho: bruto.length });
+                $('#pg-dn-import-apply').click();
+                return;
+            }
             box.hidden = !box.hidden;
-            if (!box.hidden) { $('#pg-dn-import-text').value = ''; $('#pg-dn-import-text').focus(); }
+            logEvent('config-import-caixa', { aberta: !box.hidden });
+            if (!box.hidden) { $('#pg-dn-import-text').value = ''; importPreview(); $('#pg-dn-import-text').focus(); }
         };
         $('#pg-dn-import-apply').onclick = () => {
             let data;
@@ -4732,6 +4759,7 @@
                 `recarga ${cfg.reloadEnabled ? 'ligada' : 'desligada'}`,
             ].join(' · ');
             logEvent('config-importada', { origem, versaoAqui: VERSION, maisNova, desconhecidas, drops: dropsVindos.length, resumo });
+            $('#pg-dn-import-text').value = ''; $('#pg-dn-import-box').hidden = true;   // aplicado: a caixa fecha
             if (maisNova || desconhecidas.length) {
                 flash(`⚠ Importada, mas a config veio da v${origem.versao || '?'} e este painel roda a v${VERSION}${desconhecidas.length ? `: ${desconhecidas.length} opção(ões) nova(s) (${desconhecidas.slice(0, 4).join(', ')}) ficam guardadas sem aparecer` : ''}. Recarregue este painel (⟳ Atualizar tudo no PokeGrid) para usar tudo. ${resumo}`, 'warn', 0);
             } else {
