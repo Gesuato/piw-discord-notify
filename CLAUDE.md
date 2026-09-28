@@ -241,6 +241,12 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   avisos do mesmo Pokémon; padrão 0 = avisar todas. Configs anteriores a `cfgVersion: 2` tinham 30s
   fixos e são migradas para 0 no `loadCfg()`.
 - Comparações de nome sempre via `normalize()` (minúsculas, sem acento).
+- Exportar/Importar (v3.20.1): o PokeGrid LIBERA a escrita na área de transferência (`clipboard-sanitized-write` no
+  `main.js`) e NEGA a leitura: Exportar copia, mas o Importar só funciona com Ctrl+V na caixa. Exportar leva o que está
+  na tela (rascunho se houver alteração não salva) + `_drops` (ids de `pgDiscordNotifyDrops`); Importar registra
+  `config-importada`/`config-import-falhou` no log e avisa quando a config veio de versão mais nova que a do painel
+  (painel não recarregado). `test/config.roundtrip.js` exige que o fixture cubra TODA chave do cfg: feature nova com
+  campo novo precisa entrar lá.
 - Colar com o botão direito (v3.15.1): o webview do PokeGrid não tem menu de contexto e o jogo captura teclas, então
   `pasteInto(el)` (contextmenu em qualquer input de texto/textarea do painel, e o botão "📋 Colar" do Importar) tenta
   `navigator.clipboard.readText()`, depois `execCommand('paste')`, senão avisa. Exportar carimba `_versao/_exportadoEm/

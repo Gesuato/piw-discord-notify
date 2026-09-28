@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.20.0
+// @version      3.20.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.20.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.20.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -3688,9 +3688,9 @@
                             <button type="button" class="dn-btn" id="pg-dn-import" title="Cola uma config exportada de outro painel.">Importar config</button>
                         </div>
                         <div id="pg-dn-import-box" class="dn-section" hidden>
-                            <textarea id="pg-dn-import-text" class="dn-textarea" rows="3" placeholder="Cole a config exportada"></textarea>
+                            <textarea id="pg-dn-import-text" class="dn-textarea" rows="3" placeholder="Clique aqui e cole com Ctrl+V a config exportada (no PokeGrid o botão Colar não consegue ler a área de transferência)"></textarea>
                             <label class="dn-toggle"><input id="pg-dn-import-keephooks" type="checkbox"><span class="sw"></span>Manter os canais deste painel</label>
-                            <div class="dn-actions"><button type="button" class="dn-btn" id="pg-dn-import-paste" title="Cola o que está na área de transferência (o mesmo que o botão direito no campo).">📋 Colar</button><button type="button" class="dn-btn dn-btn--primary" id="pg-dn-import-apply">Aplicar</button></div>
+                            <div class="dn-actions"><button type="button" class="dn-btn" id="pg-dn-import-paste" title="Tenta ler a área de transferência. No PokeGrid a leitura é negada: clique na caixa e use Ctrl+V.">📋 Colar</button><button type="button" class="dn-btn dn-btn--primary" id="pg-dn-import-apply">Aplicar</button></div>
                         </div>
                         <label class="dn-toggle"><input id="pg-dn-debug" type="checkbox"><span class="sw"></span>Debug no console</label>
                         <div class="dn-status"><span class="k">v${VERSION}</span><span class="r" id="pg-dn-socket"></span></div>
@@ -4645,11 +4645,27 @@
         };
 
         // ---- Exportar / importar configuração (para copiar entre contas/painéis) ----
+        // Compara versões "3.20.1": > 0 se a for mais nova que b.
+        function cmpVersion(a, b) {
+            const pa = String(a || '').split('.').map(Number), pb = String(b || '').split('.').map(Number);
+            for (let i = 0; i < Math.max(pa.length, pb.length); i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d; }
+            return 0;
+        }
+        // Exporta o que está NA TELA (com alteração não salva, leva o rascunho e avisa), mais os drops conhecidos do
+        // "Guardar na cidade" (`_drops`, fora do cfg). Tudo com `_` no começo é carimbo e o Importar descarta.
         $('#pg-dn-export').onclick = () => {
-            const txt = JSON.stringify(Object.assign({ _piwDiscordNotify: cfg.cfgVersion || 2, _versao: VERSION, _exportadoEm: new Date().toISOString(), _conta: playerName() || null }, cfg));
+            const pendente = dirty;
+            const base = pendente ? Object.assign({}, cfg, readForm().draft) : cfg;
+            const txt = JSON.stringify(Object.assign({ _piwDiscordNotify: cfg.cfgVersion || 2, _versao: VERSION, _exportadoEm: new Date().toISOString(), _conta: playerName() || null, _drops: [...droppedIds] }, base));
+            logEvent('config-exportada', { versao: VERSION, pendente, tamanho: txt.length, chaves: Object.keys(base).length, guardar: { itens: base.depositItems || '', pokes: base.depositPokes || '', lista: familyList(base).length }, drops: droppedIds.size });
+            const extra = pendente ? ' Levou também as alterações ainda NÃO salvas da tela (salve aqui se quiser mantê-las neste painel).' : '';
             copyText(txt).then(ok => {
-                if (ok) flash('✔ Config copiada (inclui os canais). Na outra conta: Sistema → Importar config.', 'ok', 7000);
-                else { $('#pg-dn-import-box').hidden = false; $('#pg-dn-import-text').value = txt; flash('⚠ Não copiou; a config apareceu na caixa abaixo — copie de lá.', 'warn'); }
+                if (ok) flash(`✔ Config copiada (inclui os canais).${extra} Na outra conta: Sistema → Importar config, clique na caixa e cole com Ctrl+V.`, pendente ? 'warn' : 'ok', 12000);
+                else {
+                    $('#pg-dn-import-box').hidden = false;
+                    const ta = $('#pg-dn-import-text'); ta.value = txt; ta.focus(); ta.select();
+                    flash(`⚠ Não copiou; a config apareceu na caixa abaixo, já selecionada: Ctrl+C.${extra}`, 'warn');
+                }
             });
         };
         $('#pg-dn-import').onclick = () => {
@@ -4659,10 +4675,22 @@
         };
         $('#pg-dn-import-apply').onclick = () => {
             let data;
-            try { data = JSON.parse($('#pg-dn-import-text').value.trim()); }
-            catch { flash('✖ Não é uma config válida.', 'error'); return; }
-            if (!data || typeof data !== 'object' || Array.isArray(data) || !('webhookUrl' in data)) { flash('✖ Isso não parece uma config deste script.', 'error'); return; }
+            const bruto = $('#pg-dn-import-text').value.trim();
+            try { data = JSON.parse(bruto); }
+            catch {
+                logEvent('config-import-falhou', { motivo: 'texto não é JSON', tamanho: bruto.length, inicio: bruto.slice(0, 1), fim: bruto.slice(-1) });
+                flash(bruto ? `✖ Não é uma config válida (${fmtNum(bruto.length)} caracteres${bruto.slice(-1) !== '}' ? '; o fim está faltando: o texto foi cortado ao copiar' : ''}). Exporte de novo e cole com Ctrl+V.` : '✖ A caixa está vazia: clique nela e cole com Ctrl+V.', 'error');
+                return;
+            }
+            if (!data || typeof data !== 'object' || Array.isArray(data) || !('webhookUrl' in data)) {
+                logEvent('config-import-falhou', { motivo: 'não é config deste script', chaves: Object.keys(data || {}).slice(0, 8) });
+                flash('✖ Isso não parece uma config deste script.', 'error');
+                return;
+            }
             const origem = { versao: data._versao, conta: data._conta, em: data._exportadoEm };
+            const dropsVindos = Array.isArray(data._drops) ? data._drops.map(Number).filter(n => n > 0) : [];
+            const maisNova = Boolean(origem.versao && cmpVersion(origem.versao, VERSION) > 0);
+            const desconhecidas = Object.keys(data).filter(k => !k.startsWith('_') && !(k in DEFAULTS) && !['sellProfiles', 'routes', 'routeName'].includes(k));
             for (const k of Object.keys(data)) if (k.startsWith('_')) delete data[k];
             const keepHooks = $('#pg-dn-import-keephooks').checked;
             const mine = { webhookUrl: cfg.webhookUrl, webhookShiny: cfg.webhookShiny, webhookAlerts: cfg.webhookAlerts, webhookLevel: cfg.webhookLevel };
@@ -4670,6 +4698,7 @@
             if (keepHooks) Object.assign(cfg, mine);
             cfg.cfgVersion = 2;
             saveCfg(cfg);
+            if (dropsVindos.length) { for (const id of dropsVindos) droppedIds.add(id); saveDropped(); }   // drops conhecidos do "Guardar na cidade"
             for (const k of Object.keys(ballAlerted)) delete ballAlerted[k];
             for (const k of Object.keys(autoBuyAttempted)) delete autoBuyAttempted[k];
             restartTripCycle();
@@ -4686,10 +4715,17 @@
                 `Pokémon ${cfg.pokeSellEnabled ? 'ligado' : 'desligado'}, ${Object.keys(cfg.pokeSellLimits || {}).length} raridades com limite`,
                 `viagem ${cfg.tripEveryMin}${cfg.tripEveryMaxMin > cfg.tripEveryMin ? `–${cfg.tripEveryMaxMin}` : ''} min (${cfg.tripCity})`,
                 `${Object.keys(cfg.routes || {}).length} rotas de treino${cfg.routeName ? ` (ativa: ${cfg.routeName})` : ''}`,
-                `captura ${cfg.catchRouteEnabled ? 'ligada' : 'desligada'}`, `daily ${cfg.dailyEnabled ? 'ligada' : 'desligada'}`, `recarga ${cfg.reloadEnabled ? 'ligada' : 'desligada'}`,
+                `captura ${cfg.catchRouteEnabled ? 'ligada' : 'desligada'}`, `daily ${cfg.dailyEnabled ? (cfg.dailyAuto ? 'sozinha' : 'ligada') : 'desligada'}`,
+                `clã ${cfg.clanEnabled ? `${clanName(cfg.clanKey)}${cfg.clanRoute ? ' + caça' : ''}` : 'desligado'}`,
+                `guardar: ${[familyList(cfg).length ? `${familyList(cfg).length} itens → família` : '', cfg.depositItems ? `drops → ${cfg.depositItems === 'depot' ? 'Depot' : 'família'}` : '', cfg.depositPokes ? 'Pokémon → família' : ''].filter(Boolean).join(', ') || 'desligado'}${dropsVindos.length ? ` (${dropsVindos.length} drops conhecidos)` : ''}`,
+                `recarga ${cfg.reloadEnabled ? 'ligada' : 'desligada'}`,
             ].join(' · ');
-            logEvent('config-importada', { origem, resumo });
-            flash(`✔ Config importada${origem.conta ? ` de ${origem.conta}` : ''}${origem.versao ? ` (v${origem.versao})` : ''}: ${resumo}`, 'ok', 20000);
+            logEvent('config-importada', { origem, versaoAqui: VERSION, maisNova, desconhecidas, drops: dropsVindos.length, resumo });
+            if (maisNova || desconhecidas.length) {
+                flash(`⚠ Importada, mas a config veio da v${origem.versao || '?'} e este painel roda a v${VERSION}${desconhecidas.length ? `: ${desconhecidas.length} opção(ões) nova(s) (${desconhecidas.slice(0, 4).join(', ')}) ficam guardadas sem aparecer` : ''}. Recarregue este painel (⟳ Atualizar tudo no PokeGrid) para usar tudo. ${resumo}`, 'warn', 0);
+            } else {
+                flash(`✔ Config importada${origem.conta ? ` de ${origem.conta}` : ''}${origem.versao ? ` (v${origem.versao})` : ''}: ${resumo}`, 'ok', 20000);
+            }
         };
 
 
