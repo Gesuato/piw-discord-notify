@@ -248,7 +248,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   na tela (rascunho se houver alteração não salva) + `_drops` (ids de `pgDiscordNotifyDrops`); Importar registra
   `config-importada`/`config-import-falhou` no log e avisa quando a config veio de versão mais nova que a do painel
   (painel não recarregado). `test/config.roundtrip.js` exige que o fixture cubra TODA chave do cfg: feature nova com
-  campo novo precisa entrar lá.
+  campo novo precisa entrar lá. v3.20.3: `sellProfiles` SOMAM no import (a que veio ganha na mesma hunt);
+  `test/config.live.js` importa num painel vivo (em hunt, com perfis próprios). Cada PC tem a própria cópia do script no
+  PokeGrid: "não importou" em outro PC costuma ser painel sem Atualizar/⟳ (a versão aparece no topo do 🔔).
 - Colar com o botão direito (v3.15.1): o webview do PokeGrid não tem menu de contexto e o jogo captura teclas, então
   `pasteInto(el)` (contextmenu em qualquer input de texto/textarea do painel, e o botão "📋 Colar" do Importar) tenta
   `navigator.clipboard.readText()`, depois `execCommand('paste')`, senão avisa. Exportar carimba `_versao/_exportadoEm/

@@ -58,13 +58,14 @@ setTimeout(() => {
     const diff = Object.keys(rica).filter(k => JSON.stringify(saved[k]) !== JSON.stringify(rica[k])).map(k => `${k}: ${JSON.stringify(rica[k])} -> ${JSON.stringify(saved[k])}`);
     console.log('import: diferenças =', diff.length ? diff.join(' | ') : 'nenhuma', '| msg:', w2.document.querySelector('#pg-dn-msg').textContent.slice(0, 60));
     // e com "manter os canais" marcado
-    const w3 = boot({ webhookUrl: 'https://discord.com/api/webhooks/9/z' });
+    const w3 = boot({ webhookUrl: 'https://discord.com/api/webhooks/9/z', sellProfiles: { soDaqui: { items: { 7: { keep: 1 } } }, pidgey: { items: { 1: { keep: 0 } } } } });
     w3.document.querySelector('#pg-dn-btn').click();
     w3.document.querySelector('#pg-dn-import').click();
     w3.document.querySelector('#pg-dn-import-text').value = box; w3.document.querySelector('#pg-dn-import-keephooks').checked = true;
     w3.document.querySelector('#pg-dn-import-apply').click();
     const s3 = JSON.parse(w3.localStorage.getItem('pgDiscordNotifyCfg'));
-    console.log('import mantendo canais: webhookUrl=' + s3.webhookUrl + ' watchList=' + s3.watchList + ' routes=' + Object.keys(s3.routes));
+    console.log('import mantendo canais: webhookUrl=' + s3.webhookUrl + ' watchList=' + s3.watchList + ' routes=' + Object.keys(s3.routes) + ' perfis=' + JSON.stringify(s3.sellProfiles));
+    const somaOk = s3.sellProfiles.soDaqui && s3.sellProfiles.soDaqui.items[7] && JSON.stringify(s3.sellProfiles.pidgey) === JSON.stringify(rica.sellProfiles.pidgey);
     // drops conhecidos viajam no _drops; import normal não avisa versão; log registra
     const dropsW2 = JSON.parse(w2.localStorage.getItem('pgDiscordNotifyDrops') || '[]');
     const logW2 = JSON.parse(w2.localStorage.getItem('pgDiscordNotifyLog') || '[]').map(e => e.kind);
@@ -91,7 +92,7 @@ setTimeout(() => {
     const exp4 = JSON.parse(w4.document.querySelector('#pg-dn-import-text').value || '{}');
     console.log('export com alteração não salva: depositItems =', exp4.depositItems, '| msg:', w4.document.querySelector('#pg-dn-msg').textContent.slice(0, 90));
     const pendenteOk = exp4.depositItems === 'family';
-    if (!dropsOk || !pendenteOk || !avisoOk || faltamNoExport.length || diff.length || !telaOk || diffSalvar.length || semFixture.length || s3.webhookUrl !== 'https://discord.com/api/webhooks/9/z') { console.error('FALHOU config.roundtrip'); process.exit(1); }
+    if (!somaOk || !dropsOk || !pendenteOk || !avisoOk || faltamNoExport.length || diff.length || !telaOk || diffSalvar.length || semFixture.length || s3.webhookUrl !== 'https://discord.com/api/webhooks/9/z') { console.error('FALHOU config.roundtrip'); process.exit(1); }
     console.log('OK config.roundtrip — exportar/importar sem perdas (tela, salvar depois, drops, alteração não salva, versão nova, texto cortado)');
     process.exit(0);
     }, 50);

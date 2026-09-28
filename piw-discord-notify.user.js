@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.20.2
+// @version      3.20.3
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.20.2';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.20.3';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -4699,8 +4699,14 @@
             for (const k of Object.keys(data)) if (k.startsWith('_')) delete data[k];
             const keepHooks = $('#pg-dn-import-keephooks').checked;
             const mine = { webhookUrl: cfg.webhookUrl, webhookShiny: cfg.webhookShiny, webhookAlerts: cfg.webhookAlerts, webhookLevel: cfg.webhookLevel };
+            const perfisDaqui = Object.assign({}, cfg.sellProfiles || {});
             cfg = migrateCfg(Object.assign({}, DEFAULTS, data));
             if (keepHooks) Object.assign(cfg, mine);
+            // v3.20.3: listas de venda por hunt SOMAM (a que veio ganha na mesma hunt); antes o import apagava as hunts
+            // que só este painel tinha configurado.
+            const perfisVindos = Object.keys(cfg.sellProfiles || {});
+            const soDaqui = Object.keys(perfisDaqui).filter(k => !perfisVindos.includes(k));
+            cfg.sellProfiles = Object.assign({}, perfisDaqui, cfg.sellProfiles || {});
             cfg.cfgVersion = 2;
             saveCfg(cfg);
             if (dropsVindos.length) { for (const id of dropsVindos) droppedIds.add(id); saveDropped(); }   // drops conhecidos do "Guardar na cidade"
@@ -4716,7 +4722,7 @@
                 `${canais} ${canais === 1 ? 'canal' : 'canais'}${keepHooks ? ' (mantidos deste painel)' : ''}`,
                 cfg.notifyEveryCapture ? 'avisa toda captura' : `lista com ${(cfg.watchList || []).length}`,
                 `bolas ${cfg.autoBuy ? `compra ${cfg.autoBuyQty} abaixo de ${cfg.ballsMin || 1}` : (cfg.ballsMin ? `avisa abaixo de ${cfg.ballsMin}` : 'desligado')}`,
-                `drops ${cfg.sellEnabled ? 'ligado' : 'desligado'}, perfis de ${Object.keys(cfg.sellProfiles || {}).length} hunts`,
+                `drops ${cfg.sellEnabled ? 'ligado' : 'desligado'}, listas de ${Object.keys(cfg.sellProfiles || {}).length} hunts (${perfisVindos.length} vieram${soDaqui.length ? `, ${soDaqui.length} já eram daqui e ficaram` : ''})`,
                 `Pokémon ${cfg.pokeSellEnabled ? 'ligado' : 'desligado'}, ${Object.keys(cfg.pokeSellLimits || {}).length} raridades com limite`,
                 `viagem ${cfg.tripEveryMin}${cfg.tripEveryMaxMin > cfg.tripEveryMin ? `–${cfg.tripEveryMaxMin}` : ''} min (${cfg.tripCity})`,
                 `${Object.keys(cfg.routes || {}).length} rotas de treino${cfg.routeName ? ` (ativa: ${cfg.routeName})` : ''}`,
