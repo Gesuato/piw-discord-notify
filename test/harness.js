@@ -159,7 +159,7 @@ function loadDailyModule(cfg, init) {
     };
     const factory = new Function(...Object.keys(ctx), 'function teamLeader() { return team.find(p => p.leader) || team[0] || null; }\n' + mod + `
         return {
-            dailyTick, noteDailyKill, noteHuntChange, dailyStatus, dailyReturnTarget, dailyOnHunt, dailyHoldsLeader, dailyGoFailed,
+            dailyTick, noteDailyKill, noteHuntChange, dailyStatus, dailyReturnTarget, dailyOnHunt, dailyHoldsLeader, dailyWantsHunt, dailyGoFailed,
             setHunt(slug) { huntSlug = slug; noteHuntChange(slug); },
             setTeam(t) { team = t; },
             get dailyRun() { return dailyRun; },
@@ -419,6 +419,7 @@ function loadClanModule(cfg, init) {
         dailyEnabled: () => Boolean(init.dailyOnHunt),
         dailyOnHunt: () => Boolean(init.dailyOnHunt),
         dailyHoldsLeader: () => false,
+        dailyWantsHunt: () => Boolean(init.dailyOnHunt),
         tripRequest: (k, d, m) => state.trips.push({ k, m }),
         catchRouteActive: () => false,
         catchCooldownUntil: 0, catchSentAt: 0, catchSentFor: null, CATCH_SEND_GAP_MS: 3000,
@@ -432,7 +433,7 @@ function loadClanModule(cfg, init) {
             clanTick, clanCityWork, clanPlan, clanMissing, clanKeepsItem, clanKeepsSpecies, clanWantsCity, clanOnPending,
             clanOnInventory, clanStatus, noteClanKill, refreshClan,
             setHunt(slug) { huntSlug = slug; },
-            get clanTarget() { return clanTarget; }, get clanFrom() { return clanFrom; }, get clanState() { return clanState; },
+            get clanTarget() { return clanTarget; }, get clanFrom() { return clanFrom; }, get clanState() { return clanState; }, get clanWait() { return clanWait; },
         };`);
     const api = factory(...Object.values(ctx));
     state.hook = (items) => api.clanOnInventory(items);

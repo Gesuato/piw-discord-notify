@@ -52,6 +52,7 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         assert(api.prevHuntSlug === 'larvitar', 'hunt anterior guardada');
         assert(api.daily && api.daily.picked && api.daily.name === 'Pidgey' && api.daily.have === 3, 'missão lida');
         assert(api.dailyOnHunt(), 'na hunt da daily');
+        assert(api.dailyWantsHunt(), 'missão em andamento segura a hunt (rota do clã espera)');
         assert(/Pidgey 3\/5 · na hunt da daily · volta para larvitar/.test(api.dailyStatus()), 'status: ' + api.dailyStatus());
         api.noteDailyKill({ type: 'field-kill', speciesName: 'Rattata' });
         assert(api.daily.have === 3, 'abate de outra espécie não conta');
@@ -70,6 +71,9 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         await api.dailyTick(true); await api.dailyTick(true);
         assert(state.switches.length === 1 && state.hooks.length === 1, 'não repete no mesmo dia');
         assert(/concluída e resgatada hoje/.test(api.dailyStatus()), 'status depois: ' + api.dailyStatus());
+        api.setHunt('pidgey');                                      // parado na hunt da espécie do dia depois de resgatar
+        await flush();
+        assert(!api.dailyWantsHunt(), 'resgatada: não segura mais a hunt (antes travava a rota do clã o dia inteiro)');
     }
 
     // 4) "Voltar para" fixo vence a rota, que vence a hunt anterior

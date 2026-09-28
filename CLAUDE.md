@@ -169,6 +169,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   NUNCA trocar de clã, custa diamante), `POST /api/game/convert { baseItemId, packs }` (100 base = 1 item de clã, mapa
   `CLAN_CONVERT`), mochila pelo frame `inventory` do `inv-get`. Converter e subir de rank só na viagem (tarefa `cla`); a
   venda de itens e de Pokémon respeita `clanKeepsItem`/`clanKeepsSpecies`. `clanRoute` é a 3ª rota excludente do Salvar.
+  v3.20.5: a rota do clã só espera a Daily enquanto ela está em andamento (`dailyWantsHunt`; feita/resgatada não segura);
+  item pedido que já é drop vira `base.direto` (sem conversão); toda espera tem motivo em `clanWait` (painel "parado: …",
+  log `cla-espera`), nunca mais "escolhendo a hunt…" mudo.
 - Rota de captura / Pokédex (v3.10.0, aba Profissão): hunts em `GET /api/game/map-markers` (público, `hunts[{ slug,
   name, level, area, looktype }]`, level 0 = cidade), espécies em `GET /game/creatures.json` (público, `creatures[{
   pokeId, name, looktype }]`, pokeId < 10000 = normal), capturadas em `GET /api/game/pokedex` (auth, `species[{ id,

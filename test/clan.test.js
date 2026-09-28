@@ -105,6 +105,26 @@ const cfgBase = () => ({ clanEnabled: true, clanKey: 'orebound', clanRankup: tru
         const { api: a2, state: st2 } = loadClanModule(cfgBase(), { api: fakeApi(s2), items: ITEMS, creatures: CREATURES, huntCatalog: CATALOGO, team: TIME, huntSlug: 'pidgey', dailyOnHunt: true });
         await a2.clanTick(); await flush();
         assert(st2.switches.length === 0, 'não tira da hunt da daily');
+        assert(/Daily Kill/.test(a2.clanWait) && /parado: a Daily Kill/.test(a2.clanStatus().rota), 'painel diz por que espera: ' + a2.clanStatus().rota);
+        assert(st2.logs.some(l => l[0] === 'cla-espera'), 'log cla-espera');
+    }
+
+    // 5b) tarefa pede o próprio drop (Earth Ball, sem conversão): ainda acha a hunt
+    {
+        const api5 = (url) => Promise.resolve({ clan: 'orebound', clanRank: 1, level: 95, canJoin: true, nextTask: { rank: 2, name: 'Rock', level: 90, levelOk: true, items: [{ itemId: 39, name: 'Earth Ball', have: 20, need: 300 }], caught: [], kills: [], rewardXp: 1, ok: false } });
+        const { api: a5, state: st5 } = loadClanModule(cfgBase(), { api: api5, items: ITEMS, creatures: CREATURES, huntCatalog: CATALOGO, team: TIME, huntSlug: 'pidgey', bag: [] });
+        await a5.clanTick(); await flush();
+        assert(st5.switches.length === 1 && st5.switches[0].slug === 'onix', 'foi dropar Earth Ball em onix: ' + JSON.stringify(st5.switches) + ' ' + a5.clanWait);
+        assert(a5.clanKeepsItem(39), 'não vende a Earth Ball pedida');
+        const r5 = await a5.clanCityWork();
+        assert(!st5.calls.some(c => c.url === '/api/game/convert'), 'não tenta converter o que já é o item pedido');
+    }
+
+    // 5c) nenhuma hunt ao alcance: diz no painel em vez de "escolhendo a hunt"
+    {
+        const { api: a6 } = loadClanModule(cfgBase(), { api: fakeApi({ onix: 1, rock: 500 }), items: ITEMS, creatures: CREATURES, huntCatalog: CATALOGO.filter(h => h.slug === 'pidgey'), team: TIME, huntSlug: 'pidgey', bag: [] });
+        await a6.clanTick(); await flush();
+        assert(/nenhuma hunt até lv 70 dá Small Stone/.test(a6.clanStatus().rota), 'motivo no painel: ' + a6.clanStatus().rota);
     }
 
     // 6) desligado: não lê nada

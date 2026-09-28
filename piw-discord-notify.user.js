@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.20.4
+// @version      3.20.5
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.20.4';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.20.5';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -1646,6 +1646,13 @@
     }
     // Chamado pelo módulo de nível: enquanto a daily sozinha escolheu o líder, a troca automática espera.
     function dailyHoldsLeader() { return dailyAutoOn() && Boolean(activeDailyRun()?.pokeId); }
+    // A daily ainda precisa da hunt (rota do clã espera): missão em andamento na hunt dela, ou a ida da daily sozinha.
+    // Feita ou resgatada, não segura mais nada, mesmo com a conta parada na hunt da espécie do dia.
+    function dailyWantsHunt() {
+        if (!dailyEnabled()) return false;
+        if (dailyHoldsLeader()) return true;
+        return dailyOnHunt() && !daily.done && !daily.claimed;
+    }
 
     // Chamado por setHunt() a cada troca de hunt.
     function noteHuntChange(novo) {
@@ -2029,6 +2036,7 @@
     let bagAt = 0;
     let clanTarget = null;          // { slug, name, level, motivo } hunt escolhida pela rota do clã
     let clanFrom = null;            // hunt de antes da rota do clã (para onde voltar)
+    let clanWait = '';              // por que a rota do clã ainda não foi para a hunt (painel e log)
     const clanFailed = new Set();   // slugs cuja entrada falhou nesta sessão
     let onClanChange = null;        // callback do painel
 
@@ -2059,13 +2067,22 @@
         if (typeof itemsCatalog !== 'undefined' && itemsCatalog) for (const [id, it] of itemsCatalog) if (normalize(it?.name) === k) return id;
         return null;
     }
+    // Algum monstro do creatures.json dropa esse item (nome normalizado)?
+    function clanIsDrop(name) {
+        const k = normalize(name);
+        if (!k || typeof creatureLoot === 'undefined') return false;
+        for (const loot of creatureLoot.values()) if (loot.some(l => normalize(l?.name) === k)) return true;
+        return false;
+    }
     // O que falta da tarefa. Itens: em unidades do item de clã e do item base (descontando o que já está na mochila).
+    // Item pedido que já é o drop (sem conversão; ex.: a própria Earth Ball): `base.direto`, conta só pelo `have` do jogo.
     function clanMissing() {
         const t = clanState?.task;
         if (!t) return null;
         const items = t.items.filter(i => i.have < i.need).map(i => {
             const falta = i.need - i.have;
             const baseName = CLAN_BASE_OF[normalize(i.name)] || null;
+            if (!baseName && clanIsDrop(i.name)) return { itemId: i.itemId, name: i.name, falta, base: { name: i.name, id: i.itemId, have: 0, falta, direto: true } };
             const baseId = baseName ? clanItemIdByName(baseName) : null;
             const baseHave = baseId ? bagQty(baseId) : 0;
             return { itemId: i.itemId, name: i.name, falta, base: baseName ? { name: baseName, id: baseId, have: baseHave, falta: Math.max(0, falta * CLAN_PACK - baseHave) } : null };
@@ -2194,7 +2211,7 @@
         await refreshBag(4000);
         const feito = [];
         for (const i of clanMissing().items) {
-            if (!i.base?.id) continue;
+            if (!i.base?.id || i.base.direto) continue;
             const packs = Math.min(i.falta, Math.floor(bagQty(i.base.id) / CLAN_PACK));
             if (packs < 1) continue;
             try {
@@ -2289,6 +2306,25 @@
         if (volta && volta !== atual) switchHunt(volta, 1, 'cla');
     }
 
+    // Por que o plano saiu vazio com a tarefa ainda aberta (texto do painel e do log).
+    function clanNoPlanReason() {
+        const m = clanMissing();
+        if (!m) return 'rank máximo';
+        if (m.nada) return 'tarefa feita';
+        const semBase = m.items.filter(i => !i.base).map(i => i.name);
+        if (semBase.length) return `não sei onde cai ${semBase.join(', ')}`;
+        const falta = m.items.filter(i => i.base.falta > 0).map(i => i.base.name).concat(m.kills.map(k => `derrotar ${k.type}`), m.caught.map(c => `capturar ${c.name}`));
+        if (falta.length) return `nenhuma hunt até lv ${clanLevelCap()} dá ${falta.join(', ')}`;
+        return 'item base já na mochila: converte e entrega na próxima viagem';
+    }
+    // Motivo da espera (painel e log `cla-espera`, só quando muda).
+    function clanSetWait(motivo) {
+        if (motivo === clanWait) return;
+        clanWait = motivo;
+        if (motivo) logEvent('cla-espera', { motivo, hunt: huntSlug || null });
+        clanNotify();
+    }
+
     // Tique (60 s): lê a tarefa, entra no clã, pede a viagem se o rank estiver pronto e (com a rota) escolhe a hunt.
     async function clanTick() {
         if (!clanOn()) return;
@@ -2299,14 +2335,24 @@
             clanReadyAsked = clanState.task.rank;
             tripRequest('cla', null, 'tarefa do clã pronta');
         }
-        if (!clanRouteOn()) return;
-        if (!Array.isArray(huntCatalog)) { try { await loadHuntCatalog(); } catch { return; } }
+        if (!clanRouteOn()) { clanSetWait(''); return; }
+        if (!Array.isArray(huntCatalog)) {
+            try { await loadHuntCatalog(); } catch (err) { clanSetWait(`não consegui baixar o mapa de hunts (${String(err?.message || err)})`); return; }
+        }
         await loadItemsCatalog();
-        if (tripRunning || huntSwitch || swapPending) return;
-        if (dailyEnabled() && (dailyOnHunt() || dailyHoldsLeader())) return;   // a Daily vem primeiro
+        if (tripRunning) { clanSetWait('esperando a viagem à cidade acabar'); return; }
+        if (huntSwitch) { clanSetWait(`esperando a troca para ${huntSwitch.slug} confirmar`); return; }
+        if (swapPending) { clanSetWait('esperando a troca de líder confirmar'); return; }
+        if (dailyWantsHunt()) { clanSetWait('a Daily Kill está usando a hunt (o clã segue quando ela acabar)'); return; }   // a Daily vem primeiro
         const plano = clanPlan();
         const atual = normalize(huntSlug || '');
-        if (!plano.length) { if (clanTarget) clanReturn(clanState.task ? (clanMissing()?.nada ? 'tarefa feita' : 'nada ao alcance') : 'rank máximo'); return; }
+        if (!plano.length) {
+            const motivo = clanNoPlanReason();
+            clanSetWait(motivo);
+            if (clanTarget) clanReturn(motivo);
+            return;
+        }
+        clanSetWait('');
         let alvo = plano[0];
         const aqui = plano.find(x => x.hunt.slug === atual);
         if (aqui && alvo.nota !== Infinity && aqui.nota >= alvo.nota * CLAN_KEEP_RATIO) alvo = aqui; // não troca por pouco
@@ -2353,14 +2399,14 @@
         for (const i of t.items) {
             const mi = m.items.find(x => x.itemId === i.itemId);
             const vendendo = mi?.base?.id && cfg.sellItems && cfg.sellItems[mi.base.id] ? ' · marcado para venda na aba Venda: o script NÃO vende enquanto a tarefa pedir' : '';
-            reqs.push(`${i.have >= i.need ? '✔' : '•'} Entregar ${i.name} ${fmtNum(Math.min(i.have, i.need))}/${fmtNum(i.need)}${mi?.base ? ` · ${mi.base.name} na mochila ${fmtNum(mi.base.have)}${mi.base.falta ? ` (faltam ${fmtNum(mi.base.falta)})` : ' ✔ (converte na viagem)'}${vendendo}` : ''}`);
+            reqs.push(`${i.have >= i.need ? '✔' : '•'} Entregar ${i.name} ${fmtNum(Math.min(i.have, i.need))}/${fmtNum(i.need)}${mi?.base && !mi.base.direto ? ` · ${mi.base.name} na mochila ${fmtNum(mi.base.have)}${mi.base.falta ? ` (faltam ${fmtNum(mi.base.falta)})` : ' ✔ (converte na viagem)'}${vendendo}` : ''}`);
         }
         for (const x of t.caught) reqs.push(`${x.have >= x.need ? '✔' : '•'} Capturar ${x.name} ${x.have}/${x.need}`);
         for (const k of t.kills) reqs.push(`${k.have >= k.need ? '✔' : '•'} Derrotar ${k.type} ${fmtNum(Math.min(k.have, k.need))}/${fmtNum(k.need)}`);
         const nivel = t.levelOk ? `nível ${t.level} ✔` : `nível ${t.level} ✖ (você: ${c.level})`;
         const pronto = t.ok ? ' · pronto para subir' + (d.clanRankup ? ' (na próxima viagem)' : ' (suba no jogo)') : '';
         const dicas = clanDropHints().map(x => `${x.base}: ${x.top.length ? x.top.join(' · ') : 'nenhuma hunt ao alcance'}`);
-        const rota = !d.clanRoute ? 'Rota do clã desligada' : clanTarget ? `▶ ${clanTarget.slug} lv${clanTarget.level} (${clanTarget.motivo})${clanFrom ? ` · volta para ${clanFrom}` : ''}` : (m.nada ? 'Nada a caçar' : 'escolhendo a hunt…');
+        const rota = !d.clanRoute ? 'Rota do clã desligada' : clanTarget ? `▶ ${clanTarget.slug} lv${clanTarget.level} (${clanTarget.motivo})${clanFrom ? ` · volta para ${clanFrom}` : ''}` : (m.nada ? 'Nada a caçar' : clanWait ? `parado: ${clanWait}` : clanRouteOn() ? 'escolhendo a hunt… (confere a cada 1 min)' : 'salve para ligar');
         return { head: `${clanName(c.clan)} rank ${c.rank}${nomeRank ? ` (${nomeRank})` : ''} → ${t.rank}${t.name ? ` ${t.name}` : ''} · ${nivel} · +${fmtNum(t.rewardXp)} XP${pronto}`, reqs, dicas, rota };
     }
 
