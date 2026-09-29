@@ -121,5 +121,20 @@ const MIN = 60 * 1000;
         assert(state.switches.length === 2 && state.tasks.slice(1).map(t => t[0]).sort().join(',') === 'bolas,itens', 'urgente foi antes do relógio e levou os drops de carona');
     }
 
+    // v3.21.0: poção/revive abaixo do limite pede viagem e vai de carona na do relógio; a faixa mostra a compra
+    {
+        const low = [{ key: 'heal', itemId: 202, name: 'Ultra Potion', min: 50, qty: 200, have: 3 }];
+        const { api, state, clock } = loadTripModule({ tripCity: 'cerulean', tripMinGapMin: 3 }, { huntSlug: 'pidgey', supplyLow: low });
+        assert(/comprar 200 Ultra Potion/.test(api.tripStatus().sub), 'faixa: ' + api.tripStatus().sub);
+        api.tripRequest('suprimentos', null, 'Ultra Potion com 3');
+        clock.now += 4 * MIN;
+        await api.tripTick();
+        assert(state.tasks.map(t => t[0]).join(',') === 'suprimentos', 'tarefa suprimentos: ' + state.tasks.map(t => t[0]));
+        assert(/poções\/revives ✔/.test(api.tripStatus().sub), 'status depois: ' + api.tripStatus().sub);
+        clock.now = api.tripDueAt() + 1;
+        await api.tripTick();
+        assert(state.tasks.length === 2 && state.tasks[1][0] === 'suprimentos', 'relógio: vai de carona');
+    }
+
     console.log('OK trip.test — pedidos juntos numa viagem, ida pela tela ou manual, intervalo, cidade, volta e falhas');
 })().catch(e => { console.error(e); process.exit(1); });

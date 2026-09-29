@@ -177,6 +177,20 @@ setTimeout(() => {
         $('#pg-dn-trip-now').click();
         log('ir agora: msg=' + $('#pg-dn-msg').textContent.slice(0, 80) + ' | faixa=' + $('#pg-dn-trip-title').textContent + ' busy=' + $('#pg-dn-trip').classList.contains('busy'));
         panel.querySelector('.dn-tab[data-tab=bolas]').click(); log('bolas=' + $('#pg-dn-balls-status').textContent.trim());
+        // ---- refil de poções e revives (v3.21.0): liga, salva, a mochila chega pelo socket ----
+        $('#pg-dn-heal-buy').checked = true; fire($('#pg-dn-heal-buy'), 'change');
+        $('#pg-dn-heal-item').value = '203'; fire($('#pg-dn-heal-item'), 'change');
+        $('#pg-dn-heal-min').value = 40; fire($('#pg-dn-heal-min'), 'input');
+        $('#pg-dn-revive-buy').checked = true; fire($('#pg-dn-revive-buy'), 'change');
+        $('#pg-dn-save').click();
+        const cfgS = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+        if (!(cfgS.healBuy && cfgS.healItemId === 203 && cfgS.healMin === 40 && cfgS.reviveBuy && cfgS.reviveItemId === 205)) throw new Error('refil não salvou: ' + JSON.stringify({ h: [cfgS.healBuy, cfgS.healItemId, cfgS.healMin], r: [cfgS.reviveBuy, cfgS.reviveItemId] }));
+        if (!ws.sent.some(x => JSON.parse(x).type === 'inv-get')) throw new Error('Salvar com refil não pediu a mochila');
+        recv({ type: 'inventory', items: [{ itemId: 203, quantity: 12 }, { itemId: 205, quantity: 30 }] });
+        const heal = $('#pg-dn-heal-status').textContent, rev = $('#pg-dn-revive-status').textContent;
+        log('refil: ' + heal + ' | ' + rev + ' | faixa=' + $('#pg-dn-trip-sub').textContent);
+        if (!/Hyper Potion: 12 na mochila.*abaixo do limite/.test(heal) || !/Revive: 30 na mochila/.test(rev) || /abaixo/.test(rev)) throw new Error('status do refil errado');
+        if (!$('#pg-dn-trip').classList.contains('busy') && !/comprar 200 Hyper Potion/.test($('#pg-dn-trip-sub').textContent)) throw new Error('faixa da viagem sem o refil');
         panel.querySelector('.dn-tab[data-tab=sistema]').click(); log('socket=' + $('#pg-dn-socket').textContent);
         log('enviados=' + ws.sent.map(x => JSON.parse(x).type).join(','));
         // ---- importar rota do PIW Tools (texto colado da aba Rota otimizada) ----

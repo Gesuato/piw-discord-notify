@@ -27,6 +27,8 @@ const rica = {
   dailyAuto: true, clanEnabled: true, clanKey: 'naturia', clanRankup: false, clanRoute: false,
   depositItems: 'depot', depositPokes: 'family', depositPokesRare: true,
   depositFamilyList: [{ id: 13115, name: 'Devoted Token', keep: 0 }, { id: 44417, name: 'Strange Pheromone', keep: 2 }],
+  // v3.21.0 (refil de poções e revives)
+  healBuy: true, healItemId: 203, healMin: 30, healQty: 150, reviveBuy: true, reviveItemId: 206, reviveMin: 3, reviveQty: 12,
 };
 setTimeout(() => {
   const w1 = boot(rica, { pgDiscordNotifyDrops: JSON.stringify([120, 7]) });

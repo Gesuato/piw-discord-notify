@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.20.6
+// @version      3.21.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.20.6';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.21.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -36,6 +36,14 @@
         ballsWatch: 'auto',     // 'auto' = bola do último catch-result, ou o id da bola ('4')
         autoBuy: false,         // comprar a bola monitorada quando ficar abaixo do limite
         autoBuyQty: 100,        // quantas comprar por vez (1..10000)
+        healBuy: false,         // v3.21.0 refil de poção: comprar na viagem à cidade quando ficar abaixo de healMin
+        healItemId: 201,        // poção comprada (200 Small, 201 Great, 202 Ultra, 203 Hyper, 204 Ultimate)
+        healMin: 50,            // limite; 0 = compra só quando acabar
+        healQty: 200,           // quantas comprar por vez (1..10000)
+        reviveBuy: false,       // v3.21.0 refil de revive, mesmo esquema
+        reviveItemId: 205,      // 205 Revive, 206 Max Revive
+        reviveMin: 10,
+        reviveQty: 50,
         sellEnabled: false,     // vender drops marcados da hunt atual periodicamente
         sellEveryMin: 10,       // intervalo mínimo da venda automática (minutos)
         sellEveryMaxMin: 0,     // intervalo máximo; 0 ou <= mínimo = intervalo fixo. Entre os dois é sorteado
@@ -712,6 +720,7 @@
     //   tokens : sessionStorage['pokeweb:tokens'] = { accessToken, refreshToken }
     //   loja   : GET  /api/game/shop      -> { gold, balls:[{ id, name, priceGold }], items:[...] }
     //   compra : POST /api/game/shop/buy  { ballId, qty } -> { ok?, bought, gold }
+    //            itens da loja (poções, revives): { itemId, qty } no mesmo endpoint (bundle, 29/09/2026)
     //   401    : POST /api/auth/refresh   { refreshToken } -> tokens novos
     // Lotes de no máximo 1000 por request. Uma tentativa por episódio de estoque
     // baixo; rearma quando o estoque volta acima do limite (ou ao Salvar).
@@ -782,14 +791,20 @@
     }
 
     // Compra `qty` da bola `id`. Devolve { ok, bought, spent, gold, motivo }.
-    async function buyBalls(id, qty) {
+    function buyBalls(id, qty) { return buyFromShop('ball', id, qty); }
+
+    // Compra na loja do Mark: kind 'ball' (lista `balls`, corpo { ballId }) ou 'item' (lista `items`, corpo { itemId },
+    // poções e revives). Devolve { ok, bought, spent, gold, motivo, name }.
+    async function buyFromShop(kind, id, qty) {
+        const bola = kind === 'ball';
         const shop = await gameApi(SHOP_URL);
-        const product = (Array.isArray(shop?.balls) ? shop.balls : []).find(b => Number(b?.id) === Number(id));
+        const lista = bola ? shop?.balls : shop?.items;
+        const product = (Array.isArray(lista) ? lista : []).find(b => Number(b?.id) === Number(id));
         const price = Number(product?.priceGold);
         let gold = Number(shop?.gold);
-        if (!product || !Number.isFinite(price) || price <= 0) return { ok: false, bought: 0, spent: 0, gold, motivo: 'bola não está à venda na loja' };
+        if (!product || !Number.isFinite(price) || price <= 0) return { ok: false, bought: 0, spent: 0, gold, motivo: `${bola ? 'bola' : 'item'} não está à venda na loja` };
         if (!Number.isFinite(gold)) return { ok: false, bought: 0, spent: 0, gold: null, motivo: 'loja não informou o gold' };
-        if (product.name) BALL_NAMES[Number(id)] = product.name;
+        if (product.name && bola) BALL_NAMES[Number(id)] = product.name;
 
         let remaining = Math.min(BUY_MAX_QTY, Math.max(1, Math.floor(Number(qty) || 0)));
         let bought = 0, spent = 0, motivo = null;
@@ -800,7 +815,7 @@
                 break;
             }
             let r;
-            try { r = await gameApi(SHOP_BUY_URL, { method: 'POST', body: JSON.stringify({ ballId: Number(id), qty: batch }) }); }
+            try { r = await gameApi(SHOP_BUY_URL, { method: 'POST', body: JSON.stringify(bola ? { ballId: Number(id), qty: batch } : { itemId: Number(id), qty: batch }) }); }
             catch (err) { motivo = `erro na compra: ${err?.message || err}`; break; }
             const got = Math.max(0, Math.floor(Number(r?.bought) || 0));
             bought += Math.min(batch, got);
@@ -809,7 +824,7 @@
             if (r?.ok === false || got !== batch) { motivo = 'o jogo confirmou só parte do lote'; break; }
             remaining -= batch;
         }
-        return { ok: remaining === 0, bought, spent, gold, motivo };
+        return { ok: remaining === 0, bought, spent, gold, motivo, name: product.name || null };
     }
 
     async function autoBuyBalls(id, qty, min) {
@@ -847,6 +862,137 @@
         }
         requestBalls(1000); // confirma o estoque novo
         return { ok: r.bought > 0 && r.ok, motivo: r.motivo, bought: r.bought, gold: r.gold };
+    }
+
+    // ---- Refil de poções e revives (v3.21.0) ------------------------------
+    //   mochila : `inv-get` (socket) -> `inventory { items:[{ itemId, quantity }] }` (o mesmo frame do módulo do clã).
+    //             Item zerado não vem na lista: depois do 1º frame, ausente = 0 (como as bolas).
+    //   na cidade: GET /api/game/depot -> { inventory:[{ id, quantity }] } (estoque exato antes de comprar)
+    //   compra  : POST /api/game/shop/buy { itemId, qty } (buyFromShop('item', ...)); catálogo em /game/items.json,
+    //             categorias `heal` (healAmount) e `revive` (revivePct).
+    // Como a compra de bolas: abaixo do limite (0 = só quando acabar) pede viagem à cidade UMA vez por episódio
+    // (rearma quando o estoque volta ao limite ou no Salvar) e, com a viagem saindo por outro motivo, vai de carona.
+    // A regra do jogo proíbe comprar no Mark durante a hunt: a compra só acontece em supplyCityWork, na viagem.
+
+    const SUPPLY_ITEMS = {
+        heal: [
+            { id: 200, name: 'Small Potion', info: 'cura 60 HP', price: 5 },
+            { id: 201, name: 'Great Potion', info: 'cura 150 HP', price: 10 },
+            { id: 202, name: 'Ultra Potion', info: 'cura 400 HP', price: 22 },
+            { id: 203, name: 'Hyper Potion', info: 'cura 1.000 HP', price: 55 },
+            { id: 204, name: 'Ultimate Potion', info: 'cura 3.000 HP', price: 135 },
+        ],
+        revive: [
+            { id: 205, name: 'Revive', info: 'revive com 50% do HP', price: 40 },
+            { id: 206, name: 'Max Revive', info: 'revive com 100% do HP', price: 350 },
+        ],
+    };
+    const SUPPLY_KINDS = [
+        { key: 'heal', label: 'Poção', icon: '🧪', buy: 'healBuy', id: 'healItemId', min: 'healMin', qty: 'healQty', def: 201 },
+        { key: 'revive', label: 'Revive', icon: '💫', buy: 'reviveBuy', id: 'reviveItemId', min: 'reviveMin', qty: 'reviveQty', def: 205 },
+    ];
+    const SUPPLY_POLL_MS = 5 * 60 * 1000;
+    const SUPPLY_AFTER_SOCKET_MS = 4000;
+    const SUPPLY_BAG_URL = '/api/game/depot';
+
+    const supplyBag = new Map();    // itemId -> quantidade na mochila (último frame `inventory`)
+    let supplyBagReceived = false;
+    let supplyBagAt = 0;
+    const supplyAttempted = {};     // itemId -> true depois de pedir a viagem neste episódio
+    let onSupplyChange = null;      // callback do painel
+
+    function supplyItemName(id) {
+        for (const k of Object.keys(SUPPLY_ITEMS)) { const it = SUPPLY_ITEMS[k].find(i => i.id === Number(id)); if (it) return it.name; }
+        return `Item ${id}`;
+    }
+    // Refis ligados (d = cfg ou rascunho do painel): [{ key, label, icon, itemId, name, min, qty }]. Limite 0 vira 1.
+    function supplySlots(d) {
+        d = d || cfg;
+        return SUPPLY_KINDS.filter(k => d[k.buy]).map(k => {
+            const itemId = Number(d[k.id]) || k.def;
+            return {
+                key: k.key, label: k.label, icon: k.icon, itemId, name: supplyItemName(itemId),
+                min: Math.max(1, Math.floor(Number(d[k.min]) || 0)),
+                qty: Math.min(BUY_MAX_QTY, Math.max(1, Math.floor(Number(d[k.qty]) || 0) || 1)),
+            };
+        });
+    }
+    function supplyOn(d) { return supplySlots(d).length > 0; }
+    function supplyQty(id) { return supplyBagReceived ? (supplyBag.get(Number(id)) || 0) : null; }
+    // Refis abaixo do limite agora (com a mochila já lida).
+    function supplyLow(d) {
+        return supplySlots(d).map(s => Object.assign(s, { have: supplyQty(s.itemId) })).filter(s => s.have != null && s.have < s.min);
+    }
+    function supplyNotify() { if (onSupplyChange) { try { onSupplyChange(); } catch { /* painel fechado */ } } }
+    function requestSupplies() { if (supplyOn()) sendGame({ type: 'inv-get' }); }
+
+    function supplyOnInventory(items) {
+        supplyBag.clear();
+        for (const it of items) {
+            const id = Number(it?.itemId ?? it?.id);
+            if (id > 0) supplyBag.set(id, (supplyBag.get(id) || 0) + Math.max(0, Number(it.quantity) || 0));
+        }
+        supplyBagReceived = true;
+        supplyBagAt = Date.now();
+        checkSupplyStock();
+        supplyNotify();
+    }
+
+    function checkSupplyStock() {
+        const pedir = [];
+        for (const s of supplySlots()) {
+            const have = supplyQty(s.itemId);
+            if (have == null) return;                                // mochila ainda não lida
+            if (have >= s.min) { supplyAttempted[s.itemId] = false; continue; }
+            if (supplyAttempted[s.itemId]) continue;                 // já pediu viagem neste episódio
+            supplyAttempted[s.itemId] = true;
+            pedir.push(`${s.name} com ${have}`);
+        }
+        if (pedir.length) tripRequest('suprimentos', null, pedir.join(', '));
+    }
+
+    // Tarefa da viagem (na cidade): confere a mochila pela REST e compra o que estiver abaixo do limite.
+    async function supplyCityWork() {
+        const slots = supplySlots();
+        if (!slots.length) return { ok: true, motivo: 'refil desligado' };
+        let mochila = null;
+        try {
+            const dep = await gameApi(SUPPLY_BAG_URL);
+            if (Array.isArray(dep?.inventory)) {
+                mochila = new Map();
+                for (const it of dep.inventory) { const id = Number(it?.id ?? it?.itemId); if (id > 0) mochila.set(id, (mochila.get(id) || 0) + Math.max(0, Number(it.quantity) || 0)); }
+            }
+        } catch (err) { logEvent('refil-mochila-erro', { erro: String(err?.message || err) }); }
+        const compras = [];
+        for (const s of slots) {
+            const have = mochila ? (mochila.get(s.itemId) || 0) : supplyQty(s.itemId);
+            if (have == null || have >= s.min) continue;
+            let r;
+            try { r = await buyFromShop('item', s.itemId, s.qty); }
+            catch (err) { r = { ok: false, bought: 0, spent: 0, gold: null, motivo: `erro: ${err?.message || err}` }; }
+            compras.push({ key: s.key, itemId: s.itemId, name: r.name || s.name, have, min: s.min, pedido: s.qty, comprado: r.bought, gasto: r.spent, gold: r.gold, ok: r.ok, motivo: r.motivo });
+        }
+        logEvent('refil', { pelaRest: Boolean(mochila), compras });
+        if (!compras.length) return { ok: true, motivo: 'estoque ok' };
+        const who = playerName();
+        const mention = cfg.mentionUserId ? `<@${cfg.mentionUserId}> ` : '';
+        const tudo = compras.every(c => c.ok);
+        const algum = compras.some(c => c.comprado > 0);
+        const gold = [...compras].reverse().find(c => c.gold != null)?.gold;
+        const linhas = compras.map(c => c.comprado > 0
+            ? `${c.name}: +${c.comprado} (tinha ${c.have}) · ${Number(c.gasto).toLocaleString('pt-BR')} gold${c.ok ? '' : ` · parcial: ${c.motivo}`}`
+            : `${c.name}: falhou (tinha ${c.have}, limite ${c.min}) · ${c.motivo || 'motivo desconhecido'}`);
+        postWebhook('alert', {
+            content: `${mention}${algum ? '🧪' : '⚠️'} ${who ? `**${who}**` : 'Sua conta'} ${algum ? `repôs ${compras.filter(c => c.comprado > 0).map(c => `**${c.comprado} ${c.name}**`).join(' e ')}` : `está com pouca ${compras.map(c => `**${c.name}**`).join(' e ')} e a compra falhou`}`,
+            username: 'Poke Idle World',
+            embeds: [{
+                title: tudo ? 'Refil de poções/revives' : algum ? 'Refil parcial de poções/revives' : 'Refil de poções/revives falhou',
+                description: (who ? `Conta: ${who}\n` : '') + linhas.join('\n') + (gold != null ? `\nGold agora: ${Number(gold).toLocaleString('pt-BR')}` : '') + `\nEm ${new Date().toLocaleString('pt-BR')}`,
+                color: tudo ? 0x57f287 : algum ? 0xfee75c : 0xed4245,
+            }],
+        }, { evento: algum ? 'refil' : 'refil-falhou', itens: compras.map(c => c.itemId) });
+        setTimeout(() => sendGame({ type: 'inv-get' }), 1000); // confirma o estoque novo
+        return { ok: tudo, motivo: tudo ? null : compras.filter(c => !c.ok).map(c => `${c.name}: ${c.motivo}`).join('; '), compras };
     }
 
     // ---- Venda automática de drops da hunt atual ------------------------
@@ -2676,7 +2822,7 @@
     //   tarefas: venda de itens (lista congelada na hora do pedido, porque `huntLoot` zera ao sair da hunt), venda
     //           de Pokémon e compra de bolas — as mesmas funções de antes, só que executadas na cidade.
     //   volta : switchHunt(slug, 1, 'viagem') → `enter-hunt` + `hunt-resume` sintético (a tela acompanha).
-    // Quem PEDE viagem: sellTick, pokeSellOnPokes, checkBallStock e os botões do painel. Os pedidos acumulam em
+    // Quem PEDE viagem: sellTick, pokeSellOnPokes, checkBallStock, checkSupplyStock e os botões do painel. Os pedidos acumulam em
     // `tripNeeds`; `tripTick` (30 s) faz UMA viagem com tudo que estiver pendente, respeitando `tripMinGapMin`
     // entre viagens e sem troca de hunt/líder ou captura em andamento. Durante a viagem, rota de captura e recarga
     // não trocam de hunt. Sem hunt para voltar (conta já na cidade), só faz as tarefas.
@@ -2723,13 +2869,16 @@
         let bolas = null;
         if (d.autoBuy) { const id = watchedBallId(); const q = ballQty(id); const min = (Number(d.ballsMin) || 0) > 0 ? Number(d.ballsMin) : 1; if (id != null && q != null && q < min) bolas = { id, qty: q, min }; }
         const cla = typeof clanWantsCity === 'function' && clanWantsCity(d);
-        return { drops, pokes, bolas, cla, nada: !drops && !pokes && !bolas && !cla };
+        const sup = typeof supplyLow === 'function' ? supplyLow(d) : [];
+        const suprimentos = sup.length ? sup : null;
+        return { drops, pokes, bolas, cla, suprimentos, nada: !drops && !pokes && !bolas && !cla && !suprimentos };
     }
     function tripLoadText(l) {
         const p = [];
         if (l.drops) p.push(`${l.drops} ${l.drops === 1 ? 'drop' : 'drops'}`);
         if (l.pokes) p.push(`${l.pokes} Pokémon`);
         if (l.bolas) p.push(`comprar ${Number(cfg.autoBuyQty) || 100} ${ballName(l.bolas.id)}`);
+        if (l.suprimentos) p.push(l.suprimentos.map(s => `comprar ${s.qty} ${s.name}`).join(', '));
         if (l.cla) p.push('clã (converter/subir de rank)');
         if (p.length && typeof depositWanted === 'function' && depositWanted()) p.push('guardar o resto');
         return p.length ? `Vai levar: ${p.join(', ')}` : 'Nada para levar por enquanto';
@@ -2754,7 +2903,7 @@
     const TRIP_PHASE_PCT = { 'indo para a cidade': 15, 'na cidade': 50, 'voltando': 90 };
     function tripLastText() {
         if (!lastTripInfo) return '';
-        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', cla: 'clã', guardar: 'guardar' };
+        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar' };
         return `Última ${new Date(lastTripInfo.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}: ${lastTripInfo.tarefas.map(t => `${nome[t.key] || t.key} ${t.ok ? '✔' : '✖'}`).join(' · ')}`;
     }
     // Estado para a faixa do painel: { busy, pct, title, sub }.
@@ -2790,6 +2939,7 @@
             if (key === 'itens') tarefas.push({ key, run: () => runSellCycle(true, n.dados?.wanted, n.dados?.hunt) });
             else if (key === 'pokes') tarefas.push({ key, run: () => runPokeSellCycle(true) });
             else if (key === 'bolas' && n.dados) tarefas.push({ key, run: () => autoBuyBalls(n.dados.id, n.dados.qty, n.dados.min) });
+            else if (key === 'suprimentos') tarefas.push({ key, run: () => supplyCityWork() });
             else if (key === 'cla') tarefas.push({ key, run: () => clanCityWork() });
         }
         // Guardar na cidade (v3.18.0): última tarefa de toda viagem que tenha outra coisa a fazer.
@@ -2852,6 +3002,7 @@
             const id = watchedBallId(), q = ballQty(id), min = effectiveBallsMin();
             if (id != null && q != null && q < min) needs.push(['bolas', { dados: { id, qty: q, min }, motivo: 'carona' }]);
         }
+        if (!has('suprimentos') && typeof supplyLow === 'function' && supplyLow().length) needs.push(['suprimentos', { dados: null, motivo: 'carona' }]);
         if (!has('cla') && typeof clanWantsCity === 'function' && clanWantsCity()) needs.push(['cla', { dados: null, motivo: 'carona' }]);
         return needs;
     }
@@ -3230,7 +3381,7 @@
             return;
         }
         if (message.type === 'field-kill') { noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteDepositDrop(message); return; }
-        if (message.type === 'inventory' && Array.isArray(message.items)) { clanOnInventory(message.items); return; }
+        if (message.type === 'inventory' && Array.isArray(message.items)) { clanOnInventory(message.items); supplyOnInventory(message.items); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
         if (message.type === 'pokes' && Array.isArray(message.list)) { updateTeam(message.list); handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); return; }
 
@@ -3295,6 +3446,7 @@
         lastSocket = ws;
         logEvent('socket', { url: String(ws.url || '').split('?')[0] });
         requestBalls(BALLS_AFTER_SOCKET_MS);
+        setTimeout(requestSupplies, SUPPLY_AFTER_SOCKET_MS);
         requestPokes(POKES_AFTER_SOCKET_MS);
         armResume(RESUME_AFTER_SOCKET_MS);
     }
@@ -3505,7 +3657,7 @@
             case 'avisos': return (d.webhookUrl || '').trim() ? 'on' : 'danger';
             case 'bolas': {
                 const min = Number(d.ballsMin) || 0;
-                if (!(min > 0 || d.autoBuy)) return 'off';
+                if (!(min > 0 || d.autoBuy) && !supplyOn(d)) return 'off';
                 if ((d.autoBuy && !min) || !temAlertas) return 'warn';
                 return 'on';
             }
@@ -3537,7 +3689,7 @@
         const st = Number(cfg.routeStage) || 0;
         return [
             `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
-            `Bolas: ${moduleState('bolas', d) === 'off' ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}`,
+            `Bolas: ${!((Number(d.ballsMin) || 0) > 0 || d.autoBuy) ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}${supplyOn(d) ? ` · refil: ${supplySlots(d).map(s => `${s.name} < ${s.min}`).join(', ')}` : ''}`,
             `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades)` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
             `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? 'daily sozinha' : 'daily') : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
@@ -3632,6 +3784,13 @@
                         <p class="dn-help warn" id="pg-dn-autobuy-warn" hidden>⚠ Limite 0: compra só quando a bola acabar.</p>
                         <p class="dn-help">Sem "Comprar sozinho", só avisa no Discord quando ficar abaixo do limite (0 = sem aviso). A compra vai na viagem à cidade; bola zerada pede viagem na hora.</p>
                     </div>
+${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
+                        <h3>${k.label} <span class="spacer"></span><label class="dn-toggle"><input id="pg-dn-${k.key}-buy" type="checkbox"><span class="sw"></span>Comprar sozinho</label></h3>
+                        <div class="dn-inline">${k.label} <select id="pg-dn-${k.key}-item" class="dn-select" style="flex:1;min-width:120px">${SUPPLY_ITEMS[k.key].map(i => `<option value="${i.id}">${i.name} (${i.info}, 💲${i.price})</option>`).join('')}</select></div>
+                        <div class="dn-inline">Quando ficar abaixo de <input id="pg-dn-${k.key}-min" class="dn-input dn-input--sm" type="number" min="0" step="1" placeholder="0"> comprar <input id="pg-dn-${k.key}-qty" class="dn-input dn-input--sm" type="number" min="1" max="${BUY_MAX_QTY}" step="1" placeholder="100"></div>
+                        <div class="dn-status" id="pg-dn-${k.key}-status"></div>
+                    </div>
+`).join('')}                    <p class="dn-help">Poções e revives: o script confere a mochila a cada 5 min; abaixo do limite (0 = quando acabar), pede viagem à cidade e compra no Mark. Na viagem do relógio, vão de carona se estiverem abaixo do limite. O aviso da compra vai para o canal de Alertas.</p>
                 </section>
                 <section class="dn-pane" data-pane="venda" hidden>
                     <div class="dn-section dn-blk" id="pg-dn-blk-itens" data-blk="itens">
@@ -3909,6 +4068,12 @@
                 ballsMin: Math.max(0, parseInt($('#pg-dn-ballsmin').value, 10) || 0),
                 autoBuy: $('#pg-dn-autobuy').checked,
                 autoBuyQty: Math.min(BUY_MAX_QTY, Math.max(1, parseInt($('#pg-dn-autobuy-qty').value, 10) || 100)),
+                ...Object.fromEntries(SUPPLY_KINDS.flatMap(k => [
+                    [k.buy, $(`#pg-dn-${k.key}-buy`).checked],
+                    [k.id, Number($(`#pg-dn-${k.key}-item`).value) || k.def],
+                    [k.min, Math.max(0, parseInt($(`#pg-dn-${k.key}-min`).value, 10) || 0)],
+                    [k.qty, Math.min(BUY_MAX_QTY, Math.max(1, parseInt($(`#pg-dn-${k.key}-qty`).value, 10) || DEFAULTS[k.qty]))],
+                ])),
                 mentionUserId: $('#pg-dn-mention').value.trim(),
                 cooldownSeconds: Math.max(0, parseInt($('#pg-dn-cooldown').value, 10) || 0),
                 debug: $('#pg-dn-debug').checked,
@@ -3989,6 +4154,21 @@
             else el.innerHTML = `<span>🎯</span><span><span class="k">${escHtml(ballName(id))}:</span> ${fmtNum(qty)} em estoque</span>${qty < (min || 1) ? '<span class="r" style="color:var(--dn-warn)">abaixo do limite</span>' : ''}`;
         }
         onBallsChange = () => { if (!panel.hidden) renderBalls(); };
+
+        // ---- Poções e revives ----
+        function renderSupply() {
+            const d = current();
+            for (const k of SUPPLY_KINDS) {
+                const el = $(`#pg-dn-${k.key}-status`);
+                const s = supplySlots(d).find(x => x.key === k.key);
+                const id = s ? s.itemId : (Number(d[k.id]) || k.def);
+                const qty = supplyQty(id);
+                if (!s) el.innerHTML = `<span>${k.icon}</span><span class="k">Refil desligado${qty != null ? ` · ${escHtml(supplyItemName(id))}: ${fmtNum(qty)} na mochila` : ''}.</span>`;
+                else if (qty == null) el.innerHTML = `<span>${k.icon}</span><span><span class="k">${escHtml(s.name)}:</span> mochila ainda não lida</span>`;
+                else el.innerHTML = `<span>${k.icon}</span><span><span class="k">${escHtml(s.name)}:</span> ${fmtNum(qty)} na mochila</span>${qty < s.min ? '<span class="r" style="color:var(--dn-warn)">abaixo do limite: compra na viagem</span>' : ''}`;
+            }
+        }
+        onSupplyChange = () => { if (!panel.hidden) renderSupply(); };
 
         // ---- Venda ----
         // Hunt vista na lista de venda ('' = a atual). Outra hunt = edita o perfil dela (cfg.sellProfiles[slug]); marcações
@@ -4443,8 +4623,8 @@
         $('#pg-dn-trip-now').onclick = () => {
             if (dirty) $('#pg-dn-save').click();
             const needs = tripAugment([]);
-            if (!needs.length) { flash('⚠ Nada para levar: nenhum drop marcado nesta hunt, nenhum Pokémon nas regras e bolas acima do limite.', 'warn'); return; }
-            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', cla: 'clã', guardar: 'guardar' };
+            if (!needs.length) { flash('⚠ Nada para levar: nenhum drop marcado nesta hunt, nenhum Pokémon nas regras e bolas, poções e revives acima do limite.', 'warn'); return; }
+            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar' };
             flash(`🏙 Indo à cidade: ${needs.map(n => nome[n[0]]).join(', ')}…`, 'info', 90000);
             tripNeeds.clear();
             cityTrip('manual: ' + needs.map(n => n[0]).join('+'), tripTasksFor(needs)).then(r => {
@@ -4452,7 +4632,9 @@
                     const x = t.r || {};
                     if (t.key === 'itens') return `drops ${t.ok ? `✔ ${x.total ?? ''} por ${fmtNum(x.ganho || 0)} gold` : `✖ ${t.motivo || ''}`}`;
                     if (t.key === 'pokes') return `Pokémon ${t.ok ? `✔ ${x.vendidos ?? ''} por ${fmtNum(x.ganho || 0)} gold` : `✖ ${t.motivo || ''}`}`;
-                    return `bolas ${t.ok ? `✔ ${x.bought ?? ''}` : `✖ ${t.motivo || ''}`}`;
+                    if (t.key === 'suprimentos') return `poções/revives ${t.ok ? `✔ ${(x.compras || []).map(c => `${c.comprado} ${c.name}`).join(', ') || 'estoque ok'}` : `✖ ${t.motivo || ''}`}`;
+                    if (t.key === 'bolas') return `bolas ${t.ok ? `✔ ${x.bought ?? ''}` : `✖ ${t.motivo || ''}`}`;
+                    return `${nome[t.key] || t.key} ${t.ok ? '✔' : `✖ ${t.motivo || ''}`}`;
                 }).join(' · ');
                 flash(`${r.ok ? '✔' : '⚠'} Viagem: ${linha}${r.volta ? ` · voltando para ${r.volta}` : ''}`, r.ok ? 'ok' : 'warn', 12000);
             });
@@ -4473,7 +4655,7 @@
 
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -4495,6 +4677,12 @@
             $('#pg-dn-ballsmin').value = cfg.ballsMin || 0;
             $('#pg-dn-autobuy').checked = Boolean(cfg.autoBuy);
             $('#pg-dn-autobuy-qty').value = cfg.autoBuyQty || 100;
+            for (const k of SUPPLY_KINDS) {
+                $(`#pg-dn-${k.key}-buy`).checked = Boolean(cfg[k.buy]);
+                $(`#pg-dn-${k.key}-item`).value = String(Number(cfg[k.id]) || k.def);
+                $(`#pg-dn-${k.key}-min`).value = Number(cfg[k.min]) || 0;
+                $(`#pg-dn-${k.key}-qty`).value = Number(cfg[k.qty]) || DEFAULTS[k.qty];
+            }
             $('#pg-dn-sell').checked = Boolean(cfg.sellEnabled);
 
             $('#pg-dn-psell').checked = Boolean(cfg.pokeSellEnabled);
@@ -4637,6 +4825,8 @@
             for (const k of Object.keys(ballAlerted)) delete ballAlerted[k]; // limite mudou: rearma
             for (const k of Object.keys(autoBuyAttempted)) delete autoBuyAttempted[k];
             requestBalls(0);
+            for (const k of Object.keys(supplyAttempted)) delete supplyAttempted[k]; // refil mudou: rearma e relê a mochila
+            requestSupplies();
             if (JSON.stringify([cfg.tripEveryMin, cfg.tripEveryMaxMin]) !== viagemAntes) restartTripCycle(); // faixa da viagem mudou: sorteia de novo
             saveHuntProfile();
             if (JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]) !== recargaAntes) scheduleReload(); // faixa mudou: sorteia de novo
@@ -4658,7 +4848,7 @@
             if (linhasRuins.length) avisos.push(`⚠ Rota: ${linhasRuins.length} linha(s) ignorada(s) (formato "hunt nível"): ${linhasRuins.map(l => `"${l}"`).join(', ')}`);
             if (!cfg.webhookUrl) avisos.push('⚠ Sem canal de Capturas: capturas não serão enviadas.');
             if (cfg.pokeSellEnabled && !pokeSellHasRules(cfg)) avisos.push('⚠ Venda de Pokémon ligada sem nenhum limite: nada será vendido.');
-            const usaAlertas = [effectiveBallsMin() > 0 && 'bolas', cfg.sellEnabled && 'venda', cfg.pokeSellEnabled && 'venda de Pokémon', routeActive() && 'troca de hunt', cfg.dailyEnabled && 'daily', cfg.catchRouteEnabled && 'rota de captura'].filter(Boolean);
+            const usaAlertas = [effectiveBallsMin() > 0 && 'bolas', supplyOn() && 'poções/revives', cfg.sellEnabled && 'venda', cfg.pokeSellEnabled && 'venda de Pokémon', routeActive() && 'troca de hunt', cfg.dailyEnabled && 'daily', cfg.catchRouteEnabled && 'rota de captura'].filter(Boolean);
             if (usaAlertas.length && !cfg.webhookAlerts) avisos.push(`⚠ Sem canal de Alertas: avisos de ${usaAlertas.join(', ')} não serão enviados.`);
             if (levelEnabled() && !cfg.webhookLevel) avisos.push('⚠ Sem canal de Nível: avisos de nível/troca de líder não serão enviados.');
             const nivel = levelEnabled() ? ` · conferindo o time para o nível ${levelTarget()}${swapEnabled() ? ' (com troca)' : ''}…` : '';
@@ -4818,6 +5008,7 @@
             if (dropsVindos.length) { for (const id of dropsVindos) droppedIds.add(id); saveDropped(); }   // drops conhecidos do "Guardar na cidade"
             for (const k of Object.keys(ballAlerted)) delete ballAlerted[k];
             for (const k of Object.keys(autoBuyAttempted)) delete autoBuyAttempted[k];
+            for (const k of Object.keys(supplyAttempted)) delete supplyAttempted[k];
             restartTripCycle();
             scheduleReload();
             loadHuntProfile();
@@ -4828,6 +5019,7 @@
                 `${canais} ${canais === 1 ? 'canal' : 'canais'}${keepHooks ? ' (mantidos deste painel)' : ''}`,
                 cfg.notifyEveryCapture ? 'avisa toda captura' : `lista com ${(cfg.watchList || []).length}`,
                 `bolas ${cfg.autoBuy ? `compra ${cfg.autoBuyQty} abaixo de ${cfg.ballsMin || 1}` : (cfg.ballsMin ? `avisa abaixo de ${cfg.ballsMin}` : 'desligado')}`,
+                `refil ${supplyOn() ? supplySlots().map(s => `${s.name} < ${s.min}`).join(', ') : 'desligado'}`,
                 `drops ${cfg.sellEnabled ? 'ligado' : 'desligado'}, listas de ${Object.keys(cfg.sellProfiles || {}).length} hunts (${perfisVindos.length} vieram${soDaqui.length ? `, ${soDaqui.length} já eram daqui e ficaram` : ''})`,
                 `Pokémon ${cfg.pokeSellEnabled ? 'ligado' : 'desligado'}, ${Object.keys(cfg.pokeSellLimits || {}).length} raridades com limite`,
                 `viagem ${cfg.tripEveryMin}${cfg.tripEveryMaxMin > cfg.tripEveryMin ? `–${cfg.tripEveryMaxMin}` : ''} min (${cfg.tripCity})`,
@@ -4855,6 +5047,7 @@
     if (cfg.reloadEnabled) scheduleReload();
     buildUI();
     setInterval(() => requestBalls(0), BALLS_POLL_MS);
+    setInterval(requestSupplies, SUPPLY_POLL_MS);
     setInterval(() => requestPokes(0), POKES_POLL_MS);
     setInterval(reloadTick, RELOAD_CHECK_MS);
     setInterval(dailyTick, DAILY_CHECK_MS);
@@ -4871,6 +5064,7 @@
         '| raridade mín.:', cfg.minTier ? `${cfg.minTier}${cfg.minTierIv ? ` com poder ${cfg.minTierIv}+` : ''}` : '(nenhuma)', '| poder mín.:', cfg.minIv || 0,
         '| alerta bolas:', effectiveBallsMin() ? `${cfg.ballsWatch} < ${effectiveBallsMin()}` : 'desligado',
         '| compra auto:', cfg.autoBuy ? `${cfg.autoBuyQty} un.` : 'não',
+        '| refil:', supplyOn() ? supplySlots().map(s => `${s.name} < ${s.min} (+${s.qty})`).join(', ') : 'não',
         '| nível:', levelEnabled() ? `${levelTarget()}${swapEnabled() ? ' + troca' : ''}` : 'não',
         '| rota:', routeActive() ? routeStatus() : 'não',
         '| captura:', cfg.catchRouteEnabled ? `${catchAreas().join('+')}${cfg.catchRouteMaxLevel ? ` até lv ${cfg.catchRouteMaxLevel}` : ''}${cfg.catchRouteAuto ? ' + bola' : ''}` : 'não',

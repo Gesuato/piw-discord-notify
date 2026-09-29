@@ -18,6 +18,7 @@ Tampermonkey/Violentmonkey no navegador.
 - ✅ Filtro por **raridade mínima** (Legendary ou superior, por exemplo) e/ou **poder mínimo**
 - ✅ Alerta de **bolas acabando** (limite por bola, checado após cada captura e a cada 5 min)
 - ✅ **Compra automática** de bolas na loja quando o estoque cai (quantidade e reserva de gold configuráveis)
+- ✅ **Refil de poções e revives**: escolha a poção (Small a Ultimate) e o revive (Revive/Max Revive), o limite e quanto comprar; abaixo do limite, a conta vai à cidade e compra no Mark
 - ✅ **Venda automática** dos drops da hunt atual que você marcar (lista branca, reserva por item; itens raros e de outras categorias ganham aviso ⚠️ mas podem ser marcados)
 - ✅ **Alerta de nível**: avisa quando o líder do time chega ao nível escolhido, em webhook próprio
 - ✅ **Troca automática de líder**: ao atingir o nível, passa a vez para o próximo do time que ainda está abaixo

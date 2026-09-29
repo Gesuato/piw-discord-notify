@@ -361,6 +361,8 @@ function loadTripModule(cfg, init) {
         runSellCycle: (manual, wanted, hunt) => { state.tasks.push(['itens', { manual, wanted, hunt }]); return Promise.resolve(init.itens || { ok: true, total: 3, ganho: 90 }); },
         runPokeSellCycle: (manual) => { state.tasks.push(['pokes', { manual }]); return Promise.resolve(init.pokes || { ok: true, vendidos: 2, ganho: 200 }); },
         autoBuyBalls: (id, qty, min) => { state.tasks.push(['bolas', { id, qty, min }]); return Promise.resolve(init.bolas || { ok: true, bought: 100 }); },
+        supplyLow: () => init.supplyLow || [],
+        supplyCityWork: () => { state.tasks.push(['suprimentos', {}]); return Promise.resolve(init.suprimentos || { ok: true, compras: [] }); },
         setTimeout: (fn, ms) => { clock.now += ms; fn(); return 1; },
         Date: FakeDate,
     };
@@ -493,4 +495,38 @@ function loadDepositModule(cfg, init) {
     return { api, state, cfg, clock };
 }
 
-module.exports = { loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+// Extrai o módulo "Refil de poções e revives" (v3.21.0). `init.api(url, opts)` responde a mochila (GET /api/game/depot);
+// `init.buy(kind, id, qty)` faz o papel de buyFromShop (padrão: compra tudo). Timers rodam na hora.
+const S_START = '    // ---- Refil de poções e revives';
+const S_END = '    // ---- Venda automática de drops';
+
+function loadSupplyModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(S_START), b = src.indexOf(S_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo de refil não encontrados no script');
+    const mod = src.slice(a, b);
+    const state = { sent: [], hooks: [], logs: [], trips: [], buys: [], calls: [] };
+    const ctx = {
+        cfg,
+        BUY_MAX_QTY: 10000,
+        sendGame: (o) => { state.sent.push(o); return true; },
+        gameApi: (url, opts) => { state.calls.push({ url, opts }); return Promise.resolve().then(() => (init.api ? init.api(url, opts) : {})); },
+        buyFromShop: (kind, id, qty) => { state.buys.push({ kind, id, qty }); return Promise.resolve(init.buy ? init.buy(kind, id, qty) : { ok: true, bought: qty, spent: qty * 10, gold: 5000, name: null }); },
+        tripRequest: (key, dados, motivo) => state.trips.push({ key, dados, motivo }),
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        setTimeout: (fn) => { fn(); return 1; },
+        Date,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            supplySlots, supplyOn, supplyQty, supplyLow, supplyOnInventory, checkSupplyStock, supplyCityWork, requestSupplies, supplyItemName,
+            get supplyAttempted() { return supplyAttempted; },
+        };`);
+    const api = factory(...Object.values(ctx));
+    return { api, state, cfg };
+}
+
+module.exports = { loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

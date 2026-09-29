@@ -29,6 +29,8 @@ Pokémon, usar o Mercado Global nem o Depot **durante a hunt**. Por isso toda ve
 | O quê | Como | Quando |
 |---|---|---|
 | Compra de bolas | viagem à cidade → `GET /api/game/shop` + `POST /api/game/shop/buy` (REST) | uma vez por episódio de estoque abaixo do limite (bola zerada some do frame `balls`; vale 0) |
+| Mochila (poções/revives) | `inv-get` (socket) | a cada 5 min, 4 s após o socket e no Salvar (só com refil ligado) |
+| Refil de poção/revive (v3.21.0) | viagem à cidade → `GET /api/game/depot` + `GET /api/game/shop` + `POST /api/game/shop/buy { itemId, qty }` (REST) | uma vez por episódio abaixo do limite; carona em toda viagem enquanto estiver abaixo |
 
 ## 💰 Venda
 

@@ -538,6 +538,20 @@ caiu na hunt atual (`sellWantedNow`). Teste: `node test/huntloot.test.js` + pass
 
 ---
 
+## ✅ 25. Refil de poções e revives (v3.21.0)
+
+**O que faz (aba Compras → Poção / Revive):** mantém um estoque mínimo de uma poção e de um revive, como a compra de
+bolas. Mochila pelo frame `inventory` (`inv-get` a cada 5 min, 4 s após o socket e no Salvar; item zerado some da lista =
+0). Abaixo do limite (0 = quando acabar) pede viagem à cidade (`tripRequest('suprimentos')`, uma vez por episódio) e vai
+de carona em toda viagem (`tripAugment`). Na cidade, `supplyCityWork` relê a mochila por `GET /api/game/depot` e compra
+com `POST /api/game/shop/buy { itemId, qty }` (bundle do cliente, 29/09/2026: o mesmo endpoint das bolas, corpo com
+`itemId`; `buyFromShop('item', ...)`). Aviso da compra/falha no canal de Alertas. Config: `healBuy`/`healItemId`/`healMin`/
+`healQty` e `reviveBuy`/`reviveItemId`/`reviveMin`/`reviveQty`. Itens da loja (items.json): 200 Small, 201 Great, 202 Ultra,
+203 Hyper, 204 Ultimate Potion; 205 Revive, 206 Max Revive (207 Medicine não é vendida). Teste: `node test/supply.test.js`,
+caso novo no `trip.test.js` e passo no smoke.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

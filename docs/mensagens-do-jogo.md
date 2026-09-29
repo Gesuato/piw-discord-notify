@@ -67,6 +67,11 @@ e `error { message }` (resposta de ação recusada; o script os trata em `handle
 
 ## REST que o cliente usa (além da loja/depot de itens do CLAUDE.md)
 
+- `POST /api/game/shop/buy` (loja do Mark, aba Comprar): bola = `{ ballId, qty }`, item = `{ itemId, qty }` (qty 1..10000)
+  → `{ bought, gold }`. `GET /api/game/shop` → `items:[{ id, name, category, description, icon, priceGold }]` (poções `heal`,
+  revives `revive`). Usado no refil de poções e revives (v3.21.0). Usar item: `use-heal { itemId }` (socket) para `heal`
+  e `revive` (inventário do jogo).
+
 - `POST /api/game/pokemon/lock { id, locked }` — cadeado do Pokémon (loja e mercado mostram 🔒; a venda em lote
   da loja exclui os travados). Usado pelo script em `lockPokemon`.
 - `POST /api/game/pokemon/sell { pokeIds:[...] }` → `{ gold, goldGained, sold }` — venda em lote da aba "Pokémon"
