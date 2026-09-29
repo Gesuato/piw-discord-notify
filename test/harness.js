@@ -533,7 +533,7 @@ function loadSupplyModule(cfg, init) {
 // pelo set-city vira 20 voltas de 500 ms; `state.onSleep` roda a cada espera, o teste usa para simular a tela). O
 // `pokes-get` responde na hora com o hp do líder tirado de `init.pokesHp` (vazio = sem resposta; null = frame sem hp).
 const H_START = '    // ---- Cura na Joy';
-const H_END = '    // ---- Lógica principal';
+const H_END = '    // ---- Volta da cidade';
 
 function loadHealModule(cfg, init) {
     init = init || {};
@@ -584,4 +584,64 @@ function loadHealModule(cfg, init) {
     return { api: out.api, state, cfg, clock };
 }
 
-module.exports = { loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+// Volta da cidade (v3.23.0): `// ---- Volta da cidade` até `// ---- Lógica principal`. `init.env` sobrescreve o estado
+// dos outros módulos (tripRunning, huntSwitch, clanTarget, route...); `api.set(nome, valor)` muda huntSlug/lastRealHunt etc.
+const I_START = '    // ---- Volta da cidade';
+const I_END = '    // ---- Lógica principal';
+
+function loadIdleModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(I_START), b = src.indexOf(I_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo da volta da cidade não encontrados no script');
+    const mod = src.slice(a, b);
+    const clock = { now: init.now || 1_000_000_000_000 };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const state = { switches: [], logs: [], hooks: [], sent: [] };
+    const hpQueue = Array.isArray(init.pokesHp) ? init.pokesHp.slice() : [];
+    const box = {};
+    const env = Object.assign({
+        huntSlug: null, lastRealHunt: null, tripRunning: false, heal: false, huntSwitch: null, swapPending: null,
+        sellRunning: false, resumeHunt: null, dailyAutoBusy: false, clanRoute: false, clanTarget: null, route: null,
+        catchRoute: false, healDeaths: [],
+    }, init.env || {});
+    const ctx = {
+        cfg, env,
+        sendGame: (o) => {
+            state.sent.push(o);
+            if (o.type === 'leave-hunt') env.huntSlug = null;
+            if (o.type === 'pokes-get' && hpQueue.length) { const hp = hpQueue.shift(); box.api.onPokes([{ id: 'a', team: true, leader: true, hp: hp == null ? undefined : hp }]); }
+            return true;
+        },
+        setTimeout: (fn, ms) => { clock.now += ms || 0; fn(); return 1; },
+        switchHunt: (slug, tentativa, origem) => state.switches.push({ slug, tentativa, origem }),
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', title: p.embeds?.[0]?.title || '', meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        normalize: (v) => String(v || '').toLowerCase().trim(),
+        CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'],
+        healBusy: () => env.heal,
+        healLeader: (list) => list.find(p => p.team && p.leader) || null,
+        clanRouteOn: () => env.clanRoute,
+        routeStep: () => env.route,
+        catchRouteActive: () => env.catchRoute,
+        HEAL_DEATH_WINDOW_MS: 30 * 60 * 1000, HEAL_MAX_DEATHS: 3,
+        Date: FakeDate,
+    };
+    // Os nomes que o módulo lê como variáveis soltas viram getters sobre `env` (via `with`).
+    const scope = new Proxy({}, {
+        has: (t, k) => ['huntSlug', 'lastRealHunt', 'tripRunning', 'huntSwitch', 'swapPending', 'sellRunning', 'resumeHunt', 'dailyAutoBusy', 'clanTarget', 'healDeaths'].includes(k),
+        get: (t, k) => env[k],
+        set: (t, k, v) => { env[k] = v; return true; },
+    });
+    const factory = new Function('scope', ...Object.keys(ctx), `with (scope) { ${mod}
+        return {
+            tick: idleTick, running: () => idleRunning, onHuntChange: idleOnHuntChange, onAlive: idleOnAlive, onPokes: idleOnPokes, status: idleStatus, since: idleSinceAt,
+            set(k, v) { env[k] = v; },
+        }; }`);
+    const api = factory(scope, ...Object.values(ctx));
+    box.api = api;
+    return { api, state, cfg, clock, env };
+}
+
+module.exports = { loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

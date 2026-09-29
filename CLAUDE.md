@@ -72,6 +72,12 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   no `pokes`). Líder em hp 0 = a tela recusa viajar para hunt. Fluxo `healStart` → `healFlow` → `switchHunt(slug, 1, 'cura')`;
   módulos que trocam de hunt checam `healBusy()` (com `typeof`, por causa dos harness). 3 quedas na mesma hunt em 30 min =
   fica na cidade e avisa.
+- Parada na cidade (v3.23.0, aba Compras → 🏙️ Parada na cidade, `cfg.cityIdleEnabled` LIGADO por padrão, `cityIdleMin` 10;
+  módulo `// ---- Volta da cidade` entre a Cura na Joy e a Lógica principal): pedido do usuário, "mais de 10 min na cidade = a
+  conta bugou". Parada = hunt do script nula/cidade sem `field`/`field-kill` no período, ou hunt pedida sem frame nenhum
+  (`idleSinceAt`). `idleGoBack`: (`leave-hunt` + `set-city` se era hunt morta) → `joy-heal` → `pokes-get` confere o hp →
+  `switchHunt(slug, 1, 'cidade')`. Destino: alvo do clã > etapa da rota > `lastRealHunt`; pula hunt com 3 quedas da cura.
+  Espera viagem/cura/troca/venda/recarga; a rota de captura tem volta própria. 3 voltas em 1 h sem frame = desiste e avisa.
 - REST do jogo (usado pela compra automática; confirmado no auto-refill de referência e no piwdex):
   tokens em `sessionStorage['pokeweb:tokens']` (`{accessToken, refreshToken}`), header
   `Authorization: Bearer`, renovação em `POST /api/auth/refresh {refreshToken}` quando vier 401.
@@ -305,7 +311,8 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
   `node test/dailyauto.test.js` (daily sozinha, mesmo `loadDailyModule` com `init.team`/`init.huntCatalog`/`init.store`) e
   `node test/balls.test.js` (`loadBallsModule`: módulo de bolas + `checkBallStock`), `node test/supply.test.js`
   (`loadSupplyModule`: `// ---- Refil de poções e revives` até `// ---- Venda automática de drops`), `node test/heal.test.js`
-  (`loadHealModule`: `// ---- Cura na Joy` até `// ---- Lógica principal`) e `node test/trip.test.js`
+  (`loadHealModule`: `// ---- Cura na Joy` até `// ---- Volta da cidade`), `node test/idle.test.js` (`loadIdleModule`:
+  `// ---- Volta da cidade` até `// ---- Lógica principal`; estado dos outros módulos em `init.env`) e `node test/trip.test.js`
   (`loadTripModule`: `// ---- Viagem à cidade` até `// ---- Recarga automática do painel`; timers avançam o relógio falso).
   `test/harness.js` recorta módulos do userscript pelos marcadores (`loadLevelModule`: `// ---- Alerta de nível do
   líder` até `// ---- Alerta de estoque de bolas`; `loadPokeSellModule`: `// ---- Venda automática de Pokémon` até

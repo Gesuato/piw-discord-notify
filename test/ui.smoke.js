@@ -203,6 +203,13 @@ setTimeout(() => {
         const kindsJoy = JSON.parse(window.localStorage.getItem('pgDiscordNotifyLog') || '[]').map(e => e.kind);
         log('joy: ' + joy + ' | log=' + kindsJoy.filter(k => ['desmaio', 'teleporte-cidade', 'cura'].includes(k)).join(','));
         if (!/indo para a cidade/.test(joy) || !kindsJoy.includes('cura')) throw new Error('cura não começou');
+        // ---- parada na cidade (v3.23.0): ligada por padrão, 10 min; mudar o tempo e salvar ----
+        if (!$('#pg-dn-cityidle').checked || $('#pg-dn-cityidle-min').value !== '10') throw new Error('parada na cidade não veio ligada com 10 min');
+        $('#pg-dn-cityidle-min').value = 15; fire($('#pg-dn-cityidle-min'), 'input');
+        $('#pg-dn-save').click();
+        if (JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg')).cityIdleMin !== 15) throw new Error('tempo da parada na cidade não salvou');
+        log('cidade: ' + $('#pg-dn-cityidle-status').textContent);
+        if (!/Volta:/.test($('#pg-dn-cityidle-status').textContent)) throw new Error('status da parada na cidade vazio');
         panel.querySelector('.dn-tab[data-tab=sistema]').click(); log('socket=' + $('#pg-dn-socket').textContent);
         log('enviados=' + ws.sent.map(x => JSON.parse(x).type).join(','));
         // ---- importar rota do PIW Tools (texto colado da aba Rota otimizada) ----

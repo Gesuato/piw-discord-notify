@@ -579,6 +579,24 @@ cidade específica para o `joy-heal`. Teste: `node test/heal.test.js` e passo no
 
 ---
 
+## ✅ 27. Parada na cidade: curar e voltar para a hunt (v3.23.0)
+
+**O que faz (aba Compras → 🏙️ Parada na cidade, `cfg.cityIdleEnabled`, ligado por padrão, `cityIdleMin` = 10):** conta fora
+de hunt há mais de 10 min está bugada (pedido do usuário): o script cura o time na Nurse Joy e volta para a hunt.
+
+**Lógica (módulo `// ---- Volta da cidade`, antes da Lógica principal):** parada = hunt do script nula ou cidade e nenhum
+`field`/`field-init`/`field-kill` no período (o servidor manda esses frames enquanto farma, mesmo com a tela na cidade), ou
+hunt pedida que nunca mandou frame. Tique de 30 s; espera viagem, cura, troca de hunt/líder, venda, volta da recarga e a
+daily sozinha (motivo no painel e no log `cidade-parada-espera`); com a rota de captura ligada quem volta é o `catchTick`.
+Fluxo `idleGoBack`: hunt morta → `leave-hunt` + `set-city cerulean`; 3–7 s → `joy-heal` → `pokes-get` confere o hp do líder
+(hp 0 = não volta e avisa) → 2–5 s → `switchHunt(slug, 1, 'cidade')` sem `leave-hunt`. Destino: alvo da rota do clã > etapa
+da rota de treino > última hunt; hunt em que o time caiu 3x em 30 min (cura) não serve. 3 voltas em 1 h sem a hunt
+confirmar = desiste e avisa; rearma no próximo frame de hunt. Webhook de alertas a cada volta. Log `cidade-parada`.
+
+**Pendente:** confirmar no log se o `joy-heal` funciona fora de Cerulean. Teste: `node test/idle.test.js` e passo no smoke.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel
