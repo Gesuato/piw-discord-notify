@@ -552,6 +552,33 @@ caso novo no `trip.test.js` e passo no smoke.
 
 ---
 
+## ✅ 26. Cura na Nurse Joy quando o time cai (v3.22.0)
+
+**O que faz (aba Compras → 💊 Nurse Joy, `cfg.healJoyEnabled`):** quando o líder desmaia sem Revive (ou o time inteiro
+cai) e o jogo manda a conta para a cidade, o script cura o time na Nurse Joy e volta para a hunt em que caiu.
+
+**Mensagens do jogo (bundle do cliente, 29/09/2026; formato ainda não visto no log):** o frame `field` traz `fainted`,
+`reviveInMs`, `noRevive` (time inteiro; na Nightmare World não há Revive), `heroHp`, `heroMaxHp`. Com `fainted` a tela mostra
+"💀 <líder> desmaiou!" com contagem regressiva, "Reviver agora" (`field-revive`, gasta um Revive; o Auto-Revive faz sozinho)
+e "Voltar para a cidade" (`leave-hunt` + viagem para Cerulean). No fim da contagem o servidor manda `field-teleport-city`
+(a tela vai para Cerulean e envia `set-city`). A Joy é `{ type:'joy-heal' }` (botão "Curar a equipe" da NPC, de graça,
+time todo); o cliente não espera resposta. Com o líder em hp 0 a tela recusa viajar para hunt ("Cure-o com a Nurse Joy ou
+use um Revive antes de ir caçar"); o `hp` do líder vem no frame `pokes`.
+
+**Lógica (módulo `// ---- Cura na Joy`, antes da Lógica principal):** `healOnField` guarda a queda (`faintSeen`, log
+`desmaio`/`desmaio-levantou`). Gatilhos: `field-teleport-city` real (o sintético da viagem é filtrado; também zera a hunt
+atual, porque a tela não manda `leave-hunt`), `leave-hunt` com o líder desmaiado ("Voltar para a cidade") ou líder com hp 0
+no `pokes` fora de hunt (ex.: recarga no meio da contagem). Fluxo: espera o `set-city` da tela (10 s; senão manda
+`set-city cerulean`) → 3–7 s → `joy-heal` → 1,5 s → `pokes-get` confere o hp do líder (2 tentativas; frame sem `hp` segue)
+→ 2–5 s → `switchHunt(slug, 1, 'cura')` (sem `leave-hunt`). Enquanto `healBusy()`, viagem, rota de captura, daily sozinha,
+rota do clã e recarga não trocam de hunt. Proteção: 3 quedas na mesma hunt em 30 min = fica na cidade e avisa. Webhook
+de alertas na 1ª queda da janela e em toda falha/parada. Log `cura { fase: inicio|joy|fim }`.
+
+**Pendente:** confirmar no log (`desmaio`, `cura`) os campos do `field` e se o servidor exige estar perto da Joy ou numa
+cidade específica para o `joy-heal`. Teste: `node test/heal.test.js` e passo no smoke.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

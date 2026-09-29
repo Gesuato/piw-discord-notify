@@ -65,6 +65,13 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   (tarefa `suprimentos`, `supplyCityWork`) com `POST /api/game/shop/buy { itemId, qty }` via `buyFromShop('item', ...)`
   (confirmado no bundle em 29/09/2026; bolas usam `buyFromShop('ball', ...)` com `{ ballId }`). Ids: poções 200–204,
   Revive 205, Max Revive 206. Limite 0 = compra quando acabar. Uma viagem pedida por episódio (`supplyAttempted`).
+- Cura na Joy (v3.22.0, aba Compras → 💊 Nurse Joy, `cfg.healJoyEnabled`, módulo `// ---- Cura na Joy` antes da Lógica
+  principal; bundle em 29/09/2026, campos ainda não vistos no log): `field` traz `fainted`, `reviveInMs`, `noRevive` (time
+  inteiro), `heroHp`; sem Revive o servidor manda `field-teleport-city` (a tela vai a Cerulean e envia `set-city`, mas NÃO
+  `leave-hunt`: `healOnTeleport` zera a hunt). Cura = `{ type:'joy-heal' }` (grátis, sem resposta; conferir pelo `hp` do líder
+  no `pokes`). Líder em hp 0 = a tela recusa viajar para hunt. Fluxo `healStart` → `healFlow` → `switchHunt(slug, 1, 'cura')`;
+  módulos que trocam de hunt checam `healBusy()` (com `typeof`, por causa dos harness). 3 quedas na mesma hunt em 30 min =
+  fica na cidade e avisa.
 - REST do jogo (usado pela compra automática; confirmado no auto-refill de referência e no piwdex):
   tokens em `sessionStorage['pokeweb:tokens']` (`{accessToken, refreshToken}`), header
   `Authorization: Bearer`, renovação em `POST /api/auth/refresh {refreshToken}` quando vier 401.
@@ -297,7 +304,8 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
   `node test/clan.test.js` (`loadClanModule`: `// ---- Clã: subir de rank` até `// ---- Viagem à cidade`),
   `node test/dailyauto.test.js` (daily sozinha, mesmo `loadDailyModule` com `init.team`/`init.huntCatalog`/`init.store`) e
   `node test/balls.test.js` (`loadBallsModule`: módulo de bolas + `checkBallStock`), `node test/supply.test.js`
-  (`loadSupplyModule`: `// ---- Refil de poções e revives` até `// ---- Venda automática de drops`) e `node test/trip.test.js`
+  (`loadSupplyModule`: `// ---- Refil de poções e revives` até `// ---- Venda automática de drops`), `node test/heal.test.js`
+  (`loadHealModule`: `// ---- Cura na Joy` até `// ---- Lógica principal`) e `node test/trip.test.js`
   (`loadTripModule`: `// ---- Viagem à cidade` até `// ---- Recarga automática do painel`; timers avançam o relógio falso).
   `test/harness.js` recorta módulos do userscript pelos marcadores (`loadLevelModule`: `// ---- Alerta de nível do
   líder` até `// ---- Alerta de estoque de bolas`; `loadPokeSellModule`: `// ---- Venda automática de Pokémon` até

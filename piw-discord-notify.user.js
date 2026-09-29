@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.21.0
+// @version      3.22.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.21.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.22.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -44,6 +44,7 @@
         reviveItemId: 205,      // 205 Revive, 206 Max Revive
         reviveMin: 10,
         reviveQty: 50,
+        healJoyEnabled: false,  // v3.22.0 time caiu (líder desmaiado / mandado para a cidade): curar na Nurse Joy e voltar para a hunt
         sellEnabled: false,     // vender drops marcados da hunt atual periodicamente
         sellEveryMin: 10,       // intervalo mínimo da venda automática (minutos)
         sellEveryMaxMin: 0,     // intervalo máximo; 0 ou <= mínimo = intervalo fixo. Entre os dois é sorteado
@@ -450,7 +451,7 @@
     }
 
     function requestPokes(delayMs) {
-        if (!levelEnabled() && !cfg.pokeSellEnabled && !cfg.catchRouteEnabled && !(cfg.dailyEnabled && cfg.dailyAuto) && !(cfg.clanEnabled && cfg.clanRoute)) return; // venda de Pokémon, rota de captura e daily sozinha também usam o frame `pokes`
+        if (!levelEnabled() && !cfg.pokeSellEnabled && !cfg.catchRouteEnabled && !(cfg.dailyEnabled && cfg.dailyAuto) && !(cfg.clanEnabled && cfg.clanRoute) && !cfg.healJoyEnabled) return; // venda de Pokémon, rota de captura, daily sozinha e cura na Joy também usam o frame `pokes`
         clearTimeout(pokesRequestTimer);
         pokesRequestTimer = setTimeout(() => {
             pokesRequestTimer = null;
@@ -597,7 +598,7 @@
     function switchHunt(slug, tentativa, origem) {
         origem = origem || 'rota';
         if (huntSwitch?.timer) clearTimeout(huntSwitch.timer);
-        if (origem !== 'recarga' && origem !== 'viagem') sendGame({ type: 'leave-hunt' }); // recarga/viagem: a conta já está na cidade
+        if (origem !== 'recarga' && origem !== 'viagem' && origem !== 'cura') sendGame({ type: 'leave-hunt' }); // recarga/viagem/cura: a conta já está na cidade
         huntSwitch = { slug, at: 0, tries: tentativa, timer: null, origem };
         huntSwitch.timer = setTimeout(() => {
             if (!huntSwitch || huntSwitch.slug !== slug) return;
@@ -630,6 +631,7 @@
             rota: { verbo: 'entrar na', quando: 'rota', titulo: `Rota: entrada em ${slug} não confirmou`, dica: 'Confira o nome da hunt (é o mesmo que aparece em "Hunt atual") e entre na mão; a rota continua da etapa atual.' },
             painel: { verbo: 'entrar na', quando: 'botão do painel', titulo: `Painel: entrada em ${slug} não confirmou`, dica: 'Confira o nome da hunt da etapa e entre na mão.' },
             captura: { verbo: 'entrar na', quando: 'rota de captura', titulo: `Rota de captura: entrada em ${slug} não confirmou`, dica: 'Essa hunt foi pulada nesta sessão; a rota segue para a próxima espécie.' },
+            cura: { verbo: 'voltar para a', quando: 'depois da cura na Nurse Joy', titulo: `Cura: volta para ${slug} não confirmou`, dica: 'A conta está curada na cidade: entre na hunt na mão (se o time caiu de novo na entrada, a hunt pode estar forte demais).' },
             viagem: { verbo: 'voltar para a', quando: 'depois da viagem à cidade', titulo: `Viagem: volta para ${slug} não confirmou`, dica: 'A conta deve estar na cidade: entre na hunt na mão.' },
         }[origem] || { verbo: 'entrar na', quando: origem, titulo: `Entrada em ${slug} não confirmou`, dica: 'Entre na hunt na mão.' };
         postWebhook(origem === 'rota' ? 'level' : 'alert', {
@@ -1086,8 +1088,8 @@
         let m;
         try { m = JSON.parse(data); } catch { return; }
         if (m?.type === 'enter-hunt') setHunt(m.slug);
-        else if (m?.type === 'leave-hunt') setHunt(null);
-        else if (m?.type === 'set-city') { tripOnSetCity(); armResume(RESUME_AFTER_CITY_MS); } // SPA na cidade: viagem chegou / hora de voltar pra hunt
+        else if (m?.type === 'leave-hunt') { healOnLeave(); setHunt(null); }
+        else if (m?.type === 'set-city') { tripOnSetCity(); healOnSetCity(); armResume(RESUME_AFTER_CITY_MS); } // SPA na cidade: viagem chegou / hora de voltar pra hunt
     }
 
     function handleFieldKill(message) {
@@ -1673,7 +1675,7 @@
     // CATCH_REENTER_MS (chamado por setHunt). Para caçar na mão, desligue a rota. Exceção: a hunt da Daily Kill.
     function catchOnHuntChange(slug) {
         clearTimeout(catchReenterTimer); catchReenterTimer = null;
-        if (!catchRouteActive() || !catchTarget || !huntCatalog || tripRunning) return;
+        if (!catchRouteActive() || !catchTarget || !huntCatalog || tripRunning || (typeof healBusy === 'function' && healBusy())) return;
         const h = normalize(slug || '');
         if (!h || CITY_SLUGS.includes(h) || h === catchTarget.slug) return;
         if (dailyEnabled() && dailyOnHunt()) return;
@@ -1690,7 +1692,7 @@
     function catchTick() {
         if (!catchRouteActive()) return;
         if (!huntCatalog) { startCatchRoute('tique'); return; }
-        if (!catchTarget || huntSwitch || catchBusy || catchReenterTimer || tripRunning) return;
+        if (!catchTarget || huntSwitch || catchBusy || catchReenterTimer || tripRunning || (typeof healBusy === 'function' && healBusy())) return;
         const h = normalize(huntSlug || '');
         if (h === catchTarget.slug) return;
         if (dailyEnabled() && dailyOnHunt()) return;
@@ -1931,7 +1933,7 @@
     async function dailyAutoStep() {
         if (!dailyAutoOn() || dailyAutoBusy || !daily || daily.locked || daily.claimed || daily.done) return;
         if (daily.picked && dailyOnHunt()) { noteDailyAuto(''); return; }
-        if (huntSwitch || tripRunning || swapPending) return;       // outra troca/viagem em andamento: próximo tique
+        if (huntSwitch || tripRunning || swapPending || (typeof healBusy === 'function' && healBusy())) return;       // outra troca/viagem/cura em andamento: próximo tique
         dailyAutoBusy = true;
         try {
             try { await loadHuntCatalog(); }
@@ -2520,6 +2522,7 @@
         }
         await loadItemsCatalog();
         if (tripRunning) { clanSetWait('esperando a viagem à cidade acabar'); return; }
+        if ((typeof healBusy === 'function' && healBusy())) { clanSetWait('esperando a cura na Nurse Joy acabar'); return; }
         if (huntSwitch) { clanSetWait(`esperando a troca para ${huntSwitch.slug} confirmar`); return; }
         if (swapPending) { clanSetWait('esperando a troca de líder confirmar'); return; }
         if (dailyWantsHunt()) { clanSetWait('a Daily Kill está usando a hunt (o clã segue quando ela acabar)'); return; }   // a Daily vem primeiro
@@ -3011,7 +3014,7 @@
     // (nada a fazer = só sorteia o próximo horário, sem sair da hunt). Pedido urgente (ex.: bola zerada) não espera o
     // relógio, só o intervalo mínimo entre viagens. Nunca com troca de hunt/líder ou captura em andamento.
     function tripTick() {
-        if (tripRunning) return;
+        if (tripRunning || (typeof healBusy === 'function' && healBusy())) return;              // cura na Joy em andamento: a viagem espera
         if (huntSwitch || swapPending || awaitingDetails.length) return;
         const urgente = tripNeeds.size > 0;
         const venceu = Date.now() >= tripDueAt();
@@ -3069,6 +3072,7 @@
     function reloadBusyReason() {
         if (sellRunning) return 'venda em andamento';
         if (tripRunning) return 'viagem à cidade em andamento';
+        if ((typeof healBusy === 'function' && healBusy())) return 'cura na Nurse Joy em andamento';
         if (huntSwitch) return 'troca de hunt em andamento';
         if (swapPending) return 'troca de líder em andamento';
         if (awaitingDetails.length) return 'captura aguardando detalhes';
@@ -3140,6 +3144,7 @@
             if (!slug) return;
             resumeHunt = null;
             if (lastFieldAt > 0) { logEvent('recarga-hunt', { slug, jaNaHunt: true }); return; }
+            if ((typeof healBusy === 'function' && healBusy())) { logEvent('recarga-hunt', { slug, cura: true }); return; }   // a cura volta para a hunt
             switchHunt(slug, 1, 'recarga');
         }, delayMs);
     }
@@ -3354,6 +3359,173 @@
         }
     }
 
+    // ---- Cura na Joy: o time caiu, a conta foi para a cidade -> curar e voltar para a hunt (v3.22.0) ----
+    // Levantado no bundle do cliente em 29/09/2026:
+    //   field               -> também traz `fainted`, `reviveInMs`, `noRevive`, `heroHp`, `heroMaxHp`. Com `fainted` a tela
+    //                          mostra "💀 <líder> desmaiou!" com contagem regressiva: "Reviver agora" (`field-revive`, gasta
+    //                          um Revive; o Auto-Revive do jogo faz isso sozinho) ou "Voltar para a cidade" (`leave-hunt`).
+    //                          `noRevive` = o time inteiro caiu (Nightmare World não aceita Revive).
+    //   field-teleport-city -> o servidor mandou a conta para a cidade (acabou o tempo sem Revive); a tela vai para
+    //                          Cerulean e manda `set-city`.
+    //   joy-heal            -> o botão da Nurse Joy ("Curar a equipe", de graça, cura o time todo). O cliente não espera
+    //                          resposta (só mostra "💊 Seus Pokémon foram curados!"); confirmamos pelo `hp` do líder no `pokes`.
+    //   Com o líder em hp 0 a tela recusa viajar para hunt ("Cure-o com a Nurse Joy ou use um Revive antes de ir caçar").
+    // Fluxo: queda confirmada (teleporte do servidor, "Voltar para a cidade" com o líder desmaiado ou líder em hp 0 fora de
+    // hunt) -> espera a tela chegar na cidade (set-city; sem ele em 10 s mandamos nós) -> "anda até a Joy" -> `joy-heal` ->
+    // `pokes-get` confere o hp -> `switchHunt(slug, 1, 'cura')`. Enquanto isso (`healBusy()`) a viagem, a rota de captura, a
+    // daily, o clã e a recarga não trocam de hunt. Proteção: 3 quedas na mesma hunt em 30 min = não volta mais para ela
+    // (a hunt está forte demais) e avisa.
+
+    const HEAL_CITY_WAIT_MS = 10 * 1000;
+    const HEAL_WALK_MS = [3000, 7000];       // "andar até a Joy"
+    const HEAL_CHECK_MS = 1500;              // joy-heal -> pokes-get
+    const HEAL_BEFORE_BACK_MS = [2000, 5000];
+    const HEAL_TRIES = 2;
+    const HEAL_DEATH_WINDOW_MS = 30 * 60 * 1000;
+    const HEAL_MAX_DEATHS = 3;
+
+    let faintSeen = null;           // { slug, at, noRevive } desde o 1º `field` com fainted; some se levantou (Revive)
+    let healRun = null;             // { slug, motivo, at, fase, tries, cityArrived, hpWait }
+    let healDeaths = [];            // [{ slug, at }] quedas recentes (proteção contra loop)
+    let healLast = null;            // { at, slug, ok, motivo } para o painel
+    let onHealChange = null;        // callback do painel
+
+    const healRnd = (par) => par[0] + Math.floor(Math.random() * (par[1] - par[0] + 1));
+    const healWait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    function healBusy() { return Boolean(healRun); }
+    function healNotify() { if (onHealChange) { try { onHealChange(); } catch { /* painel fechado */ } } }
+    function healIsHunt(slug) { const h = normalize(slug || ''); return Boolean(h) && !CITY_SLUGS.includes(h); }
+    function healStatus() {
+        if (!cfg.healJoyEnabled) return 'desligada';
+        if (healRun) return `${healRun.fase} (volta para ${healRun.slug || '—'})`;
+        if (faintSeen) return `líder desmaiado em ${faintSeen.slug || '?'}; esperando o Revive ou o teleporte para a cidade`;
+        if (!healLast) return 'pronta; nenhuma queda nesta sessão';
+        const hora = new Date(healLast.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        return `última queda ${hora} em ${healLast.slug || '?'}: ${healLast.ok ? 'curado e de volta ✔' : `✖ ${healLast.motivo}`}`;
+    }
+
+    // Cada frame `field`: só olha a transição do `fainted`.
+    function healOnField(message) {
+        const caiu = message.fainted === true;
+        if (caiu && !faintSeen) {
+            faintSeen = { slug: healIsHunt(huntSlug) ? normalize(huntSlug) : null, at: Date.now(), noRevive: Boolean(message.noRevive) };
+            logEvent('desmaio', { hunt: faintSeen.slug, noRevive: faintSeen.noRevive, reviveEmS: Math.round((Number(message.reviveInMs) || 0) / 1000), hp: message.heroHp ?? null });
+            healNotify();
+        } else if (!caiu && faintSeen) {                        // a tela trata `fainted` ausente como de pé
+            logEvent('desmaio-levantou', { hunt: faintSeen.slug, seg: Math.round((Date.now() - faintSeen.at) / 1000) });
+            faintSeen = null;
+            healNotify();
+        }
+    }
+    // O servidor teleportou para a cidade (o sintético da viagem já foi filtrado em handleGameMessage).
+    // A conta saiu da hunt no servidor, mas a tela não manda `leave-hunt`: zera a hunt atual aqui.
+    function healOnTeleport() {
+        const caiu = Boolean(faintSeen);
+        const slug = faintSeen?.slug || (healIsHunt(huntSlug) ? normalize(huntSlug) : null);
+        logEvent('teleporte-cidade', { desmaiado: caiu, hunt: slug });
+        healStart(caiu ? 'teleporte do servidor (líder desmaiado)' : 'teleporte do servidor', slug, caiu);
+        setHunt(null);
+    }
+    // O jogador (ou a tela) clicou "Voltar para a cidade" com o líder desmaiado.
+    function healOnLeave() { if (faintSeen && !healRun && !(typeof tripRunning !== 'undefined' && tripRunning)) healStart('"Voltar para a cidade" com o líder desmaiado', faintSeen.slug, true); }
+    function healOnSetCity() { if (healRun) healRun.cityArrived = true; }
+
+    function healLeader(list) {
+        const time = list.filter(p => p && p.team);
+        return time.find(p => p.leader) || time.sort((a, b) => (Number(a.slot) || 0) - (Number(b.slot) || 0))[0] || null;
+    }
+    // Frame `pokes`: confere a cura em andamento; fora dela, líder em hp 0 fora de hunt também é queda (ex.: recarga
+    // no meio da contagem, ou a tela recusou a hunt).
+    function healOnPokes(list) {
+        const lider = healLeader(list);
+        const hp = lider && lider.hp != null ? Number(lider.hp) : null;
+        if (healRun?.hpWait) { const r = healRun.hpWait; healRun.hpWait = null; r(hp); return; }
+        if (!cfg.healJoyEnabled || healRun || hp == null || hp > 0) return;
+        if (healIsHunt(huntSlug) || faintSeen) return;            // na hunt quem decide é o `field` (Revive/teleporte)
+        if (typeof tripRunning !== 'undefined' && tripRunning) return;
+        healStart('líder com hp 0 fora de hunt', null, true, true);
+    }
+    function healPokesHp() {
+        return new Promise(resolve => {
+            let feito = false;
+            const fim = (hp) => { if (!feito) { feito = true; resolve(hp); } };
+            healRun.hpWait = fim;
+            sendGame({ type: 'pokes-get' });
+            setTimeout(() => { if (healRun?.hpWait === fim) healRun.hpWait = null; fim(undefined); }, 8000);
+        });
+    }
+
+    // slug: hunt para onde voltar (sem ela, a última hunt vista); caiu: queda confirmada (senão foi só um teleporte);
+    // naCidade: a conta já está fora de hunt, não espera set-city.
+    function healStart(motivo, slugHint, caiu, naCidade) {
+        const noRevive = Boolean(faintSeen?.noRevive);
+        faintSeen = null;
+        if (!cfg.healJoyEnabled || healRun) return false;
+        const slug = (healIsHunt(slugHint) ? normalize(slugHint) : null) || (typeof lastRealHunt !== 'undefined' && healIsHunt(lastRealHunt) ? normalize(lastRealHunt) : null);
+        healRun = { slug, motivo, caiu: Boolean(caiu), at: Date.now(), fase: 'indo para a cidade', tries: 0, cityArrived: Boolean(naCidade), hpWait: null };
+        if (slug) healDeaths = healDeaths.filter(d => Date.now() - d.at < HEAL_DEATH_WINDOW_MS).concat([{ slug, at: Date.now() }]);
+        const quedas = slug ? healDeaths.filter(d => d.slug === slug).length : 0;
+        logEvent('cura', { fase: 'inicio', motivo, hunt: slug, quedas, noRevive });
+        healNotify();
+        healFlow(motivo, slug, quedas, noRevive);
+        return true;
+    }
+
+    async function healFlow(motivo, slug, quedas, noRevive) {
+        const who = playerName();
+        const conta = who ? `Conta: ${who}\n` : '';
+        let ok = false, erro = null, volta = null;
+        const caiu = healRun.caiu;
+        const oQue = caiu ? 'o time caiu' : 'a conta foi mandada para a cidade';
+        try {
+            // 1) a tela vai para a cidade sozinha (teleporte); se não mandar set-city, mandamos nós
+            const limite = Date.now() + HEAL_CITY_WAIT_MS;
+            while (!healRun.cityArrived && Date.now() < limite) await healWait(500);
+            if (!healRun.cityArrived) sendGame({ type: 'set-city', slug: 'cerulean' });
+            healRun.fase = 'indo até a Nurse Joy'; healNotify();
+            await healWait(healRnd(HEAL_WALK_MS));
+            // 2) Joy, conferindo o hp do líder
+            let hp;
+            for (healRun.tries = 1; healRun.tries <= HEAL_TRIES; healRun.tries++) {
+                sendGame({ type: 'joy-heal' });
+                await healWait(HEAL_CHECK_MS);
+                hp = await healPokesHp();
+                logEvent('cura', { fase: 'joy', tentativa: healRun.tries, hpLider: hp === undefined ? 'sem resposta' : hp });
+                if (hp === undefined || hp === null || hp > 0) break;   // sem `hp` no frame: não dá para conferir, segue
+            }
+            if (typeof hp === 'number' && hp <= 0) { erro = 'a Joy não curou (líder segue com hp 0)'; return; }
+            ok = true;
+            // 3) volta, a menos que a hunt esteja derrubando o time seguido
+            if (!slug) { erro = 'curado; não sei de que hunt veio, fica na cidade'; return; }
+            if (quedas >= HEAL_MAX_DEATHS) { erro = `curado, mas o time caiu ${quedas}x em ${slug} em 30 min: não volto para ela`; return; }
+            healRun.fase = 'voltando'; healNotify();
+            await healWait(healRnd(HEAL_BEFORE_BACK_MS));
+            volta = slug;
+            switchHunt(slug, 1, 'cura');
+        } catch (err) {
+            erro = String(err?.message || err);
+        } finally {
+            healLast = { at: Date.now(), slug, ok: ok && Boolean(volta), motivo: erro };
+            logEvent('cura', { fase: 'fim', ok, volta, erro, seg: Math.round((Date.now() - (healRun?.at || Date.now())) / 1000) });
+            healRun = null;
+            healNotify();
+            const primeira = quedas <= 1;
+            if (!ok || !volta) {
+                postWebhook('alert', {
+                    content: `💀 ${who ? `**${who}**` : 'Sua conta'}: ${oQue}${slug ? ` em **${slug}**` : ''} — ${erro || 'ficou na cidade'}`,
+                    username: 'Poke Idle World',
+                    embeds: [{ title: ok ? 'Curado na Joy, parado na cidade' : 'Cura na Joy falhou', description: conta + `Motivo da ida: ${motivo}${noRevive ? ' (time inteiro)' : ''}\n${ok ? 'Entre na hunt na mão quando quiser.' : 'Cure na Nurse Joy na mão e entre na hunt.'}\nEm ${new Date().toLocaleString('pt-BR')}`, color: 0xed4245 }],
+                }, { evento: 'cura', ok, slug });
+            } else if (primeira) {
+                postWebhook('alert', {
+                    content: `💀 ${who ? `**${who}**` : 'Sua conta'}: ${oQue} em **${slug}**; curado na Nurse Joy, voltando para a hunt`,
+                    username: 'Poke Idle World',
+                    embeds: [{ title: caiu ? 'Time caiu: cura na Joy' : 'Mandado para a cidade: cura na Joy', description: conta + `Motivo da ida: ${motivo}${noRevive ? ' (time inteiro)' : ''}\nSe cair ${HEAL_MAX_DEATHS}x em 30 min nessa hunt, fico na cidade e aviso.\nEm ${new Date().toLocaleString('pt-BR')}`, color: 0xfee75c }],
+                }, { evento: 'cura', ok, slug });
+            }
+        }
+    }
+
     // ---- Lógica principal -------------------------------------------
 
     function handleGameMessage(rawData) {
@@ -3377,13 +3549,15 @@
         if (message.type === 'poke-xp') { handlePokeXp(message); return; }
         if (message.type === 'field' || message.type === 'field-init') {
             lastFieldAt = Date.now();
+            if (message.type === 'field') healOnField(message);
             if (message.type === 'field-init' && message.slug && !huntSlug) setHunt(message.slug); // script carregou depois do enter-hunt
             return;
         }
+        if (message.type === 'field-teleport-city') { healOnTeleport(); return; }   // o sintético da viagem já saiu acima
         if (message.type === 'field-kill') { noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteDepositDrop(message); return; }
         if (message.type === 'inventory' && Array.isArray(message.items)) { clanOnInventory(message.items); supplyOnInventory(message.items); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
-        if (message.type === 'pokes' && Array.isArray(message.list)) { updateTeam(message.list); handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); return; }
+        if (message.type === 'pokes' && Array.isArray(message.list)) { updateTeam(message.list); healOnPokes(message.list); handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); return; }
 
         if (message.type !== 'catch-result') return;
 
@@ -3657,7 +3831,7 @@
             case 'avisos': return (d.webhookUrl || '').trim() ? 'on' : 'danger';
             case 'bolas': {
                 const min = Number(d.ballsMin) || 0;
-                if (!(min > 0 || d.autoBuy) && !supplyOn(d)) return 'off';
+                if (!(min > 0 || d.autoBuy) && !supplyOn(d) && !d.healJoyEnabled) return 'off';
                 if ((d.autoBuy && !min) || !temAlertas) return 'warn';
                 return 'on';
             }
@@ -3689,7 +3863,7 @@
         const st = Number(cfg.routeStage) || 0;
         return [
             `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
-            `Bolas: ${!((Number(d.ballsMin) || 0) > 0 || d.autoBuy) ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}${supplyOn(d) ? ` · refil: ${supplySlots(d).map(s => `${s.name} < ${s.min}`).join(', ')}` : ''}`,
+            `Bolas: ${!((Number(d.ballsMin) || 0) > 0 || d.autoBuy) ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}${supplyOn(d) ? ` · refil: ${supplySlots(d).map(s => `${s.name} < ${s.min}`).join(', ')}` : ''}${d.healJoyEnabled ? ' · Joy' : ''}`,
             `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades)` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
             `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? 'daily sozinha' : 'daily') : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
@@ -3791,6 +3965,11 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <div class="dn-status" id="pg-dn-${k.key}-status"></div>
                     </div>
 `).join('')}                    <p class="dn-help">Poções e revives: o script confere a mochila a cada 5 min; abaixo do limite (0 = quando acabar), pede viagem à cidade e compra no Mark. Na viagem do relógio, vão de carona se estiverem abaixo do limite. O aviso da compra vai para o canal de Alertas.</p>
+                    <div class="dn-section">
+                        <h3>💊 Nurse Joy <span class="spacer"></span><label class="dn-toggle"><input id="pg-dn-healjoy" type="checkbox"><span class="sw"></span>Curar e voltar para a hunt</label></h3>
+                        <div class="dn-status" id="pg-dn-healjoy-status"></div>
+                        <p class="dn-help">Quando o líder desmaia sem Revive (ou o time inteiro cai) o jogo manda a conta para a cidade. Com isto ligado o script cura o time na Nurse Joy (de graça) e volta para a hunt em que caiu. Se o Auto-Revive do jogo levantar o líder, nada muda. Caiu 3 vezes na mesma hunt em 30 min: fica na cidade e avisa (a hunt está forte demais). Avisos no canal de Alertas.</p>
+                    </div>
                 </section>
                 <section class="dn-pane" data-pane="venda" hidden>
                     <div class="dn-section dn-blk" id="pg-dn-blk-itens" data-blk="itens">
@@ -4074,6 +4253,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                     [k.min, Math.max(0, parseInt($(`#pg-dn-${k.key}-min`).value, 10) || 0)],
                     [k.qty, Math.min(BUY_MAX_QTY, Math.max(1, parseInt($(`#pg-dn-${k.key}-qty`).value, 10) || DEFAULTS[k.qty]))],
                 ])),
+                healJoyEnabled: $('#pg-dn-healjoy').checked,
                 mentionUserId: $('#pg-dn-mention').value.trim(),
                 cooldownSeconds: Math.max(0, parseInt($('#pg-dn-cooldown').value, 10) || 0),
                 debug: $('#pg-dn-debug').checked,
@@ -4169,6 +4349,14 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             }
         }
         onSupplyChange = () => { if (!panel.hidden) renderSupply(); };
+
+        // ---- Nurse Joy ----
+        function renderHeal() {
+            const d = current();
+            const txt = d.healJoyEnabled && !cfg.healJoyEnabled ? 'ligada ao salvar' : healStatus();
+            $('#pg-dn-healjoy-status').innerHTML = `<span>💊</span><span><span class="k">Cura:</span> ${escHtml(txt)}</span>`;
+        }
+        onHealChange = () => { if (!panel.hidden) renderHeal(); };
 
         // ---- Venda ----
         // Hunt vista na lista de venda ('' = a atual). Outra hunt = edita o perfil dela (cfg.sellProfiles[slug]); marcações
@@ -4655,7 +4843,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
 
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -4683,6 +4871,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 $(`#pg-dn-${k.key}-min`).value = Number(cfg[k.min]) || 0;
                 $(`#pg-dn-${k.key}-qty`).value = Number(cfg[k.qty]) || DEFAULTS[k.qty];
             }
+            $('#pg-dn-healjoy').checked = Boolean(cfg.healJoyEnabled);
             $('#pg-dn-sell').checked = Boolean(cfg.sellEnabled);
 
             $('#pg-dn-psell').checked = Boolean(cfg.pokeSellEnabled);
@@ -5020,6 +5209,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 cfg.notifyEveryCapture ? 'avisa toda captura' : `lista com ${(cfg.watchList || []).length}`,
                 `bolas ${cfg.autoBuy ? `compra ${cfg.autoBuyQty} abaixo de ${cfg.ballsMin || 1}` : (cfg.ballsMin ? `avisa abaixo de ${cfg.ballsMin}` : 'desligado')}`,
                 `refil ${supplyOn() ? supplySlots().map(s => `${s.name} < ${s.min}`).join(', ') : 'desligado'}`,
+                `Joy ${cfg.healJoyEnabled ? 'ligada' : 'desligada'}`,
                 `drops ${cfg.sellEnabled ? 'ligado' : 'desligado'}, listas de ${Object.keys(cfg.sellProfiles || {}).length} hunts (${perfisVindos.length} vieram${soDaqui.length ? `, ${soDaqui.length} já eram daqui e ficaram` : ''})`,
                 `Pokémon ${cfg.pokeSellEnabled ? 'ligado' : 'desligado'}, ${Object.keys(cfg.pokeSellLimits || {}).length} raridades com limite`,
                 `viagem ${cfg.tripEveryMin}${cfg.tripEveryMaxMin > cfg.tripEveryMin ? `–${cfg.tripEveryMaxMin}` : ''} min (${cfg.tripCity})`,
@@ -5065,6 +5255,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
         '| alerta bolas:', effectiveBallsMin() ? `${cfg.ballsWatch} < ${effectiveBallsMin()}` : 'desligado',
         '| compra auto:', cfg.autoBuy ? `${cfg.autoBuyQty} un.` : 'não',
         '| refil:', supplyOn() ? supplySlots().map(s => `${s.name} < ${s.min} (+${s.qty})`).join(', ') : 'não',
+        '| Joy:', cfg.healJoyEnabled ? 'cura e volta' : 'não',
         '| nível:', levelEnabled() ? `${levelTarget()}${swapEnabled() ? ' + troca' : ''}` : 'não',
         '| rota:', routeActive() ? routeStatus() : 'não',
         '| captura:', cfg.catchRouteEnabled ? `${catchAreas().join('+')}${cfg.catchRouteMaxLevel ? ` até lv ${cfg.catchRouteMaxLevel}` : ''}${cfg.catchRouteAuto ? ' + bola' : ''}` : 'não',

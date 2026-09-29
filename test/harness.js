@@ -529,4 +529,59 @@ function loadSupplyModule(cfg, init) {
     return { api, state, cfg };
 }
 
-module.exports = { loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+// Extrai o módulo "Cura na Joy" (v3.22.0) e o executa com stubs. Timers rodam na hora avançando o relógio falso (a espera
+// pelo set-city vira 20 voltas de 500 ms; `state.onSleep` roda a cada espera, o teste usa para simular a tela). O
+// `pokes-get` responde na hora com o hp do líder tirado de `init.pokesHp` (vazio = sem resposta; null = frame sem hp).
+const H_START = '    // ---- Cura na Joy';
+const H_END = '    // ---- Lógica principal';
+
+function loadHealModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(H_START), b = src.indexOf(H_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo da cura não encontrados no script');
+    const mod = src.slice(a, b);
+    const clock = { now: Date.now() };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const state = { sent: [], switches: [], logs: [], hooks: [], hunts: [], onSleep: null, cityDone: false };
+    const hpQueue = Array.isArray(init.pokesHp) ? init.pokesHp.slice() : [];
+    const box = {};
+    const ctx = {
+        cfg,
+        sendGame: (o) => {
+            state.sent.push(o);
+            if (o.type === 'pokes-get' && hpQueue.length) {
+                const hp = hpQueue.shift();
+                box.api.onPokes([{ id: 'a', team: true, leader: true, slot: 0, hp: hp == null ? undefined : hp }]);
+            }
+            return true;
+        },
+        switchHunt: (slug, tentativa, origem) => state.switches.push({ slug, tentativa, origem }),
+        setHunt: (slug) => { state.hunts.push(slug); box.setSlug(slug); },
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', title: p.embeds?.[0]?.title || '', meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        normalize: (v) => String(v || '').toLowerCase().trim(),
+        CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'],
+        huntSlug: init.huntSlug != null ? init.huntSlug : null,
+        lastRealHunt: init.lastRealHunt || null,
+        tripRunning: Boolean(init.tripRunning),
+        setTimeout: (fn, ms) => { clock.now += ms || 0; if (state.onSleep) state.onSleep(); fn(); return 1; },
+        Date: FakeDate,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            api: {
+                onField: healOnField, onTeleport: healOnTeleport, onLeave: healOnLeave, onSetCity: healOnSetCity, onPokes: healOnPokes,
+                busy: healBusy, status: healStatus, start: healStart,
+                setHunt(slug) { huntSlug = slug; if (slug) lastRealHunt = slug; },
+                flush: () => new Promise(r => setImmediate(r)),
+            },
+            setSlug(slug) { huntSlug = slug; },
+        };`);
+    const out = factory(...Object.values(ctx));
+    box.api = out.api; box.setSlug = out.setSlug;
+    return { api: out.api, state, cfg, clock };
+}
+
+module.exports = { loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

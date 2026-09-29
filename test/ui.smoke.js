@@ -191,6 +191,18 @@ setTimeout(() => {
         log('refil: ' + heal + ' | ' + rev + ' | faixa=' + $('#pg-dn-trip-sub').textContent);
         if (!/Hyper Potion: 12 na mochila.*abaixo do limite/.test(heal) || !/Revive: 30 na mochila/.test(rev) || /abaixo/.test(rev)) throw new Error('status do refil errado');
         if (!$('#pg-dn-trip').classList.contains('busy') && !/comprar 200 Hyper Potion/.test($('#pg-dn-trip-sub').textContent)) throw new Error('faixa da viagem sem o refil');
+        // ---- cura na Joy (v3.22.0): liga, salva, o líder desmaia e o servidor manda para a cidade ----
+        $('#pg-dn-healjoy').checked = true; fire($('#pg-dn-healjoy'), 'change');
+        if (!/ligada ao salvar/.test($('#pg-dn-healjoy-status').textContent)) throw new Error('status da Joy antes de salvar: ' + $('#pg-dn-healjoy-status').textContent);
+        $('#pg-dn-save').click();
+        if (!JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg')).healJoyEnabled) throw new Error('Joy não salvou');
+        recv({ type: 'field', fainted: true, reviveInMs: 9000, noRevive: false, heroHp: 0, heroMaxHp: 120 });
+        if (!/desmaiado/.test($('#pg-dn-healjoy-status').textContent)) throw new Error('status sem o desmaio: ' + $('#pg-dn-healjoy-status').textContent);
+        recv({ type: 'field-teleport-city' });
+        const joy = $('#pg-dn-healjoy-status').textContent;
+        const kindsJoy = JSON.parse(window.localStorage.getItem('pgDiscordNotifyLog') || '[]').map(e => e.kind);
+        log('joy: ' + joy + ' | log=' + kindsJoy.filter(k => ['desmaio', 'teleporte-cidade', 'cura'].includes(k)).join(','));
+        if (!/indo para a cidade/.test(joy) || !kindsJoy.includes('cura')) throw new Error('cura não começou');
         panel.querySelector('.dn-tab[data-tab=sistema]').click(); log('socket=' + $('#pg-dn-socket').textContent);
         log('enviados=' + ws.sent.map(x => JSON.parse(x).type).join(','));
         // ---- importar rota do PIW Tools (texto colado da aba Rota otimizada) ----

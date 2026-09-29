@@ -39,8 +39,8 @@ Confirmados no bundle. Os marcados com ✔ já são usados ou interceptados pelo
 | `poke-summon` ✔ | `pokeId` | torna o Pokémon do time o líder (botão ⚔ do painel de time; o HUD bloqueia durante boss) |
 | `poke-store` | `pokeId` | manda do time para o box (starter não pode) |
 | `poke-withdraw` | `pokeId` | traz do box para o time (máx. 6; recusa se estiver anunciado em trade) |
-| `field-get`, `field-revive` | — | estado do campo; reviver após faint |
-| `joy-heal` | — | cura na Joy (responde `joy-healed`) |
+| `field-get`, `field-revive` | — | estado do campo; reviver após faint (gasta um Revive; botão "Reviver agora" da tela de desmaio) |
+| `joy-heal` ✔ | — | cura o time todo na Nurse Joy, de graça (botão da NPC; o cliente não registra resposta — confirmar pelo `hp` no `pokes`) |
 | `use-heal`, `use-candy`, `use-berry`, `use-borage`, `use-addon`, `use-tm`, `use-held` | item/poke | usar itens (respondem `*-used`) |
 | `set-city`, `sleep-mode` | — | cidade; modo dormir (`sleep-ok`) |
 | `autohelper-get`, `autohelper-refresh`, `analyzer-get`, `analyzer-clear`, `boosts-refresh`, `badge-refresh` | — | painéis auxiliares |
@@ -110,7 +110,8 @@ e `error { message }` (resposta de ação recusada; o script os trata em `handle
 ## Ideias que esses nomes destravam
 
 - `field-none` / `hunt-cooldown` / `hunt-resume`: detectar hunt parada e religar (auto-reconnect).
-- `field-revive`, `joy-heal`, `use-heal`: cura/revive automático quando o líder desmaia.
+- ~~`joy-heal`: cura quando o time cai~~ feito na v3.22.0 (Cura na Joy). Desmaio: `field { fainted, reviveInMs, noRevive,
+  heroHp, heroMaxHp }`; sem Revive, `field-teleport-city` no fim da contagem. `use-heal` (poção na mão) segue sem uso.
 - `poke-store` / `poke-withdraw`: rotação de time direto do box (a rota hoje só troca entre os 6 do time).
 - `shiny-global`, `gym-global`: alertas globais do servidor.
 - `fishing-levelup`, `profession-*`: profissões.
