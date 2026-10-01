@@ -177,6 +177,14 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   nível e entra via `switchHunt(slug, 1, 'daily-ida')`; origem e líder em `localStorage.pgDiscordNotifyDaily`
   (`dailyRun`); na meta devolve o líder (`dailyRestoreLeader`) e volta para `dailyRun.from`. `dailyHoldsLeader()` pausa
   `checkLeaderLevel` enquanto a ida vale (guardado com `typeof`, porque o harness do nível não tem o módulo da daily).
+- Daily Gift (v3.24.0, aba Treino → 🎁 Daily Gift, `cfg.giftEnabled` + `cfg.giftCenterMode` 'daily'|'all'|''; módulo
+  `// ---- Daily Gift` entre a Daily Kill e o Clã; bundle em 30/09/2026, campos ainda não vistos no log): calendário de 28 dias
+  por REST: `GET /api/game/daily` → `{ canClaim, claimedToday, blockedByVip, nextDay, total, rewards[{ day, label, qty, tag,
+  claimed, current, locked }] }`; `POST /api/game/daily {}` → estado + `claimed:{ label }`. O presente cai no Gift Center
+  (correio): `GET /api/game/gifts` → `{ gifts[{ id, label, icon, grantedBy }] }` e `POST /api/game/gifts/{id}/claim {}` →
+  `{ granted }`. `giftTick` a cada 1 min relê a cada 30 min (5 min enquanto não liberou), resgata e entrega pelo Gift Center
+  o do dia (mesmo `label`) ou tudo; '' = deixa no correio (boosts começam a contar na entrega). Aviso em `alert`;
+  logs `gift`, `gift-resgate`, `gift-center`, `gift-erro`. Teste: `node test/gift.test.js` (`loadGiftModule`).
 - Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
   `guardar` no fim de toda viagem; drops → Depot (`POST /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou
   família (`family-action item`); Pokémon não vendidos → só família (o box JÁ é o Depot comum de Pokémon). Lista escolhida
@@ -311,7 +319,8 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
   `node test/dailyauto.test.js` (daily sozinha, mesmo `loadDailyModule` com `init.team`/`init.huntCatalog`/`init.store`) e
   `node test/balls.test.js` (`loadBallsModule`: módulo de bolas + `checkBallStock`), `node test/supply.test.js`
   (`loadSupplyModule`: `// ---- Refil de poções e revives` até `// ---- Venda automática de drops`), `node test/heal.test.js`
-  (`loadHealModule`: `// ---- Cura na Joy` até `// ---- Volta da cidade`), `node test/idle.test.js` (`loadIdleModule`:
+  (`loadHealModule`: `// ---- Cura na Joy` até `// ---- Volta da cidade`), `node test/gift.test.js` (`loadGiftModule`:
+  `// ---- Daily Gift` até `// ---- Clã: subir de rank`), `node test/idle.test.js` (`loadIdleModule`:
   `// ---- Volta da cidade` até `// ---- Lógica principal`; estado dos outros módulos em `init.env`) e `node test/trip.test.js`
   (`loadTripModule`: `// ---- Viagem à cidade` até `// ---- Recarga automática do painel`; timers avançam o relógio falso).
   `test/harness.js` recorta módulos do userscript pelos marcadores (`loadLevelModule`: `// ---- Alerta de nível do

@@ -597,6 +597,29 @@ confirmar = desiste e avisa; rearma no próximo frame de hunt. Webhook de alerta
 
 ---
 
+## ✅ 28. Daily Gift: resgatar o presente do dia e entregar pelo Gift Center (v3.24.0)
+
+**O que faz (aba Treino → 🎁 Daily Gift, `cfg.giftEnabled`, `cfg.giftCenterMode`):** pedido do usuário ("recuperar os daily
+gift"). O 🎁 do menu do jogo é um calendário de 28 dias com um presente por dia; resgatado, o presente cai no Gift Center
+(correio) e precisa de um segundo resgate. O script faz os dois.
+
+**Mensagens (REST, levantadas no bundle em 30/09/2026):** `GET /api/game/daily` → `{ canClaim, claimedToday, blockedByVip,
+nextDay, total, rewards[{ day, label, qty, icon, tag, claimed, current, locked }] }`; `POST /api/game/daily {}` → estado +
+`claimed:{ label }`; `GET /api/game/gifts` → `{ gifts[{ id, label, icon, grantedBy }] }`; `POST /api/game/gifts/{id}/claim {}`
+→ `{ granted }`.
+
+**Lógica (módulo `// ---- Daily Gift`, entre a Daily Kill e o Clã):** tique de 1 min; relê o calendário a cada 30 min (5 min
+enquanto não resgatou hoje e o jogo não disse por quê); `canClaim` → `POST /daily`; depois, no Gift Center, entrega o presente
+com o mesmo rótulo (padrão), tudo que houver (`'all'`, a cada leitura) ou nada (`''`, o usuário resgata no correio). Boosts
+começam a contar na entrega — por isso o padrão é só o do dia. Resgate que falhou tenta de novo em 30 min. Webhook de
+alertas por resgate (presente, dia N/28, o que o Gift Center entregou). Logs `gift`, `gift-resgate`, `gift-center`,
+`gift-erro`. Status no painel (dia, presente do dia, resgatado hoje, só VIP, concluído, quantos sobraram no Gift Center).
+
+**Pendente:** confirmar no log o texto de `granted` e se o rótulo do Gift Center bate com o do calendário (senão o log
+`gift-center` mostra `esperado` × `la`). Teste: `node test/gift.test.js` e passo no smoke.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

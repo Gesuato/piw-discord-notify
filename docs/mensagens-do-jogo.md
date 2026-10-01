@@ -86,7 +86,13 @@ e `error { message }` (resposta de ação recusada; o script os trata em `handle
   totalXp, level, leveledUp, items:[{ label }] } }`. Usado pelo script em `dailyTick`/`handleDailyState` (v3.8.0); `/pick` pela daily sozinha (`dailyAutoPick`, v3.16.0).
   `GET /api/game/daily-catch` (Daily Catch: capturas premiadas por faixa, `tiers[]`) e `GET /api/game/dailys-summary`
   → `{ tasks:{ ready }, kill:{ locked, claimed, picked, qty, have }, catch:{ used, total } }` existem, não usados.
-  `GET /api/game/daily` é o Daily Gift (calendário de 28 dias), outra coisa.
+  `GET /api/game/daily` é o Daily Gift (calendário de 28 dias), outra coisa — ver abaixo.
+- Daily Gift (🎁 do menu; levantado em 30/09/2026; usado pelo módulo Daily Gift, v3.24.0): `GET /api/game/daily` → `{ canClaim,
+  claimedToday, blockedByVip, nextDay, total, rewards:[{ day, label, qty, icon, tag, claimed, current, locked }] }`;
+  `POST /api/game/daily {}` → o mesmo estado + `claimed:{ label }`. O presente NÃO vai para a mochila: cai no Gift Center (janela
+  de mensagens/correio, `GET /api/game/gifts` → `{ gifts:[{ id, label, icon, grantedBy }] }`) e precisa de
+  `POST /api/game/gifts/{id}/claim {}` → `{ granted }` (texto) para chegar à conta; a tela dispara `pw:boosts-changed`, ou seja,
+  presentes podem ser boosts (começam a contar no claim). A janela repete o GET do Gift Center a cada 8 s enquanto aberta.
 - Clãs (janela "Clãs", levantado em 27/09/2026; usado pelo módulo Clã, v3.17.0): `GET /api/game/clans` → `{ clan,
   clanRank, level, diamonds, canJoin, joinLevel, nextTask:{ rank, name, level, levelOk, items:[{ itemId, name, icon, have,
   need }], caught:[{ speciesId, name, have, need }], kills:[{ type, have, need }], rewardXp, ok, goldOk, goldCost } | null }`;

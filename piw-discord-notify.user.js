@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.23.0
+// @version      3.24.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.23.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.24.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -74,6 +74,8 @@
         dailyClaim: true,       // ...e resgatar a recompensa sozinho (POST /api/game/daily-kill/claim)
         dailyReturnSlug: '',    // hunt fixa para voltar; vazio = etapa da rota, senão a hunt anterior à daily
         dailyAuto: false,       // v3.16.0: fazer a daily sozinho (escolhe missão e Pokémon do time, vai e volta)
+        giftEnabled: false,     // v3.24.0 Daily Gift: resgatar o presente do dia (calendário de 28 dias) sozinho
+        giftCenterMode: 'daily', // ...e no Gift Center (correio): 'daily' = entregar só o do dia | 'all' = tudo que aparecer | '' = não mexer
         clanEnabled: false,     // v3.17.0 Clã (aba Profissão): acompanhar a tarefa de rank, guardar os itens base, converter na viagem
         clanKey: 'orebound',    // clã em que o script entra sozinho se a conta não tiver nenhum (1ª entrada é grátis)
         clanRankup: true,       // ...subir de rank sozinho quando a tarefa fechar (na viagem à cidade)
@@ -2130,6 +2132,170 @@
         }, { evento: 'daily-pronta', missao: d.name, volta: volta ? dest : null });
     }
 
+    // ---- Daily Gift: resgatar o presente do dia (calendário de 28 dias) e entregar pelo Gift Center (v3.24.0) ----
+    // O "Daily Gift" (🎁 do menu do jogo) é um calendário de 28 dias: um presente por dia, resgatado na mão. Não passa
+    // pelo socket — a janela consulta por REST (levantado no bundle em 30/09/2026):
+    //   GET  /api/game/daily    -> { canClaim, claimedToday, blockedByVip, nextDay, total, rewards:[{ day, label, qty, icon,
+    //                                tag, claimed, current, locked }] }
+    //   POST /api/game/daily {} -> o mesmo estado + claimed:{ label }. O presente NÃO vai para a mochila: cai no Gift Center
+    //                              (correio 🎁), onde precisa de um 2º resgate para chegar à conta:
+    //   GET  /api/game/gifts    -> { gifts:[{ id, label, icon, grantedBy }] }
+    //   POST /api/game/gifts/{id}/claim {} -> { granted }
+    // Fluxo: tique de 1 min; relê o calendário a cada 30 min (5 min enquanto não resgatou hoje e o jogo não disse por quê:
+    // o dia pode virar), resgata quando `canClaim` e, no Gift Center, entrega o presente do dia (mesmo rótulo) ou tudo que
+    // houver, conforme `cfg.giftCenterMode` ('daily' | 'all' | ''). Um aviso no canal de Alertas por resgate. Resgate que
+    // falhou é tentado de novo em 30 min. Boosts entregues pelo Gift Center começam a contar na hora — por isso "tudo" é
+    // opcional e o padrão é só o do dia.
+
+    const GIFT_URL = '/api/game/daily';
+    const GIFT_CENTER_URL = '/api/game/gifts';
+    const GIFT_TICK_MS = 60 * 1000;
+    const GIFT_POLL_MS = 30 * 60 * 1000;        // já resgatado hoje, bloqueado ou concluído: relê de meia em meia hora
+    const GIFT_POLL_SHORT_MS = 5 * 60 * 1000;   // ainda não resgatado e sem motivo: o dia pode ter virado
+    const GIFT_RETRY_MS = 30 * 60 * 1000;       // espera depois de um erro no resgate
+
+    let gift = null;                 // último estado lido (ver parseGift)
+    let giftFetchedAt = 0;
+    let giftBusy = false;
+    let giftFailedAt = 0;
+    let giftTimer = null;
+    let giftLast = null;             // { day, label, qty, tag, granted:[], at } do último resgate desta carga (status do painel)
+    let giftCenterCount = null;      // quantos presentes sobraram no Gift Center na última leitura (null = não lido)
+    let giftSig = '';
+    let onGiftChange = null;         // callback do painel para redesenhar o status
+
+    function giftEnabled() { return Boolean(cfg.giftEnabled); }
+    function giftCenterMode(d) { d = d || cfg; return ['daily', 'all', ''].includes(d.giftCenterMode) ? d.giftCenterMode : 'daily'; }
+
+    function parseGift(s) {
+        const rewards = Array.isArray(s?.rewards) ? s.rewards : [];
+        const total = Math.max(0, Number(s?.total) || rewards.length);
+        const nextDay = Math.max(0, Number(s?.nextDay) || 0);
+        const hoje = rewards.find(r => r?.current) || rewards.find(r => Number(r?.day) === nextDay) || null;
+        return {
+            canClaim: Boolean(s?.canClaim),
+            claimedToday: Boolean(s?.claimedToday),
+            blockedByVip: Boolean(s?.blockedByVip),
+            nextDay, total,
+            done: total > 0 && nextDay > total,
+            label: hoje?.label ? String(hoje.label) : null,
+            qty: Math.max(0, Number(hoje?.qty) || 0),
+            tag: hoje?.tag ? String(hoje.tag) : null,
+            claimedDays: rewards.filter(r => r?.claimed).length,
+        };
+    }
+    function giftRewardText(g) { return g?.label ? `${g.label}${g.qty > 1 ? ` ×${fmtNum(g.qty)}` : ''}` : 'presente do dia'; }
+    function giftStatus(d) {
+        d = d || cfg;
+        if (!d.giftEnabled) return 'desligado';
+        if (!gift) return giftFetchedAt ? 'não consegui ler o calendário (veja o log)' : 'ainda não lido';
+        const dia = `dia ${fmtNum(Math.min(gift.nextDay, gift.total) || gift.nextDay)}/${fmtNum(gift.total)}`;
+        const centro = giftCenterCount ? ` · ${fmtNum(giftCenterCount)} no Gift Center` : '';
+        if (giftBusy) return `${dia} · resgatando…`;
+        if (gift.done) return `calendário concluído (${fmtNum(gift.total)} dias)${centro}`;
+        if (gift.claimedToday) return `${dia} · resgatado hoje${giftLast ? `: ${giftRewardText(giftLast)}` : ''}${centro}`;
+        if (gift.blockedByVip) return `${dia} · ${giftRewardText(gift)} só para VIP${centro}`;
+        if (gift.canClaim) return `${dia} · ${giftRewardText(gift)} pronto para resgatar${giftFailedAt ? ' (o resgate falhou, tento de novo em 30 min)' : ''}${centro}`;
+        return `${dia} · ainda não liberado hoje${centro}`;
+    }
+    function scheduleGiftCheck(ms) {
+        if (!giftEnabled()) return;
+        clearTimeout(giftTimer);
+        giftTimer = setTimeout(() => { giftTimer = null; giftTick(true); }, ms);
+    }
+    function giftTick(force) {
+        if (!giftEnabled() || giftBusy) return;
+        const gap = gift && !gift.claimedToday && !gift.blockedByVip && !gift.done ? GIFT_POLL_SHORT_MS : GIFT_POLL_MS;
+        if (!force && giftFetchedAt && Date.now() - giftFetchedAt < gap) return;
+        return giftRun();
+    }
+    async function giftRun() {
+        giftBusy = true;
+        try {
+            gift = parseGift(await gameApi(GIFT_URL));
+            const sig = JSON.stringify([gift.nextDay, gift.canClaim, gift.claimedToday, gift.blockedByVip, gift.done]);
+            if (sig !== giftSig) {
+                giftSig = sig;
+                logEvent('gift', { dia: gift.nextDay, total: gift.total, presente: gift.label, qty: gift.qty, pronto: gift.canClaim, resgatadoHoje: gift.claimedToday, vip: gift.blockedByVip, concluido: gift.done });
+            }
+            let resgatado = null;
+            if (gift.canClaim && (!giftFailedAt || Date.now() - giftFailedAt >= GIFT_RETRY_MS)) {
+                const antes = gift;
+                try {
+                    const r = await gameApi(GIFT_URL, { method: 'POST', body: '{}' });
+                    const label = r?.claimed?.label ? String(r.claimed.label) : antes.label;
+                    gift = Object.assign(parseGift(r), { claimedToday: true, canClaim: false });
+                    resgatado = { day: antes.nextDay, label, qty: antes.qty, tag: antes.tag, granted: [], at: Date.now() };
+                    giftFailedAt = 0;
+                    logEvent('gift-resgate', { dia: antes.nextDay, presente: label, qty: antes.qty });
+                } catch (err) {
+                    giftFailedAt = Date.now();
+                    logEvent('gift-erro', { etapa: 'resgate', dia: antes.nextDay, erro: String(err?.message || err) });
+                }
+            }
+            const modo = giftCenterMode();
+            if (modo && (resgatado || modo === 'all')) {
+                const granted = await giftCenterSweep(modo === 'all' ? null : (resgatado?.label || null));
+                if (resgatado) resgatado.granted = granted;
+                else if (granted.length) giftNotify(null, granted);
+            }
+            if (resgatado) { giftLast = resgatado; giftNotify(resgatado, resgatado.granted); }
+        } catch (err) {
+            logEvent('gift-erro', { etapa: 'leitura', erro: String(err?.message || err) });
+        } finally {
+            giftFetchedAt = Date.now();
+            giftBusy = false;
+            if (onGiftChange) { try { onGiftChange(); } catch { /* painel fechado */ } }
+        }
+    }
+    // Entrega o que está no Gift Center: tudo (`label` null) ou só os presentes com o rótulo dado (o do dia). Devolve o que
+    // o jogo disse ter entregado (`granted`, um texto por presente).
+    async function giftCenterSweep(label) {
+        const granted = [];
+        let lista;
+        try {
+            const r = await gameApi(GIFT_CENTER_URL);
+            lista = Array.isArray(r?.gifts) ? r.gifts : [];
+        } catch (err) {
+            logEvent('gift-erro', { etapa: 'gift-center', erro: String(err?.message || err) });
+            return granted;
+        }
+        const alvo = label ? lista.filter(g => normalize(g?.label) === normalize(label)) : lista;
+        if (label && !alvo.length) logEvent('gift-center', { aviso: 'o presente do dia não apareceu no Gift Center', esperado: label, la: lista.map(g => g?.label) });
+        for (const g of alvo) {
+            if (!g?.id) continue;
+            try {
+                const r = await gameApi(`${GIFT_CENTER_URL}/${encodeURIComponent(g.id)}/claim`, { method: 'POST', body: '{}' });
+                granted.push(r?.granted ? String(r.granted) : String(g.label || 'presente'));
+            } catch (err) {
+                logEvent('gift-erro', { etapa: 'gift-center-claim', id: g.id, presente: g.label, erro: String(err?.message || err) });
+            }
+        }
+        giftCenterCount = Math.max(0, lista.length - granted.length);
+        if (alvo.length) logEvent('gift-center', { modo: label ? 'dia' : 'tudo', entregues: granted, restantes: giftCenterCount });
+        return granted;
+    }
+    function giftNotify(resgatado, granted) {
+        const who = playerName();
+        const mention = cfg.mentionUserId ? `<@${cfg.mentionUserId}> ` : '';
+        const n = granted.length;
+        const dia = resgatado ? `dia ${fmtNum(resgatado.day)}/${fmtNum(gift?.total || 28)}` : null;
+        const presente = resgatado ? giftRewardText(resgatado) : null;
+        const entregue = n ? `Entregue pelo Gift Center: ${granted.join(' · ')}`
+            : !resgatado ? ''
+            : giftCenterMode() ? 'Não consegui entregar pelo Gift Center: resgate no jogo, no correio 🎁 (veja o log)'
+            : 'Ficou no Gift Center: resgate no jogo, no correio 🎁';
+        postWebhook('alert', {
+            content: `${mention}🎁 ${who ? `**${who}**` : 'Sua conta'} ${resgatado ? `resgatou o Daily Gift do ${dia}: **${presente}**` : `recebeu ${n} presente${n > 1 ? 's' : ''} do Gift Center`}`,
+            username: 'Poke Idle World',
+            embeds: [{
+                title: resgatado ? `Daily Gift resgatado: ${presente}` : `Gift Center: ${n} presente${n > 1 ? 's' : ''} entregue${n > 1 ? 's' : ''}`,
+                description: (who ? `Conta: ${who}\n` : '') + (resgatado ? `Calendário: ${dia}${resgatado.tag ? ` (${resgatado.tag})` : ''}\nPresente: ${presente}\n` : '') + (entregue ? `${entregue}\n` : '') + `Em ${new Date().toLocaleString('pt-BR')}`,
+                color: n || !resgatado ? 0x57f287 : 0xfee75c,
+            }],
+        }, { evento: resgatado ? 'gift-resgate' : 'gift-center', dia: resgatado ? resgatado.day : null, presente, entregues: granted });
+    }
+
     // ---- Clã: subir de rank sozinho (Orebound e os outros 9) ------------------------
     // Levantado no bundle em 27/09/2026 (janela "Clãs" e mochila) e na pokepedia (systems/clans):
     //   GET  /api/game/clans -> { clan, clanRank, level, diamonds, canJoin, joinLevel, nextTask } ; nextTask (null = rank
@@ -4021,10 +4187,10 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             }
             case 'treino': {
                 const nivel = d.routeEnabled || (Number(d.levelAlertAt) || 0) > 0;
-                if (!(nivel || d.dailyEnabled)) return 'off';
+                if (!(nivel || d.dailyEnabled || d.giftEnabled)) return 'off';
                 if (d.routeEnabled && (!rota.length || (Number(cfg.routeStage) || 0) >= rota.length)) return 'warn';
                 if (nivel && !(d.webhookLevel || '').trim()) return 'warn';
-                if ((d.routeEnabled || d.dailyEnabled) && !temAlertas) return 'warn'; // troca de hunt e daily avisam em Alertas
+                if ((d.routeEnabled || d.dailyEnabled || d.giftEnabled) && !temAlertas) return 'warn'; // troca de hunt, daily e gift avisam em Alertas
                 return 'on';
             }
             case 'profissao':
@@ -4041,7 +4207,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
             `Bolas: ${!((Number(d.ballsMin) || 0) > 0 || d.autoBuy) ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}${supplyOn(d) ? ` · refil: ${supplySlots(d).map(s => `${s.name} < ${s.min}`).join(', ')}` : ''}${d.healJoyEnabled ? ' · Joy' : ''}${d.cityIdleEnabled ? ` · volta da cidade ${Number(d.cityIdleMin) || IDLE_MIN_DEFAULT} min` : ''}`,
             `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades)` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
-            `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? 'daily sozinha' : 'daily') : ''].filter(Boolean).join(' + ') || 'desligado'}`,
+            `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? 'daily sozinha' : 'daily') : '', d.giftEnabled ? 'gift' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
         ].join(' · ');
@@ -4236,6 +4402,13 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <p class="dn-help">Escolha a missão em Dailys e entre na hunt do Pokémon no jogo. Quando a meta bater, o script resgata (se marcado), sai da hunt e volta. Com "Fazer a daily sozinho", o script escolhe a missão (se você não escolheu), põe de líder o Pokémon do time com mais vantagem de tipo contra ela (tabela do jogo × nível), entra na hunt e, no fim, devolve o líder e volta. Aviso no canal de Alertas.</p>
                         <div class="dn-status"><span>⚔️</span><span id="pg-dn-daily-status"></span></div>
                     </div>
+                    <div class="dn-section">
+                        <h3>Daily Gift</h3>
+                        <label class="dn-toggle"><input id="pg-dn-gift" type="checkbox"><span class="sw"></span>Resgatar o presente do dia sozinho <span class="dn-hint">(calendário de 28 dias)</span></label>
+                        <label class="dn-field"><span>No Gift Center</span><select id="pg-dn-gift-center" class="dn-select"><option value="daily">entregar só o presente do dia</option><option value="all">entregar tudo que aparecer</option><option value="">não mexer (eu resgato no correio)</option></select></label>
+                        <p class="dn-help">O jogo libera um presente por dia; resgatado, ele cai no Gift Center (correio 🎁) e precisa de um segundo resgate para chegar à conta. O script lê o calendário a cada 30 min, resgata o do dia e entrega pelo Gift Center conforme a opção acima. Boosts começam a contar na hora em que são entregues. Aviso no canal de Alertas.</p>
+                        <div class="dn-status"><span>🎁</span><span id="pg-dn-gift-status"></span></div>
+                    </div>
                 </section>
                 <section class="dn-pane" data-pane="profissao" hidden>
                     <div class="dn-section">
@@ -4408,6 +4581,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 dailyEnabled: $('#pg-dn-daily').checked,
                 dailyClaim: $('#pg-dn-daily-claim').checked,
                 dailyAuto: $('#pg-dn-daily-auto').checked,
+                giftEnabled: $('#pg-dn-gift').checked,
+                giftCenterMode: ['daily', 'all', ''].includes($('#pg-dn-gift-center').value) ? $('#pg-dn-gift-center').value : 'daily',
                 clanEnabled: $('#pg-dn-clan').checked,
                 depositItems: $('#pg-dn-dep-items').value || '',
                 depositPokes: $('#pg-dn-dep-pokes').value || '',
@@ -4726,6 +4901,11 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-daily-status').textContent = d.dailyEnabled ? `Daily: ${dailyStatus(d)}` : 'Daily desligada';
         }
         onDailyChange = () => { if (!panel.hidden) renderDaily(); };
+        function renderGift() {
+            const d = current();
+            $('#pg-dn-gift-status').textContent = d.giftEnabled ? `Daily Gift: ${giftStatus(d)}` : 'Daily Gift desligado';
+        }
+        onGiftChange = () => { if (!panel.hidden) renderGift(); };
         $('#pg-dn-team-refresh').onclick = () => {
             lastPokesReqAt = 0;
             const ok = sendGame({ type: 'pokes-get' });
@@ -5033,7 +5213,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
 
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -5089,6 +5269,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-daily').checked = Boolean(cfg.dailyEnabled);
             $('#pg-dn-daily-claim').checked = cfg.dailyClaim !== false;
             $('#pg-dn-daily-auto').checked = Boolean(cfg.dailyAuto);
+            $('#pg-dn-gift').checked = Boolean(cfg.giftEnabled);
+            $('#pg-dn-gift-center').value = giftCenterMode(cfg);
             $('#pg-dn-clan').checked = Boolean(cfg.clanEnabled);
             $('#pg-dn-dep-items').value = ['depot', 'family'].includes(cfg.depositItems) ? cfg.depositItems : '';
             $('#pg-dn-dep-pokes').value = cfg.depositPokes === 'family' ? 'family' : '';
@@ -5178,6 +5360,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const rotaAntes = JSON.stringify(routeList());
             const recargaAntes = JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]);
             const dailyAntes = JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug, cfg.dailyAuto]);
+            const giftAntes = JSON.stringify([cfg.giftEnabled, cfg.giftCenterMode]);
             const capturaAntes = JSON.stringify([cfg.catchRouteEnabled, cfg.catchRouteAreas, cfg.catchRouteMaxLevel]);
             const viagemAntes = JSON.stringify([cfg.tripEveryMin, cfg.tripEveryMaxMin]);
             const ligouCaptura = draft.catchRouteEnabled && !cfg.catchRouteEnabled;
@@ -5212,6 +5395,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             saveHuntProfile();
             if (JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]) !== recargaAntes) scheduleReload(); // faixa mudou: sorteia de novo
             if (JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug, cfg.dailyAuto]) !== dailyAntes) scheduleDailyCheck(500); // daily mudou: lê a missão já
+            if (JSON.stringify([cfg.giftEnabled, cfg.giftCenterMode]) !== giftAntes) { giftFetchedAt = 0; scheduleGiftCheck(500); } // gift mudou: lê o calendário já
             if (JSON.stringify([cfg.clanEnabled, cfg.clanRoute, cfg.clanKey]) !== clanAntes) {
                 if (!(cfg.clanEnabled && cfg.clanRoute) && clanTarget) clanReturn('rota do clã desligada');
                 if (cfg.clanEnabled) setTimeout(() => clanTick(), 500);
@@ -5408,6 +5592,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 `viagem ${cfg.tripEveryMin}${cfg.tripEveryMaxMin > cfg.tripEveryMin ? `–${cfg.tripEveryMaxMin}` : ''} min (${cfg.tripCity})`,
                 `${Object.keys(cfg.routes || {}).length} rotas de treino${cfg.routeName ? ` (ativa: ${cfg.routeName})` : ''}`,
                 `captura ${cfg.catchRouteEnabled ? 'ligada' : 'desligada'}`, `daily ${cfg.dailyEnabled ? (cfg.dailyAuto ? 'sozinha' : 'ligada') : 'desligada'}`,
+                `gift ${cfg.giftEnabled ? ({ daily: 'ligado', all: 'ligado + Gift Center todo', '': 'ligado, fica no correio' })[giftCenterMode(cfg)] : 'desligado'}`,
                 `clã ${cfg.clanEnabled ? `${clanName(cfg.clanKey)}${cfg.clanRoute ? ' + caça' : ''}` : 'desligado'}`,
                 `guardar: ${[familyList(cfg).length ? `${familyList(cfg).length} itens → família` : '', cfg.depositItems ? `drops → ${cfg.depositItems === 'depot' ? 'Depot' : 'família'}` : '', cfg.depositPokes ? 'Pokémon → família' : ''].filter(Boolean).join(', ') || 'desligado'}${dropsVindos.length ? ` (${dropsVindos.length} drops conhecidos)` : ''}`,
                 `recarga ${cfg.reloadEnabled ? 'ligada' : 'desligada'}`,
@@ -5434,6 +5619,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
     setInterval(() => requestPokes(0), POKES_POLL_MS);
     setInterval(reloadTick, RELOAD_CHECK_MS);
     setInterval(dailyTick, DAILY_CHECK_MS);
+    setInterval(giftTick, GIFT_TICK_MS);
     setInterval(catchTick, CATCH_TICK_MS);
     setInterval(tripTick, TRIP_TICK_MS);
     setInterval(clanTick, CLAN_TICK_MS);
@@ -5442,6 +5628,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
     if (cfg.catchRouteEnabled) setTimeout(() => startCatchRoute('carga'), 8000); // depois do socket/retomada da recarga
     if (cfg.clanEnabled) setTimeout(clanTick, 8000);   // lê o clã logo na carga (REST) e pede a mochila
     if (cfg.dailyEnabled) scheduleDailyCheck(5000); // lê a missão do dia logo na carga (REST, não depende do socket)
+    if (cfg.giftEnabled) scheduleGiftCheck(10000);  // Daily Gift: lê o calendário e resgata logo na carga (REST)
 
     console.log(TAG, `v${VERSION} ativo.`, 'Watch list:', cfg.watchList.join(', ') || '(vazia)',
         '| toda captura:', cfg.notifyEveryCapture, '| shiny:', cfg.notifyShiny,
@@ -5455,6 +5642,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
         '| rota:', routeActive() ? routeStatus() : 'não',
         '| captura:', cfg.catchRouteEnabled ? `${catchAreas().join('+')}${cfg.catchRouteMaxLevel ? ` até lv ${cfg.catchRouteMaxLevel}` : ''}${cfg.catchRouteAuto ? ' + bola' : ''}` : 'não',
         '| daily:', cfg.dailyEnabled ? `${cfg.dailyAuto ? 'sozinha, ' : ''}volta para ${dailyReturnTarget() || 'a hunt anterior'}${cfg.dailyClaim ? ' + resgate' : ''}` : 'não',
+        '| gift:', cfg.giftEnabled ? `sim (Gift Center: ${giftCenterMode() || 'não mexe'})` : 'não',
         '| venda pokes:', cfg.pokeSellEnabled ? TIERS_ASC.filter(t => pokeSellLimit(cfg, t.key) > 0).map(t => `${t.name}<${pokeSellLimit(cfg, t.key)}`).join(' ') || 'sem limites' : 'não',
         '| venda drops:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens` : 'não',
         '| viagem à cidade:', `${cfg.tripCity} a cada ${cfg.tripEveryMin}${cfg.tripEveryMaxMin > cfg.tripEveryMin ? `–${cfg.tripEveryMaxMin}` : ''} min`,

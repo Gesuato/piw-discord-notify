@@ -644,4 +644,43 @@ function loadIdleModule(cfg, init) {
     return { api, state, cfg, clock, env };
 }
 
-module.exports = { loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+// Extrai o módulo "Daily Gift" (v3.24.0) e o executa com stubs. `init.api(url, opts)` responde o REST (GET/POST
+// /api/game/daily, GET /api/game/gifts, POST /api/game/gifts/{id}/claim). Timers curtos rodam na hora; `clock.now` é o relógio.
+const F_START = '    // ---- Daily Gift';
+const F_END = '    // ---- Clã: subir de rank';
+
+function loadGiftModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(F_START), b = src.indexOf(F_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo do Daily Gift não encontrados no script');
+    const mod = src.slice(a, b);
+    const clock = { now: Date.now() };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const state = { calls: [], hooks: [], logs: [], longTimers: [] };
+    const normalize = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    const ctx = {
+        cfg,
+        gameApi: (url, opts) => { state.calls.push({ url, opts }); return Promise.resolve().then(() => init.api(url, opts)); },
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        normalize,
+        fmtNum: (n) => String(n),
+        setTimeout: (fn, ms) => { if (ms >= 5000) { state.longTimers.push(fn); return 99; } fn(); return 1; },
+        clearTimeout: () => {},
+        Date: FakeDate,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            giftTick, giftStatus, giftCenterMode, scheduleGiftCheck, parseGift,
+            get gift() { return gift; },
+            get giftLast() { return giftLast; },
+            get giftFailedAt() { return giftFailedAt; },
+            get giftCenterCount() { return giftCenterCount; },
+        };`);
+    const api = factory(...Object.values(ctx));
+    return { api, state, cfg, clock };
+}
+
+module.exports = { loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
