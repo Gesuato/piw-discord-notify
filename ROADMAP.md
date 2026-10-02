@@ -571,8 +571,8 @@ atual, porque a tela não manda `leave-hunt`), `leave-hunt` com o líder desmaia
 no `pokes` fora de hunt (ex.: recarga no meio da contagem). Fluxo: espera o `set-city` da tela (10 s; senão manda
 `set-city cerulean`) → 3–7 s → `joy-heal` → 1,5 s → `pokes-get` confere o hp do líder (2 tentativas; frame sem `hp` segue)
 → 2–5 s → `switchHunt(slug, 1, 'cura')` (sem `leave-hunt`). Enquanto `healBusy()`, viagem, rota de captura, daily sozinha,
-rota do clã e recarga não trocam de hunt. Proteção: 3 quedas na mesma hunt em 30 min = fica na cidade e avisa. Webhook
-de alertas na 1ª queda da janela e em toda falha/parada. Log `cura { fase: inicio|joy|fim }`.
+rota do clã e recarga não trocam de hunt. Volta SEMPRE (a proteção de 3 quedas em 30 min foi removida na v3.24.3 a
+pedido do usuário). Webhook de alertas na 1ª queda da janela de 30 min e em toda falha/parada. Log `cura { fase: inicio|joy|fim }`.
 
 **Pendente:** confirmar no log (`desmaio`, `cura`) os campos do `field` e se o servidor exige estar perto da Joy ou numa
 cidade específica para o `joy-heal`. Teste: `node test/heal.test.js` e passo no smoke.
@@ -590,7 +590,7 @@ hunt pedida que nunca mandou frame. Tique de 30 s; espera viagem, cura, troca de
 daily sozinha (motivo no painel e no log `cidade-parada-espera`); com a rota de captura ligada quem volta é o `catchTick`.
 Fluxo `idleGoBack`: hunt morta → `leave-hunt` + `set-city cerulean`; 3–7 s → `joy-heal` → `pokes-get` confere o hp do líder
 (hp 0 = não volta e avisa) → 2–5 s → `switchHunt(slug, 1, 'cidade')` sem `leave-hunt`. Destino: alvo da rota do clã > etapa
-da rota de treino > última hunt; hunt em que o time caiu 3x em 30 min (cura) não serve. 3 voltas em 1 h sem a hunt
+da rota de treino > última hunt (desde a v3.24.3 as quedas da cura não excluem a hunt). 3 voltas em 1 h sem a hunt
 confirmar = desiste e avisa; rearma no próximo frame de hunt. Webhook de alertas a cada volta. Log `cidade-parada`.
 
 **Pendente:** confirmar no log se o `joy-heal` funciona fora de Cerulean. Teste: `node test/idle.test.js` e passo no smoke.

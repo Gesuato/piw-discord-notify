@@ -77,13 +77,15 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   inteiro), `heroHp`; sem Revive o servidor manda `field-teleport-city` (a tela vai a Cerulean e envia `set-city`, mas NÃO
   `leave-hunt`: `healOnTeleport` zera a hunt). Cura = `{ type:'joy-heal' }` (grátis, sem resposta; conferir pelo `hp` do líder
   no `pokes`). Líder em hp 0 = a tela recusa viajar para hunt. Fluxo `healStart` → `healFlow` → `switchHunt(slug, 1, 'cura')`;
-  módulos que trocam de hunt checam `healBusy()` (com `typeof`, por causa dos harness). 3 quedas na mesma hunt em 30 min =
-  fica na cidade e avisa.
+  módulos que trocam de hunt checam `healBusy()` (com `typeof`, por causa dos harness). SEMPRE volta para a hunt: a
+  proteção "3 quedas em 30 min = fica na cidade" foi REMOVIDA na v3.24.3 a pedido do usuário (raiumundo ficou parado em
+  magneton); `healDeaths` só conta para o log `cura` e para avisar 1x por janela. Não reintroduzir sem pedido.
 - Parada na cidade (v3.23.0, aba Compras → 🏙️ Parada na cidade, `cfg.cityIdleEnabled` LIGADO por padrão, `cityIdleMin` 10;
   módulo `// ---- Volta da cidade` entre a Cura na Joy e a Lógica principal): pedido do usuário, "mais de 10 min na cidade = a
   conta bugou". Parada = hunt do script nula/cidade sem `field`/`field-kill` no período, ou hunt pedida sem frame nenhum
   (`idleSinceAt`). `idleGoBack`: (`leave-hunt` + `set-city` se era hunt morta) → `joy-heal` → `pokes-get` confere o hp →
-  `switchHunt(slug, 1, 'cidade')`. Destino: alvo do clã > etapa da rota > `lastRealHunt`; pula hunt com 3 quedas da cura.
+  `switchHunt(slug, 1, 'cidade')`. Destino: alvo do clã > etapa da rota > `lastRealHunt` (desde a v3.24.3 as quedas da
+  cura não excluem a hunt).
   Espera viagem/cura/troca/venda/recarga; a rota de captura tem volta própria. 3 voltas em 1 h sem frame = desiste e avisa.
 - REST do jogo (usado pela compra automática; confirmado no auto-refill de referência e no piwdex):
   tokens em `sessionStorage['pokeweb:tokens']` (`{accessToken, refreshToken}`), header

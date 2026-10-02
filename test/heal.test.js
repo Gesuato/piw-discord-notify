@@ -64,17 +64,18 @@ const time = (hp) => [{ id: 'a', team: true, leader: true, slot: 0, hp, maxHp: 1
         assert(state.switches.length === 1, 'sem hp no frame: volta mesmo assim');
     }
 
-    // 6) 3 quedas na mesma hunt em 30 min: na 3ª fica na cidade; 2ª não avisa (só a 1ª e a parada)
+    // 6) quedas seguidas na mesma hunt (v3.24.3): volta SEMPRE; avisa só a 1ª da janela de 30 min
     {
-        const { api, state, clock } = loadHealModule({ healJoyEnabled: true }, { huntSlug: 'onix', pokesHp: [100, 100, 100] });
-        for (let i = 0; i < 3; i++) {
+        const { api, state, clock } = loadHealModule({ healJoyEnabled: true }, { huntSlug: 'onix', pokesHp: [100, 100, 100, 100] });
+        for (let i = 0; i < 4; i++) {
             api.setHunt('onix');
             api.onField({ type: 'field', fainted: true }); api.onTeleport(); api.onSetCity();
             await api.flush();
             clock.now += 5 * MIN;
         }
-        assert(state.switches.length === 2, '3ª queda não volta: ' + state.switches.length);
-        assert(state.hooks.length === 2 && /caiu 3x em onix/.test(state.hooks[1].content), 'avisa a 1ª e a parada: ' + state.hooks.map(h => h.content).join(' | '));
+        assert(state.switches.length === 4 && state.switches.every(s => s.slug === 'onix'), '4 quedas, 4 voltas: ' + state.switches.length);
+        assert(state.hooks.length === 1 && /voltando para a hunt/.test(state.hooks[0].content), 'avisa só a 1ª: ' + state.hooks.map(h => h.content).join(' | '));
+        assert(state.logs.filter(l => l[0] === 'cura' && l[1].fase === 'inicio').pop()[1].quedas === 4, 'log conta as quedas');
     }
 
     // 7) desligada: só zera a hunt no teleporte, sem Joy
@@ -106,5 +107,5 @@ const time = (hp) => [{ id: 'a', team: true, leader: true, slot: 0, hp, maxHp: 1
         assert(state.switches.length === 1 && /mandada para a cidade/.test(state.hooks[0].content), 'teleporte sem queda: ' + state.hooks[0]?.content);
     }
 
-    console.log('OK heal.test — queda, teleporte, Joy, conferência do hp, volta, Revive, set-city manual, falha, proteção de 3 quedas e hp 0 fora de hunt');
+    console.log('OK heal.test — queda, teleporte, Joy, conferência do hp, volta, Revive, set-city manual, falha, quedas seguidas sempre voltam e hp 0 fora de hunt');
 })().catch(err => { console.error(err); process.exit(1); });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.24.2
+// @version      3.24.3
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.24.2';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.24.3';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -3605,20 +3605,19 @@
     // Fluxo: queda confirmada (teleporte do servidor, "Voltar para a cidade" com o líder desmaiado ou líder em hp 0 fora de
     // hunt) -> espera a tela chegar na cidade (set-city; sem ele em 10 s mandamos nós) -> "anda até a Joy" -> `joy-heal` ->
     // `pokes-get` confere o hp -> `switchHunt(slug, 1, 'cura')`. Enquanto isso (`healBusy()`) a viagem, a rota de captura, a
-    // daily, o clã e a recarga não trocam de hunt. Proteção: 3 quedas na mesma hunt em 30 min = não volta mais para ela
-    // (a hunt está forte demais) e avisa.
+    // daily, o clã e a recarga não trocam de hunt. SEMPRE volta para a hunt (v3.24.3, pedido do usuário: a proteção de
+    // 3 quedas em 30 min deixava a conta parada na cidade); as quedas só contam para o log e para avisar 1x por janela.
 
     const HEAL_CITY_WAIT_MS = 10 * 1000;
     const HEAL_WALK_MS = [3000, 7000];       // "andar até a Joy"
     const HEAL_CHECK_MS = 1500;              // joy-heal -> pokes-get
     const HEAL_BEFORE_BACK_MS = [2000, 5000];
     const HEAL_TRIES = 2;
-    const HEAL_DEATH_WINDOW_MS = 30 * 60 * 1000;
-    const HEAL_MAX_DEATHS = 3;
+    const HEAL_DEATH_WINDOW_MS = 30 * 60 * 1000;   // janela em que as quedas na mesma hunt contam (só log/aviso)
 
     let faintSeen = null;           // { slug, at, noRevive } desde o 1º `field` com fainted; some se levantou (Revive)
     let healRun = null;             // { slug, motivo, at, fase, tries, cityArrived, hpWait }
-    let healDeaths = [];            // [{ slug, at }] quedas recentes (proteção contra loop)
+    let healDeaths = [];            // [{ slug, at }] quedas recentes (contagem para o log e o aviso; não bloqueia a volta)
     let healLast = null;            // { at, slug, ok, motivo } para o painel
     let onHealChange = null;        // callback do painel
 
@@ -3727,9 +3726,8 @@
             }
             if (typeof hp === 'number' && hp <= 0) { erro = 'a Joy não curou (líder segue com hp 0)'; return; }
             ok = true;
-            // 3) volta, a menos que a hunt esteja derrubando o time seguido
+            // 3) volta sempre (v3.24.3: sem limite de quedas)
             if (!slug) { erro = 'curado; não sei de que hunt veio, fica na cidade'; return; }
-            if (quedas >= HEAL_MAX_DEATHS) { erro = `curado, mas o time caiu ${quedas}x em ${slug} em 30 min: não volto para ela`; return; }
             healRun.fase = 'voltando'; healNotify();
             await healWait(healRnd(HEAL_BEFORE_BACK_MS));
             volta = slug;
@@ -3752,7 +3750,7 @@
                 postWebhook('alert', {
                     content: `💀 ${who ? `**${who}**` : 'Sua conta'}: ${oQue} em **${slug}**; curado na Nurse Joy, voltando para a hunt`,
                     username: 'Poke Idle World',
-                    embeds: [{ title: caiu ? 'Time caiu: cura na Joy' : 'Mandado para a cidade: cura na Joy', description: conta + `Motivo da ida: ${motivo}${noRevive ? ' (time inteiro)' : ''}\nSe cair ${HEAL_MAX_DEATHS}x em 30 min nessa hunt, fico na cidade e aviso.\nEm ${new Date().toLocaleString('pt-BR')}`, color: 0xfee75c }],
+                    embeds: [{ title: caiu ? 'Time caiu: cura na Joy' : 'Mandado para a cidade: cura na Joy', description: conta + `Motivo da ida: ${motivo}${noRevive ? ' (time inteiro)' : ''}\nVolto sempre; novas quedas nessa hunt nos próximos 30 min ficam só no log.\nEm ${new Date().toLocaleString('pt-BR')}`, color: 0xfee75c }],
                 }, { evento: 'cura', ok, slug });
             }
         }
@@ -3764,8 +3762,8 @@
     // cidade) E sem `field`/`field-kill` há `cityIdleMin` minutos (o servidor manda esses frames enquanto farma, mesmo com a
     // tela na cidade), ou uma hunt que o script pediu mas que nunca mandou frame nenhum. Não age com viagem, cura, troca de
     // hunt/líder, venda, daily sozinha ou volta da recarga em andamento; a rota de captura tem a própria volta (catchTick).
-    // Destino: alvo da rota do clã > etapa da rota de treino > última hunt vista; a hunt que a cura largou (caiu 3x) não
-    // serve. Fluxo (idleGoBack): hunt pedida sem frame -> `leave-hunt` + `set-city`; `joy-heal` sempre (a conta pode ter
+    // Destino: alvo da rota do clã > etapa da rota de treino > última hunt vista (v3.24.3: quedas da cura não excluem
+    // mais a hunt). Fluxo (idleGoBack): hunt pedida sem frame -> `leave-hunt` + `set-city`; `joy-heal` sempre (a conta pode ter
     // ficado com o líder desmaiado, e com hp 0 a tela recusa hunt) -> `pokes-get` confere o hp -> `switchHunt(slug, 1,
     // 'cidade')`. Não conta como queda da cura. Proteção: IDLE_MAX_BACKS voltas em 1 h sem a hunt confirmar = para e avisa
     // (rearma quando a conta volta a farmar).
@@ -3833,8 +3831,6 @@
         else if (routeStep()?.slug) slug = normalize(routeStep().slug);
         else if (idleIsHunt(lastRealHunt)) slug = normalize(lastRealHunt);
         if (!slug) return { motivo: 'não sei de que hunt veio (entre numa hunt uma vez)' };
-        const quedas = healDeaths.filter(x => x.slug === slug && Date.now() - x.at < HEAL_DEATH_WINDOW_MS).length;
-        if (quedas >= HEAL_MAX_DEATHS) return { motivo: `o time caiu ${quedas}x em ${slug} há pouco (a cura largou essa hunt)` };
         return { slug };
     }
     function idleSetNote(motivo) {
@@ -4376,7 +4372,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <h3>🏙️ Parada na cidade <span class="spacer"></span><label class="dn-toggle"><input id="pg-dn-cityidle" type="checkbox"><span class="sw"></span>Voltar para a hunt</label></h3>
                         <div class="dn-inline">Depois de <input id="pg-dn-cityidle-min" class="dn-input dn-input--sm" type="number" min="1" step="1" placeholder="5"> min parada fora de hunt (padrão 10)</div>
                         <div class="dn-status" id="pg-dn-cityidle-status"></div>
-                        <p class="dn-help">Se a conta ficar esse tempo na cidade sem farmar (a volta da viagem ou da recarga não pegou, o jogo mandou para a cidade, você saiu e esqueceu), a conta está bugada: o script cura o time na Nurse Joy e volta para a hunt: a da rota do clã, a etapa da rota de treino ou a última em que esteve. Não mexe durante viagem, cura, troca de hunt ou de líder; a rota de captura já tem a própria volta. Não volta para uma hunt em que o time caiu 3x há pouco nem se a Joy não curar. Voltou 3 vezes em 1 h sem a hunt pegar: para e avisa. Avisos no canal de Alertas.</p>
+                        <p class="dn-help">Se a conta ficar esse tempo na cidade sem farmar (a volta da viagem ou da recarga não pegou, o jogo mandou para a cidade, você saiu e esqueceu), a conta está bugada: o script cura o time na Nurse Joy e volta para a hunt: a da rota do clã, a etapa da rota de treino ou a última em que esteve. Não mexe durante viagem, cura, troca de hunt ou de líder; a rota de captura já tem a própria volta. Não volta se a Joy não curar. Voltou 3 vezes em 1 h sem a hunt pegar: para e avisa. Avisos no canal de Alertas.</p>
                     </div>
                 </section>
                 <section class="dn-pane" data-pane="venda" hidden>

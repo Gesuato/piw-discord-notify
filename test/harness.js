@@ -625,7 +625,7 @@ function loadIdleModule(cfg, init) {
         clanRouteOn: () => env.clanRoute,
         routeStep: () => env.route,
         catchRouteActive: () => env.catchRoute,
-        HEAL_DEATH_WINDOW_MS: 30 * 60 * 1000, HEAL_MAX_DEATHS: 3,
+        HEAL_DEATH_WINDOW_MS: 30 * 60 * 1000,
         Date: FakeDate,
     };
     // Os nomes que o módulo lê como variáveis soltas viram getters sobre `env` (via `with`).

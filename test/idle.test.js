@@ -57,7 +57,7 @@ const cfgOn = () => ({ cityIdleEnabled: true, cityIdleMin: 10 });
         r = loadIdleModule(cfgOn(), { env: { lastRealHunt: 'onix' } });
         r.env.healDeaths = [1, 2, 3].map(i => ({ slug: 'onix', at: r.clock.now - i * MIN }));
         r.api.onHuntChange(null); r.clock.now += 10 * MIN; await r.api.tick();
-        assert(r.state.switches.length === 0 && /cura largou/.test(r.api.status()), 'hunt que derrubou o time: ' + r.api.status());
+        assert(r.state.switches[0]?.slug === 'onix', 'v3.24.3: quedas da cura não impedem a volta: ' + JSON.stringify(r.state.switches));
         r = loadIdleModule(cfgOn(), {});
         r.api.onHuntChange(null); r.clock.now += 10 * MIN; await r.api.tick();
         assert(r.state.switches.length === 0 && /não sei de que hunt/.test(r.api.status()), 'sem destino: ' + r.api.status());
