@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.24.5
+// @version      3.24.6
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.24.5';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.24.6';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -219,7 +219,8 @@
     // sem ivTotal/quality, pedimos `pokes-get` e procuramos o recém-capturado na
     // lista `pokes` — só quando a escolha é inequívoca (um único indivíduo novo da
     // espécie com xp 0), para nunca atribuir o IV de outro exemplar. Se nada chegar
-    // a tempo, a notificação sai sem esses campos (e avisa isso no embed).
+    // a tempo e há filtro de qualidade, a captura NÃO é avisada (v3.24.6); sem
+    // filtro nenhum, sai sem os campos e o embed diz isso.
     // v3.24.4: o jogo também manda o poke-delta ANTES do catch-result (mesmo
     // milissegundo; visto em 02/10/2026 16:50Z). Delta novo (xp 0) sem captura
     // esperando fica em `pendingDeltas` por DETAILS_PRE_MS e a captura que chegar
@@ -262,13 +263,14 @@
     //   - nenhum configurado                                  -> passa tudo;
     //   - raridade >= mínima E poder >= minTierIv (0 = qualquer) -> passa (v3.4.1: antes bastava a raridade);
     //   - senão, poder (ivTotal) >= minIv                     -> passa;
-    //   - sem dados de qualidade (timeout)                    -> passa, para não perder um raro.
+    //   - sem dados de qualidade (timeout) com filtro ligado  -> NÃO passa (v3.24.6, pedido do usuário: "não quero
+    //     notificação sem o IV"; antes passava para não perder um raro). Fica no log `decisao`.
     function passesQualityFilter(info) {
         const minTier = tierByKey(cfg.minTier);
         const minIv = Number(cfg.minIv) || 0;
         if (!minTier && minIv <= 0) return { ok: true, motivo: 'sem filtro de qualidade' };
         const tier = qualityTier(info.quality);
-        if (tier == null && info.ivTotal == null) return { ok: true, motivo: 'sem dados de qualidade' };
+        if (tier == null && info.ivTotal == null) return { ok: false, motivo: 'sem dados de qualidade (o jogo não mandou o poder; não aviso)' };
         const tierIv = Number(cfg.minTierIv) || 0;
         if (minTier && tier && tier.rank >= minTier.rank) {
             if (tierIv <= 0 || info.ivTotal == null || info.ivTotal >= tierIv) return { ok: true, motivo: `raridade ${tier.name} >= ${minTier.name}${tierIv > 0 ? ` com poder ${info.ivTotal ?? '?'} >= ${tierIv}` : ''}` };

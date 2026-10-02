@@ -58,8 +58,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `ivTotal`/`quality`, envia `pokes-get` e casa o recém-capturado na lista `pokes` pelo `id` do delta ou,
   senão, pelo ÚNICO indivíduo novo da espécie (`xp === 0`, sem delta visto em `seenDeltaIds`, ausente do
   frame `pokes` anterior à captura); 0 ou 2+ candidatos = segue esperando (nunca chuta o IV de outro
-  exemplar). Delta de líder/time (`xp > 0`) não fecha a fila. Estourou: notifica sem os campos, com aviso
-  ⚠ no embed (`info.detailsTimeout`). v3.24.4: o jogo também manda o `poke-delta` ANTES do `catch-result` (mesmo
+  exemplar). Delta de líder/time (`xp > 0`) não fecha a fila. Estourou: com filtro de qualidade ligado NÃO avisa
+  (v3.24.6, pedido do usuário; fica no log `decisao`); sem filtro nenhum, avisa sem os campos com ⚠ no embed
+  (`info.detailsTimeout`). v3.24.4: o jogo também manda o `poke-delta` ANTES do `catch-result` (mesmo
   ms, visto em 02/10/2026 16:50Z): delta novo sem captura esperando fica em `pendingDeltas` por 3 s
   (`DETAILS_PRE_MS`) e a captura que chegar o pega na hora (log `poke-delta-antes`). Não existe "órfã" (delta
   depois do timeout ia para a captura encerrada): nesse cenário ela roubava o delta da captura seguinte.
@@ -288,8 +289,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   2. Qualidade (decidida DEPOIS do `poke-delta`): `minTier` ('' = sem filtro; chave em minúsculas,
      ex. `legendary`), `minTierIv` (v3.4.1: poder mínimo exigido de quem passa pela raridade; 0 = qualquer)
      e `minIv` (0 = sem filtro; compara com `ivTotal` 0..192). Passa se (raridade ≥ mínima E poder ≥
-     `minTierIv`) OU poder ≥ `minIv`. Nenhum configurado = passa tudo. Sem dados (timeout do delta, 20 s) = passa,
-     para não perder um raro (o embed avisa que saiu sem filtro). `cooldownSeconds` (painel) é o intervalo mínimo entre
+     `minTierIv`) OU poder ≥ `minIv`. Nenhum configurado = passa tudo (inclusive sem dados). Sem dados (timeout do
+     delta, 20 s) com algum filtro = NÃO passa (v3.24.6, "eu não quero receber notificação sem o IV"; até a v3.24.5
+     passava para não perder um raro). Não voltar a passar sem pedido. `cooldownSeconds` (painel) é o intervalo mínimo entre
   avisos do mesmo Pokémon; padrão 0 = avisar todas. Configs anteriores a `cfgVersion: 2` tinham 30s
   fixos e são migradas para 0 no `loadCfg()`.
 - Comparações de nome sempre via `normalize()` (minúsculas, sem acento).

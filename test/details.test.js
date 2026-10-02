@@ -95,7 +95,11 @@ function logs(state, kind) { return state.logs.filter(l => l[0] === kind); }
     state.fire(20000);
     return_after_tick(() => {
         assert(first && first.ivTotal == null && first.quality == null && first.detailsTimeout === true, 'timeout: sem dados e marcado: ' + JSON.stringify(first));
-        assert(api.passesQualityFilter(first).ok === true && api.passesQualityFilter(first).motivo === 'sem dados de qualidade', 'sem dados passa (regra mantida)');
+        assert(api.passesQualityFilter(first).ok === false && /sem dados de qualidade/.test(api.passesQualityFilter(first).motivo), 'v3.24.6: sem dados NÃO avisa com filtro ligado');
+        {   // sem filtro nenhum configurado, continua avisando (não há o que filtrar)
+            const livre = loadDetailsModule({ minTier: '', minIv: 0, minTierIv: 0 });
+            assert(livre.api.passesQualityFilter(first).ok === true, 'sem filtro: passa mesmo sem dados');
+        }
         const t = logs(state, 'detalhes-timeout');
         assert(t.length === 1 && t[0][1].pediuPokes === true && t[0][1].esperaMs === 20000, 'log do timeout: ' + JSON.stringify(t));
         api.handlePokeDelta({ type: 'poke-delta', poke: { id: 'late', name: 'Phanpy', level: 1, xp: 0, ivTotal: 58, quality: 0.975 } });
