@@ -1303,6 +1303,7 @@
 
     let lastPokesList = [];         // último frame `pokes` (para a prévia do painel e a venda)
     let lastPokesAt = 0;
+    let pokesFrameSeq = 0;           // conta os frames `pokes` (dois no mesmo ms têm o mesmo lastPokesAt)
     let pokeSellRunning = false;
     let lastPokeSellAt = 0;         // última venda de Pokémon (só informativo; a recarga restaura)
     const recentCaptureIds = new Map();   // id -> quando chegou o poke-delta
@@ -1351,11 +1352,11 @@
     // Lista fresca antes de vender (v3.24.7): o último frame `pokes` pode ser velho (Pokémon posto no time ou travado na
     // mão depois dele). Pede `pokes-get` e espera o frame novo até POKE_SELL_REFRESH_MS; sem resposta, segue com a última.
     function pokeSellRefreshList() {
-        const antes = lastPokesAt;
+        const antes = pokesFrameSeq;
         if (!sendGame({ type: 'pokes-get' })) return Promise.resolve(false);
         const t0 = Date.now();
         return new Promise(res => (function loop() {
-            if (lastPokesAt !== antes) return res(true);
+            if (pokesFrameSeq !== antes) return res(true);
             if (Date.now() - t0 >= POKE_SELL_REFRESH_MS) return res(false);
             setTimeout(loop, 250);
         })());
@@ -1436,6 +1437,7 @@
     function pokeSellOnPokes(list) {
         lastPokesList = Array.isArray(list) ? list.filter(p => p && typeof p === 'object') : [];
         lastPokesAt = Date.now();
+        pokesFrameSeq++;
         if (!pokesFieldsLogged && lastPokesList.length) {
             pokesFieldsLogged = true;
             const fora = lastPokesList.find(p => !p.team) || lastPokesList[0];
