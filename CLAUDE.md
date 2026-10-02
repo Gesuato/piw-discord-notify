@@ -59,8 +59,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   senão, pelo ÚNICO indivíduo novo da espécie (`xp === 0`, sem delta visto em `seenDeltaIds`, ausente do
   frame `pokes` anterior à captura); 0 ou 2+ candidatos = segue esperando (nunca chuta o IV de outro
   exemplar). Delta de líder/time (`xp > 0`) não fecha a fila. Estourou: notifica sem os campos, com aviso
-  ⚠ no embed (`info.detailsTimeout`), e um delta que chegue depois cai na captura encerrada (`orphanDetails`,
-  log `poke-delta-atrasado`), não na próxima da fila.
+  ⚠ no embed (`info.detailsTimeout`). v3.24.4: o jogo também manda o `poke-delta` ANTES do `catch-result` (mesmo
+  ms, visto em 02/10/2026 16:50Z): delta novo sem captura esperando fica em `pendingDeltas` por 3 s
+  (`DETAILS_PRE_MS`) e a captura que chegar o pega na hora (log `poke-delta-antes`). Não existe "órfã" (delta
+  depois do timeout ia para a captura encerrada): nesse cenário ela roubava o delta da captura seguinte.
 - Cliente envia `{ type:'catch', pendingId, ballId }` para capturar.
 - `balls` → `{ type:'balls', counts:{ '<ballId>': qty } }`, resposta a `{ type:'balls-get' }`. O frame OMITE as bolas
   zeradas (CONFIRMADO em 26/09/2026: a Ultra Ball some de `counts` ao acabar); use `ballQty(id)` (ausente = 0 depois

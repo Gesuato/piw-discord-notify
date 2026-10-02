@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.24.3
+// @version      3.24.4
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.24.3';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.24.4';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -219,9 +219,13 @@
     // sem ivTotal/quality, pedimos `pokes-get` e procuramos o recém-capturado na
     // lista `pokes` — só quando a escolha é inequívoca (um único indivíduo novo da
     // espécie com xp 0), para nunca atribuir o IV de outro exemplar. Se nada chegar
-    // a tempo, a notificação sai sem esses campos (e avisa isso no embed). Um delta
-    // que chegue DEPOIS do timeout é casado com a captura já encerrada (`orphan`),
-    // não com a próxima da fila.
+    // a tempo, a notificação sai sem esses campos (e avisa isso no embed).
+    // v3.24.4: o jogo também manda o poke-delta ANTES do catch-result (mesmo
+    // milissegundo; visto em 02/10/2026 16:50Z). Delta novo (xp 0) sem captura
+    // esperando fica em `pendingDeltas` por DETAILS_PRE_MS e a captura que chegar
+    // logo depois o pega na hora. Não existe mais "órfã" (delta depois do timeout
+    // ia para a captura encerrada): nesse cenário ela roubava o delta da captura
+    // seguinte e encadeava timeouts.
     //
     // Tabela oficial de faixas (poke.idleworld.online/pokepedia/systems/quality):
     //   <1.0 Weak · 1.0 Common · 1.1 Uncommon · 1.3 Rare · 1.5 Epic
@@ -230,7 +234,7 @@
     const IV_MAX = 192; // 32 por atributo, 6 atributos
     const DETAILS_TIMEOUT_MS = 20000;   // espera total pelo poke-delta / pokes
     const DETAILS_POKES_MS = 4000;      // sem delta até aqui: pede pokes-get (plano B)
-    const DETAILS_ORPHAN_MS = 30000;    // janela em que um delta atrasado ainda é da captura encerrada
+    const DETAILS_PRE_MS = 3000;        // delta que chegou ANTES do catch-result espera a captura por este tempo
     // Do mais raro ao mais fraco; `rank` cresce com a raridade.
     const TIERS = [
         [4.0, 'Divine', 0xf1f5f9], [3.0, 'Ancient', 0xfb923c], [2.0, 'Mythic', 0xe879f9],
@@ -269,7 +273,7 @@
 
     let lastSocket = null;          // socket mais recente do jogo (para pokes-get)
     const awaitingDetails = [];     // capturas esperando poke-delta / pokes
-    const orphanDetails = [];       // capturas que estouraram o timeout (delta atrasado cai aqui)
+    const pendingDeltas = [];       // [{ poke, at }] deltas novos (xp 0) que chegaram sem captura esperando
     const seenDeltaIds = new Set(); // ids de todo poke-delta visto na sessão (exclui exemplares antigos do plano B)
     let prevPokesIds = new Set();   // ids do frame `pokes` anterior (quem já estava lá não é o recém-capturado)
     let prevPokesAt = 0;
@@ -310,15 +314,32 @@
         logEvent('pokes-get', { name: entry.info.name, motivo, enviado: sendGame({ type: 'pokes-get' }) });
     }
 
+    function prunePendingDeltas() {
+        const now = Date.now();
+        for (let i = pendingDeltas.length - 1; i >= 0; i--) if (now - pendingDeltas[i].at > DETAILS_PRE_MS) pendingDeltas.splice(i, 1);
+        while (pendingDeltas.length > 20) pendingDeltas.shift();
+    }
+    // Delta que chegou antes do catch-result desta captura (o mais recente da espécie).
+    function takePendingDelta(entry) {
+        prunePendingDeltas();
+        for (let i = pendingDeltas.length - 1; i >= 0; i--) {
+            if (sameSpecies(entry, pendingDeltas[i].poke)) return pendingDeltas.splice(i, 1)[0];
+        }
+        return null;
+    }
+
     // Devolve uma Promise com `info` completado (ou não) com ivTotal/quality.
     function withDetails(info) {
         return new Promise((resolve) => {
             const entry = { info, resolve, pokeId: null, askedPokes: false, timer: null, pokesTimer: null, at: Date.now() };
+            const antes = takePendingDelta(entry);
+            if (antes) {
+                logEvent('poke-delta-antes', { name: info.name, antesMs: Date.now() - antes.at, ivTotal: antes.poke?.ivTotal ?? null, quality: antes.poke?.quality ?? null });
+                if (applyPokeDetails(entry, antes.poke)) { resolve(info); return; }
+            }
             entry.timer = setTimeout(() => {
                 logEvent('detalhes-timeout', { name: info.name, esperaMs: DETAILS_TIMEOUT_MS, pediuPokes: entry.askedPokes });
                 info.detailsTimeout = true;
-                orphanDetails.push({ entry, at: Date.now(), socket: lastSocket });
-                while (orphanDetails.length > 20) orphanDetails.shift();
                 finishDetails(entry);
             }, DETAILS_TIMEOUT_MS);
             entry.pokesTimer = setTimeout(() => {
@@ -326,17 +347,6 @@
             }, DETAILS_POKES_MS);
             awaitingDetails.push(entry);
         });
-    }
-
-    // Delta que chegou depois do timeout: pertence à captura já encerrada (FIFO no mesmo socket), não à próxima
-    // da fila. Se o socket mudou (reconexão), o delta da encerrada se perdeu: a órfã é descartada.
-    function takeOrphan(poke) {
-        const now = Date.now();
-        for (let i = orphanDetails.length - 1; i >= 0; i--) {
-            if (now - orphanDetails[i].at > DETAILS_ORPHAN_MS || orphanDetails[i].socket !== lastSocket) orphanDetails.splice(i, 1);
-        }
-        const i = orphanDetails.findIndex(o => sameSpecies(o.entry, poke));
-        return i >= 0 ? orphanDetails.splice(i, 1)[0] : null;
     }
 
     function sameSpecies(entry, p) {
@@ -353,15 +363,14 @@
             seenDeltaIds.add(String(poke.id));
         }
         // Só é "novo" (xp 0) quem acabou de ser capturado: delta do líder/time (xp alto) não entra na fila.
-        const novo = !(num(poke?.xp) > 0);
-        const orphan = novo && orphanDetails.length ? takeOrphan(poke) : null;
-        if (orphan) {
-            logEvent('poke-delta-atrasado', { name: orphan.entry.info.name, ivTotal: poke?.ivTotal ?? null, quality: poke?.quality ?? null, atrasoMs: Date.now() - orphan.entry.at });
+        if (num(poke?.xp) > 0) return;
+        const entry = awaitingDetails.find(e => sameSpecies(e, poke)) || awaitingDetails[0];
+        if (!entry) {
+            // Ninguém esperando: o catch-result ainda não chegou (ou o delta é de uma captura já encerrada). Guarda um pouco.
+            prunePendingDeltas();
+            pendingDeltas.push({ poke, at: Date.now() });
             return;
         }
-        if (!novo) return;
-        const entry = awaitingDetails.find(e => sameSpecies(e, poke)) || awaitingDetails[0];
-        if (!entry) return;
         if (applyPokeDetails(entry, poke)) finishDetails(entry);
         else requestPokesOnce(entry, 'poke-delta sem ivTotal/quality');
     }

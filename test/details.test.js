@@ -72,6 +72,7 @@ function logs(state, kind) { return state.logs.filter(l => l[0] === kind); }
     const { api, state } = loadDetailsModule({ ...CFG });
     api.setSocket(socket(state));
     api.handlePokeDelta({ type: 'poke-delta', poke: diglett('seen', 60, 1.0) });   // captura antiga (sem ninguém na fila)
+    state.clock.now += 10000;   // bem antes da captura de agora: já saiu do buffer de 3 s
     let got = null;
     api.withDetails({ name: 'Diglett', shiny: false, level: null }).then(i => { got = i; });
     api.handlePokeDelta({ type: 'poke-delta', poke: { id: 'lider', name: 'Tyranitar', level: 451, team: true, xp: 2880753816, ivTotal: 151, quality: 1.8 } });
@@ -83,8 +84,8 @@ function logs(state, kind) { return state.logs.filter(l => l[0] === kind); }
     });
 }
 
-// 5) timeout total: sai sem dados (marcado), e o delta que chega depois vai para a captura encerrada,
-//    NÃO para a captura seguinte que está na fila
+// 5) timeout total: sai sem dados (marcado); um delta que chegue muito depois, sem captura esperando, fica no
+//    buffer só por 3 s e NÃO vai para a captura seguinte que vier depois disso
 {
     const { api, state } = loadDetailsModule({ ...CFG });
     api.setSocket(socket(state));
@@ -97,12 +98,11 @@ function logs(state, kind) { return state.logs.filter(l => l[0] === kind); }
         assert(api.passesQualityFilter(first).ok === true && api.passesQualityFilter(first).motivo === 'sem dados de qualidade', 'sem dados passa (regra mantida)');
         const t = logs(state, 'detalhes-timeout');
         assert(t.length === 1 && t[0][1].pediuPokes === true && t[0][1].esperaMs === 20000, 'log do timeout: ' + JSON.stringify(t));
-        assert(api.orphans === 1, 'captura encerrada vira órfã');
-        api.withDetails({ name: 'Phanpy', shiny: false, level: null }).then(i => { second = i; });
         api.handlePokeDelta({ type: 'poke-delta', poke: { id: 'late', name: 'Phanpy', level: 1, xp: 0, ivTotal: 58, quality: 0.975 } });
-        assert(api.orphans === 0 && api.awaiting === 1, 'delta atrasado consumido pela órfã; a 2ª captura segue esperando');
-        const late = logs(state, 'poke-delta-atrasado');
-        assert(late.length === 1 && late[0][1].ivTotal === 58 && late[0][1].atrasoMs >= 24000, 'log poke-delta-atrasado: ' + JSON.stringify(late));
+        assert(api.pendentes === 1 && api.awaiting === 0, 'delta sem captura esperando fica pendente');
+        state.clock.now += 5000;   // passou a janela de 3 s
+        api.withDetails({ name: 'Phanpy', shiny: false, level: null }).then(i => { second = i; });
+        assert(api.awaiting === 1 && api.pendentes === 0 && logs(state, 'poke-delta-antes').length === 0, 'delta velho não vai para a captura nova');
         api.handlePokeDelta({ type: 'poke-delta', poke: { id: 'ok', name: 'Phanpy', level: 1, xp: 0, ivTotal: 140, quality: 1.7 } });
         return_after_tick(() => {
             assert(second && second.ivTotal === 140 && second.pokeId === 'ok', '2ª captura recebe o próprio delta: ' + JSON.stringify(second));
@@ -111,24 +111,37 @@ function logs(state, kind) { return state.logs.filter(l => l[0] === kind); }
     });
 }
 
-// 5b) reconexão depois do timeout: o delta da captura encerrada se perdeu; o primeiro delta do socket novo
-//     é da captura que está esperando (não vai para a órfã)
+// 5b) caso real de 02/10/2026 16:50Z: o poke-delta chega ANTES do catch-result (mesmo ms). A captura pega o delta
+//     pendente na hora: sem pokes-get, sem timers; o delta da captura seguinte não é roubado
 {
     const { api, state } = loadDetailsModule({ ...CFG });
     api.setSocket(socket(state));
     let first = null, second = null;
-    api.withDetails({ name: 'Phanpy', shiny: false, level: null }).then(i => { first = i; });
-    state.fire(4000);
-    state.fire(20000);
-    assert(api.orphans === 1, 'órfã registrada');
-    api.setSocket(socket(state));   // reconectou
-    api.withDetails({ name: 'Phanpy', shiny: false, level: null }).then(i => { second = i; });
-    api.handlePokeDelta({ type: 'poke-delta', poke: { id: 'novo', name: 'Phanpy', level: 1, xp: 0, ivTotal: 170, quality: 1.2 } });
+    api.handlePokeDelta({ type: 'poke-delta', poke: diglett('d1', 144, 1.2) });
+    assert(api.pendentes === 1 && state.recent.includes('d1'), 'delta adiantado guardado');
+    state.clock.now += 1;
+    api.withDetails({ name: 'Diglett', shiny: false, level: null }).then(i => { first = i; });
+    assert(api.awaiting === 0 && api.pendentes === 0 && state.timers.length === 0 && state.sent.length === 0, 'pegou o delta adiantado na hora');
+    const antes = logs(state, 'poke-delta-antes');
+    assert(antes.length === 1 && antes[0][1].ivTotal === 144 && antes[0][1].antesMs === 1, 'log poke-delta-antes: ' + JSON.stringify(antes));
+    state.clock.now += 3000;
+    api.handlePokeDelta({ type: 'poke-delta', poke: diglett('d2', 60, 1.0) });   // captura seguinte, delta primeiro de novo
+    api.withDetails({ name: 'Diglett', shiny: false, level: null }).then(i => { second = i; });
     return_after_tick(() => {
-        assert(first && first.detailsTimeout === true, '1ª saiu sem dados');
-        assert(second && second.ivTotal === 170 && second.pokeId === 'novo', 'socket novo: delta vai para a captura em espera: ' + JSON.stringify(second));
-        assert(api.orphans === 0 && api.awaiting === 0 && logs(state, 'poke-delta-atrasado').length === 0, 'órfã descartada sem consumir o delta');
+        assert(first && first.ivTotal === 144 && first.pokeId === 'd1', '1ª com o próprio delta: ' + JSON.stringify(first));
+        assert(second && second.ivTotal === 60 && second.pokeId === 'd2', '2ª com o próprio delta: ' + JSON.stringify(second));
     });
+}
+
+// 5c) ordem normal continua igual: catch-result primeiro, delta depois (nada fica pendente)
+{
+    const { api, state } = loadDetailsModule({ ...CFG });
+    api.setSocket(socket(state));
+    let got = null;
+    api.withDetails({ name: 'Diglett', shiny: false, level: null }).then(i => { got = i; });
+    api.handlePokeDelta({ type: 'poke-delta', poke: diglett('n1', 130, 1.1) });
+    assert(api.pendentes === 0 && api.awaiting === 0, 'nada pendente na ordem normal');
+    return_after_tick(() => { assert(got && got.ivTotal === 130, 'ordem normal ok'); });
 }
 
 // 6) delta sem ivTotal/quality: pede pokes-get na hora e casa pelo id do delta na lista

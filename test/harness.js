@@ -722,8 +722,8 @@ function loadDetailsModule(cfg, init) {
         return {
             withDetails, handlePokeDelta, handlePokesList, passesQualityFilter, qualityTier,
             get awaiting() { return awaitingDetails.length; },
-            get orphans() { return orphanDetails.length; },
-            DETAILS_TIMEOUT_MS, DETAILS_POKES_MS,
+            get pendentes() { return pendingDeltas.length; },
+            DETAILS_TIMEOUT_MS, DETAILS_POKES_MS, DETAILS_PRE_MS,
             setSocket(ws) { lastSocket = ws; },
         };`);
     const api = factory(...Object.values(ctx));
