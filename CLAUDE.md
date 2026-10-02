@@ -50,10 +50,17 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   1.0/1.3/1.7...), power, xp, stats{hp,atk,def,spAtk,spDef,speed}`. Faixas oficiais de qualidade:
   <1.0 Weak, 1.0 Common, 1.1 Uncommon, 1.3 Rare, 1.5 Epic, 1.7 Legendary, 2.0 Mythic, 3.0 Ancient,
   4.0 Divine (fonte: poke.idleworld.online/pokepedia/systems/quality via piwdex `src/lib/rarity.ts`).
-- Fluxo do script para IV/qualidade: `catch-result` ok → espera até 4s por `poke-delta` (que na prática
-  chega no mesmo segundo). Plano B: se o delta vier sem `ivTotal`/`quality`, envia `pokes-get` e casa o
-  recém-capturado na lista `pokes` (por `id` do delta ou espécie com `xp === 0`). Sem resposta,
-  notifica sem esses campos.
+- Fluxo do script para IV/qualidade (módulo `// ---- IV e qualidade do indivíduo capturado`, teste
+  `node test/details.test.js` via `loadDetailsModule`): `catch-result` ok → espera até 20 s
+  (`DETAILS_TIMEOUT_MS`) por `poke-delta`, que normalmente chega no mesmo segundo, MAS em 02/10/2026 o
+  jogo lento mandou 5–8 s depois e, com a espera antiga de 4 s, o aviso saía "sem dados de qualidade"
+  (sem filtro) — não voltar a encurtar. Plano B: sem delta em 4 s (`DETAILS_POKES_MS`) ou delta sem
+  `ivTotal`/`quality`, envia `pokes-get` e casa o recém-capturado na lista `pokes` pelo `id` do delta ou,
+  senão, pelo ÚNICO indivíduo novo da espécie (`xp === 0`, sem delta visto em `seenDeltaIds`, ausente do
+  frame `pokes` anterior à captura); 0 ou 2+ candidatos = segue esperando (nunca chuta o IV de outro
+  exemplar). Delta de líder/time (`xp > 0`) não fecha a fila. Estourou: notifica sem os campos, com aviso
+  ⚠ no embed (`info.detailsTimeout`), e um delta que chegue depois cai na captura encerrada (`orphanDetails`,
+  log `poke-delta-atrasado`), não na próxima da fila.
 - Cliente envia `{ type:'catch', pendingId, ballId }` para capturar.
 - `balls` → `{ type:'balls', counts:{ '<ballId>': qty } }`, resposta a `{ type:'balls-get' }`. O frame OMITE as bolas
   zeradas (CONFIRMADO em 26/09/2026: a Ultra Ball some de `counts` ao acabar); use `ballQty(id)` (ausente = 0 depois
@@ -270,8 +277,8 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   2. Qualidade (decidida DEPOIS do `poke-delta`): `minTier` ('' = sem filtro; chave em minúsculas,
      ex. `legendary`), `minTierIv` (v3.4.1: poder mínimo exigido de quem passa pela raridade; 0 = qualquer)
      e `minIv` (0 = sem filtro; compara com `ivTotal` 0..192). Passa se (raridade ≥ mínima E poder ≥
-     `minTierIv`) OU poder ≥ `minIv`. Nenhum configurado = passa tudo. Sem dados (timeout do delta) = passa,
-     para não perder um raro. `cooldownSeconds` (painel) é o intervalo mínimo entre
+     `minTierIv`) OU poder ≥ `minIv`. Nenhum configurado = passa tudo. Sem dados (timeout do delta, 20 s) = passa,
+     para não perder um raro (o embed avisa que saiu sem filtro). `cooldownSeconds` (painel) é o intervalo mínimo entre
   avisos do mesmo Pokémon; padrão 0 = avisar todas. Configs anteriores a `cfgVersion: 2` tinham 30s
   fixos e são migradas para 0 no `loadCfg()`.
 - Comparações de nome sempre via `normalize()` (minúsculas, sem acento).
@@ -321,8 +328,10 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
   (`loadSupplyModule`: `// ---- Refil de poções e revives` até `// ---- Venda automática de drops`), `node test/heal.test.js`
   (`loadHealModule`: `// ---- Cura na Joy` até `// ---- Volta da cidade`), `node test/gift.test.js` (`loadGiftModule`:
   `// ---- Daily Gift` até `// ---- Clã: subir de rank`), `node test/idle.test.js` (`loadIdleModule`:
-  `// ---- Volta da cidade` até `// ---- Lógica principal`; estado dos outros módulos em `init.env`) e `node test/trip.test.js`
-  (`loadTripModule`: `// ---- Viagem à cidade` até `// ---- Recarga automática do painel`; timers avançam o relógio falso).
+  `// ---- Volta da cidade` até `// ---- Lógica principal`; estado dos outros módulos em `init.env`), `node test/trip.test.js`
+  (`loadTripModule`: `// ---- Viagem à cidade` até `// ---- Recarga automática do painel`; timers avançam o relógio falso) e
+  `node test/details.test.js` (`loadDetailsModule`: `// ---- IV e qualidade do indivíduo capturado` até `// ---- Alerta de
+  nível do líder`; timers ficam em `state.timers` e `state.fire(ms)` dispara os desse prazo).
   `test/harness.js` recorta módulos do userscript pelos marcadores (`loadLevelModule`: `// ---- Alerta de nível do
   líder` até `// ---- Alerta de estoque de bolas`; `loadPokeSellModule`: `// ---- Venda automática de Pokémon` até
   `// ---- Rota de captura`; `loadCatchModule`: `// ---- Rota de captura` até `// ---- Daily Kill`, com `init.fetchJson(url)` para os

@@ -262,7 +262,7 @@ sem família, depósito congelado ou limite diário (`movesUsed/movesCap`). O id
 `familia`, `erro-jogo`, `guardar`. Teste: parte final de `node test/ui.smoke.js`.
 
 **Pendências:** formato do frame `family` visto só no bundle; confirmar no log na primeira vez que rodar ao
-vivo. Se o `poke-delta` atrasar mais de 4 s, avisa sem guardar (registrado no log).
+vivo. Se o `poke-delta` atrasar mais de 20 s (v3.24.1; era 4 s), avisa sem guardar (registrado no log).
 
 ---
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.24.0
+// @version      3.24.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.24.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.24.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -213,16 +213,24 @@
     //   { type:'poke-delta', poke:{ id, speciesId, name, level, shiny, xp:0,
     //     ivTotal (0..192), quality, power, stats{...}, type1, type2, ... } }
     // Estratégia: ao capturar, esperamos até DETAILS_TIMEOUT_MS pelo
-    // poke-delta. Como plano B (caso o delta venha sem ivTotal/quality),
-    // pedimos `pokes-get` e procuramos o recém-capturado na lista `pokes`.
-    // Se nada chegar a tempo, a notificação sai sem esses campos.
+    // poke-delta (normalmente chega no mesmo segundo). Plano B (v3.24.1): se
+    // em DETAILS_POKES_MS o delta não veio (jogo lento: em 02/10/2026 ele chegou
+    // 5–8 s depois do catch-result e o aviso saía sem poder/qualidade), ou se veio
+    // sem ivTotal/quality, pedimos `pokes-get` e procuramos o recém-capturado na
+    // lista `pokes` — só quando a escolha é inequívoca (um único indivíduo novo da
+    // espécie com xp 0), para nunca atribuir o IV de outro exemplar. Se nada chegar
+    // a tempo, a notificação sai sem esses campos (e avisa isso no embed). Um delta
+    // que chegue DEPOIS do timeout é casado com a captura já encerrada (`orphan`),
+    // não com a próxima da fila.
     //
     // Tabela oficial de faixas (poke.idleworld.online/pokepedia/systems/quality):
     //   <1.0 Weak · 1.0 Common · 1.1 Uncommon · 1.3 Rare · 1.5 Epic
     //   1.7 Legendary · 2.0 Mythic · 3.0 Ancient · 4.0 Divine
 
     const IV_MAX = 192; // 32 por atributo, 6 atributos
-    const DETAILS_TIMEOUT_MS = 4000;
+    const DETAILS_TIMEOUT_MS = 20000;   // espera total pelo poke-delta / pokes
+    const DETAILS_POKES_MS = 4000;      // sem delta até aqui: pede pokes-get (plano B)
+    const DETAILS_ORPHAN_MS = 30000;    // janela em que um delta atrasado ainda é da captura encerrada
     // Do mais raro ao mais fraco; `rank` cresce com a raridade.
     const TIERS = [
         [4.0, 'Divine', 0xf1f5f9], [3.0, 'Ancient', 0xfb923c], [2.0, 'Mythic', 0xe879f9],
@@ -261,6 +269,10 @@
 
     let lastSocket = null;          // socket mais recente do jogo (para pokes-get)
     const awaitingDetails = [];     // capturas esperando poke-delta / pokes
+    const orphanDetails = [];       // capturas que estouraram o timeout (delta atrasado cai aqui)
+    const seenDeltaIds = new Set(); // ids de todo poke-delta visto na sessão (exclui exemplares antigos do plano B)
+    let prevPokesIds = new Set();   // ids do frame `pokes` anterior (quem já estava lá não é o recém-capturado)
+    let prevPokesAt = 0;
 
     function num(v) { return (typeof v === 'number' && Number.isFinite(v)) ? v : null; }
 
@@ -276,6 +288,7 @@
 
     function finishDetails(entry) {
         clearTimeout(entry.timer);
+        clearTimeout(entry.pokesTimer);
         const i = awaitingDetails.indexOf(entry);
         if (i >= 0) awaitingDetails.splice(i, 1);
         entry.resolve(entry.info);
@@ -291,22 +304,39 @@
         return false;
     }
 
-    function requestPokesOnce(entry) {
+    function requestPokesOnce(entry, motivo) {
         if (entry.askedPokes) return;
         entry.askedPokes = true;
-        logEvent('pokes-get', { name: entry.info.name, enviado: sendGame({ type: 'pokes-get' }) });
+        logEvent('pokes-get', { name: entry.info.name, motivo, enviado: sendGame({ type: 'pokes-get' }) });
     }
 
     // Devolve uma Promise com `info` completado (ou não) com ivTotal/quality.
     function withDetails(info) {
         return new Promise((resolve) => {
-            const entry = { info, resolve, pokeId: null, askedPokes: false, timer: null };
+            const entry = { info, resolve, pokeId: null, askedPokes: false, timer: null, pokesTimer: null, at: Date.now() };
             entry.timer = setTimeout(() => {
-                logEvent('detalhes-timeout', { name: info.name });
+                logEvent('detalhes-timeout', { name: info.name, esperaMs: DETAILS_TIMEOUT_MS, pediuPokes: entry.askedPokes });
+                info.detailsTimeout = true;
+                orphanDetails.push({ entry, at: Date.now(), socket: lastSocket });
+                while (orphanDetails.length > 20) orphanDetails.shift();
                 finishDetails(entry);
             }, DETAILS_TIMEOUT_MS);
+            entry.pokesTimer = setTimeout(() => {
+                if (awaitingDetails.includes(entry)) requestPokesOnce(entry, 'poke-delta não chegou em ' + DETAILS_POKES_MS + ' ms');
+            }, DETAILS_POKES_MS);
             awaitingDetails.push(entry);
         });
+    }
+
+    // Delta que chegou depois do timeout: pertence à captura já encerrada (FIFO no mesmo socket), não à próxima
+    // da fila. Se o socket mudou (reconexão), o delta da encerrada se perdeu: a órfã é descartada.
+    function takeOrphan(poke) {
+        const now = Date.now();
+        for (let i = orphanDetails.length - 1; i >= 0; i--) {
+            if (now - orphanDetails[i].at > DETAILS_ORPHAN_MS || orphanDetails[i].socket !== lastSocket) orphanDetails.splice(i, 1);
+        }
+        const i = orphanDetails.findIndex(o => sameSpecies(o.entry, poke));
+        return i >= 0 ? orphanDetails.splice(i, 1)[0] : null;
     }
 
     function sameSpecies(entry, p) {
@@ -318,23 +348,44 @@
         const poke = message.poke || message;
         logEvent('poke-delta', message);
         noteRecentCapture(poke?.id);
+        if (poke?.id != null) {
+            if (seenDeltaIds.size > 5000) seenDeltaIds.clear();
+            seenDeltaIds.add(String(poke.id));
+        }
+        // Só é "novo" (xp 0) quem acabou de ser capturado: delta do líder/time (xp alto) não entra na fila.
+        const novo = !(num(poke?.xp) > 0);
+        const orphan = novo && orphanDetails.length ? takeOrphan(poke) : null;
+        if (orphan) {
+            logEvent('poke-delta-atrasado', { name: orphan.entry.info.name, ivTotal: poke?.ivTotal ?? null, quality: poke?.quality ?? null, atrasoMs: Date.now() - orphan.entry.at });
+            return;
+        }
+        if (!novo) return;
         const entry = awaitingDetails.find(e => sameSpecies(e, poke)) || awaitingDetails[0];
         if (!entry) return;
         if (applyPokeDetails(entry, poke)) finishDetails(entry);
-        else requestPokesOnce(entry);
+        else requestPokesOnce(entry, 'poke-delta sem ivTotal/quality');
     }
 
+    // Plano B: casa o recém-capturado na lista `pokes`. Pelo id do delta quando há; senão, pelo único
+    // indivíduo NOVO da espécie (xp 0, sem delta visto e ausente do frame `pokes` anterior à captura).
+    // Ambíguo (0 ou 2+ candidatos) = segue esperando o delta até o timeout, nunca chuta.
     function handlePokesList(list) {
+        const prev = prevPokesIds, prevAt = prevPokesAt;
+        prevPokesIds = new Set(list.map(p => String(p?.id)));
+        prevPokesAt = Date.now();
         if (!awaitingDetails.length) return;
         for (const entry of [...awaitingDetails]) {
             let match = entry.pokeId != null ? list.find(p => String(p?.id) === entry.pokeId) : null;
+            let candidatos = match ? 1 : 0;
             if (!match) {
-                const same = list.filter(p => p && sameSpecies(entry, p) && p.name);
-                match = same.find(p => p.xp === 0) || same.find(p => p.xp == null) || null;
+                const usePrev = prevAt > 0 && prevAt < entry.at;
+                const novos = list.filter(p => p && p.name && sameSpecies(entry, p) && (p.xp === 0 || p.xp == null)
+                    && !seenDeltaIds.has(String(p.id)) && !(usePrev && prev.has(String(p.id))));
+                candidatos = novos.length;
+                if (novos.length === 1) match = novos[0];
             }
-            logEvent('pokes', { name: entry.info.name, total: list.length, achou: match ? { id: match.id, ivTotal: match.ivTotal, quality: match.quality, level: match.level } : null });
-            if (match) applyPokeDetails(entry, match);
-            finishDetails(entry);
+            logEvent('pokes', { name: entry.info.name, total: list.length, candidatos, achou: match ? { id: match.id, ivTotal: match.ivTotal, quality: match.quality, level: match.level } : null });
+            if (match && applyPokeDetails(entry, match)) finishDetails(entry);
         }
     }
 
@@ -3416,6 +3467,7 @@
         // O jogo mostra o ivTotal (0..192) como "Poder X/192"; usamos o mesmo rótulo.
         const ivTxt = info.ivTotal != null ? `\nPoder: ${info.ivTotal}/${IV_MAX} (${Math.round(info.ivTotal / IV_MAX * 100)}%)` : '';
         const qualTxt = info.quality != null ? `\nQualidade: ${info.quality.toFixed(3)}${tier ? ` · ${tier.name}` : ''}` : '';
+        const noDataTxt = (!isTest && info.ivTotal == null && info.quality == null && info.detailsTimeout) ? `\n⚠ Poder/qualidade não chegaram do jogo em ${DETAILS_TIMEOUT_MS / 1000} s (aviso sem filtro de qualidade)` : '';
         const who = playerName();
 
         const payload = {
@@ -3423,7 +3475,7 @@
             username: 'Poke Idle World',
             embeds: [{
                 title: `${isTest ? 'Teste: ' : 'Captura: '}${info.name}${shinyTag}${tier ? ` [${tier.name}]` : ''}`,
-                description: (who ? `Conta: ${who}\n` : '') + `Em ${new Date().toLocaleString('pt-BR')}` + ivTxt + qualTxt + ballTxt + autoTxt + keepTxt,
+                description: (who ? `Conta: ${who}\n` : '') + `Em ${new Date().toLocaleString('pt-BR')}` + ivTxt + qualTxt + noDataTxt + ballTxt + autoTxt + keepTxt,
                 color: info.shiny ? 0xffd700 : (tier ? tier.color : 0x57f287),
             }],
         };

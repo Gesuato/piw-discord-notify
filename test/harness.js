@@ -683,4 +683,51 @@ function loadGiftModule(cfg, init) {
     return { api, state, cfg, clock };
 }
 
-module.exports = { loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+// Extrai o módulo "IV e qualidade do indivíduo capturado" (espera pelo poke-delta / plano B pokes-get). Timers ficam em
+// `state.timers` ({ fn, ms, id }); `state.fire(ms)` dispara os pendentes com esse prazo; `clock.now` controla o Date.now().
+const DT_START = '    // ---- IV e qualidade do indivíduo capturado';
+const DT_END = '    // ---- Alerta de nível do líder';
+
+function loadDetailsModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(DT_START), b = src.indexOf(DT_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo de detalhes não encontrados no script');
+    const mod = src.slice(a, b);
+
+    const clock = { now: 1_000_000 };
+    const state = { sent: [], logs: [], timers: [], recent: [], clock };
+    let nextId = 1;
+    state.fire = (ms) => {
+        const due = state.timers.filter(t => t.ms === ms);
+        state.timers = state.timers.filter(t => t.ms !== ms);
+        clock.now += ms;
+        for (const t of due) t.fn();
+    };
+    const FakeDate = class extends Date {
+        constructor(...args) { super(...(args.length ? args : [clock.now])); }
+        static now() { return clock.now; }
+    };
+    const ctx = {
+        cfg,
+        TAG: '[teste]',
+        logEvent: (k, dd) => state.logs.push([k, dd]),
+        normalize: (sx) => String(sx || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim(),
+        noteRecentCapture: (id) => state.recent.push(id),
+        setTimeout: (fn, ms) => { const id = nextId++; state.timers.push({ fn, ms, id }); return id; },
+        clearTimeout: (id) => { state.timers = state.timers.filter(t => t.id !== id); },
+        Date: FakeDate,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            withDetails, handlePokeDelta, handlePokesList, passesQualityFilter, qualityTier,
+            get awaiting() { return awaitingDetails.length; },
+            get orphans() { return orphanDetails.length; },
+            DETAILS_TIMEOUT_MS, DETAILS_POKES_MS,
+            setSocket(ws) { lastSocket = ws; },
+        };`);
+    const api = factory(...Object.values(ctx));
+    return { api, state, cfg, clock };
+}
+
+module.exports = { loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
