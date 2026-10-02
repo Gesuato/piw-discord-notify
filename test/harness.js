@@ -248,7 +248,7 @@ function loadPokeSellModule(cfg, init) {
 
     const clock = { now: Date.now() };
     const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
-    const state = { calls: [], hooks: [], logs: [], pokesReqs: 0, awaiting: init.awaiting || [], window: init.window || {} };
+    const state = { calls: [], hooks: [], logs: [], sent: [], pokesReqs: 0, awaiting: init.awaiting || [], window: init.window || {}, onPokesGet: null };
     const TIERS = [[4.0, 'Divine'], [3.0, 'Ancient'], [2.0, 'Mythic'], [1.7, 'Legendary'], [1.5, 'Epic'], [1.3, 'Rare'], [1.1, 'Uncommon'], [1.0, 'Common'], [-Infinity, 'Weak']]
         .map(([min, name], i, arr) => ({ min, name, key: name.toLowerCase(), rank: arr.length - 1 - i }));
     const ctx = {
@@ -257,6 +257,9 @@ function loadPokeSellModule(cfg, init) {
         logEvent: (k, d) => state.logs.push([k, d]),
         postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
         requestPokes: () => { state.pokesReqs++; },
+        // `pokes-get` antes de vender: `init.freshPokes` é a lista que o jogo devolve na hora (ausente = jogo mudo, a
+        // espera de 5 s passa com o relógio falso e a venda segue com a lista antiga).
+        sendGame: (m) => { state.sent.push(m); if (m.type === 'pokes-get' && init.freshPokes && state.onPokesGet) state.onPokesGet(init.freshPokes); return true; },
         lastPokesReqAt: 0,
         tripRequest: (key, dados, motivo) => { state.trips = state.trips || []; state.trips.push({ key, motivo }); },
         playerName: () => 'Teste',
@@ -267,7 +270,7 @@ function loadPokeSellModule(cfg, init) {
         awaitingDetails: state.awaiting,
         TIERS,
         window: state.window,
-        setTimeout: (fn, ms) => { fn(); return 1; },
+        setTimeout: (fn, ms) => { clock.now += ms || 0; fn(); return 1; },
         clearTimeout: () => {},
         Date: FakeDate,
     };
@@ -278,6 +281,7 @@ function loadPokeSellModule(cfg, init) {
             get lastPokeSellAt() { return lastPokeSellAt; },
         };`);
     const api = factory(...Object.values(ctx));
+    state.onPokesGet = (list) => api.pokeSellOnPokes(list);
     return { api, state, cfg, clock };
 }
 

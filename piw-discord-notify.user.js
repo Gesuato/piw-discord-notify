@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.24.6
+// @version      3.24.7
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.24.6';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.24.7';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -1298,6 +1298,7 @@
     const POKE_SELL_URL = '/api/game/pokemon/sell';
     const POKE_SELL_TICK_MS = 30 * 1000;
     const POKE_SELL_RECENT_MS = 2 * 60 * 1000;
+    const POKE_SELL_REFRESH_MS = 5000;        // espera pela lista fresca (pokes-get) antes de vender (v3.24.7)
     const POKE_SELL_BATCH = 50;
 
     let lastPokesList = [];         // último frame `pokes` (para a prévia do painel e a venda)
@@ -1347,14 +1348,30 @@
         return `${p.name || '?'} lv${Number(p.level) || 0} ${t ? t.name : '?'} ${Number.isFinite(Number(p.ivTotal)) ? Number(p.ivTotal) : '?'}/${IV_MAX}`;
     }
 
+    // Lista fresca antes de vender (v3.24.7): o último frame `pokes` pode ser velho (Pokémon posto no time ou travado na
+    // mão depois dele). Pede `pokes-get` e espera o frame novo até POKE_SELL_REFRESH_MS; sem resposta, segue com a última.
+    function pokeSellRefreshList() {
+        const antes = lastPokesAt;
+        if (!sendGame({ type: 'pokes-get' })) return Promise.resolve(false);
+        const t0 = Date.now();
+        return new Promise(res => (function loop() {
+            if (lastPokesAt !== antes) return res(true);
+            if (Date.now() - t0 >= POKE_SELL_REFRESH_MS) return res(false);
+            setTimeout(loop, 250);
+        })());
+    }
+
     async function runPokeSellCycle(manual) {
         if (pokeSellRunning) return { ok: false, motivo: 'venda de Pokémon já em andamento' };
         if (!manual && !cfg.pokeSellEnabled) return { ok: false, motivo: 'desligada' };
-        if (!lastPokesList.length) return { ok: false, motivo: 'time ainda não lido' };
         if (awaitingDetails.length) return { ok: false, motivo: 'captura aguardando detalhes' };
-        const cand = pokeSellCandidates(cfg);
-        if (!cand.length) return { ok: false, motivo: 'nenhum Pokémon dentro das regras' };
         pokeSellRunning = true;
+        let fresca = false;
+        try { fresca = await pokeSellRefreshList(); } catch (err) { fresca = false; }
+        logEvent('venda-pokes-lista', { fresca, total: lastPokesList.length, candidatos: pokeSellCandidates(cfg).length });
+        if (!lastPokesList.length) { pokeSellRunning = false; return { ok: false, motivo: 'time ainda não lido' }; }
+        const cand = pokeSellCandidates(cfg);
+        if (!cand.length) { pokeSellRunning = false; return { ok: false, motivo: 'nenhum Pokémon dentro das regras' }; }
         lastPokeSellAt = Date.now();
         const who = playerName();
         const conta = who ? `Conta: ${who}\n` : '';

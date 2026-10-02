@@ -85,6 +85,29 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         assert(!r.ok && /aguardando/.test(r.motivo), 'manual também espera');
     }
 
+    // 5b) lista fresca antes de vender (v3.24.7): o jogo responde ao pokes-get com c40 já no time -> não vende c40
+    {
+        const cfg = { pokeSellEnabled: true, pokeSellLimits: REGRAS };
+        const fresca = LISTA.map(p => p.id === 'c40' ? P({ id: 'c40', name: 'Rattata', team: true, slot: 2, ivTotal: 40, quality: 1.0 }) : p);
+        const { api, state } = loadPokeSellModule(cfg, { api: okApi(), freshPokes: fresca });
+        api.pokeSellOnPokes(LISTA);   // frame velho: c40 fora do time
+        const r = await api.runPokeSellCycle(true);
+        assert(state.sent.some(m => m.type === 'pokes-get'), 'pediu a lista antes de vender');
+        assert(r.ok && state.calls[0].body.pokeIds.join(',') === 'e99,l90', 'vendeu pela lista fresca (sem c40): ' + JSON.stringify(state.calls[0].body));
+        assert(state.logs.some(l => l[0] === 'venda-pokes-lista' && l[1].fresca === true), 'log da lista fresca');
+    }
+
+    // 5c) jogo mudo ao pokes-get: espera 5 s e vende com a última lista
+    {
+        const cfg = { pokeSellEnabled: true, pokeSellLimits: REGRAS };
+        const { api, state, clock } = loadPokeSellModule(cfg, { api: okApi() });
+        api.pokeSellOnPokes(LISTA);
+        const t0 = clock.now;
+        const r = await api.runPokeSellCycle(true);
+        assert(clock.now - t0 >= 5000 && r.ok && r.vendidos === 3, 'sem resposta: esperou 5 s e vendeu com a lista antiga: ' + JSON.stringify(r));
+        assert(state.logs.some(l => l[0] === 'venda-pokes-lista' && l[1].fresca === false), 'log fresca=false');
+    }
+
     // 6) venda parcial e erro
     {
         const cfg = { pokeSellEnabled: true, pokeSellLimits: REGRAS };
@@ -153,5 +176,5 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         assert(!('__pgSellGuardOn' in win4), 'sem guarda nada é criado em window');
     }
 
-    console.log('OK pokesell.test — limite por raridade, proteções, venda automática/manual, parcial, erro, lote recusado e guarda do PokeGrid');
+    console.log('OK pokesell.test — limite por raridade, proteções, lista fresca antes de vender, venda automática/manual, parcial, erro, lote recusado e guarda do PokeGrid');
 })().catch(e => { console.error(e); process.exit(1); });

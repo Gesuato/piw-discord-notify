@@ -138,6 +138,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   com os campos; `pokes-campos` registra as chaves do frame na 1ª leitura). Nunca vende time/líder, inicial, shiny, `locked`, `listed`, `sellValue` 0, sem IV ou
   capturado há < 2 min (`recentCaptureIds`, alimentado pelo `poke-delta`). Usa o frame `pokes` (por isso
   `requestPokes` roda mesmo sem alvo de nível quando `pokeSellEnabled`) e `POST /api/game/pokemon/sell { pokeIds }`.
+  v3.24.7: `runPokeSellCycle` pede `pokes-get` e espera a lista fresca até 5 s (`pokeSellRefreshList`, log
+  `venda-pokes-lista { fresca }`) antes de decidir, porque o último frame pode ser velho (Pokémon posto no time na mão).
+  Sem resposta segue com a última lista. Harness: `init.freshPokes` responde ao `pokes-get`; timers avançam o relógio.
   A aba de id `bolas` chama-se "🛒 Compras" desde a v3.11.0 (id mantido por causa do `pgDiscordNotifyUi`).
 - Time e líder (v3.2.0): `pokes.list[]` traz `team`, `slot` (0-based), `leader`, `level`, `id` (cuid string).
   Líder = `leader: true` ou o 1º por slot. `poke-xp { id, speciesId, xpGained, xp, level, leveledUp }` chega a
