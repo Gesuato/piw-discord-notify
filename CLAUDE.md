@@ -63,6 +63,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   ms, visto em 02/10/2026 16:50Z): delta novo sem captura esperando fica em `pendingDeltas` por 3 s
   (`DETAILS_PRE_MS`) e a captura que chegar o pega na hora (log `poke-delta-antes`). Não existe "órfã" (delta
   depois do timeout ia para a captura encerrada): nesse cenário ela roubava o delta da captura seguinte.
+  v3.24.5: o delta de UMA captura pode nunca vir (17:34:11Z); o par delta↔captura é pelo TEMPO (captura mais nova
+  com menos de `DETAILS_PAIR_MS` 1,5 s), e só sem captura recente o delta é tratado como atrasado e vai para a mais
+  antiga. Com FIFO puro, um delta perdido deslocava todos os seguintes para a captura errada. Hoje o servidor também
+  NÃO responde ao `pokes-get` durante a hunt (15 pedidos sem frame `pokes`); o plano B só vale quando responde.
 - Cliente envia `{ type:'catch', pendingId, ballId }` para capturar.
 - `balls` → `{ type:'balls', counts:{ '<ballId>': qty } }`, resposta a `{ type:'balls-get' }`. O frame OMITE as bolas
   zeradas (CONFIRMADO em 26/09/2026: a Ultra Ball some de `counts` ao acabar); use `ballQty(id)` (ausente = 0 depois

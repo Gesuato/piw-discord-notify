@@ -133,6 +133,49 @@ function logs(state, kind) { return state.logs.filter(l => l[0] === kind); }
     });
 }
 
+// 5d) caso real de 02/10/2026 17:34Z: o delta de UMA captura não vem. As seguintes (catch-result + delta em ms)
+//     recebem o PRÓPRIO delta (par pelo tempo), e só a captura sem delta estoura o timeout
+{
+    const { api, state } = loadDetailsModule({ ...CFG });
+    api.setSocket(socket(state));
+    const got = [];
+    api.withDetails({ name: 'Diglett', shiny: false, level: null }).then(i => { got[0] = i; });   // A: delta nunca vem
+    state.clock.now += 12000;
+    api.withDetails({ name: 'Diglett', shiny: false, level: null }).then(i => { got[1] = i; });   // B
+    state.clock.now += 5;
+    api.handlePokeDelta({ type: 'poke-delta', poke: diglett('b', 90, 1.546) });
+    assert(api.awaiting === 1 && api.pendentes === 0, 'delta de B foi para B (não para A, a mais antiga)');
+    state.clock.now += 7000;
+    api.withDetails({ name: 'Diglett', shiny: false, level: null }).then(i => { got[2] = i; });   // C
+    state.clock.now += 3;
+    api.handlePokeDelta({ type: 'poke-delta', poke: diglett('c', 124, 1.066) });
+    assert(api.awaiting === 1, 'delta de C foi para C');
+    state.fire(20000);   // A estoura (e os pokes-get de 4 s ficam sem resposta, como no jogo hoje)
+    return_after_tick(() => {
+        assert(got[1] && got[1].pokeId === 'b' && got[1].ivTotal === 90, 'B com o próprio delta: ' + JSON.stringify(got[1]));
+        assert(got[2] && got[2].pokeId === 'c' && got[2].ivTotal === 124, 'C com o próprio delta: ' + JSON.stringify(got[2]));
+        assert(got[0] && got[0].ivTotal == null && got[0].detailsTimeout === true, 'só A saiu sem dados: ' + JSON.stringify(got[0]));
+        assert(api.awaiting === 0 && state.timers.length === 0, 'fila vazia');
+    });
+}
+
+// 5e) delta atrasado (jogo lento) sem captura recente continua indo para a mais antiga (FIFO como reserva)
+{
+    const { api, state } = loadDetailsModule({ ...CFG });
+    api.setSocket(socket(state));
+    const got = [];
+    api.withDetails({ name: 'Phanpy', shiny: false, level: null }).then(i => { got[0] = i; });
+    state.clock.now += 6000;
+    api.withDetails({ name: 'Phanpy', shiny: false, level: null }).then(i => { got[1] = i; });
+    state.clock.now += 4000;
+    api.handlePokeDelta({ type: 'poke-delta', poke: { id: 'a', name: 'Phanpy', level: 1, xp: 0, ivTotal: 58, quality: 0.975 } });
+    state.clock.now += 4000;
+    api.handlePokeDelta({ type: 'poke-delta', poke: { id: 'b', name: 'Phanpy', level: 1, xp: 0, ivTotal: 140, quality: 1.7 } });
+    return_after_tick(() => {
+        assert(got[0] && got[0].pokeId === 'a' && got[1] && got[1].pokeId === 'b', 'atrasados em ordem: ' + JSON.stringify(got));
+    });
+}
+
 // 5c) ordem normal continua igual: catch-result primeiro, delta depois (nada fica pendente)
 {
     const { api, state } = loadDetailsModule({ ...CFG });

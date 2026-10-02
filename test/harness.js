@@ -723,7 +723,7 @@ function loadDetailsModule(cfg, init) {
             withDetails, handlePokeDelta, handlePokesList, passesQualityFilter, qualityTier,
             get awaiting() { return awaitingDetails.length; },
             get pendentes() { return pendingDeltas.length; },
-            DETAILS_TIMEOUT_MS, DETAILS_POKES_MS, DETAILS_PRE_MS,
+            DETAILS_TIMEOUT_MS, DETAILS_POKES_MS, DETAILS_PRE_MS, DETAILS_PAIR_MS,
             setSocket(ws) { lastSocket = ws; },
         };`);
     const api = factory(...Object.values(ctx));

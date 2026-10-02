@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.24.4
+// @version      3.24.5
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.24.4';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.24.5';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -226,6 +226,12 @@
     // logo depois o pega na hora. Não existe mais "órfã" (delta depois do timeout
     // ia para a captura encerrada): nesse cenário ela roubava o delta da captura
     // seguinte e encadeava timeouts.
+    // v3.24.5: às vezes o delta de UMA captura simplesmente não vem (17:34:11Z do
+    // mesmo dia). Com a fila em FIFO, cada delta seguinte ia para a captura mais
+    // antiga (a errada) e o último da corrente estourava. Agora o par é pelo tempo:
+    // o delta vai para a captura mais NOVA que chegou há menos de DETAILS_PAIR_MS
+    // (o delta normal chega até ~10 ms depois do catch-result); só sem captura
+    // recente é que ele é tratado como atrasado e vai para a mais antiga.
     //
     // Tabela oficial de faixas (poke.idleworld.online/pokepedia/systems/quality):
     //   <1.0 Weak · 1.0 Common · 1.1 Uncommon · 1.3 Rare · 1.5 Epic
@@ -235,6 +241,7 @@
     const DETAILS_TIMEOUT_MS = 20000;   // espera total pelo poke-delta / pokes
     const DETAILS_POKES_MS = 4000;      // sem delta até aqui: pede pokes-get (plano B)
     const DETAILS_PRE_MS = 3000;        // delta que chegou ANTES do catch-result espera a captura por este tempo
+    const DETAILS_PAIR_MS = 1500;       // delta é da captura mais nova se ela chegou há menos que isto; senão, da mais antiga
     // Do mais raro ao mais fraco; `rank` cresce com a raridade.
     const TIERS = [
         [4.0, 'Divine', 0xf1f5f9], [3.0, 'Ancient', 0xfb923c], [2.0, 'Mythic', 0xe879f9],
@@ -364,7 +371,11 @@
         }
         // Só é "novo" (xp 0) quem acabou de ser capturado: delta do líder/time (xp alto) não entra na fila.
         if (num(poke?.xp) > 0) return;
-        const entry = awaitingDetails.find(e => sameSpecies(e, poke)) || awaitingDetails[0];
+        const same = awaitingDetails.filter(e => sameSpecies(e, poke));
+        const pool = same.length ? same : awaitingDetails;
+        let entry = null;
+        for (let i = pool.length - 1; i >= 0; i--) if (Date.now() - pool[i].at <= DETAILS_PAIR_MS) { entry = pool[i]; break; }
+        if (!entry) entry = pool[0] || null;   // nenhuma captura recente: delta atrasado, vai para a mais antiga
         if (!entry) {
             // Ninguém esperando: o catch-result ainda não chegou (ou o delta é de uma captura já encerrada). Guarda um pouco.
             prunePendingDeltas();
