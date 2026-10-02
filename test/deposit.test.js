@@ -98,6 +98,13 @@ const sellRule = (p) => (Number(p.ivTotal) < 30 ? null : 'poder alto');   // "ve
         const { api: a2, state: s2 } = loadDepositModule({ depositItems: 'family' }, { api: depotApi(BAG.slice()), items: ITEMS, store: { pgDiscordNotifyDrops: DROPS }, family: null });
         const r2 = await a2.depositCityWork();
         assert(!s2.family.length && /família/.test(r2.motivo) && /não conseguiu guardar/.test(s2.hooks[0].content), 'sem família: ' + JSON.stringify(r2));
+
+        // jogo mudo ao family-get (v3.24.2): pede duas vezes e diz que não respondeu, NÃO que a conta está sem família
+        const { api: a3, state: s3 } = loadDepositModule({ depositItems: 'family' }, { api: depotApi(BAG.slice()), items: ITEMS, store: { pgDiscordNotifyDrops: DROPS }, familyReply: false });
+        const r3 = await a3.depositCityWork();
+        assert(s3.sent.filter(m => m.type === 'family-get').length === 2, 'family-get pedido 2x: ' + JSON.stringify(s3.sent));
+        assert(!s3.family.length && /não respondeu/.test(r3.motivo) && !/não está numa família/.test(r3.motivo), 'jogo mudo: ' + JSON.stringify(r3));
+        assert(s3.logs.some(l => l[0] === 'familia-espera'), 'log da 2ª espera');
     }
 
     // 6) drops vistos em field-kill ficam guardados no localStorage; desligado não faz nada

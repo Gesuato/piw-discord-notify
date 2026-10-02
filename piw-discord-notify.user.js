@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.24.1
+// @version      3.24.2
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.24.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.24.2';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -2837,6 +2837,7 @@
     // Consumíveis nunca saem da mochila (o jogo usa na hunt ou o jogador usa na mão), mesmo que um dia caiam em hunt.
     const DEPOSIT_SKIP_CATS = ['heal', 'revive', 'ball', 'berry', 'held', 'tm', 'addon', 'pokecard', 'vitamin', 'energy'];
     const DEPOSIT_WAIT_MS = 5000;
+    const DEPOSIT_WAIT_RETRY_MS = 15000;      // 2ª espera pelo frame `family` (v3.24.2: jogo lento não é "sem família")
     const DEPOSIT_GAP_MS = [300, 700];        // pausa entre movimentos (sorteada)
     const droppedIds = loadDropped();         // ids de item que já caíram em hunt
     let lastDeposit = null;                   // { at, itens, pokes, erros } da última viagem
@@ -2922,8 +2923,15 @@
         const pararFamilia = (motivo) => FAMILY_STOP.test(motivo || '');
         try {
             if (lista.length || cfg.depositItems === 'family' || cfg.depositPokes === 'family') {
-                await waitFrame(() => lastFamilyAt, () => sendGame({ type: 'family-get' }), DEPOSIT_WAIT_MS);
-                if (!lastFamily) { res.erros.push('a conta não está numa família'); movs = 0; }
+                // Sem resposta ao family-get, `lastFamily` segue null e parecia "sem família" (bobosky, 02/10/2026, com o
+                // jogo lento). Agora: tenta de novo com espera maior e, ainda mudo, diz que o jogo não respondeu.
+                let veio = await waitFrame(() => lastFamilyAt, () => sendGame({ type: 'family-get' }), DEPOSIT_WAIT_MS);
+                if (!veio && !lastFamilyAt) {
+                    logEvent('familia-espera', { tentativa: 2, esperaMs: DEPOSIT_WAIT_RETRY_MS });
+                    veio = await waitFrame(() => lastFamilyAt, () => sendGame({ type: 'family-get' }), DEPOSIT_WAIT_RETRY_MS);
+                }
+                if (!veio && !lastFamilyAt) { res.erros.push(`o jogo não respondeu ao family-get em ${(DEPOSIT_WAIT_MS + DEPOSIT_WAIT_RETRY_MS) / 1000} s (tento na próxima viagem)`); movs = 0; }
+                else if (!lastFamily) { res.erros.push('a conta não está numa família'); movs = 0; }
                 else if (lastFamily.frozen) { res.erros.push('depósito da família congelado'); movs = 0; }
                 else movs = Math.max(0, lastFamily.movesCap - lastFamily.movesUsed);
                 if (lastFamily && !movs && !lastFamily.frozen) res.erros.push(`limite diário da família (${lastFamily.movesUsed}/${lastFamily.movesCap})`);
@@ -3545,7 +3553,7 @@
     function handleFamily(message) {
         const fam = message.family || null;
         const depot = message.depot || {};
-        logEvent('familia', { temFamilia: Boolean(fam), movimentos: fam ? `${fam.movesUsed}/${fam.movesCap}` : null, congelado: Boolean(fam?.frozen), pokesNoDeposito: Array.isArray(depot.pokes) ? depot.pokes.length : null });
+        logEvent('familia', { temFamilia: Boolean(fam), movimentos: fam ? `${fam.movesUsed}/${fam.movesCap}` : null, congelado: Boolean(fam?.frozen), pokesNoDeposito: Array.isArray(depot.pokes) ? depot.pokes.length : null, chaves: fam ? undefined : Object.keys(message || {}) });
         catchOnFamily(depot.pokes);
         lastFamily = fam ? { movesUsed: Number(fam.movesUsed) || 0, movesCap: Number(fam.movesCap) || 0, frozen: Boolean(fam.frozen) } : null;
         lastFamilyAt = Date.now();

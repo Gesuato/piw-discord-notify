@@ -444,7 +444,7 @@ function loadClanModule(cfg, init) {
 
 // Extrai o módulo "Guardar na cidade" (v3.18.0). `init.api(url, opts)` responde depot/move; `init.family` é o frame da
 // família devolvido ao `family-get` (null = sem família); `init.pokes` a lista do `pokes-get`; `init.familyResp(payload)`
-// decide o resultado de cada family-action (padrão ok).
+// decide o resultado de cada family-action (padrão ok); `init.familyReply: false` = o jogo nunca responde ao family-get.
 const G_START = '    // ---- Guardar na cidade';
 const G_END = '    // ---- Viagem à cidade';
 
@@ -462,7 +462,7 @@ function loadDepositModule(cfg, init) {
         gameApi: (url, opts) => { state.calls.push({ url, opts }); return Promise.resolve().then(() => init.api(url, opts)); },
         sendGame: (m) => {
             state.sent.push(m);
-            if (m.type === 'family-get' && state.set) state.set.family(init.family === undefined ? { movesUsed: 0, movesCap: 50, frozen: false } : init.family);
+            if (m.type === 'family-get' && state.set && init.familyReply !== false) state.set.family(init.family === undefined ? { movesUsed: 0, movesCap: 50, frozen: false } : init.family);
             if (m.type === 'pokes-get' && state.set) state.set.pokes(init.pokes || []);
             return true;
         },

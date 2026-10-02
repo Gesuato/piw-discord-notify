@@ -197,6 +197,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   família (`family-action item`); Pokémon não vendidos → só família (o box JÁ é o Depot comum de Pokémon). Lista escolhida
   `depositFamilyList [{ id, name, keep }]` (v3.19.0) vai primeiro, de qualquer origem; o guardar NUNCA gera viagem própria. Família via
   `familyAction(payload, evento, dados, check)`; limite diário em `lastFamily.movesCap`. O que entra na família é DELA.
+  v3.24.2: sem resposta ao `family-get` em 5 s o guardar pede de novo (mais 15 s) e, ainda mudo, erra com "o jogo não
+  respondeu" — antes `lastFamily` null virava "a conta não está numa família" (bobosky, 02/10/2026, jogo lento). O log
+  `familia` traz `chaves` do frame quando vem sem `family`. Harness: `init.familyReply: false` = jogo mudo.
 - Clã (v3.17.0, aba Profissão, ROADMAP #22, módulo `// ---- Clã` antes da Viagem): `GET /api/game/clans` (tarefa em
   `nextTask`: items/caught/kills), `POST /clans/rankup`, `/clans/change { clan, targetRank }` (só a 1ª entrada, grátis;
   NUNCA trocar de clã, custa diamante), `POST /api/game/convert { baseItemId, packs }` (100 base = 1 item de clã, mapa
