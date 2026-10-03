@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.25.0
+// @version      3.26.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.25.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.26.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -77,6 +77,8 @@
         giftEnabled: false,     // v3.24.0 Daily Gift: resgatar o presente do dia (calendário de 28 dias) sozinho
         giftCenterMode: 'daily', // ...e no Gift Center (correio): 'daily' = entregar só o do dia | 'all' = tudo que aparecer | '' = não mexer
         evolveEnabled: false,   // v3.25.0 Evolução: quem do time chega ao nível vai à cidade (Cerulean) e evolui com as pedras da mochila
+        slotEnabled: false,     // v3.26.0 Poke Slot Machine: na viagem à cidade (shopping) gira o roll grátis e ativa o bônus
+        slotWanted: '',         // ...Pokémon pedidos, em ordem de preferência (vírgula); nenhum sorteado = escolhe um qualquer
         clanEnabled: false,     // v3.17.0 Clã (aba Profissão): acompanhar a tarefa de rank, guardar os itens base, converter na viagem
         clanKey: 'orebound',    // clã em que o script entra sozinho se a conta não tiver nenhum (1ª entrada é grátis)
         clanRankup: true,       // ...subir de rank sozinho quando a tarefa fechar (na viagem à cidade)
@@ -2344,6 +2346,267 @@
         return partes.join(' · ') + ult;
     }
 
+    // ---- Poke Slot Machine: girar de graça, ativar o bônus no Pokémon pedido (ou num qualquer) e avisar (v3.26.0) ----
+    //   O NPC "Poke Slot Machine" (kind `pokeslot`, "Sorteie bônus por espécie na máquina") fica na cidade `shopping`;
+    //   por dentro o jogo chama o sistema de "golden stars". Levantado no bundle do cliente em 02/10/2026 (componente `a0`
+    //   da janela; formatos ainda não vistos no log — o log `slot-campos` registra as chaves na 1ª leitura):
+    //   GET  /api/game/golden-stars -> { cards, cardIcon, cardItemId, isVip, slots:[{ slot, unlocked, unlockedPerm,
+    //        unlockedUntil, vipLocked, freeReady, freeRollAt, active:{ speciesId, name, looktype, pct, bonusType, rarity,
+    //        startedAt, expiresAt } | null, expired:{ name, ... } | null, candidates:[{ speciesId, name, looktype }] | null,
+    //        unlockPerm, unlockTemp }], config:{ rarities:[{ key, color, min, max }], bonuses:[{ type, icon }], candidates (9),
+    //        freeRollCooldownMs, rollCostCards, rerollCostCards, rerollBonusCards, pickSpeciesCards } }
+    //   POST /api/game/golden-stars/roll { slot } -> { state, candidates:[...] }  (grátis com `freeReady`; senão gasta Poke Slot
+    //        Cards — o script NUNCA gasta: só gira slot com roll grátis pronto)
+    //   POST /api/game/golden-stars/pick { slot, speciesId } -> { active, state }  (speciesId de `candidates`; bônus, % e
+    //        raridade são sorteados aqui; "a estrela atual continua até você escolher um Pokémon")
+    //   Não usados: POST .../reroll-bonus { slot } (1 card), GET .../species?slot= + POST .../species { slot, speciesId }
+    //   (escolha direta, 5 cards), POST .../unlock { slot, mode:'perm'|'temp' }, GET .../history?limit=. Depois de mudar
+    //   algo o cliente manda `golden-stars-refresh` pelo socket (só para o HUD).
+    //   Regras (texto do próprio jogo): o bônus vale SÓ nas interações com a espécie sorteada (EXP, loot, captura, dano,
+    //   defesa, crítico, shiny); cada slot tem um roll grátis a cada `freeRollCooldownMs`; ao rolar escolhe-se 1 entre 9;
+    //   dois slots nunca repetem a mesma espécie nem o mesmo tipo de bônus; só entram espécies de hunts liberadas para o
+    //   nível da conta. Slot 1 é de todos; os outros se desbloqueiam (ouro/diamante/VIP).
+    //   Fluxo: tique de 1 min lê o estado (de novo quando o próximo roll grátis vence ou uma estrela expira; no máximo a
+    //   cada 30 min). Slot "pronto" = liberado, sem trava de VIP e com sorteio esperando escolha OU roll grátis sem uma
+    //   estrela ativa que já seja um dos Pokémon pedidos. Com slot pronto pede viagem à cidade (`tripRequest('slot')`, e
+    //   vai de carona em toda viagem); na cidade, `slotCityWork` manda `set-city shopping` se a viagem foi para outra
+    //   cidade, faz o roll grátis de cada slot pronto e escolhe o 1º da lista `cfg.slotWanted` que estiver entre os
+    //   sorteados — nenhum deles saiu = escolhe um sorteado qualquer (pedido do usuário). Aviso no canal de Alertas.
+    //   Erro (leitura, roll ou escolha) = espera 15 min antes de tentar de novo o mesmo slot.
+
+    const SLOT_URL = '/api/game/golden-stars';
+    const SLOT_CITY = 'shopping';               // cidade do NPC (lista de NPCs do bundle: `shopping:pokeslot`)
+    const SLOT_CITY_WAIT_MS = 2000;
+    const SLOT_TICK_MS = 60 * 1000;
+    const SLOT_POLL_MS = 30 * 60 * 1000;        // relê o estado de meia em meia hora (antes disso só quando um prazo vence)
+    const SLOT_RETRY_MS = 15 * 60 * 1000;       // espera depois de um erro, e antes de insistir no mesmo slot
+    const SLOT_BETWEEN_MS = [1200, 2500];       // entre o roll e a escolha, e entre slots ("humano")
+    const SLOT_BONUS = { exp: 'EXP', loot: 'Loot', catch: 'Captura', damage: 'Dano', defense: 'Defesa', critChance: 'Chance de crítico', critDamage: 'Dano crítico', shiny: 'Chance de shiny' };
+    const SLOT_RARITY = { common: 'Comum', uncommon: 'Incomum', rare: 'Raro', epic: 'Épico', legendary: 'Lendário' };
+
+    let slotState = null;        // última leitura (parseSlotState)
+    let slotFetchedAt = 0;
+    let slotBusy = false;        // lendo o estado
+    let slotWorking = false;     // na cidade, girando
+    let slotFailedAt = 0;        // último erro (leitura/roll/escolha)
+    let slotLast = null;         // { at, feitos:[{ slot, name, pct, bonusType, rarity, expiresAt, aleatorio, candidatos }], falhas:[{ slot, motivo }] }
+    let slotSig = '';
+    let slotFieldsLogged = false;
+    const slotTriedAt = {};      // slot -> quando foi girado/falhou por último (não insiste antes de SLOT_RETRY_MS)
+    let onSlotChange = null;     // callback do painel
+
+    function slotEnabled(d) { return Boolean((d || cfg).slotEnabled); }
+    // Lista de Pokémon pedidos, em ordem de preferência (vírgula, ponto e vírgula ou linha), normalizada e sem repetição.
+    function slotWantedList(d) {
+        const out = [];
+        for (const p of String((d || cfg).slotWanted || '').split(/[,;\n]+/)) { const n = normalize(p); if (n && !out.includes(n)) out.push(n); }
+        return out;
+    }
+    function slotNotify() { if (onSlotChange) { try { onSlotChange(); } catch { /* painel fechado */ } } }
+    const slotRnd = (par) => par[0] + Math.floor(Math.random() * (par[1] - par[0] + 1));
+    const slotWait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    const slotHora = (ts) => (ts ? new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '?');
+    function slotFmtLeft(ms) {
+        ms = Math.max(0, Number(ms) || 0);
+        const h = Math.floor(ms / 36e5), m = Math.round((ms % 36e5) / 6e4);
+        return h > 0 ? `${h}h${m ? String(m).padStart(2, '0') : ''}` : `${Math.max(1, m)}min`;
+    }
+    const slotBonusName = (t) => SLOT_BONUS[t] || String(t || '?');
+    const slotRarityName = (r) => SLOT_RARITY[r] || String(r || '?');
+    const slotStarText = (a) => `${a.name} +${a.pct}% ${slotBonusName(a.bonusType)}${a.rarity ? ` (${slotRarityName(a.rarity)})` : ''}`;
+
+    function parseSlotActive(a) {
+        if (!a || typeof a !== 'object') return null;
+        return { speciesId: Number(a.speciesId) || 0, name: String(a.name || '?'), pct: Number(a.pct) || 0, bonusType: String(a.bonusType || ''), rarity: String(a.rarity || ''), startedAt: Number(a.startedAt) || 0, expiresAt: Number(a.expiresAt) || 0 };
+    }
+    const parseSlotCands = (list) => (Array.isArray(list) && list.length ? list.map(c => ({ speciesId: Number(c?.speciesId) || 0, name: String(c?.name || '?') })) : null);
+    function parseSlotState(s) {
+        const slots = (Array.isArray(s?.slots) ? s.slots : []).map((x, i) => ({
+            slot: Number.isFinite(Number(x?.slot)) ? Number(x.slot) : i,
+            unlocked: Boolean(x?.unlocked), vipLocked: Boolean(x?.vipLocked),
+            freeReady: Boolean(x?.freeReady), freeRollAt: Number(x?.freeRollAt) || 0,
+            active: parseSlotActive(x?.active),
+            candidates: parseSlotCands(x?.candidates),
+        }));
+        return { cards: Number(s?.cards) || 0, cooldownMs: Number(s?.config?.freeRollCooldownMs) || 0, nCandidates: Number(s?.config?.candidates) || 0, slots };
+    }
+    function slotActive(x, now) { return x?.active && x.active.expiresAt > (now || Date.now()) ? x.active : null; }
+    // Slots que valem uma ida à máquina (ver o cabeçalho). `st` = estado a usar (padrão: o último lido).
+    function slotReadySlots(d, st) {
+        d = d || cfg; st = st || slotState;
+        if (!st) return [];
+        const wanted = slotWantedList(d);
+        const now = Date.now();
+        return st.slots.filter(x => {
+            if (!x.unlocked || x.vipLocked) return false;
+            if (x.candidates) return true;
+            if (!x.freeReady) return false;
+            const a = slotActive(x, now);
+            return !(a && wanted.includes(normalize(a.name)));
+        });
+    }
+    // Os prontos em que o script ainda não insistiu há pouco (girados ou com erro nos últimos SLOT_RETRY_MS).
+    function slotPending(d, st) { const now = Date.now(); return slotReadySlots(d, st).filter(x => !(slotTriedAt[x.slot] && now - slotTriedAt[x.slot] < SLOT_RETRY_MS)); }
+    function slotWanted(d) { return slotEnabled(d) && !slotWorking && slotPending(d).length > 0; }   // carona na viagem
+    // Próximo prazo que muda o estado sem ler de novo: roll grátis vencendo ou estrela expirando.
+    function slotNextEventAt(st) {
+        st = st || slotState;
+        const ts = [];
+        for (const x of st?.slots || []) {
+            if (!x.unlocked || x.vipLocked) continue;
+            if (!x.freeReady && x.freeRollAt > 0) ts.push(x.freeRollAt);
+            if (x.active && x.active.expiresAt > 0) ts.push(x.active.expiresAt);
+        }
+        return ts.length ? Math.min(...ts) : 0;
+    }
+    function slotDue() {
+        if (!slotState) return true;
+        const now = Date.now();
+        if (now - slotFetchedAt >= SLOT_POLL_MS) return true;
+        const ev = slotNextEventAt();
+        return ev > 0 && ev <= now && slotFetchedAt < ev;
+    }
+    // Com slot pronto, pede a viagem (idempotente: `tripRequest` guarda por chave).
+    function slotAsk() {
+        if (!slotEnabled() || slotWorking) return;
+        if (slotFailedAt && Date.now() - slotFailedAt < SLOT_RETRY_MS) return;
+        const pend = slotPending();
+        if (pend.length) tripRequest('slot', null, pend.map(x => `slot ${x.slot + 1} (${x.candidates ? 'sorteio esperando escolha' : 'roll grátis'})`).join(', '));
+    }
+    function slotTick(force) {
+        if (!slotEnabled() || slotBusy || slotWorking) return;
+        if (!force && slotFailedAt && Date.now() - slotFailedAt < SLOT_RETRY_MS) return;
+        if (!force && !slotDue()) { slotAsk(); return; }
+        return slotRead().then(() => slotAsk());
+    }
+    async function slotRead() {
+        slotBusy = true;
+        try {
+            const raw = await gameApi(SLOT_URL);
+            if (!slotFieldsLogged && raw && typeof raw === 'object') {
+                slotFieldsLogged = true;
+                const s0 = Array.isArray(raw.slots) ? raw.slots.find(x => x && typeof x === 'object') : null;
+                logEvent('slot-campos', { chaves: Object.keys(raw), slot: s0 ? Object.keys(s0) : null, ativa: s0?.active && typeof s0.active === 'object' ? Object.keys(s0.active) : null, config: raw.config && typeof raw.config === 'object' ? Object.keys(raw.config) : null });
+            }
+            slotState = parseSlotState(raw);
+            slotFailedAt = 0;
+            const sig = JSON.stringify(slotState.slots.map(x => [x.unlocked, x.vipLocked, x.freeReady, x.freeRollAt, x.active?.name, x.active?.expiresAt, x.candidates?.length || 0]));
+            if (sig !== slotSig) {
+                slotSig = sig;
+                logEvent('slot', {
+                    cards: slotState.cards, gratisACada: slotState.cooldownMs ? slotFmtLeft(slotState.cooldownMs) : null,
+                    slots: slotState.slots.map(x => ({ slot: x.slot, liberado: x.unlocked, vip: x.vipLocked, gratis: x.freeReady, gratisEm: !x.freeReady && x.freeRollAt ? new Date(x.freeRollAt).toISOString() : null, ativa: x.active ? slotStarText(x.active) : null, ate: x.active ? new Date(x.active.expiresAt).toISOString() : null, sorteados: x.candidates ? x.candidates.map(c => c.name) : null })),
+                });
+            }
+        } catch (err) {
+            slotFailedAt = Date.now();
+            logEvent('slot-erro', { etapa: 'leitura', erro: String(err?.message || err) });
+        } finally {
+            slotFetchedAt = Date.now();
+            slotBusy = false;
+            slotNotify();
+        }
+        return slotState;
+    }
+
+    // Tarefa da viagem (na cidade): relê a máquina, vai ao shopping se a viagem foi para outra cidade e, em cada slot
+    // pronto, faz o roll grátis (ou usa o sorteio pendente) e escolhe o Pokémon.
+    async function slotCityWork() {
+        if (!slotEnabled()) return { ok: true, motivo: 'desligado' };
+        slotWorking = true;
+        const feitos = [], falhas = [];
+        const wanted = slotWantedList();
+        try {
+            await slotRead();
+            if (!slotState) return { ok: false, motivo: 'não consegui ler a máquina' };
+            const pend = slotPending();
+            if (!pend.length) return { ok: true, motivo: 'nenhum slot com roll grátis pronto' };
+            if (tripCity() !== SLOT_CITY) {
+                logEvent('slot-cidade', { de: tripCity(), para: SLOT_CITY });
+                sendGame({ type: 'set-city', slug: SLOT_CITY });
+                await slotWait(SLOT_CITY_WAIT_MS);
+            }
+            for (const x of pend) {
+                let etapa = 'roll';
+                slotTriedAt[x.slot] = Date.now();
+                try {
+                    let cands = x.candidates;
+                    if (!cands) {
+                        const r = await gameApi(`${SLOT_URL}/roll`, { method: 'POST', body: JSON.stringify({ slot: x.slot }) });
+                        cands = parseSlotCands(r?.candidates) || parseSlotCands(r?.state?.slots?.find?.(s => Number(s?.slot) === x.slot)?.candidates);
+                        if (r?.state) slotState = parseSlotState(r.state);
+                        if (!cands) throw new Error('o roll não devolveu os sorteados');
+                        await slotWait(slotRnd(SLOT_BETWEEN_MS));
+                    }
+                    etapa = 'escolha';
+                    const nomes = cands.map(c => normalize(c.name));
+                    let escolha = null;
+                    for (const w of wanted) { const i = nomes.indexOf(w); if (i >= 0) { escolha = cands[i]; break; } }
+                    const aleatorio = !escolha;
+                    if (!escolha) escolha = cands[Math.floor(Math.random() * cands.length)];
+                    const r = await gameApi(`${SLOT_URL}/pick`, { method: 'POST', body: JSON.stringify({ slot: x.slot, speciesId: escolha.speciesId }) });
+                    if (r?.state) slotState = parseSlotState(r.state);
+                    const a = parseSlotActive(r?.active) || { name: escolha.name, pct: 0, bonusType: '', rarity: '', startedAt: 0, expiresAt: 0 };
+                    const feito = Object.assign({ slot: x.slot, aleatorio, candidatos: cands.map(c => c.name) }, a);
+                    feitos.push(feito);
+                    logEvent('slot-roll', { slot: x.slot, candidatos: feito.candidatos, pedidos: wanted, escolhido: feito.name, aleatorio, bonus: feito.bonusType, pct: feito.pct, raridade: feito.rarity, ate: feito.expiresAt ? new Date(feito.expiresAt).toISOString() : null, campos: r?.active && typeof r.active === 'object' ? Object.keys(r.active) : null });
+                } catch (err) {
+                    falhas.push({ slot: x.slot, motivo: `${etapa}: ${err?.message || err}` });
+                    logEvent('slot-erro', { etapa, slot: x.slot, erro: String(err?.message || err) });
+                }
+                await slotWait(slotRnd(SLOT_BETWEEN_MS));
+            }
+            slotLast = { at: Date.now(), feitos, falhas };
+            await slotRead();                               // estado final (próximo roll grátis, estrela nova)
+            if (falhas.length) slotFailedAt = Date.now();   // depois da releitura (ela zera o carimbo quando lê bem)
+            if (feitos.length || falhas.length) slotNotifyDiscord(feitos, falhas, wanted);
+            return { ok: falhas.length === 0, motivo: falhas.length ? falhas.map(f => `slot ${f.slot + 1} ${f.motivo}`).join('; ') : null, feitos: feitos.length, falhas: falhas.length };
+        } finally {
+            slotWorking = false;
+            slotNotify();
+        }
+    }
+
+    function slotNotifyDiscord(feitos, falhas, wanted) {
+        const who = playerName();
+        const mention = cfg.mentionUserId ? `<@${cfg.mentionUserId}> ` : '';
+        const linhas = feitos.map(f => `Slot ${f.slot + 1}: **${slotStarText(f)}**${f.expiresAt ? ` até ${slotHora(f.expiresAt)}` : ''}${f.aleatorio && wanted.length ? ` — nenhum dos pedidos saiu (sorteados: ${f.candidatos.join(', ')})` : ''}`)
+            .concat(falhas.map(f => `⚠ Slot ${f.slot + 1}: ${f.motivo}`));
+        const resumo = feitos.length ? feitos.map(f => `**${f.name}** +${f.pct}% ${slotBonusName(f.bonusType)}`).join(' e ') : null;
+        postWebhook('alert', {
+            content: `${mention}🎰 ${who ? `**${who}**` : 'Sua conta'} ${resumo ? `girou a Poke Slot Machine: ${resumo}` : 'não conseguiu girar a Poke Slot Machine'}`,
+            username: 'Poke Idle World',
+            embeds: [{
+                title: feitos.length ? (falhas.length ? 'Poke Slot Machine (parcial)' : 'Poke Slot Machine') : 'Poke Slot Machine: falhou',
+                description: (who ? `Conta: ${who}\n` : '') + linhas.join('\n') + (wanted.length ? `\nPedidos: ${wanted.join(', ')}` : '') + `\nEm ${new Date().toLocaleString('pt-BR')}`,
+                color: feitos.length ? (falhas.length || feitos.some(f => f.aleatorio) ? 0xfee75c : 0x57f287) : 0xed4245,
+            }],
+        }, { evento: 'slot', feitos: feitos.map(f => ({ slot: f.slot, name: f.name, aleatorio: f.aleatorio })), falhas: falhas.length });
+    }
+
+    // Linha do painel.
+    function slotStatus(d) {
+        d = d || cfg;
+        if (!slotState) return slotFetchedAt ? 'não consegui ler a máquina (veja o log)' : (d.slotEnabled ? 'ainda não lida' : 'liga para ler a máquina');
+        const now = Date.now();
+        const wanted = slotWantedList(d);
+        const partes = slotState.slots.map(x => {
+            const n = `Slot ${x.slot + 1}`;
+            if (!x.unlocked) return `${n}: bloqueado`;
+            if (x.vipLocked) return `${n}: só VIP`;
+            const a = slotActive(x, now);
+            const estrela = a ? `★ ${slotStarText(a)} até ${slotHora(a.expiresAt)}` : 'sem estrela';
+            const roll = x.candidates ? `${x.candidates.length} sorteados esperando escolha`
+                : x.freeReady ? (a && wanted.includes(normalize(a.name)) ? 'roll grátis pronto (segura o pedido até expirar)' : (slotWorking ? 'girando…' : 'roll grátis pronto → viagem'))
+                : x.freeRollAt > now ? `grátis em ${slotFmtLeft(x.freeRollAt - now)}` : '';
+            return `${n}: ${estrela}${roll ? ` · ${roll}` : ''}`;
+        });
+        const extra = [`${fmtNum(slotState.cards)} cards`];
+        if (slotState.cooldownMs) extra.push(`roll grátis a cada ${slotFmtLeft(slotState.cooldownMs)}`);
+        if (slotLast) extra.push(`última ida ${slotHora(slotLast.at)}: ${slotLast.feitos.map(f => `${f.name}${f.aleatorio ? ' (aleatório)' : ''}`).concat(slotLast.falhas.map(f => `slot ${f.slot + 1} ✖`)).join(', ') || 'nada'}`);
+        return partes.concat(extra).join(' · ');
+    }
+
     // ---- Daily Gift: resgatar o presente do dia (calendário de 28 dias) e entregar pelo Gift Center (v3.24.0) ----
     // O "Daily Gift" (🎁 do menu do jogo) é um calendário de 28 dias: um presente por dia, resgatado na mão. Não passa
     // pelo socket — a janela consulta por REST (levantado no bundle em 30/09/2026):
@@ -3264,7 +3527,8 @@
         const cla = typeof clanWantsCity === 'function' && clanWantsCity(d);
         const sup = typeof supplyLow === 'function' ? supplyLow(d) : [];
         const suprimentos = sup.length ? sup : null;
-        return { drops, pokes, bolas, cla, suprimentos, nada: !drops && !pokes && !bolas && !cla && !suprimentos };
+        const slot = typeof slotWanted === 'function' && slotWanted(d);
+        return { drops, pokes, bolas, cla, suprimentos, slot, nada: !drops && !pokes && !bolas && !cla && !suprimentos && !slot };
     }
     function tripLoadText(l) {
         const p = [];
@@ -3273,6 +3537,7 @@
         if (l.bolas) p.push(`comprar ${Number(cfg.autoBuyQty) || 100} ${ballName(l.bolas.id)}`);
         if (l.suprimentos) p.push(l.suprimentos.map(s => `comprar ${s.qty} ${s.name}`).join(', '));
         if (l.cla) p.push('clã (converter/subir de rank)');
+        if (l.slot) p.push('slot machine (roll grátis)');
         if (p.length && typeof depositWanted === 'function' && depositWanted()) p.push('guardar o resto');
         return p.length ? `Vai levar: ${p.join(', ')}` : 'Nada para levar por enquanto';
     }
@@ -3296,7 +3561,7 @@
     const TRIP_PHASE_PCT = { 'indo para a cidade': 15, 'na cidade': 50, 'voltando': 90 };
     function tripLastText() {
         if (!lastTripInfo) return '';
-        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução' };
+        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine' };
         return `Última ${new Date(lastTripInfo.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}: ${lastTripInfo.tarefas.map(t => `${nome[t.key] || t.key} ${t.ok ? '✔' : '✖'}`).join(' · ')}`;
     }
     // Estado para a faixa do painel: { busy, pct, title, sub }.
@@ -3335,6 +3600,7 @@
             else if (key === 'suprimentos') tarefas.push({ key, run: () => supplyCityWork() });
             else if (key === 'cla') tarefas.push({ key, run: () => clanCityWork() });
             else if (key === 'evoluir') tarefas.push({ key, run: () => evolveCityWork() });
+            else if (key === 'slot') tarefas.push({ key, run: () => slotCityWork() });
         }
         // Guardar na cidade (v3.18.0): última tarefa de toda viagem que tenha outra coisa a fazer.
         if (tarefas.length && typeof depositWanted === 'function' && depositWanted()) tarefas.push({ key: 'guardar', run: () => depositCityWork() });
@@ -3399,6 +3665,7 @@
         if (!has('suprimentos') && typeof supplyLow === 'function' && supplyLow().length) needs.push(['suprimentos', { dados: null, motivo: 'carona' }]);
         if (!has('cla') && typeof clanWantsCity === 'function' && clanWantsCity()) needs.push(['cla', { dados: null, motivo: 'carona' }]);
         if (!has('evoluir') && typeof evolveWanted === 'function' && evolveWanted()) needs.push(['evoluir', { dados: null, motivo: 'carona' }]);
+        if (!has('slot') && typeof slotWanted === 'function' && slotWanted()) needs.push(['slot', { dados: null, motivo: 'carona' }]);
         return needs;
     }
 
@@ -4406,10 +4673,10 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             }
             case 'treino': {
                 const nivel = d.routeEnabled || (Number(d.levelAlertAt) || 0) > 0;
-                if (!(nivel || d.dailyEnabled || d.giftEnabled || d.evolveEnabled)) return 'off';
+                if (!(nivel || d.dailyEnabled || d.giftEnabled || d.evolveEnabled || d.slotEnabled)) return 'off';
                 if (d.routeEnabled && (!rota.length || (Number(cfg.routeStage) || 0) >= rota.length)) return 'warn';
                 if (nivel && !(d.webhookLevel || '').trim()) return 'warn';
-                if ((d.routeEnabled || d.dailyEnabled || d.giftEnabled || d.evolveEnabled) && !temAlertas) return 'warn'; // troca de hunt, daily, gift e evolução avisam em Alertas
+                if ((d.routeEnabled || d.dailyEnabled || d.giftEnabled || d.evolveEnabled || d.slotEnabled) && !temAlertas) return 'warn'; // troca de hunt, daily, gift, evolução e slot machine avisam em Alertas
                 return 'on';
             }
             case 'profissao':
@@ -4426,7 +4693,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
             `Bolas: ${!((Number(d.ballsMin) || 0) > 0 || d.autoBuy) ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}${supplyOn(d) ? ` · refil: ${supplySlots(d).map(s => `${s.name} < ${s.min}`).join(', ')}` : ''}${d.healJoyEnabled ? ' · Joy' : ''}${d.cityIdleEnabled ? ` · volta da cidade ${Number(d.cityIdleMin) || IDLE_MIN_DEFAULT} min` : ''}`,
             `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades)` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
-            `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? 'daily sozinha' : 'daily') : '', d.giftEnabled ? 'gift' : '', d.evolveEnabled ? 'evolução' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
+            `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? 'daily sozinha' : 'daily') : '', d.giftEnabled ? 'gift' : '', d.evolveEnabled ? 'evolução' : '', d.slotEnabled ? 'slot machine' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
         ].join(' · ');
@@ -4634,6 +4901,13 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <p class="dn-help">Quando um Pokémon do time chega ao nível de evolução, o script pede uma viagem à cidade (o jogo só deixa evoluir em Cerulean), evolui gastando as pedras do elemento e volta para a hunt. Sem as pedras não evolui (a evolução grátis volta ao Lv.1) e avisa uma vez; tenta de novo nas próximas viagens. Linha ramificada (Eevee) só evolui se houver pedra para um destino só. Aviso no canal de Alertas.</p>
                         <div class="dn-status"><span>🧬</span><span id="pg-dn-evolve-status"></span></div>
                     </div>
+                    <div class="dn-section">
+                        <h3>Poke Slot Machine</h3>
+                        <label class="dn-toggle"><input id="pg-dn-slot" type="checkbox"><span class="sw"></span>Girar a máquina de graça e ativar o bônus sozinho <span class="dn-hint">(nunca gasta Poke Slot Cards)</span></label>
+                        <label class="dn-field"><span>Pokémon pedidos, em ordem de preferência</span><input id="pg-dn-slot-wanted" class="dn-input" type="text" placeholder="ex.: Dratini, Larvitar, Bagon — vazio = qualquer um" spellcheck="false"></label>
+                        <p class="dn-help">A Poke Slot Machine fica no shopping: cada slot tem um roll grátis de tempos em tempos e sorteia 9 Pokémon; o escolhido ganha um bônus (EXP, loot, captura, dano…) que só vale contra aquela espécie, por algumas horas. Quando um slot liberado estiver com o roll grátis pronto, o script pede uma viagem à cidade, vai ao shopping, gira e escolhe o primeiro da lista acima que tiver saído no sorteio; se nenhum saiu, escolhe um dos 9 ao acaso. Uma estrela ativa de um Pokémon pedido não é trocada antes de expirar. Aviso no canal de Alertas.</p>
+                        <div class="dn-status"><span>🎰</span><span id="pg-dn-slot-status"></span></div>
+                    </div>
                 </section>
                 <section class="dn-pane" data-pane="profissao" hidden>
                     <div class="dn-section">
@@ -4808,6 +5082,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 dailyAuto: $('#pg-dn-daily-auto').checked,
                 giftEnabled: $('#pg-dn-gift').checked,
                 evolveEnabled: $('#pg-dn-evolve').checked,
+                slotEnabled: $('#pg-dn-slot').checked,
+                slotWanted: $('#pg-dn-slot-wanted').value.trim(),
                 giftCenterMode: ['daily', 'all', ''].includes($('#pg-dn-gift-center').value) ? $('#pg-dn-gift-center').value : 'daily',
                 clanEnabled: $('#pg-dn-clan').checked,
                 depositItems: $('#pg-dn-dep-items').value || '',
@@ -5137,6 +5413,11 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-evolve-status').textContent = `Evolução${d.evolveEnabled ? '' : ' (desligada)'}: ${evolveStatus(d)}`;
         }
         onEvolveChange = () => { if (!panel.hidden) renderEvolve(); };
+        function renderSlot() {
+            const d = current();
+            $('#pg-dn-slot-status').textContent = `Slot Machine${d.slotEnabled ? '' : ' (desligada)'}: ${slotStatus(d)}`;
+        }
+        onSlotChange = () => { if (!panel.hidden) renderSlot(); };
         $('#pg-dn-team-refresh').onclick = () => {
             lastPokesReqAt = 0;
             const ok = sendGame({ type: 'pokes-get' });
@@ -5413,7 +5694,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             if (dirty) $('#pg-dn-save').click();
             const needs = tripAugment([]);
             if (!needs.length) { flash('⚠ Nada para levar: nenhum drop marcado nesta hunt, nenhum Pokémon nas regras e bolas, poções e revives acima do limite.', 'warn'); return; }
-            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução' };
+            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine' };
             flash(`🏙 Indo à cidade: ${needs.map(n => nome[n[0]]).join(', ')}…`, 'info', 90000);
             tripNeeds.clear();
             cityTrip('manual: ' + needs.map(n => n[0]).join('+'), tripTasksFor(needs)).then(r => {
@@ -5445,7 +5726,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
 
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderEvolve(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderEvolve(); renderSlot(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -5503,6 +5784,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-daily-auto').checked = Boolean(cfg.dailyAuto);
             $('#pg-dn-gift').checked = Boolean(cfg.giftEnabled);
             $('#pg-dn-evolve').checked = Boolean(cfg.evolveEnabled);
+            $('#pg-dn-slot').checked = Boolean(cfg.slotEnabled);
+            $('#pg-dn-slot-wanted').value = cfg.slotWanted || '';
             $('#pg-dn-gift-center').value = giftCenterMode(cfg);
             $('#pg-dn-clan').checked = Boolean(cfg.clanEnabled);
             $('#pg-dn-dep-items').value = ['depot', 'family'].includes(cfg.depositItems) ? cfg.depositItems : '';
@@ -5594,6 +5877,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const recargaAntes = JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]);
             const dailyAntes = JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug, cfg.dailyAuto]);
             const giftAntes = JSON.stringify([cfg.giftEnabled, cfg.giftCenterMode]);
+            const slotAntes = JSON.stringify([cfg.slotEnabled, cfg.slotWanted]);
             const capturaAntes = JSON.stringify([cfg.catchRouteEnabled, cfg.catchRouteAreas, cfg.catchRouteMaxLevel]);
             const viagemAntes = JSON.stringify([cfg.tripEveryMin, cfg.tripEveryMaxMin]);
             const ligouCaptura = draft.catchRouteEnabled && !cfg.catchRouteEnabled;
@@ -5632,6 +5916,11 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             if (JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]) !== recargaAntes) scheduleReload(); // faixa mudou: sorteia de novo
             if (JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug, cfg.dailyAuto]) !== dailyAntes) scheduleDailyCheck(500); // daily mudou: lê a missão já
             if (JSON.stringify([cfg.giftEnabled, cfg.giftCenterMode]) !== giftAntes) { giftFetchedAt = 0; scheduleGiftCheck(500); } // gift mudou: lê o calendário já
+            if (JSON.stringify([cfg.slotEnabled, cfg.slotWanted]) !== slotAntes) { // slot machine mudou: rearma e relê a máquina já
+                slotFailedAt = 0;
+                for (const k of Object.keys(slotTriedAt)) delete slotTriedAt[k];
+                if (cfg.slotEnabled) setTimeout(() => slotTick(true), 500);
+            }
             if (JSON.stringify([cfg.clanEnabled, cfg.clanRoute, cfg.clanKey]) !== clanAntes) {
                 if (!(cfg.clanEnabled && cfg.clanRoute) && clanTarget) clanReturn('rota do clã desligada');
                 if (cfg.clanEnabled) setTimeout(() => clanTick(), 500);
@@ -5858,6 +6147,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
     setInterval(reloadTick, RELOAD_CHECK_MS);
     setInterval(dailyTick, DAILY_CHECK_MS);
     setInterval(giftTick, GIFT_TICK_MS);
+    setInterval(slotTick, SLOT_TICK_MS);
+    if (cfg.slotEnabled) setTimeout(() => slotTick(true), 8000);   // 1ª leitura da slot machine logo após a carga
     setInterval(catchTick, CATCH_TICK_MS);
     setInterval(tripTick, TRIP_TICK_MS);
     setInterval(clanTick, CLAN_TICK_MS);

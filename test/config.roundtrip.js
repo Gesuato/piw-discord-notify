@@ -33,6 +33,8 @@ const rica = {
   giftEnabled: true, giftCenterMode: 'all',
   // v3.25.0 (evolução)
   evolveEnabled: true,
+  // v3.26.0 (Poke Slot Machine)
+  slotEnabled: true, slotWanted: 'Dratini, Larvitar',
 };
 setTimeout(() => {
   const w1 = boot(rica, { pgDiscordNotifyDrops: JSON.stringify([120, 7]) });

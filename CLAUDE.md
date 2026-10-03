@@ -214,6 +214,16 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `evolveAttempted`; carona via `evolveWanted`). Com `tripCity` ≠ cerulean manda `set-city cerulean` antes. Linha ramificada
   só evolui com pedra para UM destino. Sem pedra: aviso 1x por motivo (`evolveFailed`), tenta nas próximas viagens.
   Logs `evolucao { campos }`, `evolucao-cidade`. Teste: `node test/evolve.test.js` (`loadEvolveModule`).
+- Poke Slot Machine (v3.26.0, aba Treino → Poke Slot Machine, `cfg.slotEnabled` + `cfg.slotWanted` lista por vírgula em ordem de
+  preferência; módulo `// ---- Poke Slot Machine` entre a Evolução e o Daily Gift; bundle em 02/10/2026, formatos ainda não vistos no
+  log): NPC `pokeslot` da cidade `shopping`; por dentro o jogo chama de "golden stars". `GET /api/game/golden-stars` → `{ cards, slots[{
+  slot, unlocked, vipLocked, freeReady, freeRollAt, active{ name, speciesId, pct, bonusType, rarity, startedAt, expiresAt }, candidates[{
+  speciesId, name }] }], config{ freeRollCooldownMs, candidates } }`; `POST .../roll { slot }` → `{ state, candidates }` (grátis só com
+  `freeReady`; o script NUNCA gasta cards); `POST .../pick { slot, speciesId }` → `{ active, state }`. Bônus vale só contra a espécie
+  escolhida (exp/loot/catch/damage/defense/critChance/critDamage/shiny). Slot pronto = liberado, sem trava VIP, com sorteio pendente ou
+  roll grátis sem estrela ativa de um pedido → `tripRequest('slot')` + carona (`slotWanted`); `slotCityWork` manda `set-city shopping`
+  se `tripCity()` for outra, gira e escolhe o 1º pedido sorteado, senão um qualquer (pedido do usuário). Erro = 15 min por slot
+  (`slotTriedAt`). Logs `slot-campos`, `slot`, `slot-roll`, `slot-erro`, `slot-cidade`. Teste: `node test/slot.test.js` (`loadSlotModule`).
 - Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
   `guardar` no fim de toda viagem; drops → Depot (`POST /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou
   família (`family-action item`); Pokémon não vendidos → só família (o box JÁ é o Depot comum de Pokémon). Lista escolhida
@@ -358,7 +368,9 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
   (`loadTripModule`: `// ---- Viagem à cidade` até `// ---- Recarga automática do painel`; timers avançam o relógio falso) e
   `node test/details.test.js` (`loadDetailsModule`: `// ---- IV e qualidade do indivíduo capturado` até `// ---- Alerta de
   nível do líder`; timers ficam em `state.timers` e `state.fire(ms)` dispara os desse prazo) e `node test/evolve.test.js`
-  (`loadEvolveModule`: `// ---- Evolução automática` até `// ---- Daily Gift`; `init.api` responde GET/POST /evolve, `init.city`).
+  (`loadEvolveModule`: `// ---- Evolução automática` até `// ---- Poke Slot Machine`; `init.api` responde GET/POST /evolve, `init.city`) e
+  `node test/slot.test.js` (`loadSlotModule`: `// ---- Poke Slot Machine` até `// ---- Daily Gift`; `init.api` responde GET golden-stars e
+  POST roll/pick, `init.city`; `clock.now` relógio, `clock.rnd` o Math.random).
   `test/harness.js` recorta módulos do userscript pelos marcadores (`loadLevelModule`: `// ---- Alerta de nível do
   líder` até `// ---- Alerta de estoque de bolas`; `loadPokeSellModule`: `// ---- Venda automática de Pokémon` até
   `// ---- Rota de captura`; `loadCatchModule`: `// ---- Rota de captura` até `// ---- Daily Kill`, com `init.fetchJson(url)` para os

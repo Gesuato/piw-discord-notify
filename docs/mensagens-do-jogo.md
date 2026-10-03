@@ -47,6 +47,7 @@ Confirmados no bundle. Os marcados com ✔ já são usados ou interceptados pelo
 | `send`, `dm`, `chat-delete` | `channel`, `body` | chat |
 | `trade-*` (`invite`, `respond`, `slot`, `money`, `confirm`, `cancel`, `get`) | vários | troca entre jogadores |
 | `pvp-*` (`queue`, `challenge`, `accept`, `decline`, `action`, `leave`, `watch`, `unwatch`, `state`) e `switch { teamIndex }`, `move { moveIndex }`, `forfeit` | vários | PvP (o `switch` é troca de Pokémon **na batalha**, não do líder) |
+| `golden-stars-refresh` | — | Poke Slot Machine: o HUD relê os bônus depois de roll/pick (o estado em si é REST, ver abaixo) |
 | `family-get`, `family-action` ✔ | `family-action { action:'poke', dir:'deposit'\|'withdraw', capturedId }`; `{ action:'item', dir, itemId, quantity }`; `create`/`invite`/`respond` | clã/família: depósito compartilhado (limite diário de movimentos `movesUsed/movesCap`; responde `family` ou `error`) |
 
 ## Servidor → cliente (handlers registrados no bundle)
@@ -119,6 +120,15 @@ e `error { message }` (resposta de ação recusada; o script os trata em `handle
   useStone, destId? }` → `{ name }` (useStone:true gasta pedras e mantém o nível; false = grátis, volta ao Lv.1). Só em
   Cerulean (prop `inCerulean`/`canEvolveHere` do HUD). O cliente manda `pokes-get` depois. O frame `pokes` traz
   `hasEvolution`, `evolveNeedLevel`, `evolvesToName` por Pokémon.
+
+- Poke Slot Machine (v3.26.0, levantado em 02/10/2026; NPC `pokeslot` da cidade `shopping`, sistema "golden stars" por dentro):
+  `GET /api/game/golden-stars` → `{ cards, cardIcon, cardItemId, isVip, slots[{ slot, unlocked, unlockedPerm, unlockedUntil, vipLocked,
+  freeReady, freeRollAt, active{ speciesId, name, looktype, pct, bonusType, rarity, startedAt, expiresAt }, expired, candidates[{ speciesId,
+  name, looktype }], unlockPerm, unlockTemp }], config{ rarities[{ key, color, min, max }], bonuses[{ type, icon }], candidates,
+  freeRollCooldownMs, rollCostCards, rerollCostCards, rerollBonusCards, pickSpeciesCards } }`; `POST .../roll { slot }` → `{ state,
+  candidates }` (grátis com `freeReady`, senão cards); `POST .../pick { slot, speciesId }` → `{ active, state }`; `POST .../reroll-bonus
+  { slot }`; `GET .../species?slot=` + `POST .../species { slot, speciesId }` (escolha direta, 5 cards); `POST .../unlock { slot, mode }`;
+  `GET .../history?limit=`. Depois de mudar, o cliente manda `golden-stars-refresh` pelo socket. O script só usa GET, roll e pick.
 
 ## Ideias que esses nomes destravam
 

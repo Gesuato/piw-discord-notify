@@ -737,7 +737,7 @@ function loadDetailsModule(cfg, init) {
 // Extrai o módulo "Evolução automática" (v3.25.0). `init.api(url, opts)` responde GET/POST /api/game/evolve; `init.city` é
 // a cidade da viagem (padrão cerulean). Timers rodam na hora.
 const E_START = '    // ---- Evolução automática';
-const E_END = '    // ---- Daily Gift';
+const E_END = '    // ---- Poke Slot Machine';
 
 function loadEvolveModule(cfg, init) {
     init = init || {};
@@ -769,4 +769,50 @@ function loadEvolveModule(cfg, init) {
     return { api, state, cfg };
 }
 
-module.exports = { loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+// Extrai o módulo "Poke Slot Machine" (v3.26.0). `init.api(url, opts)` responde GET /api/game/golden-stars e POST .../roll,
+// .../pick; `init.city` é a cidade da viagem (padrão cerulean); `clock.now` é o relógio e `clock.rnd` o Math.random (0..1).
+// Timers rodam na hora (as esperas "humanas" não contam).
+const SM_START = '    // ---- Poke Slot Machine';
+const SM_END = '    // ---- Daily Gift';
+
+function loadSlotModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(SM_START), b = src.indexOf(SM_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo da slot machine não encontrados no script');
+    const mod = src.slice(a, b);
+    const clock = { now: Date.UTC(2026, 9, 2, 12, 0, 0), rnd: 0 };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const FakeMath = new Proxy(Math, { get(t, k) { return k === 'random' ? () => clock.rnd : t[k]; } });
+    const state = { sent: [], hooks: [], logs: [], trips: [], calls: [] };
+    const normalize = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    const ctx = {
+        cfg,
+        sendGame: (o) => { state.sent.push(o); return true; },
+        gameApi: (url, opts) => { state.calls.push({ url, method: opts?.method || 'GET', body: opts?.body ? JSON.parse(opts.body) : null }); return Promise.resolve().then(() => (init.api ? init.api(url, opts) : {})); },
+        tripRequest: (key, dados, motivo) => state.trips.push({ key, dados, motivo }),
+        tripCity: () => init.city || 'cerulean',
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', color: p.embeds?.[0]?.color, meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        normalize,
+        fmtNum: (n) => String(n),
+        setTimeout: (fn) => { fn(); return 1; },
+        Date: FakeDate,
+        Math: FakeMath,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            slotTick, slotRead, slotCityWork, slotStatus, slotWanted, slotReadySlots, slotPending, slotWantedList, parseSlotState, slotNextEventAt,
+            SLOT_POLL_MS, SLOT_RETRY_MS, SLOT_CITY,
+            get slotState() { return slotState; },
+            get slotLast() { return slotLast; },
+            get slotFailedAt() { return slotFailedAt; },
+            get slotTriedAt() { return slotTriedAt; },
+            get slotFetchedAt() { return slotFetchedAt; },
+        };`);
+    const api = factory(...Object.values(ctx));
+    return { api, state, cfg, clock };
+}
+
+module.exports = { loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

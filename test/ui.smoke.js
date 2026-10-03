@@ -120,6 +120,14 @@ setTimeout(() => {
         const cfgGift = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
         log('gift salvo=' + cfgGift.giftEnabled + ' center=' + cfgGift.giftCenterMode + ' | status=' + $('#pg-dn-gift-status').textContent + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 160));
         $('#pg-dn-gift').checked = false; fire($('#pg-dn-gift'), 'change'); $('#pg-dn-save').click();
+        // ---- Poke Slot Machine (v3.26.0): liga, escreve a lista de pedidos, salva e confere status/cfg ----
+        $('#pg-dn-slot').checked = true; fire($('#pg-dn-slot'), 'change');
+        $('#pg-dn-slot-wanted').value = 'Dratini, Larvitar'; fire($('#pg-dn-slot-wanted'), 'input');
+        log('slot rascunho=' + $('#pg-dn-slot-status').textContent + ' | treinoBadge=' + panel.querySelector('.dn-tab[data-tab=treino] .b').dataset.state);
+        $('#pg-dn-save').click();
+        const cfgSlot = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+        log('slot salvo=' + cfgSlot.slotEnabled + ' pedidos=' + cfgSlot.slotWanted + ' | status=' + $('#pg-dn-slot-status').textContent + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 160));
+        $('#pg-dn-slot').checked = false; fire($('#pg-dn-slot'), 'change'); $('#pg-dn-save').click();
         $('#pg-dn-route-reset').click(); log('reset1=' + $('#pg-dn-route-reset').textContent + ' | ' + $('#pg-dn-msg').textContent);
         $('#pg-dn-route-reset').click(); log('reset2=' + $('#pg-dn-msg').textContent);
         // ---- rotas nomeadas: migração da config antiga, nova, troca pelo menu, renomear, excluir ----

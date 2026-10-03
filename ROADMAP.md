@@ -644,6 +644,30 @@ Teste: `node test/evolve.test.js`.
 
 ---
 
+## ✅ 30. Poke Slot Machine: roll grátis e bônus no Pokémon pedido (v3.26.0)
+
+**O que faz (aba Treino → Poke Slot Machine, `cfg.slotEnabled` + `cfg.slotWanted`):** quando um slot da máquina estiver com
+o roll grátis pronto, o script pede viagem à cidade, vai ao shopping (cidade do NPC `pokeslot`), gira e escolhe o 1º
+Pokémon da lista pedida que saiu entre os 9 sorteados; nenhum saiu = escolhe um qualquer (pedido do usuário). Nunca gasta
+Poke Slot Cards. Uma estrela ativa de um Pokémon pedido não é trocada antes de expirar.
+
+**REST (bundle do cliente, 02/10/2026; o jogo chama o sistema de "golden stars"; formatos ainda não vistos no log):**
+`GET /api/game/golden-stars` → `{ cards, isVip, slots[{ slot, unlocked, vipLocked, freeReady, freeRollAt, active{ speciesId,
+name, pct, bonusType, rarity, startedAt, expiresAt }, candidates[{ speciesId, name }] }], config{ freeRollCooldownMs,
+candidates, rollCostCards, ... } }`; `POST .../roll { slot }` → `{ state, candidates }`; `POST .../pick { slot, speciesId }` →
+`{ active, state }`. Bônus: exp, loot, catch, damage, defense, critChance, critDamage, shiny; raridades common…legendary.
+
+**Lógica (módulo `// ---- Poke Slot Machine`, entre a Evolução e o Daily Gift):** `slotTick` a cada 1 min lê o estado quando um
+prazo vence (roll grátis ou estrela expirando) ou a cada 30 min; slot pronto → `tripRequest('slot')` (+ carona em toda viagem
+via `slotWanted`); `slotCityWork` na viagem: `set-city shopping` se a viagem foi para outra cidade, roll + pick por slot, aviso
+no canal de Alertas (amarelo quando caiu no aleatório). Erro = 15 min antes de insistir no slot (`slotTriedAt`). Logs
+`slot-campos`, `slot`, `slot-roll`, `slot-erro`, `slot-cidade`.
+
+**Pendente:** confirmar no log o formato das respostas e se o servidor exige estar no shopping para o roll. Teste:
+`node test/slot.test.js` e passo no smoke.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel
