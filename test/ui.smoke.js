@@ -240,6 +240,25 @@ setTimeout(() => {
         log('rota importada=' + JSON.stringify($('#pg-dn-route').value) + ' | boxHidden=' + $('#pg-dn-route-import-box').hidden + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 160));
         $('#pg-dn-route-piwlink').click();
         log('piwlink msg=' + $('#pg-dn-msg').textContent.slice(0, 120));
+        // ---- exportar / importar SÓ a rota (v3.27.0): exporta a da tela, importa como rota nova, repete e troca as etapas ----
+        $('#pg-dn-route-export').click();
+        log('rota exportada msg=' + $('#pg-dn-msg').textContent.slice(0, 120));
+        const rotaJson = JSON.stringify({ _piwDiscordNotifyRoute: 1, _versao: '9.9.9', _conta: 'outra', name: 'Vinda de fora', route: [{ slug: 'pidgey', level: 12 }, { slug: 'ledyba', level: 20 }] });
+        $('#pg-dn-route-share-import').click();
+        if ($('#pg-dn-route-share-box').hidden) throw new Error('caixa de importar rota não abriu');
+        $('#pg-dn-route-share-text').value = JSON.stringify({ webhookUrl: 'x' }); fire($('#pg-dn-route-share-text'), 'input');
+        log('rota share status config=' + $('#pg-dn-route-share-status').textContent.slice(0, 80));
+        $('#pg-dn-route-share-text').value = rotaJson; fire($('#pg-dn-route-share-text'), 'input');
+        log('rota share status=' + $('#pg-dn-route-share-status').textContent.slice(0, 160));
+        $('#pg-dn-route-share-apply').click();
+        let cfgRS = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+        log('rota importada ativa=' + cfgRS.routeName + ' etapas=' + JSON.stringify(cfgRS.routes['Vinda de fora']) + ' | box=' + $('#pg-dn-route-share-box').hidden + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 120));
+        if (cfgRS.routeName !== 'Vinda de fora' || cfgRS.route.length !== 2 || cfgRS.routeStage !== 0) throw new Error('rota importada não ficou ativa');
+        $('#pg-dn-route-share-import').click(); $('#pg-dn-route-share-text').value = 'pidgey 15\nledyba 25\ndratini 40'; fire($('#pg-dn-route-share-text'), 'input');
+        $('#pg-dn-route-share-import').click(); // com texto na caixa, aplica
+        cfgRS = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+        log('rota texto puro=' + cfgRS.routeName + ' etapas=' + cfgRS.route.length + ' rotas=' + JSON.stringify(Object.keys(cfgRS.routes)));
+        if (cfgRS.route.length !== 3 || !cfgRS.routes['Vinda de fora'] || cfgRS.routes['Vinda de fora'].route.length !== 2) throw new Error('rota em texto puro não virou rota nova');
         // ---- guardar o avisado: liga os dois toggles, salva, captura um da lista e confere lock + família + webhook ----
         panel.querySelector('.dn-tab[data-tab=avisos]').click();
         $('#pg-dn-lock').checked = true; fire($('#pg-dn-lock'), 'change');

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.26.1
+// @version      3.27.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.26.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.27.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -4874,6 +4874,13 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <div class="dn-actions">
                             <button type="button" class="dn-btn dn-btn--sm" id="pg-dn-route-import" title="Cole o texto da aba Rota otimizada do PIW Tools e o script monta as etapas.">Importar do PIW Tools</button>
                             <button type="button" class="dn-btn dn-btn--sm" id="pg-dn-route-piwlink" title="Copia o link do gerador de rota do PIW Tools já com o líder e o nível atuais.">Copiar link do PIW Tools</button>
+                            <button type="button" class="dn-btn dn-btn--sm" id="pg-dn-route-export" title="Copia SÓ esta rota (nome e etapas) para colar em outra conta/painel.">Exportar rota</button>
+                            <button type="button" class="dn-btn dn-btn--sm" id="pg-dn-route-share-import" title="Cola uma rota exportada de outra conta/painel (só a rota; o resto da config não muda).">Importar rota</button>
+                        </div>
+                        <div id="pg-dn-route-share-box" class="dn-section" hidden>
+                            <textarea id="pg-dn-route-share-text" class="dn-textarea" rows="3" placeholder="Clique aqui e cole (Ctrl+V) a rota exportada na outra conta" spellcheck="false"></textarea>
+                            <p class="dn-help" id="pg-dn-route-share-status"></p>
+                            <div class="dn-actions"><button type="button" class="dn-btn dn-btn--primary" id="pg-dn-route-share-apply">Aplicar rota</button><button type="button" class="dn-btn dn-btn--ghost" id="pg-dn-route-share-paste" title="Tenta colar da área de transferência.">📋 Colar</button></div>
                         </div>
                         <div id="pg-dn-route-import-box" class="dn-section" hidden>
                             <textarea id="pg-dn-route-import-text" class="dn-textarea" rows="4" placeholder="No PIW Tools (aba Rota otimizada), selecione as etapas, Ctrl+C e cole aqui"></textarea>
@@ -5580,6 +5587,80 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             copyText(url).then(ok => flash(ok ? `✔ Link copiado${lider?.name ? ` (${lider.name} nível ${lider.level})` : ' (time ainda não lido: escolha o Pokémon no site)'}. Abra no navegador, copie as etapas e use "Importar do PIW Tools".` : `⚠ Não copiou. Link: ${url}`, ok ? 'ok' : 'warn', 9000));
         };
 
+        // ---- Exportar / importar SÓ a rota de treino (v3.27.0): para levar uma rota a outra conta sem mexer no
+        // resto da config. Formato: { _piwDiscordNotifyRoute: 1, _versao, _exportadoEm, _conta, name, route:[{slug, level}] }.
+        // O Exportar leva o que está NA TELA (texto das etapas, mesmo sem salvar) com o nome da rota ativa. O Importar
+        // cria a rota com o nome que veio (se já existe uma com esse nome, troca as etapas dela, como os perfis de venda)
+        // e a deixa ativa a partir da 1ª etapa; não liga "Seguir a rota" sozinho. Também aceita texto "hunt nível" por linha.
+        function parseSharedRoute(bruto) {
+            const txt = String(bruto || '').trim();
+            if (!txt) return { erro: 'vazio' };
+            let data = null;
+            try { data = JSON.parse(txt); } catch { data = null; }
+            if (data && typeof data === 'object' && !Array.isArray(data)) {
+                if (!data._piwDiscordNotifyRoute && !Array.isArray(data.route)) return { erro: 'webhookUrl' in data ? 'config' : 'formato' };
+                const route = (Array.isArray(data.route) ? data.route : []).map(x => ({ slug: normalize(x?.slug || ''), level: parseInt(x?.level, 10) || 0 })).filter(x => x.slug && x.level > 0);
+                if (!route.length) return { erro: 'sem-etapas' };
+                return { name: String(data.name || '').trim().slice(0, 40), route, origem: { conta: data._conta || null, versao: data._versao || null, em: data._exportadoEm || null } };
+            }
+            // texto puro "hunt nível" por linha (o mesmo formato da caixa de etapas)
+            const linhas = txt.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+            const route = linhas.map(l => { const m = l.match(/^(\S+)\s+(\d+)$/); return m ? { slug: normalize(m[1]), level: parseInt(m[2], 10) } : null; }).filter(r => r && r.level > 0);
+            if (!route.length || route.length !== linhas.length) return { erro: 'formato' };
+            return { name: '', route, origem: {} };
+        }
+        function routeShareStatus() {
+            const st = $('#pg-dn-route-share-status');
+            const r = parseSharedRoute($('#pg-dn-route-share-text').value);
+            st.classList.remove('warn');
+            if (r.erro === 'vazio') { st.textContent = 'Clique na caixa, cole com Ctrl+V e clique em Aplicar rota.'; return null; }
+            if (r.erro) {
+                st.classList.add('warn');
+                st.textContent = r.erro === 'config' ? '✖ Isso é a config inteira: use Sistema → Importar config.' : r.erro === 'sem-etapas' ? '✖ A rota colada não tem etapas.' : '✖ Não é uma rota exportada nem "hunt nível" por linha.';
+                return null;
+            }
+            const nome = r.name || uniqueRouteName('Rota importada');
+            const existe = Boolean(r.name && cfg.routes?.[r.name]);
+            st.textContent = `✔ Rota "${nome}"${r.origem.conta ? ` de ${r.origem.conta}` : ''}: ${r.route.length} ${r.route.length === 1 ? 'etapa' : 'etapas'} (${r.route.map(x => `${x.slug} ${x.level}`).join(' · ')}). ${existe ? 'Já existe uma rota com esse nome: as etapas dela serão trocadas.' : 'Será criada e ativada.'} Clique em Aplicar rota.`;
+            return r;
+        }
+        $('#pg-dn-route-export').onclick = () => {
+            const { route, linhasRuins } = readRoute();
+            if (!route.length) { flash('⚠ Esta rota não tem etapas para exportar.', 'warn'); return; }
+            const name = cfg.routeName || '';
+            const txt = JSON.stringify({ _piwDiscordNotifyRoute: 1, _versao: VERSION, _exportadoEm: new Date().toISOString(), _conta: playerName() || null, name, route });
+            logEvent('rota-exportada', { nome: name, etapas: route.length, pendente: dirty, linhasRuins });
+            copyText(txt).then(ok => {
+                if (ok) flash(`✔ Rota ${name ? `"${name}" ` : ''}copiada (${route.length} ${route.length === 1 ? 'etapa' : 'etapas'}). Na outra conta: Treino → Importar rota, clique na caixa e cole com Ctrl+V.`, 'ok', 10000);
+                else {
+                    $('#pg-dn-route-share-box').hidden = false;
+                    const ta = $('#pg-dn-route-share-text'); ta.value = txt; routeShareStatus(); ta.focus(); ta.select();
+                    flash('⚠ Não copiou; a rota apareceu na caixa abaixo, já selecionada: Ctrl+C.', 'warn');
+                }
+            });
+        };
+        $('#pg-dn-route-share-text').addEventListener('input', routeShareStatus);
+        $('#pg-dn-route-share-paste').onclick = () => pasteInto($('#pg-dn-route-share-text')).then(pasteFlash);
+        // com uma rota já colada, o botão APLICA (mesmo atalho do Importar config)
+        $('#pg-dn-route-share-import').onclick = () => {
+            const box = $('#pg-dn-route-share-box');
+            if (!box.hidden && $('#pg-dn-route-share-text').value.trim()) { $('#pg-dn-route-share-apply').click(); return; }
+            box.hidden = !box.hidden;
+            if (!box.hidden) { $('#pg-dn-route-share-text').value = ''; routeShareStatus(); $('#pg-dn-route-share-text').focus(); }
+        };
+        $('#pg-dn-route-share-apply').onclick = () => {
+            const r = routeShareStatus();
+            if (!r) { flash($('#pg-dn-route-share-status').textContent || '✖ Cole uma rota exportada na caixa.', 'error'); return; }
+            const salvou = saveIfDirty();
+            const name = r.name || uniqueRouteName('Rota importada');
+            const existia = Boolean(cfg.routes?.[name]);
+            createRoute(name, r.route);
+            logEvent('rota-importada', { nome: name, etapas: r.route, substituiu: existia, origem: r.origem });
+            $('#pg-dn-route-share-box').hidden = true;
+            dirty = false; fill();
+            flash(`${salvou ? '✔ Salvo · ' : '✔ '}Rota "${name}" ${existia ? 'atualizada' : 'criada'} e ativa (${r.route.length} ${r.route.length === 1 ? 'etapa' : 'etapas'}, começa na 1ª)${cfg.routeEnabled ? '' : ' · "Seguir a rota" está desligado: marque e Salve para valer'}.`, 'ok', 9000);
+        };
+
         // ---- Profissão: rota de captura ----
         function renderCatch() {
             const d = current();
@@ -5810,12 +5891,13 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-debug').checked = cfg.debug;
             $('#pg-dn-import-box').hidden = true;
             $('#pg-dn-route-import-box').hidden = true;
+            $('#pg-dn-route-share-box').hidden = true;
             renderLive();
         }
 
         // qualquer edição marca "não salvo" e recalcula resumos e badges
         const onEdit = (e) => {
-            if (e.target.closest('#pg-dn-import-box, #pg-dn-route-import-box, #pg-dn-route-name-box') || e.target.id === 'pg-dn-route-sel' || e.target.id === 'pg-dn-sell-view') return;
+            if (e.target.closest('#pg-dn-import-box, #pg-dn-route-import-box, #pg-dn-route-share-box, #pg-dn-route-name-box') || e.target.id === 'pg-dn-route-sel' || e.target.id === 'pg-dn-sell-view') return;
             if (!e.target.matches('input, select, textarea')) return;
             dirty = true;
             renderDirty();

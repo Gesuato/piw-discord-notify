@@ -73,7 +73,8 @@ Tampermonkey/Violentmonkey no navegador.
      nome da hunt é o que aparece em "Hunt atual"). Marque **Seguir a rota**: o nível da etapa vira o alvo,
      a troca de líder fica ligada e, quando todos do time chegam ao nível, o script sai da hunt e entra na
      próxima. Comece na hunt da 1ª etapa. O progresso fica salvo; editar a rota ou **Reiniciar rota** volta
-     para a 1ª etapa.
+     para a 1ª etapa. **Exportar rota** copia só a rota (nome e etapas) e **Importar rota** cola numa
+     outra conta sem mexer no resto da config (também aceita `hunt nível` por linha).
 5. Clique em **Salvar** e depois em **Testar** — deve chegar uma mensagem no Discord (o Testar só envia
    mensagens de teste; quem aplica a config e dispara as checagens é o Salvar)
 
