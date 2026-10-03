@@ -2363,7 +2363,9 @@
     //   (escolha direta, 5 cards), POST .../unlock { slot, mode:'perm'|'temp' }, GET .../history?limit=. Depois de mudar
     //   algo o cliente manda `golden-stars-refresh` pelo socket (só para o HUD).
     //   Regras (texto do próprio jogo): o bônus vale SÓ nas interações com a espécie sorteada (EXP, loot, captura, dano,
-    //   defesa, crítico, shiny); cada slot tem um roll grátis a cada `freeRollCooldownMs`; ao rolar escolhe-se 1 entre 9;
+    //   defesa, crítico, shiny); cada slot tem um roll grátis a cada `freeRollCooldownMs` (12 h, texto "Como funciona" do jogo em
+    //   02/10/2026; depois 1 card por roll); ao rolar escolhe-se 1 entre 9; faixas por raridade: Comum +5–10%, Incomum +10–15%,
+    //   Raro +15–20%, Épico +20–25%, Lendário +25–35%;
     //   dois slots nunca repetem a mesma espécie nem o mesmo tipo de bônus; só entram espécies de hunts liberadas para o
     //   nível da conta. Slot 1 é de todos; os outros se desbloqueiam (ouro/diamante/VIP).
     //   Fluxo: tique de 1 min lê o estado (de novo quando o próximo roll grátis vence ou uma estrela expira; no máximo a
