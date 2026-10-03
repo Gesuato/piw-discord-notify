@@ -656,6 +656,8 @@ Poke Slot Cards. Uma estrela ativa de um Pokémon pedido não é trocada antes d
 name, pct, bonusType, rarity, startedAt, expiresAt }, candidates[{ speciesId, name }] }], config{ freeRollCooldownMs,
 candidates, rollCostCards, ... } }`; `POST .../roll { slot }` → `{ state, candidates }`; `POST .../pick { slot, speciesId }` →
 `{ active, state }`. Bônus: exp, loot, catch, damage, defense, critChance, critDamage, shiny; raridades common…legendary.
+Texto "Como funciona" do jogo (02/10/2026): roll grátis a cada **12 h** por slot (depois 1 Poke Slot Card), escolha direta 5 cards,
+faixas Comum +5–10% · Incomum +10–15% · Raro +15–20% · Épico +20–25% · Lendário +25–35%.
 
 **Lógica (módulo `// ---- Poke Slot Machine`, entre a Evolução e o Daily Gift):** `slotTick` a cada 1 min lê o estado quando um
 prazo vence (roll grátis ou estrela expirando) ou a cada 30 min; slot pronto → `tripRequest('slot')` (+ carona em toda viagem

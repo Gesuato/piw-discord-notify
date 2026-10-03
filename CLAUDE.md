@@ -220,7 +220,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   slot, unlocked, vipLocked, freeReady, freeRollAt, active{ name, speciesId, pct, bonusType, rarity, startedAt, expiresAt }, candidates[{
   speciesId, name }] }], config{ freeRollCooldownMs, candidates } }`; `POST .../roll { slot }` → `{ state, candidates }` (grátis só com
   `freeReady`; o script NUNCA gasta cards); `POST .../pick { slot, speciesId }` → `{ active, state }`. Bônus vale só contra a espécie
-  escolhida (exp/loot/catch/damage/defense/critChance/critDamage/shiny). Slot pronto = liberado, sem trava VIP, com sorteio pendente ou
+  escolhida (exp/loot/catch/damage/defense/critChance/critDamage/shiny). Texto "Como funciona" do jogo (colado pelo usuário em
+  02/10/2026): roll grátis a cada 12 h por slot, depois 1 card; escolha direta 5 cards; faixas Comum +5–10%, Incomum +10–15%, Raro
+  +15–20%, Épico +20–25%, Lendário +25–35%; o bônus dura ~2 h (usuário). Slot pronto = liberado, sem trava VIP, com sorteio pendente ou
   roll grátis sem estrela ativa de um pedido → `tripRequest('slot')` + carona (`slotWanted`); `slotCityWork` manda `set-city shopping`
   se `tripCity()` for outra, gira e escolhe o 1º pedido sorteado, senão um qualquer (pedido do usuário). Erro = 15 min por slot
   (`slotTriedAt`). Logs `slot-campos`, `slot`, `slot-roll`, `slot-erro`, `slot-cidade`. Teste: `node test/slot.test.js` (`loadSlotModule`).
