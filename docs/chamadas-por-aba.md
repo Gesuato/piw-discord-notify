@@ -49,6 +49,7 @@ sem ter vencido o próprio intervalo. Intervalo mínimo entre viagens: 3 min (co
 |---|---|---|
 | Troca de líder | `poke-summon` (socket) + `pokes-get` para confirmar | quando o líder chega ao nível |
 | Troca de hunt da rota | `leave-hunt` + `enter-hunt` + `pending-get` (socket) + `hunt-resume` sintético só para a tela | quando o time chega ao nível da etapa |
+| Evolução | `GET /api/game/evolve?capturedId` + `POST /api/game/evolve { capturedId, useStone:true, destId? }` (REST, na viagem; `set-city cerulean` se a viagem foi para outra cidade) + `pokes-get` | quando um Pokémon do time chega ao nível de evolução |
 
 ## 📖 Profissão (rota de captura)
 

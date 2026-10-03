@@ -734,4 +734,39 @@ function loadDetailsModule(cfg, init) {
     return { api, state, cfg, clock };
 }
 
-module.exports = { loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+// Extrai o módulo "Evolução automática" (v3.25.0). `init.api(url, opts)` responde GET/POST /api/game/evolve; `init.city` é
+// a cidade da viagem (padrão cerulean). Timers rodam na hora.
+const E_START = '    // ---- Evolução automática';
+const E_END = '    // ---- Daily Gift';
+
+function loadEvolveModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(E_START), b = src.indexOf(E_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo de evolução não encontrados no script');
+    const mod = src.slice(a, b);
+    const state = { sent: [], hooks: [], logs: [], trips: [], calls: [], pokesReqs: 0 };
+    const ctx = {
+        cfg,
+        sendGame: (o) => { state.sent.push(o); return true; },
+        gameApi: (url, opts) => { state.calls.push({ url, method: opts?.method || 'GET', body: opts?.body ? JSON.parse(opts.body) : null }); return Promise.resolve().then(() => (init.api ? init.api(url, opts) : {})); },
+        tripRequest: (key, dados, motivo) => state.trips.push({ key, dados, motivo }),
+        requestPokes: () => { state.pokesReqs++; },
+        tripCity: () => init.city || 'cerulean',
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        setTimeout: (fn) => { fn(); return 1; },
+        Date,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            evolveOnPokes, evolveOnPokeXp, evolveCityWork, evolveCandidates, evolveWanted, evolveStatus,
+            get evolveAttempted() { return evolveAttempted; },
+            get evolveTeam() { return evolveTeam; },
+        };`);
+    const api = factory(...Object.values(ctx));
+    return { api, state, cfg };
+}
+
+module.exports = { loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

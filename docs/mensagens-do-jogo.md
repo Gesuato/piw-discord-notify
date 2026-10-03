@@ -113,6 +113,13 @@ e `error { message }` (resposta de ação recusada; o script os trata em `handle
   `catch-cooldown { leftMs }`, `catch-result` também traz `pendingId`, `cooldownMs`, `row`, `col`, `ballId`;
   `hunt-cooldown { ms }` (o cliente reenvia `enter-hunt` depois de `ms`).
 
+- Evolução (v3.25.0, levantado em 02/10/2026 na janela "Evolve" do HUD do time): `GET /api/game/evolve?capturedId=<id>[&destId]`
+  → `{ name, level, needLevel, canEvolve, hasStones, keepLevel, destName, destId?, itemOnly, stones[{ itemId, name, need, have,
+  icon }], branches[{ destId, destName, needLevel, canEvolve, hasStones, stones }] }`; `POST /api/game/evolve { capturedId,
+  useStone, destId? }` → `{ name }` (useStone:true gasta pedras e mantém o nível; false = grátis, volta ao Lv.1). Só em
+  Cerulean (prop `inCerulean`/`canEvolveHere` do HUD). O cliente manda `pokes-get` depois. O frame `pokes` traz
+  `hasEvolution`, `evolveNeedLevel`, `evolvesToName` por Pokémon.
+
 ## Ideias que esses nomes destravam
 
 - `field-none` / `hunt-cooldown` / `hunt-resume`: detectar hunt parada e religar (auto-reconnect).

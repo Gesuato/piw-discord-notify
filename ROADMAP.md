@@ -620,6 +620,30 @@ alertas por resgate (presente, dia N/28, o que o Gift Center entregou). Logs `gi
 
 ---
 
+## ✅ 29. Evolução automática com pedras (v3.25.0)
+
+**O que faz (aba Treino → 🧬 Evolução, `cfg.evolveEnabled`):** pedido do usuário em 02/10/2026 ("quando o Pokémon pegar o
+level da evolução, ele volta para a cidade e evolui caso tenha as stones no inventário"). Quando um Pokémon do TIME chega ao
+nível de evolução (`evolveNeedLevel` do frame `pokes`), o script pede uma viagem à cidade, evolui gastando as pedras (mantém o
+nível) e volta para a hunt. Sem pedra NÃO evolui (a grátis volta ao Lv.1) e avisa uma vez.
+
+**Mensagens (REST, levantadas no bundle em 02/10/2026):** `GET /api/game/evolve?capturedId=<id>[&destId]` → `{ name, level,
+needLevel, canEvolve, hasStones, keepLevel, destName, destId?, itemOnly, stones[{ itemId, name, need, have, icon }],
+branches[{ destId, destName, needLevel, canEvolve, hasStones, stones }] }`; `POST /api/game/evolve { capturedId, useStone,
+destId? }` → `{ name }`. O botão do HUD só funciona em Cerulean ("Evolution is only allowed in Cerulean").
+
+**Lógica (módulo `// ---- Evolução automática`, antes do Daily Gift):** `evolveOnPokes` guarda quem do time evolui por nível e,
+no nível, `tripRequest('evoluir')` uma vez por Pokémon por episódio (rearma no Salvar, quando evolui/sai do time ou no estágio
+novo abaixo do nível); `poke-xp` com `leveledUp` pede `pokes-get`. Na cidade (`evolveCityWork`, com `set-city cerulean` se a
+viagem foi para outra cidade): GET por candidato; linha ramificada só com pedra para UM destino (`destId`); `hasStones` →
+`POST useStone:true`; depois `pokes-get`. Aviso no canal de Alertas (evoluiu / falha nova); falha repetida com o mesmo motivo
+não avisa de novo, mas tenta a cada viagem (carona). Logs `evolucao { campos }`, `evolucao-cidade`. Status no painel.
+
+**Pendente:** confirmar no log `evolucao` os campos reais da resposta (`campos`) e se o servidor exige Cerulean também no POST.
+Teste: `node test/evolve.test.js`.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

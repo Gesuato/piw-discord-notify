@@ -23,6 +23,7 @@ Tampermonkey/Violentmonkey no navegador.
 - ✅ **Alerta de nível**: avisa quando o líder do time chega ao nível escolhido, em webhook próprio
 - ✅ **Troca automática de líder**: ao atingir o nível, passa a vez para o próximo do time que ainda está abaixo
 - ✅ **Rota de treino**: etapas "hunt + nível"; quando todos do time chegam ao nível, troca de hunt sozinho
+- ✅ **Evolução automática**: quem do time chega ao nível de evolução vai à cidade, evolui com as pedras da mochila (mantém o nível) e volta para a hunt
 - ✅ **Recarga automática**: recarrega o painel sozinho a cada X–Y minutos (sorteado), como o "⟳ Atualizar tudo" do PokeGrid, e volta para a hunt em que estava
 - ✅ **Exportar / importar** a configuração entre contas e painéis
 - ✅ Webhooks separados por tipo de evento: capturas, shinys, alertas e nível (cada um pode ir para um canal)

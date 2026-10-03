@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.24.7
+// @version      3.25.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.24.7';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.25.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -76,6 +76,7 @@
         dailyAuto: false,       // v3.16.0: fazer a daily sozinho (escolhe missão e Pokémon do time, vai e volta)
         giftEnabled: false,     // v3.24.0 Daily Gift: resgatar o presente do dia (calendário de 28 dias) sozinho
         giftCenterMode: 'daily', // ...e no Gift Center (correio): 'daily' = entregar só o do dia | 'all' = tudo que aparecer | '' = não mexer
+        evolveEnabled: false,   // v3.25.0 Evolução: quem do time chega ao nível vai à cidade (Cerulean) e evolui com as pedras da mochila
         clanEnabled: false,     // v3.17.0 Clã (aba Profissão): acompanhar a tarefa de rank, guardar os itens base, converter na viagem
         clanKey: 'orebound',    // clã em que o script entra sozinho se a conta não tiver nenhum (1ª entrada é grátis)
         clanRankup: true,       // ...subir de rank sozinho quando a tarefa fechar (na viagem à cidade)
@@ -528,7 +529,7 @@
     }
 
     function requestPokes(delayMs) {
-        if (!levelEnabled() && !cfg.pokeSellEnabled && !cfg.catchRouteEnabled && !(cfg.dailyEnabled && cfg.dailyAuto) && !(cfg.clanEnabled && cfg.clanRoute) && !cfg.healJoyEnabled) return; // venda de Pokémon, rota de captura, daily sozinha e cura na Joy também usam o frame `pokes`
+        if (!levelEnabled() && !cfg.pokeSellEnabled && !cfg.catchRouteEnabled && !(cfg.dailyEnabled && cfg.dailyAuto) && !(cfg.clanEnabled && cfg.clanRoute) && !cfg.healJoyEnabled && !cfg.evolveEnabled) return; // venda de Pokémon, rota de captura, daily sozinha e cura na Joy também usam o frame `pokes`
         clearTimeout(pokesRequestTimer);
         pokesRequestTimer = setTimeout(() => {
             pokesRequestTimer = null;
@@ -2224,6 +2225,125 @@
         }, { evento: 'daily-pronta', missao: d.name, volta: volta ? dest : null });
     }
 
+    // ---- Evolução automática: evoluir quem do time chegou ao nível, com as pedras, na cidade (v3.25.0) ----
+    //   Levantado no bundle do cliente em 02/10/2026 (janela "Evolve" do HUD do time, componente `ns`):
+    //   GET  /api/game/evolve?capturedId=<id>[&destId=<speciesId>] -> { name, level, needLevel, canEvolve, hasStones,
+    //        keepLevel, destName, destId?, itemOnly, stones:[{ itemId, name, need, have, icon }],
+    //        branches:[{ destId, destName, needLevel, canEvolve, hasStones, stones:[...] }] }  (branches = linha ramificada,
+    //        ex. Eevee: cada pedra leva a um destino; o cliente manda destId na 2ª leitura e no POST)
+    //   POST /api/game/evolve { capturedId, useStone: true|false, destId? } -> { name }  (nome novo). useStone:true gasta
+    //        as pedras e MANTÉM o nível; useStone:false é grátis mas volta ao Lv.1 — o script SÓ evolui com pedra (pedido
+    //        do usuário). Depois o cliente manda `pokes-get`.
+    //   O botão do HUD só funciona em Cerulean ("Evolution is only allowed in Cerulean — return to town"): a evolução é
+    //   tarefa da viagem à cidade (`evoluir`); se a cidade da viagem não for Cerulean, manda `set-city cerulean` antes.
+    //   Candidato: Pokémon do TIME no frame `pokes` (`team`, `hasEvolution`, `evolveNeedLevel`, `evolvesToName`, campos
+    //   vistos em `pokes-campos` em 02/10/2026) com level >= evolveNeedLevel. Uma viagem pedida por Pokémon por episódio
+    //   (`evolveAttempted`); rearma no Salvar, quando ele evolui/sai do time ou deixa de estar no nível. Faltando pedra,
+    //   avisa uma vez (repete só se o motivo mudar) e tenta de novo a cada viagem (carona).
+    //   Formatos só valem como confirmados depois de aparecerem no log `evolucao` (traz `campos` da resposta).
+
+    const EVOLVE_URL = '/api/game/evolve';
+    const EVOLVE_CITY = 'cerulean';
+    const EVOLVE_CITY_WAIT_MS = 2000;
+
+    let evolveTeam = [];            // [{ id, name, level, need, dest }] do último frame `pokes` (time com evolução por nível)
+    const evolveAttempted = {};     // id -> true depois de pedir a viagem neste episódio
+    const evolveFailed = {};        // id -> motivo da última falha (não repete o aviso enquanto for o mesmo)
+    let evolveLast = null;          // { at, feitos, falhas } da última viagem (painel)
+    let onEvolveChange = null;      // callback do painel
+
+    function evolveNotify() { if (onEvolveChange) { try { onEvolveChange(); } catch { /* painel fechado */ } } }
+    function evolveReady(p) { return Number(p.level) >= Number(p.need); }
+    function evolveCandidates() { return evolveTeam.filter(evolveReady); }
+    function evolveWanted() { return Boolean(cfg.evolveEnabled) && evolveCandidates().length > 0; }
+
+    // Frame `pokes`: guarda quem do time evolui por nível e, no nível, pede a viagem (uma vez por Pokémon por episódio).
+    function evolveOnPokes(list) {
+        evolveTeam = (Array.isArray(list) ? list : [])
+            .filter(p => p && p.team && p.hasEvolution && Number(p.evolveNeedLevel) > 0)
+            .map(p => ({ id: String(p.id), name: p.name, level: Number(p.level) || 0, need: Number(p.evolveNeedLevel), dest: p.evolvesToName || null }));
+        for (const id of Object.keys(evolveAttempted)) {
+            const p = evolveTeam.find(x => x.id === id);
+            if (!p || !evolveReady(p)) { delete evolveAttempted[id]; delete evolveFailed[id]; }   // evoluiu, saiu do time ou (estágio novo) ainda não está no nível
+        }
+        evolveNotify();
+        if (!cfg.evolveEnabled) return;
+        const pedir = evolveCandidates().filter(p => !evolveAttempted[p.id]);
+        if (!pedir.length) return;
+        for (const p of pedir) evolveAttempted[p.id] = true;
+        tripRequest('evoluir', null, pedir.map(p => `${p.name} lv ${p.level}${p.dest ? ` → ${p.dest}` : ''}`).join(', '));
+    }
+    // `poke-xp` com leveledUp: confere o time (o frame `pokes` é quem decide).
+    function evolveOnPokeXp(message) { if (cfg.evolveEnabled && message?.leveledUp) requestPokes(0); }
+
+    const evolveStonesTxt = (stones) => (Array.isArray(stones) ? stones : []).map(s => `${s.need}x ${s.name}${s.have != null ? ` (tem ${s.have})` : ''}`).join(', ');
+
+    // Tarefa da viagem (na cidade): lê a janela de evolução de cada candidato e evolui com pedra quando o jogo deixa.
+    async function evolveCityWork() {
+        if (!cfg.evolveEnabled) return { ok: true, motivo: 'desligado' };
+        const cand = evolveCandidates();
+        if (!cand.length) return { ok: true, motivo: 'ninguém do time no nível de evoluir' };
+        if (tripCity() !== EVOLVE_CITY) {
+            logEvent('evolucao-cidade', { de: tripCity(), para: EVOLVE_CITY });
+            sendGame({ type: 'set-city', slug: EVOLVE_CITY });
+            await new Promise(r => setTimeout(r, EVOLVE_CITY_WAIT_MS));
+        }
+        const feitos = [], falhas = [];
+        for (const p of cand) {
+            let info = null, motivo = null, destId = null, pedras = null, para = null;
+            try {
+                info = await gameApi(`${EVOLVE_URL}?capturedId=${encodeURIComponent(p.id)}`);
+                const ramos = Array.isArray(info?.branches) ? info.branches : [];
+                if (ramos.length) {
+                    const prontos = ramos.filter(b => b && b.canEvolve && b.hasStones);
+                    if (prontos.length === 1) { destId = prontos[0].destId; pedras = prontos[0].stones; para = prontos[0].destName; }
+                    else if (!prontos.length) motivo = `faltam pedras (${ramos.map(b => `${b.destName}: ${evolveStonesTxt(b.stones) || '?'}`).join(' · ')})`;
+                    else motivo = `linha ramificada com pedra para ${prontos.map(b => b.destName).join(' e ')}: escolha no jogo`;
+                } else if (!info || info.canEvolve !== true) motivo = `o jogo diz que ainda não pode (nível ${info?.level ?? '?'}, precisa ${info?.needLevel ?? '?'})`;
+                else if (!info.hasStones) motivo = `faltam pedras (${evolveStonesTxt(info.stones) || 'sem lista'})`;
+                else { pedras = info.stones; para = info.destName; }
+                if (!motivo) {
+                    const body = Object.assign({ capturedId: p.id, useStone: true }, destId != null ? { destId } : {});
+                    const r = await gameApi(EVOLVE_URL, { method: 'POST', body: JSON.stringify(body) });
+                    para = r?.name || para || p.dest;
+                    feitos.push({ id: p.id, de: p.name, para, level: p.level, pedras: evolveStonesTxt(pedras).replace(/ \(tem \d+\)/g, '') });
+                }
+            } catch (err) { motivo = `erro: ${err?.message || err}`; }
+            if (motivo) falhas.push({ id: p.id, name: p.name, dest: info?.destName || p.dest, motivo });
+            logEvent('evolucao', { id: p.id, name: p.name, level: p.level, ok: !motivo, para: motivo ? null : para, destId, motivo, campos: info && typeof info === 'object' ? Object.keys(info) : null });
+        }
+        evolveLast = { at: Date.now(), feitos, falhas };
+        setTimeout(() => sendGame({ type: 'pokes-get' }), 1000);   // o time novo (nome, hasEvolution) rearma/limpa os candidatos
+        const novas = falhas.filter(f => evolveFailed[f.id] !== f.motivo);
+        for (const f of falhas) evolveFailed[f.id] = f.motivo;
+        if (feitos.length || novas.length) {
+            const who = playerName();
+            const mention = cfg.mentionUserId ? `<@${cfg.mentionUserId}> ` : '';
+            const linhas = feitos.map(f => `${f.de} → **${f.para}** (lv ${f.level} mantido${f.pedras ? `, gastou ${f.pedras}` : ''})`)
+                .concat(novas.map(f => `⚠ ${f.name}${f.dest ? ` → ${f.dest}` : ''}: ${f.motivo}`));
+            postWebhook('alert', {
+                content: `${mention}🧬 ${who ? `**${who}**` : 'Sua conta'} ${feitos.length ? `evoluiu ${feitos.map(f => `**${f.de}** em **${f.para}**`).join(' e ')}` : `não conseguiu evoluir ${novas.map(f => `**${f.name}**`).join(' e ')}`}`,
+                username: 'Poke Idle World',
+                embeds: [{
+                    title: feitos.length ? (falhas.length ? 'Evolução parcial' : 'Evolução') : 'Evolução não feita',
+                    description: (who ? `Conta: ${who}\n` : '') + linhas.join('\n') + `\nEm ${new Date().toLocaleString('pt-BR')}`,
+                    color: feitos.length ? (falhas.length ? 0xfee75c : 0x57f287) : 0xed4245,
+                }],
+            }, { evento: feitos.length ? 'evolucao' : 'evolucao-falhou', ids: cand.map(p => p.id) });
+        }
+        evolveNotify();
+        return { ok: falhas.length === 0, motivo: falhas.length ? falhas.map(f => `${f.name}: ${f.motivo}`).join('; ') : null, feitos: feitos.length, falhas: falhas.length };
+    }
+
+    // Linha do painel.
+    function evolveStatus(d) {
+        d = d || cfg;
+        if (!evolveTeam.length) return 'ninguém do time evolui por nível (ou o time ainda não foi lido)';
+        const partes = evolveTeam.map(p => `${p.name} ${p.level}/${p.need}${p.dest ? ` → ${p.dest}` : ''}${evolveReady(p) ? (d.evolveEnabled ? (evolveAttempted[p.id] ? ' ✔ viagem pedida' : ' ✔ pronto') : ' ✔ no nível') : ''}`);
+        const ult = evolveLast ? ` · última viagem: ${evolveLast.feitos.length ? `evoluiu ${evolveLast.feitos.map(f => f.para).join(', ')}` : ''}${evolveLast.falhas.length ? `${evolveLast.feitos.length ? '; ' : ''}${evolveLast.falhas.map(f => `${f.name}: ${f.motivo}`).join('; ')}` : ''}` : '';
+        return partes.join(' · ') + ult;
+    }
+
     // ---- Daily Gift: resgatar o presente do dia (calendário de 28 dias) e entregar pelo Gift Center (v3.24.0) ----
     // O "Daily Gift" (🎁 do menu do jogo) é um calendário de 28 dias: um presente por dia, resgatado na mão. Não passa
     // pelo socket — a janela consulta por REST (levantado no bundle em 30/09/2026):
@@ -3176,7 +3296,7 @@
     const TRIP_PHASE_PCT = { 'indo para a cidade': 15, 'na cidade': 50, 'voltando': 90 };
     function tripLastText() {
         if (!lastTripInfo) return '';
-        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar' };
+        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução' };
         return `Última ${new Date(lastTripInfo.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}: ${lastTripInfo.tarefas.map(t => `${nome[t.key] || t.key} ${t.ok ? '✔' : '✖'}`).join(' · ')}`;
     }
     // Estado para a faixa do painel: { busy, pct, title, sub }.
@@ -3214,6 +3334,7 @@
             else if (key === 'bolas' && n.dados) tarefas.push({ key, run: () => autoBuyBalls(n.dados.id, n.dados.qty, n.dados.min) });
             else if (key === 'suprimentos') tarefas.push({ key, run: () => supplyCityWork() });
             else if (key === 'cla') tarefas.push({ key, run: () => clanCityWork() });
+            else if (key === 'evoluir') tarefas.push({ key, run: () => evolveCityWork() });
         }
         // Guardar na cidade (v3.18.0): última tarefa de toda viagem que tenha outra coisa a fazer.
         if (tarefas.length && typeof depositWanted === 'function' && depositWanted()) tarefas.push({ key: 'guardar', run: () => depositCityWork() });
@@ -3277,6 +3398,7 @@
         }
         if (!has('suprimentos') && typeof supplyLow === 'function' && supplyLow().length) needs.push(['suprimentos', { dados: null, motivo: 'carona' }]);
         if (!has('cla') && typeof clanWantsCity === 'function' && clanWantsCity()) needs.push(['cla', { dados: null, motivo: 'carona' }]);
+        if (!has('evoluir') && typeof evolveWanted === 'function' && evolveWanted()) needs.push(['evoluir', { dados: null, motivo: 'carona' }]);
         return needs;
     }
 
@@ -3984,7 +4106,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         if (message.type === 'poke-delta') { handlePokeDelta(message); return; }
         if (message.type === 'family') { handleFamily(message); return; }
         if (message.type === 'error') { handleGameError(message); return; }
-        if (message.type === 'poke-xp') { handlePokeXp(message); return; }
+        if (message.type === 'poke-xp') { handlePokeXp(message); evolveOnPokeXp(message); return; }
         if (message.type === 'field' || message.type === 'field-init') {
             lastFieldAt = Date.now();
             if (message.type === 'field') healOnField(message);
@@ -3996,7 +4118,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         if (message.type === 'field-kill') { idleOnAlive(); noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteDepositDrop(message); return; }
         if (message.type === 'inventory' && Array.isArray(message.items)) { clanOnInventory(message.items); supplyOnInventory(message.items); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
-        if (message.type === 'pokes' && Array.isArray(message.list)) { updateTeam(message.list); healOnPokes(message.list); idleOnPokes(message.list);handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); return; }
+        if (message.type === 'pokes' && Array.isArray(message.list)) { updateTeam(message.list); healOnPokes(message.list); idleOnPokes(message.list);handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); evolveOnPokes(message.list); return; }
 
         if (message.type !== 'catch-result') return;
 
@@ -4284,10 +4406,10 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             }
             case 'treino': {
                 const nivel = d.routeEnabled || (Number(d.levelAlertAt) || 0) > 0;
-                if (!(nivel || d.dailyEnabled || d.giftEnabled)) return 'off';
+                if (!(nivel || d.dailyEnabled || d.giftEnabled || d.evolveEnabled)) return 'off';
                 if (d.routeEnabled && (!rota.length || (Number(cfg.routeStage) || 0) >= rota.length)) return 'warn';
                 if (nivel && !(d.webhookLevel || '').trim()) return 'warn';
-                if ((d.routeEnabled || d.dailyEnabled || d.giftEnabled) && !temAlertas) return 'warn'; // troca de hunt, daily e gift avisam em Alertas
+                if ((d.routeEnabled || d.dailyEnabled || d.giftEnabled || d.evolveEnabled) && !temAlertas) return 'warn'; // troca de hunt, daily, gift e evolução avisam em Alertas
                 return 'on';
             }
             case 'profissao':
@@ -4304,7 +4426,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
             `Bolas: ${!((Number(d.ballsMin) || 0) > 0 || d.autoBuy) ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}${supplyOn(d) ? ` · refil: ${supplySlots(d).map(s => `${s.name} < ${s.min}`).join(', ')}` : ''}${d.healJoyEnabled ? ' · Joy' : ''}${d.cityIdleEnabled ? ` · volta da cidade ${Number(d.cityIdleMin) || IDLE_MIN_DEFAULT} min` : ''}`,
             `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades)` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
-            `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? 'daily sozinha' : 'daily') : '', d.giftEnabled ? 'gift' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
+            `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? 'daily sozinha' : 'daily') : '', d.giftEnabled ? 'gift' : '', d.evolveEnabled ? 'evolução' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
         ].join(' · ');
@@ -4506,6 +4628,12 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <p class="dn-help">O jogo libera um presente por dia; resgatado, ele cai no Gift Center (correio 🎁) e precisa de um segundo resgate para chegar à conta. O script lê o calendário a cada 30 min, resgata o do dia e entrega pelo Gift Center conforme a opção acima. Boosts começam a contar na hora em que são entregues. Aviso no canal de Alertas.</p>
                         <div class="dn-status"><span>🎁</span><span id="pg-dn-gift-status"></span></div>
                     </div>
+                    <div class="dn-section">
+                        <h3>Evolução</h3>
+                        <label class="dn-toggle"><input id="pg-dn-evolve" type="checkbox"><span class="sw"></span>Evoluir sozinho quem do time chegar ao nível <span class="dn-hint">(só com as pedras na mochila; mantém o nível)</span></label>
+                        <p class="dn-help">Quando um Pokémon do time chega ao nível de evolução, o script pede uma viagem à cidade (o jogo só deixa evoluir em Cerulean), evolui gastando as pedras do elemento e volta para a hunt. Sem as pedras não evolui (a evolução grátis volta ao Lv.1) e avisa uma vez; tenta de novo nas próximas viagens. Linha ramificada (Eevee) só evolui se houver pedra para um destino só. Aviso no canal de Alertas.</p>
+                        <div class="dn-status"><span>🧬</span><span id="pg-dn-evolve-status"></span></div>
+                    </div>
                 </section>
                 <section class="dn-pane" data-pane="profissao" hidden>
                     <div class="dn-section">
@@ -4679,6 +4807,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 dailyClaim: $('#pg-dn-daily-claim').checked,
                 dailyAuto: $('#pg-dn-daily-auto').checked,
                 giftEnabled: $('#pg-dn-gift').checked,
+                evolveEnabled: $('#pg-dn-evolve').checked,
                 giftCenterMode: ['daily', 'all', ''].includes($('#pg-dn-gift-center').value) ? $('#pg-dn-gift-center').value : 'daily',
                 clanEnabled: $('#pg-dn-clan').checked,
                 depositItems: $('#pg-dn-dep-items').value || '',
@@ -5003,6 +5132,11 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-gift-status').textContent = d.giftEnabled ? `Daily Gift: ${giftStatus(d)}` : 'Daily Gift desligado';
         }
         onGiftChange = () => { if (!panel.hidden) renderGift(); };
+        function renderEvolve() {
+            const d = current();
+            $('#pg-dn-evolve-status').textContent = `Evolução${d.evolveEnabled ? '' : ' (desligada)'}: ${evolveStatus(d)}`;
+        }
+        onEvolveChange = () => { if (!panel.hidden) renderEvolve(); };
         $('#pg-dn-team-refresh').onclick = () => {
             lastPokesReqAt = 0;
             const ok = sendGame({ type: 'pokes-get' });
@@ -5279,7 +5413,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             if (dirty) $('#pg-dn-save').click();
             const needs = tripAugment([]);
             if (!needs.length) { flash('⚠ Nada para levar: nenhum drop marcado nesta hunt, nenhum Pokémon nas regras e bolas, poções e revives acima do limite.', 'warn'); return; }
-            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar' };
+            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução' };
             flash(`🏙 Indo à cidade: ${needs.map(n => nome[n[0]]).join(', ')}…`, 'info', 90000);
             tripNeeds.clear();
             cityTrip('manual: ' + needs.map(n => n[0]).join('+'), tripTasksFor(needs)).then(r => {
@@ -5289,6 +5423,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                     if (t.key === 'pokes') return `Pokémon ${t.ok ? `✔ ${x.vendidos ?? ''} por ${fmtNum(x.ganho || 0)} gold` : `✖ ${t.motivo || ''}`}`;
                     if (t.key === 'suprimentos') return `poções/revives ${t.ok ? `✔ ${(x.compras || []).map(c => `${c.comprado} ${c.name}`).join(', ') || 'estoque ok'}` : `✖ ${t.motivo || ''}`}`;
                     if (t.key === 'bolas') return `bolas ${t.ok ? `✔ ${x.bought ?? ''}` : `✖ ${t.motivo || ''}`}`;
+                    if (t.key === 'evoluir') return `evolução ${t.ok ? `✔ ${x.feitos ?? ''}` : `✖ ${t.motivo || ''}`}`;
                     return `${nome[t.key] || t.key} ${t.ok ? '✔' : `✖ ${t.motivo || ''}`}`;
                 }).join(' · ');
                 flash(`${r.ok ? '✔' : '⚠'} Viagem: ${linha}${r.volta ? ` · voltando para ${r.volta}` : ''}`, r.ok ? 'ok' : 'warn', 12000);
@@ -5310,7 +5445,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
 
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderEvolve(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -5367,6 +5502,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-daily-claim').checked = cfg.dailyClaim !== false;
             $('#pg-dn-daily-auto').checked = Boolean(cfg.dailyAuto);
             $('#pg-dn-gift').checked = Boolean(cfg.giftEnabled);
+            $('#pg-dn-evolve').checked = Boolean(cfg.evolveEnabled);
             $('#pg-dn-gift-center').value = giftCenterMode(cfg);
             $('#pg-dn-clan').checked = Boolean(cfg.clanEnabled);
             $('#pg-dn-dep-items').value = ['depot', 'family'].includes(cfg.depositItems) ? cfg.depositItems : '';
@@ -5488,6 +5624,9 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             requestBalls(0);
             for (const k of Object.keys(supplyAttempted)) delete supplyAttempted[k]; // refil mudou: rearma e relê a mochila
             requestSupplies();
+            for (const k of Object.keys(evolveAttempted)) delete evolveAttempted[k]; // evolução: rearma (pedras compradas, etc.) e relê o time
+            for (const k of Object.keys(evolveFailed)) delete evolveFailed[k];
+            if (cfg.evolveEnabled) requestPokes(0);
             if (JSON.stringify([cfg.tripEveryMin, cfg.tripEveryMaxMin]) !== viagemAntes) restartTripCycle(); // faixa da viagem mudou: sorteia de novo
             saveHuntProfile();
             if (JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]) !== recargaAntes) scheduleReload(); // faixa mudou: sorteia de novo
@@ -5671,6 +5810,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             for (const k of Object.keys(ballAlerted)) delete ballAlerted[k];
             for (const k of Object.keys(autoBuyAttempted)) delete autoBuyAttempted[k];
             for (const k of Object.keys(supplyAttempted)) delete supplyAttempted[k];
+            for (const k of Object.keys(evolveAttempted)) delete evolveAttempted[k];
+            for (const k of Object.keys(evolveFailed)) delete evolveFailed[k];
             restartTripCycle();
             scheduleReload();
             loadHuntProfile();

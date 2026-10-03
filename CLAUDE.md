@@ -204,6 +204,16 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `{ granted }`. `giftTick` a cada 1 min relê a cada 30 min (5 min enquanto não liberou), resgata e entrega pelo Gift Center
   o do dia (mesmo `label`) ou tudo; '' = deixa no correio (boosts começam a contar na entrega). Aviso em `alert`;
   logs `gift`, `gift-resgate`, `gift-center`, `gift-erro`. Teste: `node test/gift.test.js` (`loadGiftModule`).
+- Evolução automática (v3.25.0, aba Treino → 🧬 Evolução, `cfg.evolveEnabled`; módulo `// ---- Evolução automática` antes do
+  Daily Gift; bundle em 02/10/2026, formatos ainda não vistos no log): `GET /api/game/evolve?capturedId=<id>[&destId]` →
+  `{ name, level, needLevel, canEvolve, hasStones, keepLevel, destName, destId?, itemOnly, stones[{ itemId, name, need, have,
+  icon }], branches[{ destId, destName, needLevel, canEvolve, hasStones, stones }] }`; `POST /api/game/evolve { capturedId,
+  useStone, destId? }` → `{ name }`. `useStone:true` gasta as pedras e mantém o nível; `false` é grátis mas volta ao Lv.1 —
+  o script SÓ usa pedra (pedido do usuário). O jogo só deixa evoluir em Cerulean: é tarefa da viagem (`evoluir`, pedida
+  por `evolveOnPokes` quando um Pokémon do TIME tem `level >= evolveNeedLevel`, uma vez por Pokémon por episódio em
+  `evolveAttempted`; carona via `evolveWanted`). Com `tripCity` ≠ cerulean manda `set-city cerulean` antes. Linha ramificada
+  só evolui com pedra para UM destino. Sem pedra: aviso 1x por motivo (`evolveFailed`), tenta nas próximas viagens.
+  Logs `evolucao { campos }`, `evolucao-cidade`. Teste: `node test/evolve.test.js` (`loadEvolveModule`).
 - Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
   `guardar` no fim de toda viagem; drops → Depot (`POST /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou
   família (`family-action item`); Pokémon não vendidos → só família (o box JÁ é o Depot comum de Pokémon). Lista escolhida
@@ -347,7 +357,8 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
   `// ---- Volta da cidade` até `// ---- Lógica principal`; estado dos outros módulos em `init.env`), `node test/trip.test.js`
   (`loadTripModule`: `// ---- Viagem à cidade` até `// ---- Recarga automática do painel`; timers avançam o relógio falso) e
   `node test/details.test.js` (`loadDetailsModule`: `// ---- IV e qualidade do indivíduo capturado` até `// ---- Alerta de
-  nível do líder`; timers ficam em `state.timers` e `state.fire(ms)` dispara os desse prazo).
+  nível do líder`; timers ficam em `state.timers` e `state.fire(ms)` dispara os desse prazo) e `node test/evolve.test.js`
+  (`loadEvolveModule`: `// ---- Evolução automática` até `// ---- Daily Gift`; `init.api` responde GET/POST /evolve, `init.city`).
   `test/harness.js` recorta módulos do userscript pelos marcadores (`loadLevelModule`: `// ---- Alerta de nível do
   líder` até `// ---- Alerta de estoque de bolas`; `loadPokeSellModule`: `// ---- Venda automática de Pokémon` até
   `// ---- Rota de captura`; `loadCatchModule`: `// ---- Rota de captura` até `// ---- Daily Kill`, com `init.fetchJson(url)` para os

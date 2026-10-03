@@ -31,6 +31,8 @@ const rica = {
   healBuy: true, healItemId: 203, healMin: 30, healQty: 150, reviveBuy: true, reviveItemId: 206, reviveMin: 3, reviveQty: 12, healJoyEnabled: true, cityIdleEnabled: false, cityIdleMin: 25,
   // v3.24.0 (Daily Gift)
   giftEnabled: true, giftCenterMode: 'all',
+  // v3.25.0 (evolução)
+  evolveEnabled: true,
 };
 setTimeout(() => {
   const w1 = boot(rica, { pgDiscordNotifyDrops: JSON.stringify([120, 7]) });
