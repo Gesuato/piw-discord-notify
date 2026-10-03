@@ -215,8 +215,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   só evolui com pedra para UM destino. Sem pedra: aviso 1x por motivo (`evolveFailed`), tenta nas próximas viagens.
   Logs `evolucao { campos }`, `evolucao-cidade`. Teste: `node test/evolve.test.js` (`loadEvolveModule`).
 - Poke Slot Machine (v3.26.0, aba Treino → Poke Slot Machine, `cfg.slotEnabled` + `cfg.slotWanted` lista por vírgula em ordem de
-  preferência; módulo `// ---- Poke Slot Machine` entre a Evolução e o Daily Gift; bundle em 02/10/2026, formatos ainda não vistos no
-  log): NPC `pokeslot` da cidade `shopping`; por dentro o jogo chama de "golden stars". `GET /api/game/golden-stars` → `{ cards, slots[{
+  preferência; módulo `// ---- Poke Slot Machine` entre a Evolução e o Daily Gift; bundle em 02/10/2026, formato CONFIRMADO no log em
+  03/10/2026 03:44Z: raiz traz também `now, gold, diamonds, level`, cada slot traz `rolls`; 1º giro real na conta4 às 03:47Z, viagem a
+  Cerulean → `set-city shopping` → roll/pick em 14 s, o servidor aceitou): NPC `pokeslot` da cidade `shopping`; por dentro o jogo chama de "golden stars". `GET /api/game/golden-stars` → `{ cards, slots[{
   slot, unlocked, vipLocked, freeReady, freeRollAt, active{ name, speciesId, pct, bonusType, rarity, startedAt, expiresAt }, candidates[{
   speciesId, name }] }], config{ freeRollCooldownMs, candidates } }`; `POST .../roll { slot }` → `{ state, candidates }` (grátis só com
   `freeReady`; o script NUNCA gasta cards); `POST .../pick { slot, speciesId }` → `{ active, state }`. Bônus vale só contra a espécie

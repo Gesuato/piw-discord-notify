@@ -665,8 +665,9 @@ via `slotWanted`); `slotCityWork` na viagem: `set-city shopping` se a viagem foi
 no canal de Alertas (amarelo quando caiu no aleatório). Erro = 15 min antes de insistir no slot (`slotTriedAt`). Logs
 `slot-campos`, `slot`, `slot-roll`, `slot-erro`, `slot-cidade`.
 
-**Pendente:** confirmar no log o formato das respostas e se o servidor exige estar no shopping para o roll. Teste:
-`node test/slot.test.js` e passo no smoke.
+**Confirmado em 03/10/2026 (log da conta4):** formato igual ao do bundle (raiz traz ainda `now, gold, diamonds, level`; slot traz
+`rolls`); viagem a Cerulean → `set-city shopping` → roll → pick funcionou em 14 s (Machamp +14% Loot, aleatório porque Phanpy não
+saiu). Teste: `node test/slot.test.js` e passo no smoke.
 
 ---
 
