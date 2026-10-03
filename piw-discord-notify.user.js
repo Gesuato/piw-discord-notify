@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.26.0
+// @version      3.26.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.26.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.26.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -2398,10 +2398,13 @@
     let onSlotChange = null;     // callback do painel
 
     function slotEnabled(d) { return Boolean((d || cfg).slotEnabled); }
+    // Chave de comparação de espécie: minúsculas, sem acento, e espaço/`_`/`-` equivalentes (v3.26.1: os outros campos do painel
+    // viram slug `ancient_pinsir`, e o usuário escreve assim por hábito; o sorteio traz "Ancient Pinsir").
+    const slotKey = (name) => normalize(name).replace(/[\s_-]+/g, ' ').trim();
     // Lista de Pokémon pedidos, em ordem de preferência (vírgula, ponto e vírgula ou linha), normalizada e sem repetição.
     function slotWantedList(d) {
         const out = [];
-        for (const p of String((d || cfg).slotWanted || '').split(/[,;\n]+/)) { const n = normalize(p); if (n && !out.includes(n)) out.push(n); }
+        for (const p of String((d || cfg).slotWanted || '').split(/[,;\n]+/)) { const n = slotKey(p); if (n && !out.includes(n)) out.push(n); }
         return out;
     }
     function slotNotify() { if (onSlotChange) { try { onSlotChange(); } catch { /* painel fechado */ } } }
@@ -2444,7 +2447,7 @@
             if (x.candidates) return true;
             if (!x.freeReady) return false;
             const a = slotActive(x, now);
-            return !(a && wanted.includes(normalize(a.name)));
+            return !(a && wanted.includes(slotKey(a.name)));
         });
     }
     // Os prontos em que o script ainda não insistiu há pouco (girados ou com erro nos últimos SLOT_RETRY_MS).
@@ -2541,7 +2544,7 @@
                         await slotWait(slotRnd(SLOT_BETWEEN_MS));
                     }
                     etapa = 'escolha';
-                    const nomes = cands.map(c => normalize(c.name));
+                    const nomes = cands.map(c => slotKey(c.name));
                     let escolha = null;
                     for (const w of wanted) { const i = nomes.indexOf(w); if (i >= 0) { escolha = cands[i]; break; } }
                     const aleatorio = !escolha;
@@ -2599,7 +2602,7 @@
             const a = slotActive(x, now);
             const estrela = a ? `★ ${slotStarText(a)} até ${slotHora(a.expiresAt)}` : 'sem estrela';
             const roll = x.candidates ? `${x.candidates.length} sorteados esperando escolha`
-                : x.freeReady ? (a && wanted.includes(normalize(a.name)) ? 'roll grátis pronto (segura o pedido até expirar)' : (slotWorking ? 'girando…' : 'roll grátis pronto → viagem'))
+                : x.freeReady ? (a && wanted.includes(slotKey(a.name)) ? 'roll grátis pronto (segura o pedido até expirar)' : (slotWorking ? 'girando…' : 'roll grátis pronto → viagem'))
                 : x.freeRollAt > now ? `grátis em ${slotFmtLeft(x.freeRollAt - now)}` : '';
             return `${n}: ${estrela}${roll ? ` · ${roll}` : ''}`;
         });

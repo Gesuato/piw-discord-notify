@@ -43,6 +43,8 @@ function mkApi(st, opts) {
     {
         const { api, state } = loadSlotModule({ slotEnabled: false, slotWanted: ' Dratini; larvitar,  Bagon\nDRATINI ' });
         assert(api.slotWantedList().join() === 'dratini,larvitar,bagon', 'lista de pedidos: ' + api.slotWantedList());
+        const g = loadSlotModule({ slotEnabled: true, slotWanted: 'ancient_pinsir, Nightmare-Pinsir,  Ancient  Pinsir' });
+        assert(g.api.slotWantedList().join('|') === 'ancient pinsir|nightmare pinsir', 'slug/hifen/espacos duplos viram a mesma chave: ' + g.api.slotWantedList());
         await api.slotTick();
         assert(state.calls.length === 0 && state.trips.length === 0, 'desligado não faz nada');
         assert(/liga para ler/.test(api.slotStatus()), 'status desligado: ' + api.slotStatus());
@@ -139,7 +141,7 @@ function mkApi(st, opts) {
     // 7) sorteio já feito esperando escolha (alguém rolou na mão): não rola de novo, só escolhe; viagem em outra cidade -> set-city shopping
     {
         const m = mkApi(stateRaw([slotRaw({ slot: 0, freeReady: false, freeRollAt: T0 + 3 * H, candidates: CANDS2 })]));
-        const { api, state } = loadSlotModule({ slotEnabled: true, slotWanted: 'Dratini' }, { api: m.api, city: 'cerulean' });
+        const { api, state } = loadSlotModule({ slotEnabled: true, slotWanted: 'dratini_' }, { api: m.api, city: 'cerulean' });   // grafia de slug casa com "Dratini"
         await api.slotTick();
         assert(state.trips.length === 1 && /sorteio esperando escolha/.test(state.trips[0].motivo) && /9 sorteados esperando escolha/.test(api.slotStatus()), 'pendente pede viagem: ' + api.slotStatus());
         const r = await api.slotCityWork();

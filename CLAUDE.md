@@ -224,7 +224,8 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   02/10/2026): roll grátis a cada 12 h por slot, depois 1 card; escolha direta 5 cards; faixas Comum +5–10%, Incomum +10–15%, Raro
   +15–20%, Épico +20–25%, Lendário +25–35%; o bônus dura ~2 h (usuário). Slot pronto = liberado, sem trava VIP, com sorteio pendente ou
   roll grátis sem estrela ativa de um pedido → `tripRequest('slot')` + carona (`slotWanted`); `slotCityWork` manda `set-city shopping`
-  se `tripCity()` for outra, gira e escolhe o 1º pedido sorteado, senão um qualquer (pedido do usuário). Erro = 15 min por slot
+  se `tripCity()` for outra, gira e escolhe o 1º pedido sorteado, senão um qualquer (pedido do usuário). Nomes comparados por `slotKey`
+  (v3.26.1: espaço, `_` e `-` equivalentes, porque os outros campos do painel viram slug `ancient_pinsir`). Erro = 15 min por slot
   (`slotTriedAt`). Logs `slot-campos`, `slot`, `slot-roll`, `slot-erro`, `slot-cidade`. Teste: `node test/slot.test.js` (`loadSlotModule`).
 - Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
   `guardar` no fim de toda viagem; drops → Depot (`POST /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou
