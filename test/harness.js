@@ -359,6 +359,8 @@ function loadTripModule(cfg, init) {
         huntLoot: new Map((init.wantedNow || []).map(id => [id, { name: 'x', qty: 1 }])),
         pokeSellCandidates: () => init.pokeCands || [],
         pokeSellListUnread: () => Boolean(init.pokesUnread),
+        pokesListWanted: () => Boolean(init.pokesWanted),
+        pokeSellRefreshList: () => { state.tasks.push(['time', {}]); return Promise.resolve(init.pokesReply !== false); },
         ballName: (id) => ({ 1: 'Poke Ball', 4: 'Ultra Ball' }[id] || `Ball ${id}`),
         watchedBallId: () => (init.ballId != null ? init.ballId : null),
         ballQty: () => (init.ballQty != null ? init.ballQty : null),

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.27.1
+// @version      3.27.2
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.27.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.27.2';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -530,8 +530,13 @@
         return true;
     }
 
+    // Algum módulo usa a lista `pokes`? (nível/rota, venda de Pokémon, rota de captura, daily sozinha, clã, Joy, evolução)
+    function pokesListUsed() {
+        return levelEnabled() || Boolean(cfg.pokeSellEnabled) || Boolean(cfg.catchRouteEnabled) || Boolean(cfg.dailyEnabled && cfg.dailyAuto)
+            || Boolean(cfg.clanEnabled && cfg.clanRoute) || Boolean(cfg.healJoyEnabled) || Boolean(cfg.evolveEnabled);
+    }
     function requestPokes(delayMs) {
-        if (!levelEnabled() && !cfg.pokeSellEnabled && !cfg.catchRouteEnabled && !(cfg.dailyEnabled && cfg.dailyAuto) && !(cfg.clanEnabled && cfg.clanRoute) && !cfg.healJoyEnabled && !cfg.evolveEnabled) return; // venda de Pokémon, rota de captura, daily sozinha e cura na Joy também usam o frame `pokes`
+        if (!pokesListUsed()) return;
         clearTimeout(pokesRequestTimer);
         pokesRequestTimer = setTimeout(() => {
             pokesRequestTimer = null;
@@ -1171,7 +1176,7 @@
         try { m = JSON.parse(data); } catch { return; }
         if (m?.type === 'enter-hunt') setHunt(m.slug);
         else if (m?.type === 'leave-hunt') { healOnLeave(); setHunt(null); }
-        else if (m?.type === 'set-city') { tripOnSetCity(); healOnSetCity(); armResume(RESUME_AFTER_CITY_MS); } // SPA na cidade: viagem chegou / hora de voltar pra hunt
+        else if (m?.type === 'set-city') { tripOnSetCity(); healOnSetCity(); pokesOnSetCity(); armResume(RESUME_AFTER_CITY_MS); } // SPA na cidade: viagem chegou / hora de voltar pra hunt
     }
 
     function handleFieldKill(message) {
@@ -1349,6 +1354,23 @@
     // não levava a tarefa de Pokémon: a conta4 (líder sem subir de nível na hunt de Phanpy, 04/10/2026) ficou com
     // "Time ainda não lido" e dezenas de capturas no box sem vender. A viagem agora lê a lista quando ela nunca veio.
     function pokeSellListUnread() { return Boolean(cfg.pokeSellEnabled) && !lastPokesList.length; }
+    // v3.27.2: a lista nunca veio e algum módulo (evolução, nível, Joy...) precisa dela — a viagem leva a tarefa `time`
+    // (só lê a lista; sem venda). Com a venda de Pokémon ligada a tarefa `pokes` já faz isso e vende na mesma viagem.
+    function pokesListWanted() { return !lastPokesList.length && pokesListUsed(); }
+    // Chegada na cidade pela MÃO do usuário (`set-city` fora da viagem do script): o jogo responde aqui, então pede a lista
+    // 3 s depois (a tela ainda está trocando de cena). Na viagem do script quem pede é a tarefa.
+    const POKES_CITY_DELAY_MS = 3000;
+    let pokesCityTimer = null;
+    function pokesOnSetCity() {
+        if (typeof tripRunning !== 'undefined' && tripRunning) return;
+        if (!pokesListUsed()) return;
+        clearTimeout(pokesCityTimer);
+        pokesCityTimer = setTimeout(() => {
+            pokesCityTimer = null;
+            lastPokesReqAt = Date.now();
+            logEvent('pokes-get', { motivo: 'chegou na cidade', nuncaLida: !lastPokesList.length, enviado: sendGame({ type: 'pokes-get' }) });
+        }, POKES_CITY_DELAY_MS);
+    }
     function pokeSellCandidates(d, list) {
         return (Array.isArray(list) ? list : lastPokesList).filter(p => !pokeSellReason(p, d));
     }
@@ -3538,7 +3560,8 @@
         const sup = typeof supplyLow === 'function' ? supplyLow(d) : [];
         const suprimentos = sup.length ? sup : null;
         const slot = typeof slotWanted === 'function' && slotWanted(d);
-        return { drops, pokes, bolas, cla, suprimentos, slot, nada: !drops && !pokes && !bolas && !cla && !suprimentos && !slot };
+        const time = (typeof pokeSellListUnread === 'function' && pokeSellListUnread()) || (typeof pokesListWanted === 'function' && pokesListWanted());
+        return { drops, pokes, bolas, cla, suprimentos, slot, time, nada: !drops && !pokes && !bolas && !cla && !suprimentos && !slot && !time };
     }
     function tripLoadText(l) {
         const p = [];
@@ -3548,6 +3571,7 @@
         if (l.suprimentos) p.push(l.suprimentos.map(s => `comprar ${s.qty} ${s.name}`).join(', '));
         if (l.cla) p.push('clã (converter/subir de rank)');
         if (l.slot) p.push('slot machine (roll grátis)');
+        if (l.time) p.push('ler o time (a lista nunca veio; o jogo só responde na cidade)');
         if (p.length && typeof depositWanted === 'function' && depositWanted()) p.push('guardar o resto');
         return p.length ? `Vai levar: ${p.join(', ')}` : 'Nada para levar por enquanto';
     }
@@ -3571,7 +3595,7 @@
     const TRIP_PHASE_PCT = { 'indo para a cidade': 15, 'na cidade': 50, 'voltando': 90 };
     function tripLastText() {
         if (!lastTripInfo) return '';
-        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine' };
+        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time' };
         return `Última ${new Date(lastTripInfo.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}: ${lastTripInfo.tarefas.map(t => `${nome[t.key] || t.key} ${t.ok ? '✔' : '✖'}`).join(' · ')}`;
     }
     // Estado para a faixa do painel: { busy, pct, title, sub }.
@@ -3606,6 +3630,7 @@
         for (const [key, n] of needs) {
             if (key === 'itens') tarefas.push({ key, run: () => runSellCycle(true, n.dados?.wanted, n.dados?.hunt) });
             else if (key === 'pokes') tarefas.push({ key, run: () => runPokeSellCycle(true) });
+            else if (key === 'time') tarefas.push({ key, run: () => Promise.resolve(pokeSellRefreshList()).then(ok => ({ ok, motivo: ok ? null : 'o jogo não respondeu ao pedido da lista' })) });
             else if (key === 'bolas' && n.dados) tarefas.push({ key, run: () => autoBuyBalls(n.dados.id, n.dados.qty, n.dados.min) });
             else if (key === 'suprimentos') tarefas.push({ key, run: () => supplyCityWork() });
             else if (key === 'cla') tarefas.push({ key, run: () => clanCityWork() });
@@ -3669,6 +3694,7 @@
         if (!has('itens') && cfg.sellEnabled) { const wanted = sellWantedNow(); if (wanted.length) needs.push(['itens', { dados: { wanted, hunt: huntSlug }, motivo: 'carona' }]); }
         if (!has('pokes') && cfg.pokeSellEnabled && pokeSellCandidates(cfg).length) needs.push(['pokes', { dados: null, motivo: 'carona' }]);
         else if (!has('pokes') && typeof pokeSellListUnread === 'function' && pokeSellListUnread()) needs.push(['pokes', { dados: null, motivo: 'lista de Pokémon nunca lida (o jogo só responde na cidade)' }]);
+        else if (!has('time') && typeof pokesListWanted === 'function' && pokesListWanted()) needs.push(['time', { dados: null, motivo: 'ler o time na cidade (lista nunca lida)' }]);
         if (!has('bolas') && cfg.autoBuy) {
             const id = watchedBallId(), q = ballQty(id), min = effectiveBallsMin();
             if (id != null && q != null && q < min) needs.push(['bolas', { dados: { id, qty: q, min }, motivo: 'carona' }]);
@@ -3829,7 +3855,7 @@
     // o que importa para diagnóstico (import, viagem, clã...). Agora cada tipo barulhento tem cota própria e o resto dura horas.
     const LOG_KEY = 'pgDiscordNotifyLog';
     const LOG_MAX = 200;
-    const LOG_NOISY = { 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10, 'poke-delta': 15 };
+    const LOG_NOISY = { 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10, 'poke-delta': 15, 'pokes-frame': 10, 'pokes-get': 10 };
 
     function logEvent(kind, data) {
         if (cfg.debug) console.log(TAG, kind, data);
@@ -4396,7 +4422,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         if (message.type === 'field-kill') { idleOnAlive(); noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteDepositDrop(message); return; }
         if (message.type === 'inventory' && Array.isArray(message.items)) { clanOnInventory(message.items); supplyOnInventory(message.items); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
-        if (message.type === 'pokes' && Array.isArray(message.list)) { updateTeam(message.list); healOnPokes(message.list); idleOnPokes(message.list);handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); evolveOnPokes(message.list); return; }
+        if (message.type === 'pokes' && Array.isArray(message.list)) { logEvent('pokes-frame', { total: message.list.length, time: message.list.filter(p => p && p.team).map(p => `${p.name} lv${p.level}`), hunt: huntSlug || null }); updateTeam(message.list); healOnPokes(message.list); idleOnPokes(message.list);handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); evolveOnPokes(message.list); return; }
 
         if (message.type !== 'catch-result') return;
 
@@ -5440,6 +5466,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             lastPokesReqAt = 0;
             const ok = sendGame({ type: 'pokes-get' });
             const naHunt = Boolean(normalize(huntSlug || '')) && !CITY_SLUGS.includes(normalize(huntSlug || ''));
+            logEvent('pokes-get', { motivo: 'botão Atualizar time', naHunt, hunt: huntSlug || null, nuncaLida: !team.length, enviado: ok });
             if (ok && naHunt) flash('📥 Pedi o time ao jogo… Na hunt o jogo costuma NÃO responder: a lista chega quando o líder sobe de nível ou na próxima viagem à cidade (o script pede lá).', 'info', 8000);
             else if (ok) flash('📥 Pedi o time ao jogo…', 'info', 3000);
             else flash('✖ Sem socket do jogo ainda. Recarregue o painel.', 'error');
@@ -5788,7 +5815,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             if (dirty) $('#pg-dn-save').click();
             const needs = tripAugment([]);
             if (!needs.length) { flash('⚠ Nada para levar: nenhum drop marcado nesta hunt, nenhum Pokémon nas regras e bolas, poções e revives acima do limite.', 'warn'); return; }
-            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine' };
+            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time' };
             flash(`🏙 Indo à cidade: ${needs.map(n => nome[n[0]]).join(', ')}…`, 'info', 90000);
             tripNeeds.clear();
             cityTrip('manual: ' + needs.map(n => n[0]).join('+'), tripTasksFor(needs)).then(r => {

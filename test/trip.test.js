@@ -152,5 +152,22 @@ const MIN = 60 * 1000;
         assert(state.tasks.map(t => t[0]).join(',') === 'itens', 'lista lida e sem candidatos: não leva Pokémon: ' + state.tasks.map(t => t[0]));
     }
 
+    // v3.27.2: lista nunca lida e venda de Pokémon DESLIGADA (ex.: só evolução): tarefa `time` lê a lista sem vender;
+    // a faixa avisa; jogo mudo = tarefa falha com motivo
+    {
+        const { api, state, clock } = loadTripModule({ evolveEnabled: true, tripMinGapMin: 3 }, { huntSlug: 'pidgey', pokesWanted: true });
+        assert(/ler o time/.test(api.tripStatus().sub), 'faixa avisa a leitura: ' + api.tripStatus().sub);
+        clock.now = api.tripDueAt() + 1;
+        await api.tripTick();
+        assert(state.tasks.map(t => t[0]).join(',') === 'time', 'tarefa time sozinha (sem venda): ' + state.tasks.map(t => t[0]));
+        assert(api.lastTripInfo.tarefas[0].ok === true && /ler o time ✔/.test(api.tripStatus().sub), 'leu: ' + api.tripStatus().sub);
+    }
+    {
+        const { api, state, clock } = loadTripModule({ evolveEnabled: true, tripMinGapMin: 3 }, { huntSlug: 'pidgey', pokesWanted: true, pokesReply: false });
+        clock.now = api.tripDueAt() + 1;
+        await api.tripTick();
+        assert(api.lastTripInfo.tarefas[0].ok === false && /não respondeu/.test(api.lastTripInfo.tarefas[0].motivo), 'jogo mudo: ' + JSON.stringify(api.lastTripInfo.tarefas));
+    }
+
     console.log('OK trip.test — pedidos juntos numa viagem, ida pela tela ou manual, intervalo, cidade, volta e falhas');
 })().catch(e => { console.error(e); process.exit(1); });

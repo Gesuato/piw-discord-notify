@@ -72,6 +72,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   04/10/2026); na cidade o `pokes-get` é respondido (`venda-pokes-lista { fresca: true }`). v3.27.1: com venda de Pokémon
   ligada e lista nunca lida (`pokeSellListUnread`), `tripAugment` leva a tarefa `pokes` só para ler a lista na cidade —
   antes a conta4 (líder parado de nível na hunt de Phanpy) ficava "Time ainda não lido" e sem vender para sempre.
+  v3.27.2: sem venda mas com outro módulo usando a lista (`pokesListUsed`, mesmo gate do `requestPokes`), a viagem leva a
+  tarefa `time` (só `pokeSellRefreshList`, nunca vende); `set-city` mandado pela mão do usuário (fora da viagem) pede a lista
+  3 s depois (`pokesOnSetCity`); o frame `pokes` entra no log como `pokes-frame { total, time, hunt }` e todo `pokes-get`
+  tem `motivo` (botão, cidade, delta atrasado). Conta4 em 04/10/2026: líder Golem lv 346 com 396 XP/abate — nunca sobe.
 - Cliente envia `{ type:'catch', pendingId, ballId }` para capturar.
 - `balls` → `{ type:'balls', counts:{ '<ballId>': qty } }`, resposta a `{ type:'balls-get' }`. O frame OMITE as bolas
   zeradas (CONFIRMADO em 26/09/2026: a Ultra Ball some de `counts` ao acabar); use `ballQty(id)` (ausente = 0 depois
