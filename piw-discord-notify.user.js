@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.27.0
+// @version      3.27.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.27.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.27.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -1344,6 +1344,11 @@
         if (iv >= limite) return `poder ${iv} ≥ ${limite}`;
         return null;
     }
+    // v3.27.1: lista `pokes` nunca lida nesta carga. Na hunt o servidor NÃO responde ao `pokes-get` (só manda `pokes`
+    // sozinho quando o líder sobe de nível); na cidade responde. Sem lista não há candidatos, e sem candidatos a viagem
+    // não levava a tarefa de Pokémon: a conta4 (líder sem subir de nível na hunt de Phanpy, 04/10/2026) ficou com
+    // "Time ainda não lido" e dezenas de capturas no box sem vender. A viagem agora lê a lista quando ela nunca veio.
+    function pokeSellListUnread() { return Boolean(cfg.pokeSellEnabled) && !lastPokesList.length; }
     function pokeSellCandidates(d, list) {
         return (Array.isArray(list) ? list : lastPokesList).filter(p => !pokeSellReason(p, d));
     }
@@ -3663,6 +3668,7 @@
         const has = (k) => needs.some(([key]) => key === k);
         if (!has('itens') && cfg.sellEnabled) { const wanted = sellWantedNow(); if (wanted.length) needs.push(['itens', { dados: { wanted, hunt: huntSlug }, motivo: 'carona' }]); }
         if (!has('pokes') && cfg.pokeSellEnabled && pokeSellCandidates(cfg).length) needs.push(['pokes', { dados: null, motivo: 'carona' }]);
+        else if (!has('pokes') && typeof pokeSellListUnread === 'function' && pokeSellListUnread()) needs.push(['pokes', { dados: null, motivo: 'lista de Pokémon nunca lida (o jogo só responde na cidade)' }]);
         if (!has('bolas') && cfg.autoBuy) {
             const id = watchedBallId(), q = ballQty(id), min = effectiveBallsMin();
             if (id != null && q != null && q < min) needs.push(['bolas', { dados: { id, qty: q, min }, motivo: 'carona' }]);
@@ -3823,7 +3829,7 @@
     // o que importa para diagnóstico (import, viagem, clã...). Agora cada tipo barulhento tem cota própria e o resto dura horas.
     const LOG_KEY = 'pgDiscordNotifyLog';
     const LOG_MAX = 200;
-    const LOG_NOISY = { 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10 };
+    const LOG_NOISY = { 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10, 'poke-delta': 15 };
 
     function logEvent(kind, data) {
         if (cfg.debug) console.log(TAG, kind, data);
@@ -5377,7 +5383,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const alvo = levelTarget();
             $('#pg-dn-team').innerHTML = team.length
                 ? `<span class="k">Time:</span> ${team.map(p => `${p.leader ? '★ ' : ''}${p.shiny ? '✨' : ''}${escHtml(p.name)} ${p.level}${alvo && p.level >= alvo ? ' ✔' : ''}`).join(' · ')}`
-                : '<span class="k">Time ainda não lido.</span>';
+                : '<span class="k">Time ainda não lido. O jogo só responde na cidade: vem na próxima viagem (ou quando o líder subir de nível).</span>';
         }
         function renderRoute() {
             const lines = $('#pg-dn-route').value.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
@@ -5433,7 +5439,9 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
         $('#pg-dn-team-refresh').onclick = () => {
             lastPokesReqAt = 0;
             const ok = sendGame({ type: 'pokes-get' });
-            if (ok) flash('📥 Pedi o time ao jogo…', 'info', 3000);
+            const naHunt = Boolean(normalize(huntSlug || '')) && !CITY_SLUGS.includes(normalize(huntSlug || ''));
+            if (ok && naHunt) flash('📥 Pedi o time ao jogo… Na hunt o jogo costuma NÃO responder: a lista chega quando o líder sobe de nível ou na próxima viagem à cidade (o script pede lá).', 'info', 8000);
+            else if (ok) flash('📥 Pedi o time ao jogo…', 'info', 3000);
             else flash('✖ Sem socket do jogo ainda. Recarregue o painel.', 'error');
         };
         $('#pg-dn-route-reset').onclick = () => {

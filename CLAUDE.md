@@ -67,7 +67,11 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   v3.24.5: o delta de UMA captura pode nunca vir (17:34:11Z); o par delta↔captura é pelo TEMPO (captura mais nova
   com menos de `DETAILS_PAIR_MS` 1,5 s), e só sem captura recente o delta é tratado como atrasado e vai para a mais
   antiga. Com FIFO puro, um delta perdido deslocava todos os seguintes para a captura errada. Hoje o servidor também
-  NÃO responde ao `pokes-get` durante a hunt (15 pedidos sem frame `pokes`); o plano B só vale quando responde.
+  NÃO responde ao `pokes-get` durante a hunt (15 pedidos sem frame `pokes`); o plano B só vale quando responde. Na hunt o
+  frame `pokes` só chega por conta do servidor quando o líder sobe de nível (log `time` a cada level up nas contas 1–3,
+  04/10/2026); na cidade o `pokes-get` é respondido (`venda-pokes-lista { fresca: true }`). v3.27.1: com venda de Pokémon
+  ligada e lista nunca lida (`pokeSellListUnread`), `tripAugment` leva a tarefa `pokes` só para ler a lista na cidade —
+  antes a conta4 (líder parado de nível na hunt de Phanpy) ficava "Time ainda não lido" e sem vender para sempre.
 - Cliente envia `{ type:'catch', pendingId, ballId }` para capturar.
 - `balls` → `{ type:'balls', counts:{ '<ballId>': qty } }`, resposta a `{ type:'balls-get' }`. O frame OMITE as bolas
   zeradas (CONFIRMADO em 26/09/2026: a Ultra Ball some de `counts` ao acabar); use `ballQty(id)` (ausente = 0 depois

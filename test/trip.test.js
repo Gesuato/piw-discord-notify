@@ -136,5 +136,21 @@ const MIN = 60 * 1000;
         assert(state.tasks.length === 2 && state.tasks[1][0] === 'suprimentos', 'relógio: vai de carona');
     }
 
+    // v3.27.1: lista `pokes` nunca lida (o jogo não responde ao pokes-get na hunt): a viagem do relógio leva a tarefa de
+    // Pokémon só para ler a lista na cidade; com a lista já lida e sem candidatos, não leva.
+    {
+        const { api, state, clock } = loadTripModule({ pokeSellEnabled: true, sellEnabled: true, tripMinGapMin: 3 }, { huntSlug: 'pidgey', wantedNow: [39], pokesUnread: true });
+        clock.now = api.tripDueAt() + 1;
+        await api.tripTick();
+        assert(state.tasks.map(t => t[0]).sort().join(',') === 'itens,pokes', 'lista nunca lida: viagem leva a tarefa de Pokémon: ' + state.tasks.map(t => t[0]));
+        assert(state.logs.some(l => l[0] === 'viagem' && l[1].fase === 'cidade' && l[1].tarefas.includes('pokes')), 'log da ida com pokes');
+    }
+    {
+        const { api, state, clock } = loadTripModule({ pokeSellEnabled: true, sellEnabled: true, tripMinGapMin: 3 }, { huntSlug: 'pidgey', wantedNow: [39], pokesUnread: false });
+        clock.now = api.tripDueAt() + 1;
+        await api.tripTick();
+        assert(state.tasks.map(t => t[0]).join(',') === 'itens', 'lista lida e sem candidatos: não leva Pokémon: ' + state.tasks.map(t => t[0]));
+    }
+
     console.log('OK trip.test — pedidos juntos numa viagem, ida pela tela ou manual, intervalo, cidade, volta e falhas');
 })().catch(e => { console.error(e); process.exit(1); });
