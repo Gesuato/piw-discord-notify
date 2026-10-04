@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.27.2
+// @version      3.28.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.27.2';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.28.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -56,6 +56,7 @@
         pokeSellLimits: {},     // v3.12.0: raridade (chave: weak..divine) -> vende se poder (ivTotal) < limite; ausente/0 = não vende
         pokeSellEveryMin: 10,   // v3.13.0: intervalo mínimo entre vendas de Pokémon (minutos)
         pokeSellEveryMaxMin: 15, // intervalo máximo; 0 ou <= mínimo = fixo. Entre os dois é sorteado a cada ciclo
+        boxAlertAt: 200,        // v3.28.0: box (Pokémon na conta, estimado) acima disso = alerta + viagem de venda; 0 = desligado
         levelAlertAt: 0,        // avisar quando o líder chegar a este nível; 0 = desligado
         levelSwap: false,       // ao atingir, trocar o líder pelo próximo do time abaixo do nível
         routeEnabled: false,    // seguir a rota de treino (etapas hunt + nível); implica levelSwap
@@ -376,6 +377,7 @@
         }
         // Só é "novo" (xp 0) quem acabou de ser capturado: delta do líder/time (xp alto) não entra na fila.
         if (num(poke?.xp) > 0) return;
+        if (typeof boxNoteCapture === 'function') boxNoteCapture(poke);
         const same = awaitingDetails.filter(e => sameSpecies(e, poke));
         const pool = same.length ? same : awaitingDetails;
         let entry = null;
@@ -1319,6 +1321,111 @@
     let pokesFieldsLogged = false;
     let onPokeSellChange = null;    // callback do painel
 
+    // ---- Box (v3.28.0): o jogo CALA o frame `pokes` quando o box fica grande demais (conta4, 04/10/2026: centenas de
+    // Phanpy sem vender; nem ao carregar, nem ao pokes-get na cidade, sem `error`; vendido na mão, voltou). Sem lista
+    // nada vende e o box só cresce. Três defesas:
+    //   1. estimativa do box = total do último frame + capturas vistas no poke-delta − vendidas; acima de `cfg.boxAlertAt`
+    //      avisa (1x/h) e pede viagem de venda. `boxMaxSeen` = maior total que já chegou (o limite real do jogo é acima);
+    //   2. 2 pedidos seguidos na cidade sem frame = alerta "lista não chega" (1x/h);
+    //   3. plano B de venda: fila dos capturados com os dados do poke-delta (id, ivTotal, quality, shiny, sellValue,
+    //      starter), persistida em localStorage (sobrevive ao reload). Sem lista fresca, vende quem passa nas MESMAS
+    //      regras, nunca com menos de 2 min nem quem o script travou. Risco aceito: Pokémon posto no time à mão enquanto
+    //      a lista está muda (o jogo recusa cadeado e anúncio; time não confirmado).
+    const BOX_KEY = 'pgDiscordNotifyBox';
+    const BOX_QUEUE_MAX = 3000;
+    const BOX_ALERT_GAP_MS = 60 * 60 * 1000;
+    const POKES_SILENT_ALERT_AT = 2;
+    let boxKnown = null;            // { total, at } do último frame `pokes`
+    let boxMaxSeen = 0;             // maior lista que já chegou nesta carga
+    let boxCapturesSince = 0;       // capturas desde o último frame
+    let boxSoldSince = 0;           // vendidas desde o último frame
+    let boxAlertedAt = 0;
+    let pokesSilentAsks = 0;        // pedidos seguidos (na cidade) sem frame
+    let pokesSilentAlertedAt = 0;
+    let captureQueue = loadBoxQueue();
+    function loadBoxQueue() {
+        try { const q = JSON.parse(localStorage.getItem(BOX_KEY) || '[]'); return Array.isArray(q) ? q.filter(p => p && p.id != null) : []; }
+        catch { return []; }
+    }
+    function saveBoxQueue() {
+        try {
+            if (captureQueue.length > BOX_QUEUE_MAX) captureQueue = captureQueue.slice(-BOX_QUEUE_MAX);
+            localStorage.setItem(BOX_KEY, JSON.stringify(captureQueue));
+        } catch { /* sem localStorage */ }
+    }
+    function boxLimit(d) { return Math.max(0, Number((d || cfg).boxAlertAt) || 0); }
+    function boxEstimate() {
+        if (boxKnown) return Math.max(0, boxKnown.total + boxCapturesSince - boxSoldSince);
+        return captureQueue.length || null;   // sem frame nesta carga: a fila é o mínimo que se sabe
+    }
+    // Captura nova (poke-delta com xp 0): conta na estimativa e entra na fila do plano B.
+    function boxNoteCapture(poke) {
+        if (!poke || poke.id == null) return;
+        const id = String(poke.id);
+        boxCapturesSince++;
+        if (!captureQueue.some(p => String(p.id) === id)) {
+            captureQueue.push({ id, speciesId: Number(poke.speciesId) || 0, name: poke.name || poke.speciesName || '?', level: Number(poke.level) || 1, shiny: Boolean(poke.shiny), starter: Boolean(poke.starter), sellValue: poke.sellValue ?? null, ivTotal: poke.ivTotal ?? null, quality: poke.quality ?? null, at: Date.now() });
+            saveBoxQueue();
+        }
+        boxCheck();
+    }
+    function boxNoteLocked(id) { const p = captureQueue.find(x => String(x.id) === String(id)); if (p) { p.locked = true; saveBoxQueue(); } }
+    // Frame `pokes` chegou: o box é o que o jogo diz; na fila só fica quem o frame mostra como vendável (o resto o frame cobre).
+    function boxOnPokes(list) {
+        const total = list.length;
+        const antes = boxKnown ? boxKnown.total : null;
+        boxKnown = { total, at: Date.now() };
+        boxCapturesSince = 0; boxSoldSince = 0;
+        if (total > boxMaxSeen) boxMaxSeen = total;
+        const ids = new Map(list.map(p => [String(p.id), p]));
+        const n0 = captureQueue.length;
+        captureQueue = captureQueue.filter(p => { const f = ids.get(String(p.id)); return f && !f.team && !f.leader && !f.locked && !f.starter && !f.listed; });
+        if (captureQueue.length !== n0) saveBoxQueue();
+        if (antes == null || Math.abs(total - antes) >= 10) logEvent('box', { total, maiorLido: boxMaxSeen, fila: captureQueue.length, limite: boxLimit() });
+        boxCheck();
+    }
+    // Candidatos do plano B: fila (dados do delta) com mais de 2 min, fora da lista conhecida, passando nas regras.
+    function pokeSellQueueCandidates(d) {
+        const known = new Set(lastPokesList.map(p => String(p.id)));
+        return captureQueue.filter(p => !known.has(String(p.id)) && Date.now() - (Number(p.at) || 0) >= POKE_SELL_RECENT_MS && !pokeSellReason(Object.assign({ team: false, leader: false }, p), d));
+    }
+    function boxCheck() {
+        const limite = boxLimit(), est = boxEstimate();
+        if (!limite || est == null || est < limite) return;
+        if (cfg.pokeSellEnabled && typeof tripRequest === 'function') tripRequest('pokes', null, `box com ~${est} Pokémon (limite ${limite})`);
+        if (Date.now() - boxAlertedAt < BOX_ALERT_GAP_MS) return;
+        boxAlertedAt = Date.now();
+        const who = playerName();
+        logEvent('box-alerta', { estimativa: est, limite, conhecido: boxKnown ? boxKnown.total : null, fila: captureQueue.length, vendaLigada: Boolean(cfg.pokeSellEnabled) });
+        postWebhook('alert', {
+            content: `📦 ${who ? `**${who}**` : 'Sua conta'}: box com **~${est} Pokémon** (limite ${limite})${cfg.pokeSellEnabled ? ' — viagem de venda pedida' : ' — venda de Pokémon DESLIGADA: venda na mão'}`,
+            username: 'Poke Idle World',
+            embeds: [{
+                title: `Box com ~${est} Pokémon`,
+                description: `${who ? `Conta: ${who}\n` : ''}Box grande demais = o jogo para de mandar a lista de Pokémon e nada vende sozinho.\n${cfg.pokeSellEnabled ? 'O script pediu uma viagem à cidade para vender.' : 'Ligue "Vender sozinho" na aba Venda ou venda na mão.'}\nMaior lista já lida nesta carga: ${boxMaxSeen || '?'}\nEm ${new Date().toLocaleString('pt-BR')}`,
+                color: 0xfee75c,
+            }],
+        }, { evento: 'box-alerta', estimativa: est, limite });
+    }
+    // Pedido de lista feito na cidade: respondido zera o contador; mudo conta e, no 2º seguido, avisa (1x por hora).
+    function pokesNoteSilent(answered) {
+        if (answered) { pokesSilentAsks = 0; return; }
+        pokesSilentAsks++;
+        logEvent('pokes-mudo', { seguidos: pokesSilentAsks, box: boxEstimate(), fila: captureQueue.length });
+        if (pokesSilentAsks < POKES_SILENT_ALERT_AT || Date.now() - pokesSilentAlertedAt < BOX_ALERT_GAP_MS) return;
+        pokesSilentAlertedAt = Date.now();
+        const who = playerName(), est = boxEstimate();
+        postWebhook('alert', {
+            content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: o jogo não responde a lista de Pokémon (${pokesSilentAsks} pedidos na cidade sem resposta) — box grande demais?${est != null ? ` ~${est} Pokémon` : ''}`,
+            username: 'Poke Idle World',
+            embeds: [{
+                title: 'Lista de Pokémon não chega',
+                description: `${who ? `Conta: ${who}\n` : ''}Sintoma de box cheio: o servidor cala o frame de Pokémon. ${captureQueue.length ? `O script vai vender pela fila das capturas (${captureQueue.length}) na viagem.` : 'Venda Pokémon na mão na tela do jogo.'}\nEm ${new Date().toLocaleString('pt-BR')}`,
+                color: 0xed4245,
+            }],
+        }, { evento: 'pokes-mudo', seguidos: pokesSilentAsks });
+    }
+
     function noteRecentCapture(id) {
         if (id == null) return;
         recentCaptureIds.set(String(id), Date.now());
@@ -1368,7 +1475,10 @@
         pokesCityTimer = setTimeout(() => {
             pokesCityTimer = null;
             lastPokesReqAt = Date.now();
-            logEvent('pokes-get', { motivo: 'chegou na cidade', nuncaLida: !lastPokesList.length, enviado: sendGame({ type: 'pokes-get' }) });
+            const antes = pokesFrameSeq;
+            const enviado = sendGame({ type: 'pokes-get' });
+            logEvent('pokes-get', { motivo: 'chegou na cidade', nuncaLida: !lastPokesList.length, enviado });
+            if (enviado) setTimeout(() => pokesNoteSilent(pokesFrameSeq !== antes), POKE_SELL_REFRESH_MS);
         }, POKES_CITY_DELAY_MS);
     }
     function pokeSellCandidates(d, list) {
@@ -1389,7 +1499,7 @@
             if (pokesFrameSeq !== antes) return res(true);
             if (Date.now() - t0 >= POKE_SELL_REFRESH_MS) return res(false);
             setTimeout(loop, 250);
-        })());
+        })()).then(ok => { pokesNoteSilent(ok); return ok; });
     }
 
     async function runPokeSellCycle(manual) {
@@ -1399,10 +1509,15 @@
         pokeSellRunning = true;
         let fresca = false;
         try { fresca = await pokeSellRefreshList(); } catch (err) { fresca = false; }
-        logEvent('venda-pokes-lista', { fresca, total: lastPokesList.length, candidatos: pokeSellCandidates(cfg).length });
-        if (!lastPokesList.length) { pokeSellRunning = false; return { ok: false, motivo: 'time ainda não lido' }; }
-        const cand = pokeSellCandidates(cfg);
-        if (!cand.length) { pokeSellRunning = false; return { ok: false, motivo: 'nenhum Pokémon dentro das regras' }; }
+        let cand = pokeSellCandidates(cfg);
+        let planoB = [];
+        if (!fresca) {   // lista muda (ou velha): completa com a fila das capturas (plano B, v3.28.0)
+            const ids = new Set(cand.map(p => String(p.id)));
+            planoB = pokeSellQueueCandidates(cfg).filter(p => !ids.has(String(p.id)));
+            cand = cand.concat(planoB);
+        }
+        logEvent('venda-pokes-lista', { fresca, total: lastPokesList.length, candidatos: cand.length, fila: captureQueue.length, planoB: planoB.length });
+        if (!cand.length) { pokeSellRunning = false; return { ok: false, motivo: lastPokesList.length ? 'nenhum Pokémon dentro das regras' : 'time ainda não lido' }; }
         lastPokeSellAt = Date.now();
         const who = playerName();
         const conta = who ? `Conta: ${who}\n` : '';
@@ -1439,7 +1554,9 @@
         finally { pokeSellRunning = false; }
         const ids = new Set(vendidos.map(p => String(p.id)));
         lastPokesList = lastPokesList.filter(p => !ids.has(String(p.id)));
-        logEvent('venda-pokes', { candidatos: cand.length, vendidos: vendidos.length, ganho, gold, motivo, guardaPokeGrid: Boolean(window.__pgSellGuard), lista: vendidos.slice(0, 20).map(pokeLabel) });
+        boxSoldSince += vendidos.length;
+        if (ids.size) { captureQueue = captureQueue.filter(p => !ids.has(String(p.id))); saveBoxQueue(); }
+        logEvent('venda-pokes', { candidatos: cand.length, vendidos: vendidos.length, planoB: planoB.filter(p => ids.has(String(p.id))).length, ganho, gold, motivo, guardaPokeGrid: Boolean(window.__pgSellGuard), lista: vendidos.slice(0, 20).map(pokeLabel) });
         if (onPokeSellChange) { try { onPokeSellChange(); } catch { /* painel fechado */ } }
         if (vendidos.length) {
             const nomes = vendidos.slice(0, 15).map(pokeLabel).join('\n');
@@ -1468,6 +1585,7 @@
         lastPokesList = Array.isArray(list) ? list.filter(p => p && typeof p === 'object') : [];
         lastPokesAt = Date.now();
         pokesFrameSeq++;
+        boxOnPokes(lastPokesList);
         if (!pokesFieldsLogged && lastPokesList.length) {
             pokesFieldsLogged = true;
             const fora = lastPokesList.find(p => !p.team) || lastPokesList[0];
@@ -3980,6 +4098,7 @@
                 new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), KEEP_TIMEOUT_MS)),
             ]);
             logEvent('poke-lock', { name, pokeId, ok: true, resposta: r });
+            if (typeof boxNoteLocked === 'function') boxNoteLocked(pokeId);
             return true;
         } catch (err) {
             logEvent('poke-lock', { name, pokeId, ok: false, erro: String(err?.message || err) });
@@ -4859,6 +4978,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <p class="dn-help">Nunca vende: no time, inicial, shiny, com cadeado 🔒, anunciado no mercado ou capturado há menos de 2 min. Vazio = essa raridade não vende. A proteção de venda do PokeGrid não pergunta nas vendas do script.</p>
                         <div class="dn-tiers">${TIERS_ASC.map(t => `<label for="pg-dn-psell-${t.key}"><span class="dn-chip" style="--c:#${t.color.toString(16).padStart(6, '0')}">${t.name}</span></label><span class="dn-inline">poder &lt; <input id="pg-dn-psell-${t.key}" class="dn-input dn-input--sm pg-dn-psell-lim" data-tier="${t.key}" type="number" min="0" max="${IV_MAX}" step="1" placeholder="—"></span>`).join('')}</div>
                         <p class="dn-help">Poder = 0 a ${IV_MAX}.</p>
+                        <label class="dn-field"><span>Avisar com box acima de</span><input id="pg-dn-box-alert" class="dn-input dn-input--sm" type="number" min="0" step="10" placeholder="0 = desligado"></label>
+                        <p class="dn-help">Pokémon na conta, estimado pelas capturas. Acima disso avisa no canal de Alertas e pede uma viagem de venda. Box grande demais = o jogo para de mandar a lista e nada vende sozinho; sem a lista, o script vende pela fila das capturas (dados da própria captura).</p>
                         <div class="dn-status col">
                             <div class="dn-inline"><b id="pg-dn-psell-status"></b><span class="k">prévia</span><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm r" id="pg-dn-psell-refresh" title="Pede a lista de Pokémon ao jogo.">Atualizar lista</button></div>
                             <table class="dn-prev" aria-label="Prévia da venda"><thead><tr><th>Pokémon</th><th>Raridade</th><th class="n">Poder</th><th>Decisão</th></tr></thead><tbody id="pg-dn-psell-list"></tbody></table>
@@ -5170,6 +5291,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                     return { sellItems: sd[cur] || Object.assign({}, cfg.sellItems || {}), sellProfiles: perfis };
                 })(),
                 pokeSellEnabled: $('#pg-dn-psell').checked,
+                boxAlertAt: Math.max(0, parseInt($('#pg-dn-box-alert').value, 10) || 0),
                 tripEveryMin: Math.max(1, parseInt($('#pg-dn-trip-min').value, 10) || 10),
                 tripEveryMaxMin: Math.max(0, parseInt($('#pg-dn-trip-max').value, 10) || 0),
                 pokeSellLimits: Object.fromEntries([...panel.querySelectorAll('.pg-dn-psell-lim')].map(i => [i.dataset.tier, Math.min(IV_MAX, Math.max(0, parseInt(i.value, 10) || 0))]).filter(([, v]) => v > 0)),
@@ -5371,13 +5493,16 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const st = $('#pg-dn-psell-status'), ls = $('#pg-dn-psell-list');
             const nLim = TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length;
             const sum = $('#pg-dn-sum-pokes');
-            if (!lastPokesList.length) { st.textContent = 'Lista de Pokémon ainda não lida.'; ls.innerHTML = ''; sum.textContent = `· ${nLim} raridades com limite${d.pokeSellEnabled ? '' : ' · desligado'}`; return; }
+            const est = boxEstimate();
+            const boxTxt = est != null ? ` · box ~${est}${boxLimit(d) ? `/${boxLimit(d)}` : ''}${boxMaxSeen ? ` (maior lista lida: ${boxMaxSeen})` : ''}` : '';
+            const filaTxt = captureQueue.length ? ` · fila do plano B: ${captureQueue.length}` : '';
+            if (!lastPokesList.length) { st.textContent = `Lista de Pokémon ainda não lida.${boxTxt}${filaTxt}${captureQueue.length ? ' (sem a lista, a viagem vende pela fila)' : ''}`; ls.innerHTML = ''; sum.textContent = `· ${nLim} raridades com limite${d.pokeSellEnabled ? '' : ' · desligado'}`; return; }
             const fora = lastPokesList.filter(p => !p.team && !p.leader);
             const linhas = fora.map(p => ({ p, motivo: pokeSellReason(p, d), t: qualityTier(Number(p.quality)) }))
                 .sort((a, b) => (a.motivo ? 1 : 0) - (b.motivo ? 1 : 0) || (b.t?.rank ?? -1) - (a.t?.rank ?? -1));
             const cand = linhas.filter(l => !l.motivo);
             const gold = cand.reduce((s, l) => s + (Number(l.p.sellValue) || 0), 0);
-            st.textContent = `${fora.length} fora do time · ${cand.length} ${d.pokeSellEnabled ? 'serão vendidos' : 'dentro das regras (desligado)'}${gold ? ` · ~${fmtNum(gold)} gold` : ''}`;
+            st.textContent = `${fora.length} fora do time · ${cand.length} ${d.pokeSellEnabled ? 'serão vendidos' : 'dentro das regras (desligado)'}${gold ? ` · ~${fmtNum(gold)} gold` : ''}${boxTxt}${filaTxt}`;
             sum.textContent = `· ${nLim} raridades com limite · ${cand.length} ${cand.length === 1 ? 'seria vendido' : 'seriam vendidos'}${d.pokeSellEnabled ? '' : ' · desligado'}`;
             ls.innerHTML = linhas.slice(0, 40).map(l => `<tr class="${l.motivo ? 'keep' : 'sell'}"><td>${escHtml(l.p.name || '?')} <span class="k">lv${Number(l.p.level) || 0}</span></td><td style="color:#${(l.t?.color ?? 0x9aa4b2).toString(16).padStart(6, '0')}">${l.t ? l.t.name : '?'}</td><td class="n">${Number.isFinite(Number(l.p.ivTotal)) ? Number(l.p.ivTotal) : '?'}</td><td class="why">${l.motivo ? escHtml(l.motivo) : '✔ vende'}</td></tr>`).join('')
                 + (linhas.length > 40 ? `<tr class="keep"><td colspan="4">… e mais ${linhas.length - 40}</td></tr>` : '');
@@ -5881,6 +6006,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-sell').checked = Boolean(cfg.sellEnabled);
 
             $('#pg-dn-psell').checked = Boolean(cfg.pokeSellEnabled);
+            $('#pg-dn-box-alert').value = Number(cfg.boxAlertAt) || 0;
             $('#pg-dn-trip-min').value = cfg.tripEveryMin || 10;
             $('#pg-dn-trip-max').value = cfg.tripEveryMaxMin || '';
             for (const i of panel.querySelectorAll('.pg-dn-psell-lim')) i.value = pokeSellLimit(cfg, i.dataset.tier) || '';

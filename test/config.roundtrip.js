@@ -19,7 +19,7 @@ const rica = {
   webhookUrl: 'https://discord.com/api/webhooks/1/a', webhookShiny: 'https://discord.com/api/webhooks/2/b', webhookAlerts: 'https://discord.com/api/webhooks/3/c', webhookLevel: 'https://discord.com/api/webhooks/4/d',
   watchList: ['dratini', 'larvitar'], notifyEveryCapture: true, notifyShiny: false, lockNotified: true, familyNotified: true, minTier: 'epic', minIv: 150, minTierIv: 120,
   ballsMin: 200, ballsWatch: '4', autoBuy: true, autoBuyQty: 500, sellEnabled: true, sellItems: { 39: { keep: 5 } }, sellProfiles: { pidgey: { items: { 39: { keep: 5 } } } },
-  pokeSellEnabled: true, pokeSellLimits: { common: 100, legendary: 140 }, levelAlertAt: 30, levelSwap: true, routeEnabled: true, route: [{ slug: 'pidgey', level: 10 }], routeStage: 0,
+  pokeSellEnabled: true, pokeSellLimits: { common: 100, legendary: 140 }, boxAlertAt: 150, levelAlertAt: 30, levelSwap: true, routeEnabled: true, route: [{ slug: 'pidgey', level: 10 }], routeStage: 0,
   routes: { A: { route: [{ slug: 'pidgey', level: 10 }], stage: 0 } }, routeName: 'A', catchRouteEnabled: false, catchRouteAreas: ['kanto', 'orre'], catchRouteMaxLevel: 30, catchRouteAuto: true, catchRouteBall: '4',
   catchRouteSkipped: ['abra'], catchRouteDone: [16, 19], dailyEnabled: true, dailyClaim: false, dailyReturnSlug: 'larvitar', tripCity: 'pewter', tripMinGapMin: 5, tripEveryMin: 12, tripEveryMaxMin: 20,
   reloadEnabled: true, reloadEveryMin: 45, reloadEveryMaxMin: 90, mentionUserId: '123', cooldownSeconds: 7, cfgVersion: 2, debug: true,

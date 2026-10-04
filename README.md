@@ -26,6 +26,8 @@ Tampermonkey/Violentmonkey no navegador.
 - ✅ **Evolução automática**: quem do time chega ao nível de evolução vai à cidade, evolui com as pedras da mochila (mantém o nível) e volta para a hunt
 - ✅ **Recarga automática**: recarrega o painel sozinho a cada X–Y minutos (sorteado), como o "⟳ Atualizar tudo" do PokeGrid, e volta para a hunt em que estava
 - ✅ **Exportar / importar** a configuração entre contas e painéis
+- ✅ **Box sob controle**: estima quantos Pokémon há na conta, avisa e pede venda acima do limite, e vende pela fila das
+  capturas quando o jogo para de mandar a lista (acontece com o box grande demais)
 - ✅ Webhooks separados por tipo de evento: capturas, shinys, alertas e nível (cada um pode ir para um canal)
 - ✅ Anti-spam opcional: intervalo mínimo entre avisos do mesmo Pokémon (padrão 0 = avisa todas)
 - ✅ Painel de configurações dentro do jogo (botão 🔔) — nada de editar código

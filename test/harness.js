@@ -262,6 +262,7 @@ function loadPokeSellModule(cfg, init) {
         sendGame: (m) => { state.sent.push(m); if (m.type === 'pokes-get' && init.freshPokes && state.onPokesGet) state.onPokesGet(init.freshPokes); return true; },
         lastPokesReqAt: 0,
         tripRequest: (key, dados, motivo) => { state.trips = state.trips || []; state.trips.push({ key, motivo }); },
+        localStorage: { getItem: (k) => (k in (state.store = state.store || (init.store || {})) ? state.store[k] : null), setItem: (k, v) => { state.store[k] = String(v); }, removeItem: (k) => { delete state.store[k]; } },
         playerName: () => 'Teste',
         fmtNum: (n) => String(n),
         qualityTier: (q) => (typeof q === 'number' && Number.isFinite(q)) ? TIERS.find(t => q >= t.min) : null,
@@ -277,6 +278,8 @@ function loadPokeSellModule(cfg, init) {
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
             pokeSellReason, pokeSellCandidates, runPokeSellCycle, pokeSellOnPokes, noteRecentCapture, pokeSellLimit, pokeSellHasRules, pokeLabel,
+            boxNoteCapture, boxNoteLocked, boxEstimate, pokeSellQueueCandidates, pokesNoteSilent,
+            get captureQueue() { return captureQueue; },
             get lastPokesList() { return lastPokesList; },
             get lastPokeSellAt() { return lastPokeSellAt; },
         };`);

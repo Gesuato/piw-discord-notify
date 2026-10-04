@@ -176,5 +176,61 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         assert(!('__pgSellGuardOn' in win4), 'sem guarda nada é criado em window');
     }
 
-    console.log('OK pokesell.test — limite por raridade, proteções, lista fresca antes de vender, venda automática/manual, parcial, erro, lote recusado e guarda do PokeGrid');
+    // v3.28.0: box e plano B
+    // a) estimativa do box = frame + capturas − vendidas; acima do limite pede viagem e avisa 1x/h
+    {
+        const cfg = { pokeSellEnabled: true, pokeSellLimits: REGRAS, boxAlertAt: 15 };
+        const { api, state, clock } = loadPokeSellModule(cfg, { api: okApi() });
+        api.pokeSellOnPokes(LISTA);                                   // 13 na conta
+        assert(api.boxEstimate() === 13 && !state.hooks.length && !(state.trips || []).length, 'box 13 abaixo do limite');
+        api.boxNoteCapture({ id: 'n1', speciesId: 19, name: 'Rattata', level: 1, xp: 0, shiny: false, sellValue: 100, ivTotal: 30, quality: 1.0 });
+        api.boxNoteCapture({ id: 'n2', speciesId: 19, name: 'Rattata', level: 1, xp: 0, shiny: false, sellValue: 100, ivTotal: 30, quality: 1.0 });
+        assert(api.boxEstimate() === 15 && state.trips.length === 1 && state.trips[0].key === 'pokes' && /box com ~15/.test(state.trips[0].motivo), 'no limite: viagem pedida: ' + JSON.stringify(state.trips));
+        assert(state.hooks.length === 1 && /box com \*\*~15 Pokémon\*\*/.test(state.hooks[0].content) && state.hooks[0].meta.evento === 'box-alerta', 'alerta do box: ' + (state.hooks[0] || {}).content);
+        api.boxNoteCapture({ id: 'n3', speciesId: 19, name: 'Rattata', level: 1, xp: 0, shiny: false, sellValue: 100, ivTotal: 30, quality: 1.0 });
+        assert(state.hooks.length === 1, 'segundo alerta só depois de 1 h');
+        assert(JSON.parse(state.store.pgDiscordNotifyBox).length === 3, 'fila persistida: ' + state.store.pgDiscordNotifyBox);
+    }
+    // b) plano B: lista muda (sem frame nesta carga) -> vende pela fila com as mesmas regras; recentes, shiny e travados ficam
+    {
+        const cfg = { pokeSellEnabled: true, pokeSellLimits: REGRAS, boxAlertAt: 0 };
+        const fila = [
+            { id: 'q1', speciesId: 19, name: 'Rattata', level: 1, shiny: false, starter: false, sellValue: 100, ivTotal: 40, quality: 1.0, at: Date.now() - 10 * 60 * 1000 },
+            { id: 'q2', speciesId: 19, name: 'Rattata', level: 1, shiny: true, starter: false, sellValue: 100, ivTotal: 40, quality: 1.0, at: Date.now() - 10 * 60 * 1000 },
+            { id: 'q3', speciesId: 19, name: 'Rattata', level: 1, shiny: false, starter: false, sellValue: 100, ivTotal: 40, quality: 1.0, at: Date.now() - 10 * 60 * 1000, locked: true },
+            { id: 'q4', speciesId: 19, name: 'Rattata', level: 1, shiny: false, starter: false, sellValue: 100, ivTotal: 150, quality: 1.0, at: Date.now() - 10 * 60 * 1000 },
+            { id: 'q5', speciesId: 19, name: 'Rattata', level: 1, shiny: false, starter: false, sellValue: 100, ivTotal: 40, quality: 1.0, at: Date.now() - 30 * 1000 },
+        ];
+        const { api, state } = loadPokeSellModule(cfg, { api: okApi(), store: { pgDiscordNotifyBox: JSON.stringify(fila) } });
+        assert(api.captureQueue.length === 5, 'fila carregada do localStorage');
+        assert(api.pokeSellQueueCandidates(cfg).map(p => p.id).join(',') === 'q1', 'só q1 vende (shiny, cadeado, poder alto e recente ficam): ' + api.pokeSellQueueCandidates(cfg).map(p => p.id));
+        const r = await api.runPokeSellCycle(true);
+        assert(r.ok && r.vendidos === 1 && state.calls[0].body.pokeIds.join(',') === 'q1', 'vendeu pela fila sem lista: ' + JSON.stringify(r) + ' ' + JSON.stringify(state.calls));
+        assert(api.captureQueue.length === 4 && !api.captureQueue.some(p => p.id === 'q1'), 'q1 saiu da fila');
+        const lg = state.logs.find(l => l[0] === 'venda-pokes-lista');
+        assert(lg && lg[1].fresca === false && lg[1].planoB === 1, 'log diz plano B: ' + JSON.stringify(lg));
+        // frame chega: a fila fica só com quem o frame mostra como vendável (q5 presente e livre; q3 travado no frame; q2/q4 sumiram)
+        api.pokeSellOnPokes([P({ id: 'q5', ivTotal: 40 }), P({ id: 'q3', locked: true })]);
+        assert(api.captureQueue.map(p => p.id).join(',') === 'q5', 'fila podada pelo frame: ' + api.captureQueue.map(p => p.id));
+        // lista fresca: plano B não entra (a lista manda)
+        const { api: a2, state: s2 } = loadPokeSellModule(cfg, { api: okApi(), freshPokes: LISTA, store: { pgDiscordNotifyBox: JSON.stringify(fila) } });
+        a2.pokeSellOnPokes(LISTA);
+        const r2 = await a2.runPokeSellCycle(true);
+        assert(r2.vendidos === 3 && !s2.calls[0].body.pokeIds.includes('q1'), 'com lista fresca vende só pela lista: ' + JSON.stringify(s2.calls[0].body));
+    }
+    // c) 2 pedidos seguidos mudos na cidade = alerta (1x/h); resposta zera
+    {
+        const cfg = { pokeSellEnabled: true, pokeSellLimits: REGRAS, boxAlertAt: 0 };
+        const { api, state } = loadPokeSellModule(cfg, { api: okApi() });
+        api.pokesNoteSilent(false);
+        assert(!state.hooks.length, '1º mudo: sem alerta');
+        api.pokesNoteSilent(false);
+        assert(state.hooks.length === 1 && /não responde a lista/.test(state.hooks[0].content) && state.hooks[0].meta.evento === 'pokes-mudo', 'alerta no 2º mudo: ' + (state.hooks[0] || {}).content);
+        api.pokesNoteSilent(false);
+        assert(state.hooks.length === 1, 'não repete dentro de 1 h');
+        api.pokesNoteSilent(true);
+        assert(state.logs.filter(l => l[0] === 'pokes-mudo').length === 3, 'log pokes-mudo por pedido mudo');
+    }
+
+    console.log('OK pokesell.test — limite por raridade, proteções, lista fresca antes de vender, venda automática/manual, parcial, erro, lote recusado, guarda do PokeGrid, box e plano B');
 })().catch(e => { console.error(e); process.exit(1); });

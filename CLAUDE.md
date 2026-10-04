@@ -80,6 +80,14 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   centenas de Phanpy sem vender): nem ao carregar, nem ao `pokes-get` na cidade, sem frame `error`; os outros painéis recebem
   em < 0,5 s. Depois que o usuário vendeu os Pokémon na mão, a lista voltou a chegar. Não há REST para a lista (a tela do
   jogo usa o mesmo `pokes-get`). Sintoma: "Time ainda não lido" + `pokes-get` com `enviado: true` e nenhum `pokes-frame`.
+  DEFESAS (v3.28.0, módulo `// ---- Box` dentro da venda de Pokémon, aba Venda → "Avisar com box acima de", `cfg.boxAlertAt`
+  padrão 200, 0 = desligado): (1) `boxEstimate()` = total do último frame + capturas (`boxNoteCapture`, chamado em
+  `handlePokeDelta` para xp 0) − vendidas; no limite `boxCheck` pede `tripRequest('pokes')` e avisa 1x/h (`box-alerta`);
+  `boxMaxSeen` = maior lista lida (log `box`). (2) `pokesNoteSilent` conta pedidos na cidade sem frame (refresh da viagem e
+  chegada manual); 2 seguidos = alerta `pokes-mudo` 1x/h. (3) Plano B: `captureQueue` (dados do `poke-delta`, chave
+  `localStorage.pgDiscordNotifyBox`, máx. 3000) — `runPokeSellCycle` sem lista fresca soma `pokeSellQueueCandidates`
+  (mesmas regras, ≥ 2 min pelo `at`, nunca quem `lockPokemon` travou via `boxNoteLocked`); o frame poda a fila para quem
+  ele mostra como vendável; a venda tira da fila. Nunca exportar a fila (é da conta). Teste: `node test/pokesell.test.js`.
 - Cliente envia `{ type:'catch', pendingId, ballId }` para capturar.
 - `balls` → `{ type:'balls', counts:{ '<ballId>': qty } }`, resposta a `{ type:'balls-get' }`. O frame OMITE as bolas
   zeradas (CONFIRMADO em 26/09/2026: a Ultra Ball some de `counts` ao acabar); use `ballQty(id)` (ausente = 0 depois
