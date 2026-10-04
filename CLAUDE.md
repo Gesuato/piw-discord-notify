@@ -76,6 +76,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   tarefa `time` (só `pokeSellRefreshList`, nunca vende); `set-city` mandado pela mão do usuário (fora da viagem) pede a lista
   3 s depois (`pokesOnSetCity`); o frame `pokes` entra no log como `pokes-frame { total, time, hunt }` e todo `pokes-get`
   tem `motivo` (botão, cidade, delta atrasado). Conta4 em 04/10/2026: líder Golem lv 346 com 396 XP/abate — nunca sobe.
+  CAUSA REAL (confirmada em 04/10/2026): o servidor NÃO manda o frame `pokes` quando o box está grande demais (conta4 com
+  centenas de Phanpy sem vender): nem ao carregar, nem ao `pokes-get` na cidade, sem frame `error`; os outros painéis recebem
+  em < 0,5 s. Depois que o usuário vendeu os Pokémon na mão, a lista voltou a chegar. Não há REST para a lista (a tela do
+  jogo usa o mesmo `pokes-get`). Sintoma: "Time ainda não lido" + `pokes-get` com `enviado: true` e nenhum `pokes-frame`.
 - Cliente envia `{ type:'catch', pendingId, ballId }` para capturar.
 - `balls` → `{ type:'balls', counts:{ '<ballId>': qty } }`, resposta a `{ type:'balls-get' }`. O frame OMITE as bolas
   zeradas (CONFIRMADO em 26/09/2026: a Ultra Ball some de `counts` ao acabar); use `ballQty(id)` (ausente = 0 depois
