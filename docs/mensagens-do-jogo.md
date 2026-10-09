@@ -151,11 +151,13 @@ killsRequired`, 3000 para um Donphan rank N); "chocar agora" e slot extra custam
   pheromonesHave, killsRequired, shinyChild, partnerExcess, delta{ table[{ delta, pct }], baseQuality, minQuality, maxQuality,
   expectedDelta, cap }, ivPreview{ growth{hp..speed}, ivTotal, donor: 'pai', shinyRef, bump{ chance, possible, maxTotal }, donorId },
   parents{ a{ id, shiny, ivTotal, quality, bqs }, b{...} } }`. CONFIRMADO (chamada feita na hunt). `stones[].have` conta a mochila
-  do personagem (subiu 8 → 28 → 40 conforme o usuário tirava da família). No caso visto, `parent1` tinha Q 1,466 e `parent2` Q 1,345
-  e `donorId` = `parent1`; a ordem invertida (fraco no slot 1) ainda NÃO foi testada, então não se sabe se o doador segue o slot ou a
-  maior quality.
+  do personagem (subiu 8 → 28 → 40 conforme o usuário tirava da família). **A ordem dos slots NÃO decide quem doa o IV** (confirmado em 09/10/2026 03:29Z,
+  conta2, Chansey): com `parent1` Q 1,054 / IV 51 e `parent2` Q 1,098 / IV 114 o `donorId` foi o `parent2` (`donor: 'mae'`);
+  na conta3 (`parent1` Q 1,466 / IV 126 × `parent2` Q 1,345 / IV 104) foi o `parent1` (`donor: 'pai'`). Nos dois casos o doador
+  é o pai de MAIOR quality (que também tinha o maior IV; o texto do jogo diz que é pela quality). `delta.baseQuality` = maior
+  quality dos dois. O script confere `donorId === tronco` na cotação antes de todo `breed`, independente da ordem.
 - `POST { action:'breed', parent1, parent2, free, double }` → `center` novo (o ovo aparece em `eggs`, `usedSlots` sobe, `gold` já
-  descontado). CONFIRMADO com `free: true, double: true`, feito na cidade (não se sabe se o servidor aceita na hunt).
+  descontado). CONFIRMADO 2x com `free: true, double: true`, ambos feitos na cidade (não se sabe se o servidor aceita na hunt).
 - `POST { action:'hatch', eggId }` / `{ action:'hatch-now', eggId }` → `{ child{ speciesId, shiny, ivTotal, quality, ... } }`
   (bundle; NÃO confirmado — o ovo precisa de 3000 abates).
 - `POST { action:'buy-slot' }` → `center` novo (bundle; o script nunca usa).
