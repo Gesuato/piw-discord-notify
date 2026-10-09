@@ -690,7 +690,9 @@ quality/ivTotal. Mock: `docs/mockup-breeding.html`. Formatos: `docs/mensagens-do
 bqs } }`, sem id do filho — o módulo acha o filho no frame `pokes` pela quality+IV exatos (dica em `pendingChild`); o aviso mostra Q, IV e Δ
 mesmo quando a lista demora. Farejador `rest-breeding` removido.
 
-**Pendente:** `family-action … dir:'withdraw'` (mesmo formato do depósito; o frame `family` confirma o movimento); se o `breed` funciona na hunt
+**v3.29.2:** `family-action … dir:'withdraw'` CONFIRMADO (09/10/2026 13:15Z, conta1, pela janela Família): mesmos campos do depósito.
+
+**Pendente:** se o `breed` funciona na hunt
 (o script sempre cruza na viagem). Teste: `node test/breeding.test.js`, caso novo no `pokesell.test.js`, passo no smoke e fixture no
 round-trip.
 

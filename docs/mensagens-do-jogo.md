@@ -48,7 +48,7 @@ Confirmados no bundle. Os marcados com ✔ já são usados ou interceptados pelo
 | `trade-*` (`invite`, `respond`, `slot`, `money`, `confirm`, `cancel`, `get`) | vários | troca entre jogadores |
 | `pvp-*` (`queue`, `challenge`, `accept`, `decline`, `action`, `leave`, `watch`, `unwatch`, `state`) e `switch { teamIndex }`, `move { moveIndex }`, `forfeit` | vários | PvP (o `switch` é troca de Pokémon **na batalha**, não do líder) |
 | `golden-stars-refresh` | — | Poke Slot Machine: o HUD relê os bônus depois de roll/pick (o estado em si é REST, ver abaixo) |
-| `family-get`, `family-action` ✔ | `family-action { action:'poke', dir:'deposit'\|'withdraw', capturedId }`; `{ action:'item', dir, itemId, quantity }`; `create`/`invite`/`respond` | clã/família: depósito compartilhado (limite diário de movimentos `movesUsed/movesCap`; responde `family` ou `error`) |
+| `family-get`, `family-action` ✔ | `family-action { action:'poke', dir:'deposit'\|'withdraw', capturedId }`; `{ action:'item', dir, itemId, quantity }`; `create`/`invite`/`respond` | clã/família: depósito compartilhado (limite diário de movimentos `movesUsed/movesCap`; responde `family` ou `error`). As 4 combinações CONFIRMADAS no log em 09/10/2026 13:15Z (conta1, janela Família do jogo, log `familia-envio`): `withdraw` usa exatamente os mesmos campos do `deposit` (`itemId`+`quantity` para item, `capturedId` para Pokémon); o frame `family` chega ~0,3 s depois e cada movimento soma 1 em `movesUsed` |
 
 ## Servidor → cliente (handlers registrados no bundle)
 
