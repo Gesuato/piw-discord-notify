@@ -232,5 +232,16 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         assert(state.logs.filter(l => l[0] === 'pokes-mudo').length === 3, 'log pokes-mudo por pedido mudo');
     }
 
-    console.log('OK pokesell.test — limite por raridade, proteções, lista fresca antes de vender, venda automática/manual, parcial, erro, lote recusado, guarda do PokeGrid, box e plano B');
+    // d) breeding (v3.29.0): quem sobe e a espécie dele NUNCA entram na venda, mesmo com IV abaixo da tabela
+    {
+        const cfg = { pokeSellEnabled: true, pokeSellLimits: REGRAS, boxAlertAt: 0 };
+        const { api, state } = loadPokeSellModule(cfg, { api: okApi(), breedKeepsPoke: (p) => Number(p.speciesId) === 232 || p.id === 'tronco' });
+        const lista = [P({ id: 'tronco', name: 'Donphan', speciesId: 232, quality: 1.466, ivTotal: 10 }), P({ id: 'comida', name: 'Donphan', speciesId: 232, quality: 1.345, ivTotal: 5 }), P({ id: 'outro', name: 'Rattata', speciesId: 19, quality: 1.0, ivTotal: 5 })];
+        assert(api.pokeSellReason(lista[0], cfg) === 'breeding' && api.pokeSellReason(lista[1], cfg) === 'breeding' && api.pokeSellReason(lista[2], cfg) === null, 'breeding protege quem sobe e a espécie: ' + lista.map(p => api.pokeSellReason(p, cfg)).join(','));
+        api.pokeSellOnPokes(lista);
+        const r = await api.runPokeSellCycle(true);
+        assert(r.vendidos === 1 && state.calls[0].body.pokeIds.join(',') === 'outro', 'vendeu só o Rattata: ' + JSON.stringify(state.calls[0].body));
+    }
+
+    console.log('OK pokesell.test — breeding protegido, limite por raridade, proteções, lista fresca antes de vender, venda automática/manual, parcial, erro, lote recusado, guarda do PokeGrid, box e plano B');
 })().catch(e => { console.error(e); process.exit(1); });

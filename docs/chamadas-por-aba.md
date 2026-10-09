@@ -73,6 +73,7 @@ da Pokédex. Fora disso, nada.
 | Clã | `GET /api/game/clans` (REST) + `inv-get` (socket); na viagem: `POST /api/game/convert`, `POST .../clans/rankup`; 1x: `POST .../clans/change` (entrar) | a cada 2 min (1 min com "Caçar o que falta"); só com o Clã ligado |
 | Daily Kill | `GET /api/game/daily-kill` (REST); `POST .../claim` na meta; com "sozinho": `POST .../pick` (1x por dia, sem missão escolhida), `poke-summon` na ida e na volta | a cada 30 s na hunt da missão, 2 min fora dela; só com a Daily ligada |
 | Daily Gift | `GET /api/game/daily` (REST); `POST /api/game/daily` quando liberado; depois `GET /api/game/gifts` + `POST .../gifts/{id}/claim` (só o do dia, tudo ou nada, conforme a opção) | a cada 30 min (5 min enquanto o dia não liberou); só com o Daily Gift ligado |
+| Breeding (v3.29.0) | `GET /api/game/breeding?action=center` (REST) a cada 2 min; `?action=quote` quando há comida no box; `family-get` (socket) a cada 10 min; na viagem: `family-action` withdraw, `pokes-get`, `quote` ×2, `POST breeding { action:'breed' }`; `POST { action:'hatch' }` quando o ovo fica pronto | só com o módulo ligado |
 | Recarga do painel | reload da página + `enter-hunt` na volta | intervalo configurável |
 | Viagem à cidade | `leave-hunt`, `field-teleport-city` sintético (tela), `set-city` se a tela não viajar, tarefas, `enter-hunt` + `hunt-resume` sintético | quando há venda/compra pendente |
 

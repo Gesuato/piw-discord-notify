@@ -257,6 +257,7 @@ function loadPokeSellModule(cfg, init) {
         logEvent: (k, d) => state.logs.push([k, d]),
         postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
         requestPokes: () => { state.pokesReqs++; },
+        breedKeepsPoke: init.breedKeepsPoke,   // v3.29.0: proteção do breeding (ausente = sem breeding)
         // `pokes-get` antes de vender: `init.freshPokes` é a lista que o jogo devolve na hora (ausente = jogo mudo, a
         // espera de 5 s passa com o relógio falso e a venda segue com a lista antiga).
         sendGame: (m) => { state.sent.push(m); if (m.type === 'pokes-get' && init.freshPokes && state.onPokesGet) state.onPokesGet(init.freshPokes); return true; },
@@ -657,7 +658,7 @@ function loadIdleModule(cfg, init) {
 // Extrai o módulo "Daily Gift" (v3.24.0) e o executa com stubs. `init.api(url, opts)` responde o REST (GET/POST
 // /api/game/daily, GET /api/game/gifts, POST /api/game/gifts/{id}/claim). Timers curtos rodam na hora; `clock.now` é o relógio.
 const F_START = '    // ---- Daily Gift';
-const F_END = '    // ---- Clã: subir de rank';
+const F_END = '    // ---- Breeding automático';
 
 function loadGiftModule(cfg, init) {
     init = init || {};
@@ -821,4 +822,63 @@ function loadSlotModule(cfg, init) {
     return { api, state, cfg, clock };
 }
 
-module.exports = { loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+// Extrai o módulo "Breeding automático" (v3.29.0). `init.api(url, opts)` responde GET center/quote e POST breed/hatch;
+// `init.pokes` é a lista `pokes` inicial (o módulo lê `state.pokes`, mutável); `init.freshPokes(n)` devolve a lista que o jogo
+// manda ao n-ésimo `pokes-get`; `init.family` = { pokes, items } do depot; `init.familyAction(payload)` responde às retiradas
+// ({ ok, motivo }); `clock.now` é o relógio (as esperas avançam o relógio); `clock.rnd` o Math.random.
+const BR_START = '    // ---- Breeding automático';
+const BR_END = '    // ---- Clã: subir de rank';
+
+function loadBreedModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(BR_START), b = src.indexOf(BR_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo de breeding não encontrados no script');
+    const mod = src.slice(a, b);
+    const clock = { now: Date.UTC(2026, 9, 9, 12, 0, 0), rnd: 0 };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const FakeMath = new Proxy(Math, { get(t, k) { return k === 'random' ? () => clock.rnd : t[k]; } });
+    const state = { sent: [], hooks: [], logs: [], trips: [], calls: [], familyActions: [], saves: 0, pokes: Array.isArray(init.pokes) ? init.pokes.slice() : [], family: init.family || { pokes: [], items: [] }, pokesGets: 0, onPokes: null, onFamily: null };
+    const normalize = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    const ctx = {
+        cfg,
+        IV_MAX: 192,
+        normalize,
+        fmtNum: (n) => String(n),
+        lastPokesList: state.pokes,
+        lastFamilyDepot: state.family,
+        tripRunning: false,
+        sendGame: (m) => {
+            state.sent.push(m);
+            if (m.type === 'pokes-get' && init.freshPokes) { const l = init.freshPokes(++state.pokesGets); if (l && state.onPokes) { state.pokes.splice(0, state.pokes.length, ...l); state.onPokes(state.pokes); } }
+            if (m.type === 'family-get' && init.familyReply !== false && state.onFamily) state.onFamily();
+            return true;
+        },
+        gameApi: (url, opts) => { state.calls.push({ url, method: opts?.method || 'GET', body: opts?.body ? JSON.parse(opts.body) : null }); return Promise.resolve().then(() => (init.api ? init.api(url, opts) : {})); },
+        familyAction: (payload, evento, dados, check) => { state.familyActions.push(payload); const r = init.familyAction ? init.familyAction(payload, check) : { ok: true }; state.logs.push([evento, Object.assign({}, dados, { ok: r.ok })]); return Promise.resolve(r); },
+        tripRequest: (key, dados, motivo) => state.trips.push({ key, dados, motivo }),
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', color: p.embeds?.[0]?.color, meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        saveCfg: () => { state.saves++; },
+        setTimeout: (fn, ms) => { clock.now += ms || 0; fn(); return 1; },
+        Date: FakeDate,
+        Math: FakeMath,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            breedTick, breedCycle, breedPlan, breedCityWork, breedHatch, breedOnPokes, breedOnFamily, breedKeepsPoke, breedFoodReason, breedFoodList, breedFoodPick,
+            breedCheckQuote, breedStoneNeeds, parseBreedCenter, breedTrunk, breedLines, breedActiveLines, breedStatus, breedFoodStatus, breedWanted, breedReset,
+            BREED_POLL_MS, BREED_RETRY_MS,
+            get breedPlanned() { return breedPlanned; },
+            get breedWait() { return breedWait; },
+            get breedCenter() { return breedCenter; },
+            get breedLast() { return breedLast; },
+        };`);
+    const api = factory(...Object.values(ctx));
+    state.onPokes = (l) => api.breedOnPokes(l);
+    state.onFamily = () => api.breedOnFamily();
+    return { api, state, cfg, clock };
+}
+
+module.exports = { loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

@@ -35,6 +35,8 @@ const rica = {
   evolveEnabled: true,
   // v3.26.0 (Poke Slot Machine)
   slotEnabled: true, slotWanted: 'Dratini, Larvitar',
+  // v3.29.0 (Breeding)
+  breedEnabled: true, breedLines: [{ id: 'tronco1', name: 'Donphan', speciesId: 232, gen: 2, q0: 1.466, iv0: 126, lastQ: 1.48, lastIv: 126 }, null], breedFoodIvMax: 140, breedFamily: false, breedDouble: false,
 };
 setTimeout(() => {
   const w1 = boot(rica, { pgDiscordNotifyDrops: JSON.stringify([120, 7]) });

@@ -248,6 +248,23 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   se `tripCity()` for outra, gira e escolhe o 1º pedido sorteado, senão um qualquer (pedido do usuário). Nomes comparados por `slotKey`
   (v3.26.1: espaço, `_` e `-` equivalentes, porque os outros campos do painel viram slug `ancient_pinsir`). Erro = 15 min por slot
   (`slotTriedAt`). Logs `slot-campos`, `slot`, `slot-roll`, `slot-erro`, `slot-cidade`. Teste: `node test/slot.test.js` (`loadSlotModule`).
+- Breeding automático (v3.29.0, aba 🥚 Breeding, `cfg.breedEnabled`, `breedLines` (até 2 linhagens), `breedFoodIvMax`, `breedFamily`,
+  `breedDouble`; módulo `// ---- Breeding automático` entre o Daily Gift e o Clã; REST `center`/`quote`/`breed` CONFIRMADOS no log em
+  09/10/2026 nas contas 2 e 3, `hatch` ainda não visto; formatos em `docs/mensagens-do-jogo.md` → "Breeding Center"): os 2 pais são
+  CONSUMIDOS; o filho nasce com o IV e a distribuição por stat do pai de MAIOR quality (`ivPreview.donorId`/`growth`) e quality =
+  maior + Δ (Grátis 0,005–0,04); **a ordem dos slots NÃO decide o doador** (conta2: fraco no slot 1, `donorId` = slot 2). O que sobe é
+  a LINHAGEM: "quem sobe" vira o ovo e o filho vira quem sobe (geração +1). Regras fixas do usuário ("SUPER IMPORTANTE"): quem sobe
+  sempre em `parent1`; comida da mesma espécie com quality E IV menores (até 0,15 abaixo, IV < teto), nunca shiny/time/inicial/Ditto/
+  travado; antes de todo breed a cotação (free=1) tem de dar `donorId` = quem sobe, `growth` somando o IV dele e `baseQuality` = Q
+  dele (`breedCheckQuote`), senão NÃO cruza e avisa; quem sobe e a espécie dele ficam fora da venda de Pokémon e do depósito na
+  família (`breedKeepsPoke` em `pokeSellReason`/`depositPokeReason`). Grátis cobra 2.000.000 de gold + 20 stones (40 com dobrar);
+  3000 abates para chocar. Fluxo: `breedTick` (1 min) lê o centro a cada 2 min, choca o `ready` (POST hatch; filho achado no frame
+  `pokes` por id novo ou pelo IV igual/+1), planeja (comida mais fraca primeiro, cota se ela está no box) e `tripRequest('breeding')`;
+  `breedCityWork` na viagem: tira stones/comida da família (`family-action … dir:'withdraw'`, mesmo formato do depósito, ainda não
+  visto no log), cota de novo, checklist e POST breed. Sem material: `breedWaitSet` avisa 1x por motivo e tenta a cada 30 min. Nunca
+  usa cadeado do jogo em quem sobe (não se sabe se o servidor cruza Pokémon travado). Logs `breeding-centro`, `breeding-cotacao`,
+  `breeding-cruzou`, `breeding-falhou`, `breeding-choca`, `breeding-filho`, `breeding-parado`. Teste: `node test/breeding.test.js`
+  (`loadBreedModule`: do marcador até `// ---- Clã: subir de rank`; o Daily Gift agora termina no marcador do breeding).
 - Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
   `guardar` no fim de toda viagem; drops → Depot (`POST /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou
   família (`family-action item`); Pokémon não vendidos → só família (o box JÁ é o Depot comum de Pokémon). Lista escolhida
@@ -394,7 +411,9 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
   nível do líder`; timers ficam em `state.timers` e `state.fire(ms)` dispara os desse prazo) e `node test/evolve.test.js`
   (`loadEvolveModule`: `// ---- Evolução automática` até `// ---- Poke Slot Machine`; `init.api` responde GET/POST /evolve, `init.city`) e
   `node test/slot.test.js` (`loadSlotModule`: `// ---- Poke Slot Machine` até `// ---- Daily Gift`; `init.api` responde GET golden-stars e
-  POST roll/pick, `init.city`; `clock.now` relógio, `clock.rnd` o Math.random).
+  POST roll/pick, `init.city`; `clock.now` relógio, `clock.rnd` o Math.random) e `node test/breeding.test.js` (`loadBreedModule`:
+  `// ---- Breeding automático` até `// ---- Clã: subir de rank`; `init.api` responde center/quote/breed/hatch, `init.pokes` lista do box
+  mutável em `state.pokes`, `init.freshPokes(n)` resposta ao n-ésimo `pokes-get`, `init.family` depot, `init.familyAction(payload)`).
   `test/harness.js` recorta módulos do userscript pelos marcadores (`loadLevelModule`: `// ---- Alerta de nível do
   líder` até `// ---- Alerta de estoque de bolas`; `loadPokeSellModule`: `// ---- Venda automática de Pokémon` até
   `// ---- Rota de captura`; `loadCatchModule`: `// ---- Rota de captura` até `// ---- Daily Kill`, com `init.fetchJson(url)` para os

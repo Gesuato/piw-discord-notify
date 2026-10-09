@@ -182,6 +182,19 @@ setTimeout(() => {
         $('#pg-dn-save').click();
         log('salvo sellItems=' + JSON.stringify(JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg')).sellItems) + ' perfil=' + JSON.stringify(JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg')).sellProfiles));
         panel.querySelector('.dn-tab[data-tab=treino]').click(); log('team=' + $('#pg-dn-team').textContent + ' | rota=' + $('#pg-dn-route-list').textContent.replace(/\s+/g, ' '));
+        // ---- Breeding (v3.29.0): box com dois Donphan chega, menu lista o box, escolhe quem sobe, salva; a comida aparece na prévia ----
+        recv({ type: 'pokes', list: [{ id: 'a', speciesId: 1, name: 'Larvitar', level: 12, team: true, slot: 0, leader: true, quality: 1.3, ivTotal: 100 }, { id: 'd1', speciesId: 232, name: 'Donphan', level: 20, team: false, quality: 1.466, ivTotal: 126, sellValue: 100 }, { id: 'd2', speciesId: 232, name: 'Donphan', level: 20, team: false, quality: 1.345, ivTotal: 104, sellValue: 100 }, { id: 'd3', speciesId: 232, name: 'Donphan', level: 20, team: false, quality: 1.5, ivTotal: 90, sellValue: 100 }] });
+        panel.querySelector('.dn-tab[data-tab=breeding]').click();
+        log('breeding opcoes=' + $('#pg-dn-breed-l1').options.length + ' | status=' + $('#pg-dn-breed-status').textContent.replace(/\s+/g, ' ').slice(0, 80));
+        $('#pg-dn-breed').checked = true; fire($('#pg-dn-breed'), 'change');
+        $('#pg-dn-breed-l1').value = 'd1'; fire($('#pg-dn-breed-l1'), 'change');
+        $('#pg-dn-breed-ivmax').value = 120; fire($('#pg-dn-breed-ivmax'), 'input');
+        log('breeding comida=' + $('#pg-dn-breed-food').textContent.replace(/\s+/g, ' ') + ' | badge=' + panel.querySelector('.dn-tab[data-tab=breeding] .b').dataset.state);
+        $('#pg-dn-save').click();
+        const cfgBr = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+        log('breeding salvo=' + cfgBr.breedEnabled + ' linhas=' + JSON.stringify(cfgBr.breedLines) + ' ivmax=' + cfgBr.breedFoodIvMax + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 120));
+        if (!(cfgBr.breedEnabled && cfgBr.breedLines[0] && cfgBr.breedLines[0].id === 'd1' && cfgBr.breedFoodIvMax === 120)) throw new Error('breeding não salvou como esperado');
+        $('#pg-dn-breed').checked = false; fire($('#pg-dn-breed'), 'change'); $('#pg-dn-save').click();
         // ---- venda de Pokémon: regras na tela mostram a prévia; salvar guarda; Vender agora chama o POST ----
         panel.querySelector('.dn-tab[data-tab=venda]').click();
         $('#pg-dn-psell-common').value = 100; fire($('#pg-dn-psell-common'), 'input');

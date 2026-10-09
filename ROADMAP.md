@@ -671,6 +671,28 @@ saiu). Teste: `node test/slot.test.js` e passo no smoke.
 
 ---
 
+## ✅ 31. Breeding automático: subir a quality de um Pokémon de IV alto (v3.29.0)
+
+**O que faz (aba 🥚 Breeding, `cfg.breedEnabled`, `breedLines` até 2 linhagens, `breedFoodIvMax`, `breedFamily`, `breedDouble`):** o
+usuário escolhe "quem sobe" (até 2, um por slot da incubadora); o script escolhe a comida (mesma espécie, quality E IV menores,
+quality até 0,15 abaixo, IV abaixo do teto; box ou depot da família), pede a cotação Grátis e só cruza se ela disser que o IV vem de
+quem sobe, pede a viagem à cidade, tira da família o que falta (stones e comida), cruza (`parent1` = quem sobe, `free`, `double`),
+volta para a hunt, choca o ovo quando o centro diz `ready` e o filho vira quem sobe da geração seguinte. Sem comida/stone/gold: para,
+avisa 1x por motivo no canal de Alertas e tenta de novo a cada 30 min (a família abastece). Quem sobe e toda a espécie dele ficam fora
+da venda automática e do depósito na família, sempre.
+
+**Fatos (log de 09/10/2026, contas 2 e 3, farejador `rest-breeding` da v3.28.1 + 3 guias do Discord):** os 2 pais são consumidos; o
+filho copia o IV (e a distribuição por stat) do pai de MAIOR quality, não do slot 1 (conta2: fraco no slot 1, doador = slot 2); Grátis
+cobra 2.000.000 de gold + 20 stones (40 com dobrar, 5% de +1 IV) e dá Δ 0,005–0,04; 3000 abates para chocar; depot da família traz
+quality/ivTotal. Mock: `docs/mockup-breeding.html`. Formatos: `docs/mensagens-do-jogo.md` → "Breeding Center".
+
+**Pendente:** resposta do `POST hatch` (o farejador continua gravando; o módulo acha o filho pelo frame `pokes` de qualquer jeito);
+`family-action … dir:'withdraw'` (mesmo formato do depósito; o frame `family` confirma o movimento); se o `breed` funciona na hunt
+(o script sempre cruza na viagem). Teste: `node test/breeding.test.js`, caso novo no `pokesell.test.js`, passo no smoke e fixture no
+round-trip.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.28.1
+// @version      3.29.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.28.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.29.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -80,6 +80,11 @@
         evolveEnabled: false,   // v3.25.0 Evolução: quem do time chega ao nível vai à cidade (Cerulean) e evolui com as pedras da mochila
         slotEnabled: false,     // v3.26.0 Poke Slot Machine: na viagem à cidade (shopping) gira o roll grátis e ativa o bônus
         slotWanted: '',         // ...Pokémon pedidos, em ordem de preferência (vírgula); nenhum sorteado = escolhe um qualquer
+        breedEnabled: false,    // v3.29.0 Breeding (aba 🥚): cruzar quem sobe com comida mais fraca (Grátis), chocar e repetir
+        breedLines: [],         // ...até 2 linhagens: [{ id, name, speciesId, gen, q0, iv0, lastQ, lastIv, eggId, pendingChild } | null]
+        breedFoodIvMax: 150,    // ...comida só com IV abaixo disto (além de quality e IV menores que quem sobe); 0 = sem teto
+        breedFamily: true,      // ...comida e stones também do depot da família (retirada na viagem à cidade)
+        breedDouble: true,      // ...dobrar stones (40 em vez de 20): 5% de +1 IV no filho
         clanEnabled: false,     // v3.17.0 Clã (aba Profissão): acompanhar a tarefa de rank, guardar os itens base, converter na viagem
         clanKey: 'orebound',    // clã em que o script entra sozinho se a conta não tiver nenhum (1ª entrada é grátis)
         clanRankup: true,       // ...subir de rank sozinho quando a tarefa fechar (na viagem à cidade)
@@ -535,7 +540,7 @@
     // Algum módulo usa a lista `pokes`? (nível/rota, venda de Pokémon, rota de captura, daily sozinha, clã, Joy, evolução)
     function pokesListUsed() {
         return levelEnabled() || Boolean(cfg.pokeSellEnabled) || Boolean(cfg.catchRouteEnabled) || Boolean(cfg.dailyEnabled && cfg.dailyAuto)
-            || Boolean(cfg.clanEnabled && cfg.clanRoute) || Boolean(cfg.healJoyEnabled) || Boolean(cfg.evolveEnabled);
+            || Boolean(cfg.clanEnabled && cfg.clanRoute) || Boolean(cfg.healJoyEnabled) || Boolean(cfg.evolveEnabled) || Boolean(cfg.breedEnabled);
     }
     function requestPokes(delayMs) {
         if (!pokesListUsed()) return;
@@ -1479,6 +1484,7 @@
         const at = recentCaptureIds.get(String(p.id));
         if (at && Date.now() - at < POKE_SELL_RECENT_MS) return 'capturado agora';
         if (typeof clanKeepsSpecies === 'function' && clanKeepsSpecies(Number(p.speciesId))) return 'tarefa do clã';
+        if (typeof breedKeepsPoke === 'function' && breedKeepsPoke(p)) return 'breeding';   // v3.29.0: quem sobe e a espécie dele, SEMPRE
         const tier = qualityTier(Number(p.quality));
         const iv = Number(p.ivTotal);
         if (!tier || !Number.isFinite(iv)) return 'sem IV';
@@ -2952,6 +2958,534 @@
         }, { evento: resgatado ? 'gift-resgate' : 'gift-center', dia: resgatado ? resgatado.day : null, presente, entregues: granted });
     }
 
+    // ---- Breeding automático: subir a quality de um Pokémon de IV alto cruzando com comida mais fraca (v3.29.0) ----
+    //   REST confirmado no log em 09/10/2026 (contas 2 e 3, farejador `rest-breeding` da v3.28.1; ver docs/mensagens-do-jogo.md →
+    //   "Breeding Center"): `GET /api/game/breeding?action=center`, `?action=quote&parent1&parent2&free=1` e
+    //   `POST { action:'breed', parent1, parent2, free, double }`. Resposta do `hatch` ainda NÃO vista (o ovo leva 3000 abates).
+    //   Regras do jogo (texto da tela + 3 guias do Discord lidos em 09/10/2026): os 2 pais são CONSUMIDOS; o filho nasce com o IV
+    //   (e a distribuição por stat, `ivPreview.growth`) do pai de MAIOR quality e quality = maior quality + Δ (Grátis: 0,005–0,04,
+    //   esperado 0,01); o par precisa ter diferença de quality ≤ 0,15; custa 2.000.000 de gold + 20 stones do elemento do filho
+    //   (40 com "dobrar", que dá 5% de +1 IV); choca com abates em hunt (`killsDone/killsRequired`); a incubadora tem 2 slots.
+    //   A ORDEM DOS SLOTS NÃO DECIDE o doador (conta2, 03:29Z: fraco no slot 1, `donorId` = slot 2). O que "sobe" é a LINHAGEM:
+    //   o escolhido ("quem sobe", tronco) vira o ovo e o filho passa a ser o escolhido da geração seguinte.
+    //   Garantias (pedido do usuário, "SUPER IMPORTANTE"):
+    //     - quem sobe vai sempre em `parent1`; a comida é da mesma espécie, com quality E IV MENORES que ele, quality até 0,15
+    //       abaixo, IV abaixo do teto do painel (`breedFoodIvMax`), nunca shiny/time/inicial/travado/Ditto/anunciado;
+    //     - antes de todo breed a cotação (free=1) tem de dizer `donorId` = quem sobe, `growth` somando o IV dele, `baseQuality` =
+    //       quality dele, sem feromônio e sem filho shiny; qualquer diferença = NÃO cruza, avisa e espera;
+    //     - quem sobe e toda a espécie dele ficam fora da venda automática e do depósito na família (`breedKeepsPoke`, usado em
+    //       `pokeSellReason`/`depositPokeReason`), mesmo com IV abaixo da tabela;
+    //     - só o caminho Grátis (que mesmo assim cobra gold + stones); nunca `hatch-now`/`buy-slot` (diamante).
+    //   Comida e stones podem vir do depot da família (`breedFamily`): o frame `family` traz quality/ivTotal dos Pokémon e
+    //   itemId/quantity dos itens (confirmado em `familia-campos`); a retirada (`family-action … dir:'withdraw'`, mesmo formato
+    //   do depósito) acontece na viagem à cidade, tarefa `breeding`, seguida de cotação de novo, checklist e breed. Na hunt o
+    //   módulo só lê (centro a cada 2 min, cotação quando tem comida no box) e choca quando o centro diz `ready`; o filho é
+    //   achado no frame `pokes` (id novo da espécie, senão o único com o IV do tronco) e vira o tronco da linhagem.
+    //   Sem comida/stone/gold: para, avisa 1x por motivo e tenta de novo a cada 30 min (a família pode abastecer).
+
+    const BREED_URL = '/api/game/breeding';
+    const BREED_TICK_MS = 60 * 1000;
+    const BREED_POLL_MS = 2 * 60 * 1000;           // relê a incubadora (o progresso do ovo só existe por REST; a tela lê a cada 20 s)
+    const BREED_FAMILY_POLL_MS = 10 * 60 * 1000;   // relê o depot da família
+    const BREED_RETRY_MS = 30 * 60 * 1000;         // parado por falta de comida/stone/gold: volta a planejar depois disso
+    const BREED_Q_GAP = 0.15;                      // o jogo exige diferença de quality ≤ 0,15 no breed normal
+    const BREED_Q_EPS = 0.0005;
+    const BREED_MAX_LINES = 2;
+    const BREED_WAIT_MS = 5000;                    // espera por frame (`pokes`/`family`)
+    const BREED_BETWEEN_MS = [1500, 3000];
+    const BREED_GOLD_FEE_HINT = 2000000;           // taxa vista no log (serve só quando ainda não há cotação)
+    const BREED_WARN_GAP_MS = 6 * 60 * 60 * 1000;  // repete o aviso do mesmo motivo só depois disso
+
+    let breedCenter = null;        // última leitura do centro (parseBreedCenter)
+    let breedCenterAt = 0;
+    let breedCenterSig = '';
+    let breedBusy = false;         // ciclo (centro/choca/plano) em andamento
+    let breedWorking = false;      // tarefa da viagem em andamento
+    const breedPlanned = {};       // id de quem sobe -> plano { foodId, foodName, foodQ, foodIv, origem, stones, at } (viagem pedida)
+    let breedWait = null;          // { motivo, at } parado por falta de material (painel + aviso)
+    const breedWarned = {};        // motivo -> quando avisou
+    const breedHatchAsked = {};    // eggId -> true (chocar falhou na hunt: viagem pedida)
+    let breedLast = null;          // { at, feitos, falhas } da última viagem
+    let breedPokesSeq = 0;         // frames `pokes` vistos pelo módulo (espera por lista fresca)
+    let breedFamilySeq = 0;        // frames `family` vistos pelo módulo
+    let breedFamilyAskedAt = 0;
+    let onBreedChange = null;      // callback do painel
+
+    function breedEnabled(d) { return Boolean((d || cfg).breedEnabled); }
+    function breedFoodIvMax(d) { return Math.max(0, Math.min(IV_MAX, Number((d || cfg).breedFoodIvMax) || 0)); }
+    function breedNotify() { if (onBreedChange) { try { onBreedChange(); } catch { /* painel fechado */ } } }
+    const breedQ = (q) => (Number.isFinite(Number(q)) ? Number(q).toFixed(3) : '?');
+    const breedRnd = (par) => par[0] + Math.floor(Math.random() * (par[1] - par[0] + 1));
+    const breedSleep = () => new Promise(r => setTimeout(r, breedRnd(BREED_BETWEEN_MS)));
+    const breedHora = (ts) => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    // Linhagens do painel (até 2), na posição em que foram escolhidas; vazia = null. Uma linhagem existe enquanto tiver quem
+    // sobe (`id`), um ovo chocando (`eggId`) ou um filho por identificar (`pendingChild`).
+    function breedLines(d) {
+        const arr = Array.isArray((d || cfg).breedLines) ? (d || cfg).breedLines : [];
+        const out = arr.slice(0, BREED_MAX_LINES).map(l => (l && typeof l === 'object' && (l.id || l.eggId || l.pendingChild)) ? l : null);
+        while (out.length < BREED_MAX_LINES) out.push(null);
+        return out;
+    }
+    function breedActiveLines(d) { return breedLines(d).filter(Boolean); }
+    // Quem sobe, pelo id, na lista `pokes` (box).
+    function breedTrunk(line) {
+        if (!line?.id) return null;
+        const p = lastPokesList.find(x => x && String(x.id) === String(line.id));
+        if (!p) return null;
+        return { id: String(p.id), name: p.name || '?', speciesId: Number(p.speciesId), quality: Number(p.quality), ivTotal: Number(p.ivTotal), level: Number(p.level) || 0, shiny: Boolean(p.shiny), team: Boolean(p.team || p.leader), starter: Boolean(p.starter) };
+    }
+    // Proteção: quem sobe e toda a espécie dele ficam fora da venda automática e do depósito na família.
+    function breedKeepsPoke(p) {
+        if (!cfg.breedEnabled || !p || typeof p !== 'object') return false;
+        const id = String(p.id ?? ''), sp = Number(p.speciesId) || 0, nome = normalize(p.name || '');
+        for (const l of breedActiveLines()) {
+            if (l.id && String(l.id) === id) return true;
+            const t = l.speciesId ? null : breedTrunk(l);   // linhagem recém-escolhida: espécie pelo box
+            const lsp = Number(l.speciesId) || (t ? t.speciesId : 0), lnome = normalize(l.name || (t ? t.name : ''));
+            if (lsp && sp && lsp === sp) return true;
+            if (lnome && nome && lnome === nome) return true;
+        }
+        return false;
+    }
+    // Motivo para `p` NÃO servir de comida para `trunk`; null = serve.
+    function breedFoodReason(p, trunk, d) {
+        d = d || cfg;
+        if (!p || typeof p !== 'object' || !trunk) return 'inválido';
+        if (String(p.id) === trunk.id) return 'é quem sobe';
+        if (breedActiveLines(d).some(l => l.id && String(l.id) === String(p.id))) return 'é quem sobe de outra linhagem';
+        if (Number(p.speciesId) !== trunk.speciesId) return 'outra espécie';
+        if (p.team || p.leader) return 'no time';
+        if (p.starter) return 'inicial';
+        if (p.shiny) return 'shiny: nunca';
+        if (p.isDitto) return 'Ditto';
+        if (p.locked) return 'cadeado';
+        if (p.listed || p.tradeId) return 'anunciado no mercado';
+        const q = Number(p.quality), iv = Number(p.ivTotal);
+        if (!Number.isFinite(q) || !Number.isFinite(iv)) return 'sem IV/quality';
+        if (q >= trunk.quality - BREED_Q_EPS) return `Q ${breedQ(q)} não é menor que ${breedQ(trunk.quality)}: nunca`;
+        if (q < trunk.quality - BREED_Q_GAP - BREED_Q_EPS) return `Q ${breedQ(q)} longe demais (o jogo exige até 0,15 abaixo)`;
+        if (iv >= trunk.ivTotal) return `IV ${iv} não é menor que ${trunk.ivTotal}: nunca`;
+        const max = breedFoodIvMax(d);
+        if (max > 0 && iv >= max) return `IV ${iv} ≥ ${max}: poupado`;
+        return null;
+    }
+    // Candidatos a comida de quem sobe: box (lista `pokes`) e, com `breedFamily`, depot da família. Quem serve vem primeiro, o
+    // mais fraco antes (menor quality, depois menor IV): a comida de Q baixa deixa de servir assim que quem sobe cresce.
+    function breedFoodList(trunk, d) {
+        d = d || cfg;
+        if (!trunk) return [];
+        const out = [];
+        const add = (p, origem) => out.push({ id: String(p.id ?? ''), name: p.name || '?', quality: Number(p.quality), ivTotal: Number(p.ivTotal), level: Number(p.level) || 0, origem, motivo: breedFoodReason(p, trunk, d) });
+        for (const p of lastPokesList) if (p && !p.team && Number(p.speciesId) === trunk.speciesId && String(p.id) !== trunk.id) add(p, 'box');
+        if (d.breedFamily) for (const p of (lastFamilyDepot.pokes || [])) if (p && Number(p.speciesId) === trunk.speciesId) add(p, 'familia');
+        return out.sort((a, b) => (a.motivo ? 1 : 0) - (b.motivo ? 1 : 0) || (a.quality || 0) - (b.quality || 0) || (a.ivTotal || 0) - (b.ivTotal || 0));
+    }
+    function breedFoodPick(trunk, d) { return breedFoodList(trunk, d).find(f => !f.motivo) || null; }
+
+    function parseBreedCenter(raw) {
+        if (!raw || typeof raw !== 'object') return null;
+        return {
+            unlocked: raw.unlocked !== false, unlockLevel: Number(raw.unlockLevel) || 0, level: Number(raw.level) || 0,
+            slots: Number(raw.slots) || 0, usedSlots: Number(raw.usedSlots) || 0, gold: Number(raw.gold) || 0, pheromones: Number(raw.pheromones) || 0,
+            eggs: (Array.isArray(raw.eggs) ? raw.eggs : []).filter(e => e && typeof e === 'object').map(e => ({
+                id: String(e.id), speciesId: Number(e.speciesId) || 0, speciesName: e.speciesName || '?', rank: e.rank || null, shinyChild: Boolean(e.shinyChild),
+                killsDone: Number(e.killsDone) || 0, killsRequired: Number(e.killsRequired) || 0, ready: Boolean(e.ready),
+            })),
+        };
+    }
+    async function breedReadCenter() {
+        const raw = await gameApi(`${BREED_URL}?action=center`);
+        const c = parseBreedCenter(raw);
+        if (!c) throw new Error('centro de breeding vazio');
+        breedCenter = c; breedCenterAt = Date.now();
+        const sig = JSON.stringify([c.unlocked, c.slots, c.usedSlots, c.eggs.map(e => [e.id, e.killsDone, e.ready])]);
+        if (sig !== breedCenterSig) {
+            breedCenterSig = sig;
+            logEvent('breeding-centro', { liberado: c.unlocked, nivel: c.level, slots: `${c.usedSlots}/${c.slots}`, gold: c.gold, ovos: c.eggs.map(e => `${e.speciesName} ${e.killsDone}/${e.killsRequired}${e.ready ? ' pronto' : ''}`) });
+        }
+        return c;
+    }
+    function breedQuote(trunk, food) {
+        return gameApi(`${BREED_URL}?action=quote&parent1=${encodeURIComponent(trunk.id)}&parent2=${encodeURIComponent(food.id)}&free=1`);
+    }
+    // Checklist da cotação: tudo tem de bater com quem sobe, senão não cruza (a genética do filho vem do pai de maior quality).
+    function breedCheckQuote(q, trunk) {
+        if (!q || typeof q !== 'object') return 'cotação vazia';
+        if (q.freeAllowed === false || q.free !== true) return 'o jogo não permite o caminho Grátis neste par';
+        if (Number(q.pheromoneCost) > 0) return `a cotação pede ${q.pheromoneCost} feromônio(s)`;
+        if (q.shinyChild) return 'o filho seria shiny (par com shiny): nunca';
+        const prev = q.ivPreview && typeof q.ivPreview === 'object' ? q.ivPreview : null;
+        if (!prev || prev.donorId == null) return 'a cotação não diz quem doa o IV';
+        if (String(prev.donorId) !== trunk.id) return `o jogo diz que o IV viria da comida (donorId ≠ quem sobe)`;
+        if (prev.ivTotal != null && Number(prev.ivTotal) !== trunk.ivTotal) return `IV projetado ${prev.ivTotal} ≠ IV de quem sobe (${trunk.ivTotal})`;
+        if (prev.growth && typeof prev.growth === 'object') {
+            const soma = Object.values(prev.growth).reduce((a, b) => a + (Number(b) || 0), 0);
+            if (soma !== trunk.ivTotal) return `distribuição por stat soma ${soma} ≠ IV de quem sobe (${trunk.ivTotal})`;
+        }
+        const bq = Number(q.delta?.baseQuality);
+        if (Number.isFinite(bq) && Math.abs(bq - trunk.quality) > 0.001) return `quality base ${breedQ(bq)} ≠ quality de quem sobe (${breedQ(trunk.quality)})`;
+        const pa = q.parents?.a;
+        if (pa && pa.id != null && String(pa.id) !== trunk.id) return 'o jogo pôs quem sobe no slot 2';
+        return null;
+    }
+    // Stones do breed: `need` (base ou dobrada), `have` (mochila, pela cotação) e `familia` (depot da família, se permitido).
+    function breedStoneNeeds(q, d) {
+        d = d || cfg;
+        const lista = d.breedDouble ? q?.stones?.double : q?.stones?.base;
+        return (Array.isArray(lista) ? lista : []).map(s => {
+            const itemId = Number(s?.itemId);
+            const fam = (lastFamilyDepot.items || []).find(i => Number(i?.itemId ?? i?.id) === itemId);
+            return { itemId, name: s?.name || `Item ${itemId}`, need: Number(s?.need) || 0, have: Number(s?.have) || 0, familia: d.breedFamily ? Math.max(0, Number(fam?.quantity) || 0) : 0 };
+        });
+    }
+    const breedStonesTxt = (stones) => stones.map(s => `${s.name} ${s.have}${s.familia ? `+${s.familia} na família` : ''}/${s.need}`).join(', ');
+
+    // Espera a lista `pokes` / o frame `family` chegar (até BREED_WAIT_MS) depois de pedir.
+    function breedRefreshPokes() {
+        const antes = breedPokesSeq;
+        if (!sendGame({ type: 'pokes-get' })) return Promise.resolve(false);
+        const t0 = Date.now();
+        return new Promise(res => (function loop() {
+            if (breedPokesSeq !== antes) return res(true);
+            if (Date.now() - t0 >= BREED_WAIT_MS) return res(false);
+            setTimeout(loop, 250);
+        })());
+    }
+    function breedRefreshFamily() {
+        const antes = breedFamilySeq;
+        breedFamilyAskedAt = Date.now();
+        if (!sendGame({ type: 'family-get' })) return Promise.resolve(false);
+        const t0 = Date.now();
+        return new Promise(res => (function loop() {
+            if (breedFamilySeq !== antes) return res(true);
+            if (Date.now() - t0 >= BREED_WAIT_MS) return res(false);
+            setTimeout(loop, 250);
+        })());
+    }
+    function familyItemWithdraw(itemId, quantity, name) {
+        const antes = Number((lastFamilyDepot.items || []).find(i => Number(i?.itemId ?? i?.id) === itemId)?.quantity) || 0;
+        return familyAction({ action: 'item', dir: 'withdraw', itemId, quantity }, 'item-familia-retira', { name, itemId, quantity },
+            (depot) => { const it = (Array.isArray(depot.items) ? depot.items : []).find(i => Number(i?.itemId ?? i?.id) === itemId); return !it || Number(it.quantity) < antes; });
+    }
+    function familyPokeWithdraw(pokeId, name) {
+        return familyAction({ action: 'poke', dir: 'withdraw', capturedId: pokeId }, 'poke-familia-retira', { name, pokeId },
+            (depot) => !(Array.isArray(depot.pokes) ? depot.pokes : []).some(p => String(p?.id) === String(pokeId)));
+    }
+
+    // Frame `pokes`: guarda nome/espécie de quem sobe (a proteção da venda usa isso) e identifica o filho pendente.
+    function breedOnPokes(list) {
+        breedPokesSeq++;
+        if (!breedEnabled()) { breedNotify(); return; }
+        let mudou = false;
+        for (const l of breedActiveLines()) {
+            const t = breedTrunk(l);
+            if (t && (l.name !== t.name || Number(l.speciesId) !== t.speciesId)) { l.name = t.name; l.speciesId = t.speciesId; mudou = true; }
+            if (!l.id && !l.eggId && l.pendingChild && breedAdoptChild(l, Array.isArray(list) ? list : lastPokesList)) mudou = true;
+        }
+        if (mudou) saveCfg(cfg);
+        breedNotify();
+    }
+    function breedOnFamily() { breedFamilySeq++; breedNotify(); }
+    // Filho de uma linhagem: id novo da espécie (quando se sabe o que havia antes), senão o ÚNICO da espécie com o IV de quem
+    // sobe (ou +1, do dobrar) e quality acima da dele. 0 ou 2+ candidatos = fica pendente (o painel deixa escolher à mão).
+    function breedAdoptChild(line, list, novosIds) {
+        const sp = Number(line.speciesId) || 0;
+        const outros = breedActiveLines().filter(o => o !== line && o.id).map(o => String(o.id));
+        let cand = (Array.isArray(list) ? list : []).filter(p => p && !p.team && !p.leader && !p.shiny && (!sp || Number(p.speciesId) === sp) && !outros.includes(String(p.id)));
+        if (novosIds && novosIds.size) {
+            const n = cand.filter(p => novosIds.has(String(p.id)));
+            if (n.length === 1) return breedSetChild(line, n[0]);
+            if (n.length > 1) cand = n;
+        }
+        const iv = Number(line.lastIv), q = Number(line.lastQ);
+        const porIv = cand.filter(p => Number.isFinite(iv) && (Number(p.ivTotal) === iv || Number(p.ivTotal) === iv + 1) && (!Number.isFinite(q) || Number(p.quality) > q - BREED_Q_EPS));
+        if (porIv.length === 1) return breedSetChild(line, porIv[0]);
+        logEvent('breeding-filho', { linhagem: line.name || null, achou: false, candidatos: porIv.length, novos: novosIds ? novosIds.size : null, iv: Number.isFinite(iv) ? iv : null });
+        return false;
+    }
+    function breedSetChild(line, p) {
+        line.id = String(p.id); line.pendingChild = null; line.eggId = null;
+        line.gen = (Number(line.gen) || 0) + 1;
+        line.lastQ = Number(p.quality); line.lastIv = Number(p.ivTotal); line.name = p.name || line.name; line.speciesId = Number(p.speciesId) || line.speciesId;
+        logEvent('breeding-filho', { linhagem: line.name, achou: true, id: line.id, geracao: line.gen, quality: line.lastQ, ivTotal: line.lastIv });
+        return true;
+    }
+    // Ovos das linhagens x centro: ovo sem id conhecido ganha o único livre da espécie; ovo que sumiu (chocado na mão) vira filho pendente.
+    function breedSyncLines(c) {
+        let mudou = false;
+        const claimed = new Set(breedActiveLines().map(l => l.eggId).filter(id => id && c.eggs.some(e => e.id === id)));
+        for (const l of breedActiveLines()) {
+            if (!l.eggId || c.eggs.some(e => e.id === l.eggId)) continue;
+            const livres = c.eggs.filter(e => !claimed.has(e.id) && (!l.speciesId || e.speciesId === Number(l.speciesId)));
+            if (livres.length === 1) { l.eggId = livres[0].id; claimed.add(l.eggId); mudou = true; continue; }
+            logEvent('breeding-ovo-sumiu', { linhagem: l.name || null, eggId: l.eggId, ovosNoCentro: c.eggs.length });
+            l.eggId = null; l.pendingChild = { at: Date.now() }; mudou = true;
+            breedAdoptChild(l, lastPokesList);
+        }
+        if (mudou) saveCfg(cfg);
+    }
+
+    function breedWaitSet(motivo) {
+        const novo = !breedWait || breedWait.motivo !== motivo;
+        breedWait = { motivo, at: Date.now() };
+        if (!novo) return;
+        logEvent('breeding-parado', { motivo });
+        if (breedWarned[motivo] && Date.now() - breedWarned[motivo] < BREED_WARN_GAP_MS) return;
+        breedWarned[motivo] = Date.now();
+        const who = playerName();
+        postWebhook('alert', {
+            content: `🥚 ${who ? `**${who}**` : 'Sua conta'}: breeding parado — ${motivo}`,
+            username: 'Poke Idle World',
+            embeds: [{ title: 'Breeding parado', description: `${who ? `Conta: ${who}\n` : ''}${motivo}\nTenta de novo a cada ${BREED_RETRY_MS / 60000} min (a família pode abastecer).\nEm ${new Date().toLocaleString('pt-BR')}`, color: 0xfee75c }],
+        }, { evento: 'breeding-parado' });
+    }
+    function breedReset() {
+        for (const k of Object.keys(breedPlanned)) delete breedPlanned[k];
+        breedWait = null; breedCenterAt = 0; breedFamilyAskedAt = 0;
+    }
+    function breedWanted() { return breedEnabled() && !breedWorking && Object.keys(breedPlanned).length > 0; }   // carona/pedido na viagem
+
+    // Tique (1 min): com o módulo ligado, relê o centro a cada 2 min, choca o que estiver pronto e planeja o próximo cruzamento.
+    function breedTick(force) {
+        if (!breedEnabled() || breedBusy || breedWorking) return;
+        if (typeof tripRunning !== 'undefined' && tripRunning) return;
+        if (!force && Date.now() - breedCenterAt < BREED_POLL_MS) return;
+        return breedCycle();
+    }
+    async function breedCycle() {
+        breedBusy = true;
+        try {
+            const c = await breedReadCenter();
+            if (!c.unlocked) { breedWaitSet(`o Breeding Center libera no nível ${c.unlockLevel} (conta no ${c.level})`); return; }
+            breedSyncLines(c);
+            let chocou = false;
+            for (const egg of c.eggs.filter(e => e.ready)) if (await breedHatch(egg)) chocou = true;
+            await breedPlan(chocou ? await breedReadCenter() : c);
+        } catch (err) {
+            logEvent('breeding-erro', { erro: String(err?.message || err) });
+        } finally {
+            breedBusy = false;
+            breedNotify();
+        }
+    }
+    // Choca um ovo pronto (POST hatch). Falhou na hunt: pede a viagem (a tarefa choca na cidade).
+    async function breedHatch(egg) {
+        const line = breedActiveLines().find(l => l.eggId === egg.id) || null;
+        const antes = new Set(lastPokesList.map(p => String(p?.id)));
+        let r;
+        try { r = await gameApi(BREED_URL, { method: 'POST', body: JSON.stringify({ action: 'hatch', eggId: egg.id }) }); }
+        catch (err) {
+            logEvent('breeding-choca', { eggId: egg.id, especie: egg.speciesName, ok: false, erro: String(err?.message || err) });
+            if (!breedHatchAsked[egg.id]) { breedHatchAsked[egg.id] = true; tripRequest('breeding', null, `chocar ${egg.speciesName} na cidade (${err?.message || err})`); }
+            return false;
+        }
+        const txt = JSON.stringify(r) || '';
+        logEvent('breeding-choca', { eggId: egg.id, especie: egg.speciesName, linhagem: line?.name || null, ok: true, campos: r && typeof r === 'object' ? Object.keys(r) : null, resposta: txt.length > 2500 ? txt.slice(0, 2500) + '…' : r });
+        breedCenterAt = 0;
+        const child = r?.child && typeof r.child === 'object' ? r.child : null;
+        let filho = null;
+        if (line) {
+            line.eggId = null; line.pendingChild = { at: Date.now() };
+            if (child?.id) { breedSetChild(line, Object.assign({ speciesId: egg.speciesId, name: egg.speciesName }, child)); filho = child; }
+            else {
+                await breedRefreshPokes();
+                const novos = new Set(lastPokesList.map(p => String(p?.id)).filter(id => !antes.has(id)));
+                // o frame novo já pode ter identificado o filho (breedOnPokes); senão tenta com os ids novos
+                if (line.id || breedAdoptChild(line, lastPokesList, novos)) filho = lastPokesList.find(p => String(p?.id) === line.id) || null;
+            }
+            saveCfg(cfg);
+        }
+        const who = playerName();
+        const gen = line ? Number(line.gen) || 0 : 0;
+        const linhas = [
+            line ? `Linhagem ${line.name || egg.speciesName}: geração ${gen}` : `Ovo sem linhagem no painel (${egg.speciesName})`,
+            filho ? `Filho: Q ${breedQ(filho.quality)} · IV ${filho.ivTotal}/${IV_MAX}${line?.q0 != null ? ` (começou em Q ${breedQ(line.q0)})` : ''}` : (line ? '⚠ Filho não identificado no box: escolha no painel 🥚 quem continua' : ''),
+            child?.shiny ? '✨ Nasceu shiny!' : '',
+        ].filter(Boolean);
+        postWebhook('alert', {
+            content: `🥚 ${who ? `**${who}**` : 'Sua conta'} chocou **${egg.speciesName}**${filho ? ` — Q ${breedQ(filho.quality)}, IV ${filho.ivTotal}` : ''}`,
+            username: 'Poke Idle World',
+            embeds: [{ title: 'Ovo chocou', description: `${who ? `Conta: ${who}\n` : ''}${linhas.join('\n')}\nEm ${new Date().toLocaleString('pt-BR')}`, color: filho ? 0x57f287 : 0xfee75c }],
+        }, { evento: 'breeding-chocou', eggId: egg.id, filho: filho?.id || null });
+        return true;
+    }
+    // Planeja o próximo cruzamento de cada linhagem com quem sobe no box e slot livre: escolhe a comida, cota (quando ela está
+    // no box) e pede a viagem. Falta algo: fica parado e avisa.
+    async function breedPlan(c) {
+        if (breedWait && Date.now() - breedWait.at < BREED_RETRY_MS) return;
+        let livres = c.slots - c.usedSlots;
+        const motivos = [];
+        let planejou = false;
+        const linhas = breedActiveLines();
+        if (!linhas.length) { breedWaitSet('escolha quem sobe na aba 🥚 Breeding'); return; }
+        if (cfg.breedFamily && Date.now() - breedFamilyAskedAt > BREED_FAMILY_POLL_MS) await breedRefreshFamily();
+        for (const line of linhas) {
+            if (!line.id) continue;                                  // ovo chocando ou filho por identificar
+            if (breedPlanned[line.id]) { livres--; planejou = true; continue; }
+            if (livres <= 0) { motivos.push('incubadora cheia'); break; }
+            const trunk = breedTrunk(line);
+            if (!trunk) { motivos.push(`${line.name || line.id}: não está no box (lista ainda não lida?)`); continue; }
+            if (trunk.team || trunk.starter || trunk.shiny) { motivos.push(`${trunk.name}: no time, inicial ou shiny não cruza`); continue; }
+            const food = breedFoodPick(trunk);
+            if (!food) { motivos.push(`${trunk.name} (Q ${breedQ(trunk.quality)}, IV ${trunk.ivTotal}): sem comida que sirva${cfg.breedFamily ? ' no box nem na família' : ' no box'}`); continue; }
+            let stones = null;
+            if (food.origem === 'box') {
+                let q = null;
+                try { q = await breedQuote(trunk, food); } catch (err) { motivos.push(`${trunk.name}: cotação falhou (${err?.message || err})`); continue; }
+                const chk = breedCheckQuote(q, trunk);
+                stones = breedStoneNeeds(q);
+                logEvent('breeding-cotacao', { tronco: trunk.name, troncoId: trunk.id, comida: food.id, qTronco: trunk.quality, qComida: food.quality, ivTronco: trunk.ivTotal, ivComida: food.ivTotal, donorId: q?.ivPreview?.donorId ?? null, ok: !chk, motivo: chk, goldFee: q?.goldFee ?? null, stones: breedStonesTxt(stones) });
+                if (chk) { motivos.push(`${trunk.name}: ${chk}`); continue; }
+                const faltam = stones.filter(s => s.have + s.familia < s.need);
+                if (faltam.length) { motivos.push(`${trunk.name}: faltam stones (${breedStonesTxt(faltam)})`); continue; }
+                if (c.gold < Number(q.goldFee || 0)) { motivos.push(`${trunk.name}: gold ${fmtNum(c.gold)} < taxa ${fmtNum(q.goldFee)}`); continue; }
+            } else if (c.gold < BREED_GOLD_FEE_HINT) { motivos.push(`${trunk.name}: gold ${fmtNum(c.gold)} < taxa ${fmtNum(BREED_GOLD_FEE_HINT)}`); continue; }
+            breedPlanned[line.id] = { foodId: food.id, foodName: food.name, foodQ: food.quality, foodIv: food.ivTotal, origem: food.origem, stones, at: Date.now() };
+            livres--; planejou = true;
+            tripRequest('breeding', null, `${trunk.name} Q ${breedQ(trunk.quality)} IV ${trunk.ivTotal} × comida Q ${breedQ(food.quality)} IV ${food.ivTotal}${food.origem === 'familia' ? ' (família)' : ''}`);
+        }
+        if (planejou) breedWait = null;
+        else if (motivos.length) breedWaitSet(motivos.join(' · '));
+        else breedWait = null;
+    }
+
+    // Tarefa da viagem (na cidade): choca o que estiver pronto, tira da família o que falta, cota de novo, confere e cruza.
+    async function breedCityWork() {
+        if (!breedEnabled()) return { ok: true, motivo: 'desligado' };
+        if (breedWorking) return { ok: false, motivo: 'breeding já em andamento' };
+        breedWorking = true;
+        const feitos = [], falhas = [];
+        try {
+            let c = await breedReadCenter();
+            for (const egg of c.eggs.filter(e => e.ready)) if (await breedHatch(egg)) c = await breedReadCenter();
+            for (const troncoId of Object.keys(breedPlanned)) {
+                const plan = breedPlanned[troncoId];
+                delete breedPlanned[troncoId];
+                const line = breedActiveLines().find(l => l.id && String(l.id) === troncoId);
+                if (!line) continue;
+                try {
+                    if (c.usedSlots >= c.slots) throw new Error('incubadora cheia');
+                    if (plan.origem === 'familia') {
+                        const r = await familyPokeWithdraw(plan.foodId, plan.foodName);
+                        if (!r.ok) throw new Error(`comida da família: ${r.motivo}`);
+                        await breedSleep();
+                    }
+                    await breedRefreshPokes();
+                    const trunk = breedTrunk(line);
+                    if (!trunk) throw new Error('quem sobe não está no box');
+                    const food = lastPokesList.find(p => p && String(p.id) === plan.foodId);
+                    if (!food) throw new Error('a comida não está no box');
+                    const fr = breedFoodReason(food, trunk);
+                    if (fr) throw new Error(`a comida não serve mais: ${fr}`);
+                    let q = await breedQuote(trunk, food);
+                    let chk = breedCheckQuote(q, trunk);
+                    if (chk) throw new Error(chk);
+                    let stones = breedStoneNeeds(q);
+                    const tirar = stones.filter(s => s.have < s.need);
+                    if (tirar.length) {
+                        if (!cfg.breedFamily) throw new Error(`faltam stones (${breedStonesTxt(tirar)})`);
+                        for (const s of tirar) {
+                            const r = await familyItemWithdraw(s.itemId, s.need - s.have, s.name);
+                            if (!r.ok) throw new Error(`${s.name} da família: ${r.motivo}`);
+                            await breedSleep();
+                        }
+                        q = await breedQuote(trunk, food);
+                        chk = breedCheckQuote(q, trunk);
+                        if (chk) throw new Error(chk);
+                        stones = breedStoneNeeds(q);
+                        const ainda = stones.filter(s => s.have < s.need);
+                        if (ainda.length) throw new Error(`stones não chegaram à mochila (${breedStonesTxt(ainda)})`);
+                    }
+                    const okStones = cfg.breedDouble ? q?.stones?.doubleOk : q?.stones?.baseOk;
+                    if (okStones === false) throw new Error('o jogo diz que faltam stones');
+                    if (c.gold < Number(q.goldFee || 0)) throw new Error(`gold ${fmtNum(c.gold)} < taxa ${fmtNum(q.goldFee)}`);
+                    const antes = new Set(c.eggs.map(e => e.id));
+                    const usadosAntes = c.usedSlots;
+                    const body = { action: 'breed', parent1: trunk.id, parent2: String(food.id), free: true, double: Boolean(cfg.breedDouble) };
+                    const r = await gameApi(BREED_URL, { method: 'POST', body: JSON.stringify(body) });
+                    const novo = parseBreedCenter(r);
+                    const egg = novo ? novo.eggs.find(e => !antes.has(e.id)) || null : null;
+                    if (novo) { breedCenter = novo; breedCenterAt = Date.now(); c = novo; }
+                    if (!egg && !(novo && novo.usedSlots > usadosAntes)) throw new Error('o jogo respondeu sem o ovo novo');
+                    if (line.q0 == null) { line.q0 = trunk.quality; line.iv0 = trunk.ivTotal; }
+                    line.gen = Number(line.gen) || 0;
+                    line.lastQ = trunk.quality; line.lastIv = trunk.ivTotal; line.name = trunk.name; line.speciesId = trunk.speciesId;
+                    line.eggId = egg?.id || 'desconhecido'; line.id = null; line.pendingChild = null; line.eggAt = Date.now(); line.eggs = (Number(line.eggs) || 0) + 1;
+                    saveCfg(cfg);
+                    const feito = { name: trunk.name, q: trunk.quality, iv: trunk.ivTotal, foodQ: Number(food.quality), foodIv: Number(food.ivTotal), min: q.delta?.minQuality, max: q.delta?.maxQuality, kills: egg?.killsRequired || null, gen: line.gen + 1, stones: stones.map(s => `${s.need}x ${s.name}`).join(', '), gold: Number(q.goldFee) || 0, dobrar: Boolean(cfg.breedDouble) };
+                    feitos.push(feito);
+                    logEvent('breeding-cruzou', { tronco: trunk.name, troncoId: trunk.id, comida: String(food.id), origem: plan.origem, qTronco: trunk.quality, qComida: feito.foodQ, ivTronco: trunk.ivTotal, ivComida: feito.foodIv, dobrar: feito.dobrar, ovo: egg?.id || null, abates: feito.kills, faixa: [feito.min, feito.max], gold: c.gold, geracao: feito.gen });
+                } catch (err) {
+                    const motivo = String(err?.message || err);
+                    falhas.push({ name: line.name || troncoId, motivo });
+                    logEvent('breeding-falhou', { linhagem: line.name || troncoId, comida: plan.foodId, origem: plan.origem, motivo });
+                }
+                await breedSleep();
+            }
+        } catch (err) {
+            falhas.push({ name: 'centro', motivo: String(err?.message || err) });
+            logEvent('breeding-falhou', { motivo: String(err?.message || err) });
+        } finally {
+            breedWorking = false;
+        }
+        breedLast = { at: Date.now(), feitos, falhas };
+        if (falhas.length) breedWait = { motivo: falhas.map(f => `${f.name}: ${f.motivo}`).join(' · '), at: Date.now() };   // não insiste antes do retry
+        if (feitos.length || falhas.length) {
+            const who = playerName();
+            const linhas = feitos.map(f => `**${f.name}** geração ${f.gen}: Q ${breedQ(f.q)} → ${breedQ(f.min)}–${breedQ(f.max)} · IV ${f.iv} mantido · comida Q ${breedQ(f.foodQ)} IV ${f.foodIv}${f.kills ? ` · choca em ${fmtNum(f.kills)} abates` : ''}\nCustou ${fmtNum(f.gold)} gold + ${f.stones}${f.dobrar ? ' (dobrado)' : ''}`)
+                .concat(falhas.map(f => `⚠ ${f.name}: ${f.motivo}`));
+            postWebhook('alert', {
+                content: `🥚 ${who ? `**${who}**` : 'Sua conta'} ${feitos.length ? `criou ${feitos.length === 1 ? 'um ovo' : `${feitos.length} ovos`} de ${feitos.map(f => `**${f.name}**`).join(' e ')}` : `não conseguiu cruzar ${falhas.map(f => `**${f.name}**`).join(' e ')}`}`,
+                username: 'Poke Idle World',
+                embeds: [{ title: feitos.length ? (falhas.length ? 'Breeding parcial' : 'Ovo na incubadora') : 'Breeding não feito', description: `${who ? `Conta: ${who}\n` : ''}${linhas.join('\n')}\nEm ${new Date().toLocaleString('pt-BR')}`, color: feitos.length ? (falhas.length ? 0xfee75c : 0x57f287) : 0xed4245 }],
+            }, { evento: feitos.length ? 'breeding-cruzou' : 'breeding-falhou', feitos: feitos.length, falhas: falhas.length });
+        }
+        breedNotify();
+        return { ok: falhas.length === 0, motivo: falhas.length ? falhas.map(f => `${f.name}: ${f.motivo}`).join('; ') : (feitos.length ? null : 'nada planejado'), feitos: feitos.length, falhas: falhas.length };
+    }
+
+    // Linhas do painel (bloco de estado).
+    function breedStatus(d) {
+        d = d || cfg;
+        const out = [];
+        const c = breedCenter;
+        if (c) {
+            out.push(`Incubadora ${c.usedSlots}/${c.slots}${c.unlocked ? '' : ` (libera no nível ${c.unlockLevel})`} · gold ${fmtNum(c.gold)} · lido ${breedHora(breedCenterAt)}`);
+            for (const e of c.eggs) {
+                const l = breedActiveLines(d).find(x => x.eggId === e.id);
+                out.push(`Ovo: ${e.speciesName} ${fmtNum(e.killsDone)}/${fmtNum(e.killsRequired)} abates${e.ready ? ' · PRONTO' : ''}${l ? ` · linhagem ${breedLines(d).indexOf(l) + 1} (geração ${(Number(l.gen) || 0) + 1})` : ''}`);
+            }
+        } else out.push(d.breedEnabled ? 'Incubadora ainda não lida.' : 'Desligado.');
+        breedLines(d).forEach((l, i) => {
+            if (!l) return;
+            const t = breedTrunk(l);
+            let estado;
+            if (l.id) estado = t ? `Q ${breedQ(t.quality)} · IV ${t.ivTotal}/${IV_MAX}${breedPlanned[l.id] ? ' · viagem pedida para cruzar' : ''}` : 'não está no box (lista não lida?)';
+            else if (l.eggId) estado = 'ovo chocando';
+            else estado = '⚠ filho não identificado: escolha no menu';
+            out.push(`Linhagem ${i + 1}: ${t?.name || l.name || '?'} · geração ${Number(l.gen) || 0}${l.q0 != null ? ` · começou em Q ${breedQ(l.q0)}` : ''} · ${estado}`);
+        });
+        if (breedWait) out.push(`Parado: ${breedWait.motivo} · tenta de novo ${breedHora(breedWait.at + BREED_RETRY_MS)}`);
+        if (breedLast) out.push(`Última viagem ${breedHora(breedLast.at)}: ${breedLast.feitos.length ? `criou ${breedLast.feitos.length} ovo(s)` : 'nada cruzado'}${breedLast.falhas.length ? ` · ⚠ ${breedLast.falhas[0].motivo}` : ''}`);
+        return out;
+    }
+    // Prévia da comida por linhagem: [{ text, ok }].
+    function breedFoodStatus(d) {
+        d = d || cfg;
+        const out = [];
+        breedLines(d).forEach((l, i) => {
+            if (!l) return;
+            const t = breedTrunk(l);
+            if (!t) { out.push({ text: `Linhagem ${i + 1}: ${l.eggId ? 'ovo chocando' : (l.id ? 'quem sobe não está no box' : 'filho por identificar')}`, ok: false }); return; }
+            const lista = breedFoodList(t, d);
+            const servem = lista.filter(f => !f.motivo);
+            out.push({ text: `Linhagem ${i + 1} (${t.name} Q ${breedQ(t.quality)} IV ${t.ivTotal}): ${servem.length} ${servem.length === 1 ? 'comida serve' : 'comidas servem'} de ${lista.length} da espécie`, ok: servem.length > 0 });
+            for (const f of lista.slice(0, 8)) out.push({ text: `  ${f.motivo ? '✖' : '✔'} ${f.name} Q ${breedQ(f.quality)} IV ${f.ivTotal}${f.origem === 'familia' ? ' (família)' : ''}${f.motivo ? ` — ${f.motivo}` : ''}`, ok: !f.motivo });
+            if (lista.length > 8) out.push({ text: `  … e mais ${lista.length - 8}`, ok: false });
+        });
+        return out;
+    }
+
     // ---- Clã: subir de rank sozinho (Orebound e os outros 9) ------------------------
     // Levantado no bundle em 27/09/2026 (janela "Clãs" e mochila) e na pokepedia (systems/clans):
     //   GET  /api/game/clans -> { clan, clanRank, level, diamonds, canJoin, joinLevel, nextTask } ; nextTask (null = rank
@@ -3496,6 +4030,7 @@
         const at = recentCaptureIds.get(String(p.id));
         if (at && Date.now() - at < POKE_SELL_RECENT_MS) return 'capturado agora';
         if (typeof clanKeepsSpecies === 'function' && clanKeepsSpecies(Number(p.speciesId))) return 'tarefa do clã';
+        if (typeof breedKeepsPoke === 'function' && breedKeepsPoke(p)) return 'breeding';
         if (d.pokeSellEnabled && !pokeSellReason(p, d)) return 'vai ser vendido';
         return null;
     }
@@ -3710,7 +4245,8 @@
         const suprimentos = sup.length ? sup : null;
         const slot = typeof slotWanted === 'function' && slotWanted(d);
         const time = (typeof pokeSellListUnread === 'function' && pokeSellListUnread()) || (typeof pokesListWanted === 'function' && pokesListWanted());
-        return { drops, pokes, bolas, cla, suprimentos, slot, time, nada: !drops && !pokes && !bolas && !cla && !suprimentos && !slot && !time };
+        const breeding = typeof breedWanted === 'function' && breedWanted();
+        return { drops, pokes, bolas, cla, suprimentos, slot, time, breeding, nada: !drops && !pokes && !bolas && !cla && !suprimentos && !slot && !time && !breeding };
     }
     function tripLoadText(l) {
         const p = [];
@@ -3721,6 +4257,7 @@
         if (l.cla) p.push('clã (converter/subir de rank)');
         if (l.slot) p.push('slot machine (roll grátis)');
         if (l.time) p.push('ler o time (a lista nunca veio; o jogo só responde na cidade)');
+        if (l.breeding) p.push('breeding (cruzar)');
         if (p.length && typeof depositWanted === 'function' && depositWanted()) p.push('guardar o resto');
         return p.length ? `Vai levar: ${p.join(', ')}` : 'Nada para levar por enquanto';
     }
@@ -3744,7 +4281,7 @@
     const TRIP_PHASE_PCT = { 'indo para a cidade': 15, 'na cidade': 50, 'voltando': 90 };
     function tripLastText() {
         if (!lastTripInfo) return '';
-        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time' };
+        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time', breeding: 'breeding' };
         return `Última ${new Date(lastTripInfo.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}: ${lastTripInfo.tarefas.map(t => `${nome[t.key] || t.key} ${t.ok ? '✔' : '✖'}`).join(' · ')}`;
     }
     // Estado para a faixa do painel: { busy, pct, title, sub }.
@@ -3785,6 +4322,7 @@
             else if (key === 'cla') tarefas.push({ key, run: () => clanCityWork() });
             else if (key === 'evoluir') tarefas.push({ key, run: () => evolveCityWork() });
             else if (key === 'slot') tarefas.push({ key, run: () => slotCityWork() });
+            else if (key === 'breeding') tarefas.push({ key, run: () => breedCityWork() });
         }
         // Guardar na cidade (v3.18.0): última tarefa de toda viagem que tenha outra coisa a fazer.
         if (tarefas.length && typeof depositWanted === 'function' && depositWanted()) tarefas.push({ key: 'guardar', run: () => depositCityWork() });
@@ -3852,6 +4390,7 @@
         if (!has('cla') && typeof clanWantsCity === 'function' && clanWantsCity()) needs.push(['cla', { dados: null, motivo: 'carona' }]);
         if (!has('evoluir') && typeof evolveWanted === 'function' && evolveWanted()) needs.push(['evoluir', { dados: null, motivo: 'carona' }]);
         if (!has('slot') && typeof slotWanted === 'function' && slotWanted()) needs.push(['slot', { dados: null, motivo: 'carona' }]);
+        if (!has('breeding') && typeof breedWanted === 'function' && breedWanted()) needs.push(['breeding', { dados: null, motivo: 'carona' }]);
         return needs;
     }
 
@@ -4140,6 +4679,7 @@
     let familyPending = null;       // { check, resolve, timer } ação da família aguardando `family`/`error`
     let lastFamily = null;          // { movesUsed, movesCap, frozen } do último frame `family` (null = sem família)
     let lastFamilyAt = 0;
+    let lastFamilyDepot = { pokes: [], items: [] };   // v3.29.0: depot inteiro do último frame `family` (comida e stones do breeding)
     // Uma ação da família pelo socket; `check(depot)` diz se o frame `family` da resposta confirma o que foi pedido.
     function familyAction(payload, evento, dados, check) {
         return new Promise((resolve) => {
@@ -4181,13 +4721,15 @@
         catchOnFamily(depot.pokes);
         lastFamily = fam ? { movesUsed: Number(fam.movesUsed) || 0, movesCap: Number(fam.movesCap) || 0, frozen: Boolean(fam.frozen) } : null;
         lastFamilyAt = Date.now();
+        lastFamilyDepot = { pokes: Array.isArray(depot.pokes) ? depot.pokes : [], items: Array.isArray(depot.items) ? depot.items : [] };
+        breedOnFamily();
         if (!familyPending) return;
         const achou = familyPending.check(depot);
         if (achou) familyPending.resolve({ ok: true });
         else if (!fam) familyPending.resolve({ ok: false, motivo: 'a conta não está numa família' });
         else if (fam.frozen) familyPending.resolve({ ok: false, motivo: 'depósito da família congelado' });
         else if (Number(fam.movesUsed) >= Number(fam.movesCap)) familyPending.resolve({ ok: false, motivo: `limite diário de movimentos (${fam.movesUsed}/${fam.movesCap})` });
-        else familyPending.resolve({ ok: false, motivo: 'o jogo respondeu sem ele no depósito' });
+        else familyPending.resolve({ ok: false, motivo: 'o jogo respondeu, mas o movimento não apareceu no depósito' });
     }
     function handleGameError(message) {
         logEvent('erro-jogo', { message: message.message || null });
@@ -4579,7 +5121,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         if (message.type === 'field-kill') { idleOnAlive(); noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteDepositDrop(message); return; }
         if (message.type === 'inventory' && Array.isArray(message.items)) { clanOnInventory(message.items); supplyOnInventory(message.items); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
-        if (message.type === 'pokes' && Array.isArray(message.list)) { logEvent('pokes-frame', { total: message.list.length, time: message.list.filter(p => p && p.team).map(p => `${p.name} lv${p.level}`), hunt: huntSlug || null }); updateTeam(message.list); healOnPokes(message.list); idleOnPokes(message.list);handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); evolveOnPokes(message.list); return; }
+        if (message.type === 'pokes' && Array.isArray(message.list)) { logEvent('pokes-frame', { total: message.list.length, time: message.list.filter(p => p && p.team).map(p => `${p.name} lv${p.level}`), hunt: huntSlug || null }); updateTeam(message.list); healOnPokes(message.list); idleOnPokes(message.list);handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); evolveOnPokes(message.list); breedOnPokes(message.list); return; }
 
         if (message.type !== 'catch-result') return;
 
@@ -4764,6 +5306,10 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
 #pg-dn-panel .dn-status .k{color:var(--dn-muted)}
 #pg-dn-panel .dn-status .r{margin-left:auto}
 #pg-dn-panel .dn-status.col{flex-direction:column;align-items:stretch;gap:4px}
+#pg-dn-panel .dn-status .bad{color:var(--dn-danger-t);font-weight:600}
+#pg-dn-panel .dn-status.col .ok{color:var(--dn-ok-t)}
+#pg-dn-panel .dn-status.col .dim{color:var(--dn-muted)}
+#pg-dn-panel .dn-status.col div{white-space:pre-wrap}
 #pg-dn-panel .dn-summary{font-size:12px;background:var(--dn-bg-0);border-left:2px solid var(--dn-accent);padding:6px 8px;border-radius:0 var(--dn-radius-sm) var(--dn-radius-sm) 0}
 #pg-dn-panel .dn-toggle{display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;position:relative;margin:0}
 #pg-dn-panel .dn-toggle input{position:absolute;opacity:0;width:0;height:0;margin:0}
@@ -4841,6 +5387,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         { id: 'venda', icon: '💰', label: 'Venda' },
         { id: 'treino', icon: '⚔', label: 'Treino' },
         { id: 'profissao', icon: '📖', label: 'Profissão' },
+        { id: 'breeding', icon: '🥚', label: 'Breeding' },
         { id: 'sistema', icon: '⚙', label: 'Sistema' },
     ];
 
@@ -4876,6 +5423,11 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             case 'profissao':
                 if (!d.catchRouteEnabled && !d.clanEnabled) return 'off';
                 return temAlertas ? 'on' : 'warn';
+            case 'breeding': {
+                if (!d.breedEnabled) return 'off';
+                if (!breedActiveLines(d).length || !temAlertas) return 'warn';
+                return 'on';
+            }
             case 'sistema': return d.reloadEnabled ? 'on' : 'off';
         }
         return 'off';
@@ -4889,6 +5441,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades)` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
             `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? 'daily sozinha' : 'daily') : '', d.giftEnabled ? 'gift' : '', d.evolveEnabled ? 'evolução' : '', d.slotEnabled ? 'slot machine' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
+            `Breeding: ${d.breedEnabled ? `${breedActiveLines(d).length} ${breedActiveLines(d).length === 1 ? 'linhagem' : 'linhagens'}${d.breedDouble ? ' + dobrar' : ''}` : 'desligado'}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
         ].join(' · ');
     }
@@ -5144,6 +5697,30 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <p class="dn-help">"Espécies diferentes capturadas" é requisito de rank no jogo; a rota acima serve para isso. Os dados vêm de Profissões e da Pokédex do jogo.</p>
                     </div>
                 </section>
+                <section class="dn-pane" data-pane="breeding" hidden>
+                    <div class="dn-section">
+                        <h3>🥚 Breeding automático (Grátis)</h3>
+                        <label class="dn-toggle"><input id="pg-dn-breed" type="checkbox"><span class="sw"></span>Cruzar, chocar com os abates da hunt e repetir <span class="dn-hint">(só o caminho Grátis; cada ovo custa 2.000.000 de gold + stones)</span></label>
+                        <p class="dn-help">Quem sobe vira o ovo e o filho nasce com o IV dele e a quality dele + 0,005 a 0,04. O filho passa a ser quem sobe (geração seguinte). O script lê a incubadora a cada 2 min, choca o ovo pronto, escolhe a comida, pede uma viagem à cidade para tirar da família o que falta e cruzar, e volta para a hunt. Sem comida, stone ou gold: para, avisa no canal de Alertas e tenta de novo a cada 30 min.</p>
+                        <div class="dn-status col" id="pg-dn-breed-status"></div>
+                    </div>
+                    <div class="dn-section">
+                        <h3>🌳 Quem sobe <span class="dn-hint">· até 2 linhagens (um ovo por slot da incubadora)</span></h3>
+                        <label class="dn-field"><span>Linhagem 1</span><select id="pg-dn-breed-l1" class="dn-select"></select></label>
+                        <label class="dn-field"><span>Linhagem 2</span><select id="pg-dn-breed-l2" class="dn-select"></select></label>
+                        <div class="dn-row"><button type="button" class="dn-btn dn-btn--sm" id="pg-dn-breed-refresh">↻ Atualizar box e família</button></div>
+                        <p class="dn-help">Menu vazio = o jogo ainda não mandou a lista do box (na hunt ele costuma não responder; na cidade responde). O IV e a distribuição por stat do filho vêm do pai de MAIOR quality, por isso a comida é sempre mais fraca; quem sobe vai sempre no Slot 1 e o script confere na cotação, antes de todo cruzamento, que o IV vem dele.</p>
+                        <div class="dn-status"><span class="bad">🔒 Nunca vendido</span><span class="dn-hint">quem sobe e toda a espécie dele ficam fora da venda automática e do depósito na família, mesmo com IV abaixo da tabela da aba Venda.</span></div>
+                    </div>
+                    <div class="dn-section">
+                        <h3>🍖 Quem vira comida</h3>
+                        <div class="dn-inline">Mesma espécie, com quality <b>e</b> IV menores que quem sobe, e IV abaixo de <input id="pg-dn-breed-ivmax" class="dn-input dn-input--sm" type="number" min="0" max="192"> <span class="dn-hint">(0 = sem teto)</span></div>
+                        <label class="dn-toggle"><input id="pg-dn-breed-family" type="checkbox"><span class="sw"></span>Pegar da família também <span class="dn-hint">(comida e stones; a retirada acontece na viagem à cidade)</span></label>
+                        <label class="dn-toggle"><input id="pg-dn-breed-double" type="checkbox"><span class="sw"></span>Dobrar stones <span class="dn-hint">(40 em vez de 20; 5% de chance de +1 IV no filho)</span></label>
+                        <div class="dn-status col" id="pg-dn-breed-food"></div>
+                        <p class="dn-help">O jogo só aceita par com até 0,15 de diferença de quality. Shiny, time, inicial, Ditto, travado e anunciado no mercado nunca viram comida. Usa primeiro a comida mais fraca que serve (a de quality baixa deixa de servir quando quem sobe cresce).</p>
+                    </div>
+                </section>
                 <section class="dn-pane" data-pane="sistema" hidden>
                     <div class="dn-section">
                         <h3>Recarga do painel</h3>
@@ -5262,6 +5839,21 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             }).filter(r => r && r.level > 0);
             return { route, linhasRuins };
         }
+        // Linhagens do breeding a partir dos dois menus: a escolha salva é mantida (com geração, Q de partida, ovo); id novo
+        // começa uma linhagem nova; filho pendente escolhido no menu continua a linhagem.
+        function readBreedLines() {
+            const old = Array.isArray(cfg.breedLines) ? cfg.breedLines : [];
+            return [1, 2].map(n => {
+                const v = $(`#pg-dn-breed-l${n}`).value || '';
+                const o = old[n - 1] && typeof old[n - 1] === 'object' ? Object.assign({}, old[n - 1]) : null;
+                if (!v) return null;
+                if (v.startsWith('egg:') || v === 'pending') return o;
+                if (o && o.id != null && String(o.id) === v) return o;
+                if (o && !o.id && o.pendingChild) return Object.assign(o, { id: v, pendingChild: null, gen: (Number(o.gen) || 0) + 1 });
+                const p = lastPokesList.find(x => x && String(x.id) === v);
+                return { id: v, gen: 0, name: p?.name || null, speciesId: Number(p?.speciesId) || null };
+            });
+        }
         function readForm() {
             const { route, linhasRuins } = readRoute();
             const lv = $('#pg-dn-level');
@@ -5287,6 +5879,11 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 evolveEnabled: $('#pg-dn-evolve').checked,
                 slotEnabled: $('#pg-dn-slot').checked,
                 slotWanted: $('#pg-dn-slot-wanted').value.trim(),
+                breedEnabled: $('#pg-dn-breed').checked,
+                breedLines: readBreedLines(),
+                breedFoodIvMax: Math.max(0, Math.min(IV_MAX, parseInt($('#pg-dn-breed-ivmax').value, 10) || 0)),
+                breedFamily: $('#pg-dn-breed-family').checked,
+                breedDouble: $('#pg-dn-breed-double').checked,
                 giftCenterMode: ['daily', 'all', ''].includes($('#pg-dn-gift-center').value) ? $('#pg-dn-gift-center').value : 'daily',
                 clanEnabled: $('#pg-dn-clan').checked,
                 depositItems: $('#pg-dn-dep-items').value || '',
@@ -5625,6 +6222,47 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-slot-status').textContent = `Slot Machine${d.slotEnabled ? '' : ' (desligada)'}: ${slotStatus(d)}`;
         }
         onSlotChange = () => { if (!panel.hidden) renderSlot(); };
+        // ---- Breeding (v3.29.0) ----
+        const breedEsc = (v) => String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        function breedBoxOptions() {
+            return lastPokesList.filter(p => p && !p.team && !p.leader && !p.starter && !p.shiny && Number.isFinite(Number(p.quality)) && Number.isFinite(Number(p.ivTotal)))
+                .sort((a, b) => Number(b.ivTotal) - Number(a.ivTotal) || Number(b.quality) - Number(a.quality))
+                .map(p => ({ id: String(p.id), label: `${p.name} · Q ${Number(p.quality).toFixed(3)} · IV ${p.ivTotal}/${IV_MAX} · lv${Number(p.level) || 0}` }));
+        }
+        function renderBreedSelects() {
+            const opts = breedBoxOptions();
+            const lines = Array.isArray(cfg.breedLines) ? cfg.breedLines : [];
+            for (const n of [1, 2]) {
+                const sel = $(`#pg-dn-breed-l${n}`);
+                const atual = sel.dataset.ready ? sel.value : null;   // conserva a escolha ainda não salva
+                const line = lines[n - 1] && typeof lines[n - 1] === 'object' ? lines[n - 1] : null;
+                const html = ['<option value="">— nenhum —</option>'];
+                if (line && !line.id && line.eggId) html.push(`<option value="egg:${breedEsc(line.eggId)}">🥚 ${breedEsc(line.name || 'ovo')} chocando (geração ${(Number(line.gen) || 0) + 1})</option>`);
+                if (line && !line.id && !line.eggId && line.pendingChild) html.push(`<option value="pending">⚠ ${breedEsc(line.name || '?')}: filho não identificado — escolha abaixo</option>`);
+                for (const o of opts) html.push(`<option value="${breedEsc(o.id)}">${breedEsc(o.label)}</option>`);
+                const want = atual != null ? atual : (line ? (line.id ? String(line.id) : (line.eggId ? `egg:${line.eggId}` : (line.pendingChild ? 'pending' : ''))) : '');
+                if (want && !html.some(h => h.includes(`value="${breedEsc(want)}"`))) html.splice(1, 0, `<option value="${breedEsc(want)}">${breedEsc(line?.name || want)} (não está no box)</option>`);
+                sel.innerHTML = html.join('');
+                sel.value = want;
+                sel.dataset.ready = '1';
+            }
+        }
+        function renderBreed() {
+            const d = current();
+            renderBreedSelects();
+            $('#pg-dn-breed-status').innerHTML = breedStatus(d).map(l => `<div>${breedEsc(l)}</div>`).join('') || '<div class="dim">—</div>';
+            const linhas = breedFoodStatus(d);
+            $('#pg-dn-breed-food').innerHTML = linhas.length ? linhas.map(l => `<div class="${l.ok ? 'ok' : 'dim'}">${breedEsc(l.text)}</div>`).join('') : '<div class="dim">Escolha quem sobe para ver a comida.</div>';
+        }
+        onBreedChange = () => { if (!panel.hidden) renderBreed(); };
+        $('#pg-dn-breed-refresh').onclick = () => {
+            lastPokesReqAt = 0;
+            const ok = sendGame({ type: 'pokes-get' });
+            const fam = current().breedFamily ? sendGame({ type: 'family-get' }) : null;
+            logEvent('pokes-get', { motivo: 'botão Atualizar box (breeding)', hunt: huntSlug || null, enviado: ok, familia: fam });
+            flash(ok ? 'Pedi a lista do box ao jogo (na hunt ele pode não responder; na cidade responde).' : 'Socket do jogo não rastreado.', ok ? 'info' : 'warn');
+            if (cfg.breedEnabled) setTimeout(() => breedTick(true), 1500);
+        };
         $('#pg-dn-team-refresh').onclick = () => {
             lastPokesReqAt = 0;
             const ok = sendGame({ type: 'pokes-get' });
@@ -5978,7 +6616,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             if (dirty) $('#pg-dn-save').click();
             const needs = tripAugment([]);
             if (!needs.length) { flash('⚠ Nada para levar: nenhum drop marcado nesta hunt, nenhum Pokémon nas regras e bolas, poções e revives acima do limite.', 'warn'); return; }
-            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time' };
+            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time', breeding: 'breeding' };
             flash(`🏙 Indo à cidade: ${needs.map(n => nome[n[0]]).join(', ')}…`, 'info', 90000);
             tripNeeds.clear();
             cityTrip('manual: ' + needs.map(n => n[0]).join('+'), tripTasksFor(needs)).then(r => {
@@ -6010,7 +6648,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
 
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderEvolve(); renderSlot(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderEvolve(); renderSlot(); renderBreed(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -6071,6 +6709,11 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-evolve').checked = Boolean(cfg.evolveEnabled);
             $('#pg-dn-slot').checked = Boolean(cfg.slotEnabled);
             $('#pg-dn-slot-wanted').value = cfg.slotWanted || '';
+            $('#pg-dn-breed').checked = Boolean(cfg.breedEnabled);
+            $('#pg-dn-breed-ivmax').value = Math.max(0, Math.min(IV_MAX, Number(cfg.breedFoodIvMax) || 0));
+            $('#pg-dn-breed-family').checked = cfg.breedFamily !== false;
+            $('#pg-dn-breed-double').checked = cfg.breedDouble !== false;
+            for (const n of [1, 2]) delete $(`#pg-dn-breed-l${n}`).dataset.ready;   // menus refeitos a partir do cfg salvo
             $('#pg-dn-gift-center').value = giftCenterMode(cfg);
             $('#pg-dn-clan').checked = Boolean(cfg.clanEnabled);
             $('#pg-dn-dep-items').value = ['depot', 'family'].includes(cfg.depositItems) ? cfg.depositItems : '';
@@ -6164,6 +6807,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const dailyAntes = JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug, cfg.dailyAuto]);
             const giftAntes = JSON.stringify([cfg.giftEnabled, cfg.giftCenterMode]);
             const slotAntes = JSON.stringify([cfg.slotEnabled, cfg.slotWanted]);
+            const breedAntes = JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble]);
             const capturaAntes = JSON.stringify([cfg.catchRouteEnabled, cfg.catchRouteAreas, cfg.catchRouteMaxLevel]);
             const viagemAntes = JSON.stringify([cfg.tripEveryMin, cfg.tripEveryMaxMin]);
             const ligouCaptura = draft.catchRouteEnabled && !cfg.catchRouteEnabled;
@@ -6206,6 +6850,10 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 slotFailedAt = 0;
                 for (const k of Object.keys(slotTriedAt)) delete slotTriedAt[k];
                 if (cfg.slotEnabled) setTimeout(() => slotTick(true), 500);
+            }
+            if (JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble]) !== breedAntes) { // breeding mudou: replaneja já
+                breedReset();
+                if (cfg.breedEnabled) setTimeout(() => breedTick(true), 500);
             }
             if (JSON.stringify([cfg.clanEnabled, cfg.clanRoute, cfg.clanKey]) !== clanAntes) {
                 if (!(cfg.clanEnabled && cfg.clanRoute) && clanTarget) clanReturn('rota do clã desligada');
@@ -6434,6 +7082,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
     setInterval(dailyTick, DAILY_CHECK_MS);
     setInterval(giftTick, GIFT_TICK_MS);
     setInterval(slotTick, SLOT_TICK_MS);
+    setInterval(breedTick, BREED_TICK_MS);
+    if (cfg.breedEnabled) setTimeout(() => breedTick(true), 9000);   // 1ª leitura da incubadora logo após a carga
     if (cfg.slotEnabled) setTimeout(() => slotTick(true), 8000);   // 1ª leitura da slot machine logo após a carga
     setInterval(catchTick, CATCH_TICK_MS);
     setInterval(tripTick, TRIP_TICK_MS);
