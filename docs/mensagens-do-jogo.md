@@ -130,6 +130,29 @@ e `error { message }` (resposta de ação recusada; o script os trata em `handle
   { slot }`; `GET .../species?slot=` + `POST .../species { slot, speciesId }` (escolha direta, 5 cards); `POST .../unlock { slot, mode }`;
   `GET .../history?limit=`. Depois de mudar, o cliente manda `golden-stars-refresh` pelo socket. O script só usa GET, roll e pick.
 
+### Breeding Center (levantado no bundle em 08/10/2026 — NÃO confirmado no log; sniffer `rest-breeding` da v3.28.1 grava as chamadas da tela)
+
+Janela "Breeding" do menu superior (abre em qualquer lugar; o cliente não checa cidade). Tudo por REST em `/api/game/breeding`,
+mesmo `gameApi` da loja. Textos pt-BR do jogo (i18n `window.breeding`): dois pais da MESMA espécie, do box (fora do time, não
+inicial, não Ditto), são CONSUMIDOS e viram um ovo; quality do filho = melhor pai + Δ; IV copiado do pai de maior quality
+(`ivPreview.donorId`); breed normal exige diferença de quality ≤ 0,15; um pai shiny = filho sempre shiny, sem trava de diferença,
+mas feromônio obrigatório; dois normais nunca geram shiny. Caminho "Feromônios" (Strange Pheromone, item 44417) dá Δ +0,15 a
++0,30; caminho "Grátis" (`free=1`) dá Δ ~20× menor e só existe sem pai shiny. Sempre paga taxa em gold e "stones do elemento do
+filho" (categoria `stone` do catálogo); "Dobrar stones" (`double`) gasta 2× e dá 5% de +1 IV num stat. O ovo choca com abates em
+hunt (`killsDone/killsRequired`); "chocar agora" e slot extra custam diamante (o script nunca usa). Libera num nível de treinador.
+
+- `GET ?action=center` → `{ unlocked, unlockLevel, level, gold, diamonds, pheromones, slots, usedSlots, maxSlots, nextSlotCost,
+  instantHatchCost, eggs[{ id, rank, killsDone, killsRequired, ready, shinyChild }] }` (a tela relê a cada 20 s; não há evento de
+  socket para o progresso do ovo).
+- `GET ?action=quote&parent1=ID&parent2=ID&free=0|1` → `{ goldFee, pheromoneCost, pheromonesHave, free, freeAllowed, rank,
+  childSpeciesId, childTypes[], shinyChild, delta{ baseQuality, minQuality, maxQuality, cap, table[{ delta, pct }] },
+  stones{ base[{ itemId, name, need, have, icon }], baseOk, double[], doubleOk }, ivPreview{ ivTotal, donorId, shinyRef,
+  bump{ possible, chance, maxTotal } }, partnerExcess?{ parceiro, shiny } }`.
+- `POST { action:'breed', parent1, parent2, free, double }` → `center` novo (a tela acha o ovo novo em `eggs`, depois `pokes-get`).
+- `POST { action:'hatch', eggId }` / `{ action:'hatch-now', eggId }` → `{ child{ speciesId, shiny, ivTotal, quality, ... } }`.
+- `POST { action:'buy-slot' }` → `center` novo.
+- O box da tela é o frame `pokes` filtrado por `!team && !starter`; cada item traz `isDitto`.
+
 ## Ideias que esses nomes destravam
 
 - `field-none` / `hunt-cooldown` / `hunt-resume`: detectar hunt parada e religar (auto-reconnect).

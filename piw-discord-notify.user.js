@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.28.0
+// @version      3.28.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.28.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.28.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -879,6 +879,37 @@
         try { return await fn(); }
         finally { if (window.__pgSellGuardOn === false) window.__pgSellGuardOn = antes; }
     }
+
+    // ---- Farejador de REST (Breeding Center) --------------------------
+    // v3.28.1: para confirmar os endpoints do Breeding antes de implementar a feature (nada entra como fato sem aparecer no
+    // log), o script embrulha o `fetch` da página e registra toda chamada que a TELA do jogo faz a /api/game/breeding:
+    // método, URL (sem host), corpo enviado, status e resposta (cortada em 6000 caracteres). O cabeçalho Authorization
+    // nunca é gravado. Encadeia com a guarda de venda do PokeGrid (ela também embrulha o fetch). Sai quando a feature
+    // ficar pronta.
+    const REST_SNIFF = /\/api\/game\/breeding/;
+    (function installRestSniffer() {
+        const orig = window.fetch;
+        if (typeof orig !== 'function' || orig.__pgDnSniff) return;
+        const wrapped = async function (input, init) {
+            const url = typeof input === 'string' ? input : String((input && input.url) || '');
+            const res = await orig.apply(this, arguments);
+            if (!REST_SNIFF.test(url)) return res;
+            try {
+                const metodo = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+                let corpo = init && init.body;
+                if (typeof corpo === 'string') { try { corpo = JSON.parse(corpo); } catch { /* texto puro */ } }
+                const texto = await res.clone().text().catch(() => '');
+                let resposta = texto;
+                try { resposta = JSON.parse(texto); } catch { /* texto puro */ }
+                const json = JSON.stringify(resposta) || '';
+                logEvent('rest-breeding', { metodo, url: url.replace(/^https?:\/\/[^/]+/, ''), corpo: corpo ?? null, status: res.status,
+                    resposta: json.length > 6000 ? json.slice(0, 6000) + '…' : resposta });
+            } catch (e) { logEvent('rest-breeding-erro', { url, erro: String((e && e.message) || e) }); }
+            return res;
+        };
+        wrapped.__pgDnSniff = true;
+        window.fetch = wrapped;
+    })();
 
     // Compra `qty` da bola `id`. Devolve { ok, bought, spent, gold, motivo }.
     function buyBalls(id, qty) { return buyFromShop('ball', id, qty); }
@@ -3973,7 +4004,7 @@
     // o que importa para diagnóstico (import, viagem, clã...). Agora cada tipo barulhento tem cota própria e o resto dura horas.
     const LOG_KEY = 'pgDiscordNotifyLog';
     const LOG_MAX = 200;
-    const LOG_NOISY = { 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10, 'poke-delta': 15, 'pokes-frame': 10, 'pokes-get': 10 };
+    const LOG_NOISY = { 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10, 'poke-delta': 15, 'pokes-frame': 10, 'pokes-get': 10, 'rest-breeding': 40 };
 
     function logEvent(kind, data) {
         if (cfg.debug) console.log(TAG, kind, data);
@@ -4136,9 +4167,16 @@
         return familyAction({ action: 'item', dir: 'deposit', itemId, quantity }, 'item-familia', { name, itemId, quantity },
             (depot) => Array.isArray(depot.items) && depot.items.some(i => Number(i?.itemId ?? i?.id) === itemId));
     }
+    // v3.28.1: 1x por carga, o 1º Pokémon e o 1º item do depósito inteiros (para saber se `depot.pokes` traz
+    // quality/ivTotal, de que o breeding automático vai depender para escolher comida na família).
+    let familyFieldsLogged = false;
     function handleFamily(message) {
         const fam = message.family || null;
         const depot = message.depot || {};
+        if (!familyFieldsLogged && ((Array.isArray(depot.pokes) && depot.pokes.length) || (Array.isArray(depot.items) && depot.items.length))) {
+            familyFieldsLogged = true;
+            logEvent('familia-campos', { poke: Array.isArray(depot.pokes) ? depot.pokes[0] ?? null : null, item: Array.isArray(depot.items) ? depot.items[0] ?? null : null, chavesFamilia: fam ? Object.keys(fam) : null });
+        }
         logEvent('familia', { temFamilia: Boolean(fam), movimentos: fam ? `${fam.movesUsed}/${fam.movesCap}` : null, congelado: Boolean(fam?.frozen), pokesNoDeposito: Array.isArray(depot.pokes) ? depot.pokes.length : null, chaves: fam ? undefined : Object.keys(message || {}) });
         catchOnFamily(depot.pokes);
         lastFamily = fam ? { movesUsed: Number(fam.movesUsed) || 0, movesCap: Number(fam.movesCap) || 0, frozen: Boolean(fam.frozen) } : null;
