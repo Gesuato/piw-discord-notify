@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.29.2
+// @version      3.29.3
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.29.2';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.29.3';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -3229,7 +3229,9 @@
     function breedTick(force) {
         if (!breedEnabled() || breedBusy || breedWorking) return;
         if (typeof tripRunning !== 'undefined' && tripRunning) return;
-        if (!force && Date.now() - breedCenterAt < BREED_POLL_MS) return;
+        // v3.29.3: tolerância de meio tick — com tick de 1 min e releitura a cada 2 min, o 2º tick caía uns ms antes dos 2 min e a
+        // leitura real acontecia só no 3º (log da conta1 em 09/10/2026: `breeding-centro` a cada 3 min; o ovo pronto esperava até 3 min).
+        if (!force && Date.now() - breedCenterAt < BREED_POLL_MS - BREED_TICK_MS / 2) return;
         return breedCycle();
     }
     async function breedCycle() {
