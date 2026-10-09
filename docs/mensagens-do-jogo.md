@@ -130,7 +130,7 @@ e `error { message }` (resposta de ação recusada; o script os trata em `handle
   { slot }`; `GET .../species?slot=` + `POST .../species { slot, speciesId }` (escolha direta, 5 cards); `POST .../unlock { slot, mode }`;
   `GET .../history?limit=`. Depois de mudar, o cliente manda `golden-stars-refresh` pelo socket. O script só usa GET, roll e pick.
 
-### Breeding Center (bundle em 08/10/2026; `center`, `quote` e `breed` CONFIRMADOS no log em 09/10/2026 03:22–03:24Z, conta3; `hatch` ainda não visto)
+### Breeding Center (bundle em 08/10/2026; `center`, `quote`, `breed` e `hatch` CONFIRMADOS no log em 09/10/2026, contas 2 e 3; farejador removido na v3.29.1)
 
 Janela "Breeding" do menu superior (abre em qualquer lugar). Tudo por REST em `/api/game/breeding`, mesmo `gameApi` da loja.
 Textos pt-BR do jogo (i18n `window.breeding`): dois pais da MESMA espécie, do box (fora do time, não inicial, não Ditto), são
@@ -158,8 +158,11 @@ killsRequired`, 3000 para um Donphan rank N); "chocar agora" e slot extra custam
   quality dos dois. O script confere `donorId === tronco` na cotação antes de todo `breed`, independente da ordem.
 - `POST { action:'breed', parent1, parent2, free, double }` → `center` novo (o ovo aparece em `eggs`, `usedSlots` sobe, `gold` já
   descontado). CONFIRMADO 2x com `free: true, double: true`, ambos feitos na cidade (não se sabe se o servidor aceita na hunt).
-- `POST { action:'hatch', eggId }` / `{ action:'hatch-now', eggId }` → `{ child{ speciesId, shiny, ivTotal, quality, ... } }`
-  (bundle; NÃO confirmado — o ovo precisa de 3000 abates).
+- `POST { action:'hatch', eggId }` → `{ ok: true, child{ speciesId, shiny, quality, delta, growth{ hp, atk, def, spAtk, spDef, speed },
+  ivTotal, bqs } }`. CONFIRMADO em 09/10/2026 12:37–12:38Z (conta2 Chansey: Q 1,098 → 1,118, `delta` 0,02, IV 114; conta3 Donphan:
+  Q 1,466 → 1,471, `delta` 0,005, IV 126 — o `growth` é o mesmo da cotação, sem o +1 do dobrar nos dois). A resposta NÃO traz o id
+  do filho: o script o acha no frame `pokes` pela quality e IV exatos. A tela chama `center` de novo logo depois (`eggs` vazio,
+  `usedSlots` 0). Feito na hunt nas duas contas. `{ action:'hatch-now', eggId }` (diamante) segue só no bundle; o script nunca usa.
 - `POST { action:'buy-slot' }` → `center` novo (bundle; o script nunca usa).
 - O box da tela é o frame `pokes` filtrado por `!team && !starter`; cada item traz `isDitto`.
 - Depósito da família (`familia-campos`, 09/10/2026): `depot.pokes[]` traz `{ id, speciesId, name, level, looktype, shiny, isDitto,

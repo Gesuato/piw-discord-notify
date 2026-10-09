@@ -249,8 +249,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   (v3.26.1: espaço, `_` e `-` equivalentes, porque os outros campos do painel viram slug `ancient_pinsir`). Erro = 15 min por slot
   (`slotTriedAt`). Logs `slot-campos`, `slot`, `slot-roll`, `slot-erro`, `slot-cidade`. Teste: `node test/slot.test.js` (`loadSlotModule`).
 - Breeding automático (v3.29.0, aba 🥚 Breeding, `cfg.breedEnabled`, `breedLines` (até 2 linhagens), `breedFoodIvMax`, `breedFamily`,
-  `breedDouble`; módulo `// ---- Breeding automático` entre o Daily Gift e o Clã; REST `center`/`quote`/`breed` CONFIRMADOS no log em
-  09/10/2026 nas contas 2 e 3, `hatch` ainda não visto; formatos em `docs/mensagens-do-jogo.md` → "Breeding Center"): os 2 pais são
+  `breedDouble`; módulo `// ---- Breeding automático` entre o Daily Gift e o Clã; REST `center`/`quote`/`breed`/`hatch` CONFIRMADOS no
+  log em 09/10/2026 nas contas 2 e 3; formatos em `docs/mensagens-do-jogo.md` → "Breeding Center"; o farejador `rest-breeding` da
+  v3.28.1 saiu na v3.29.1): os 2 pais são
   CONSUMIDOS; o filho nasce com o IV e a distribuição por stat do pai de MAIOR quality (`ivPreview.donorId`/`growth`) e quality =
   maior + Δ (Grátis 0,005–0,04); **a ordem dos slots NÃO decide o doador** (conta2: fraco no slot 1, `donorId` = slot 2). O que sobe é
   a LINHAGEM: "quem sobe" vira o ovo e o filho vira quem sobe (geração +1). Regras fixas do usuário ("SUPER IMPORTANTE"): quem sobe
@@ -258,8 +259,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   travado; antes de todo breed a cotação (free=1) tem de dar `donorId` = quem sobe, `growth` somando o IV dele e `baseQuality` = Q
   dele (`breedCheckQuote`), senão NÃO cruza e avisa; quem sobe e a espécie dele ficam fora da venda de Pokémon e do depósito na
   família (`breedKeepsPoke` em `pokeSellReason`/`depositPokeReason`). Grátis cobra 2.000.000 de gold + 20 stones (40 com dobrar);
-  3000 abates para chocar. Fluxo: `breedTick` (1 min) lê o centro a cada 2 min, choca o `ready` (POST hatch; filho achado no frame
-  `pokes` por id novo ou pelo IV igual/+1), planeja (comida mais fraca primeiro, cota se ela está no box) e `tripRequest('breeding')`;
+  3000 abates para chocar. Fluxo: `breedTick` (1 min) lê o centro a cada 2 min, choca o `ready` (POST hatch → `{ ok, child{ quality,
+  delta, ivTotal, growth, bqs } }` SEM id; o filho é achado no frame `pokes` por id novo, senão pela quality+IV do `child` (dica guardada
+  em `pendingChild` para os frames seguintes), senão pelo IV igual/+1), planeja (comida mais fraca primeiro, cota se ela está no box) e
+  `tripRequest('breeding')`;
   `breedCityWork` na viagem: tira stones/comida da família (`family-action … dir:'withdraw'`, mesmo formato do depósito, ainda não
   visto no log), cota de novo, checklist e POST breed. Sem material: `breedWaitSet` avisa 1x por motivo e tenta a cada 30 min. Nunca
   usa cadeado do jogo em quem sobe (não se sabe se o servidor cruza Pokémon travado). Logs `breeding-centro`, `breeding-cotacao`,

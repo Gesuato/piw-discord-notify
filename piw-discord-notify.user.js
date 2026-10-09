@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.29.0
+// @version      3.29.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.29.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.29.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -884,37 +884,6 @@
         try { return await fn(); }
         finally { if (window.__pgSellGuardOn === false) window.__pgSellGuardOn = antes; }
     }
-
-    // ---- Farejador de REST (Breeding Center) --------------------------
-    // v3.28.1: para confirmar os endpoints do Breeding antes de implementar a feature (nada entra como fato sem aparecer no
-    // log), o script embrulha o `fetch` da página e registra toda chamada que a TELA do jogo faz a /api/game/breeding:
-    // método, URL (sem host), corpo enviado, status e resposta (cortada em 6000 caracteres). O cabeçalho Authorization
-    // nunca é gravado. Encadeia com a guarda de venda do PokeGrid (ela também embrulha o fetch). Sai quando a feature
-    // ficar pronta.
-    const REST_SNIFF = /\/api\/game\/breeding/;
-    (function installRestSniffer() {
-        const orig = window.fetch;
-        if (typeof orig !== 'function' || orig.__pgDnSniff) return;
-        const wrapped = async function (input, init) {
-            const url = typeof input === 'string' ? input : String((input && input.url) || '');
-            const res = await orig.apply(this, arguments);
-            if (!REST_SNIFF.test(url)) return res;
-            try {
-                const metodo = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
-                let corpo = init && init.body;
-                if (typeof corpo === 'string') { try { corpo = JSON.parse(corpo); } catch { /* texto puro */ } }
-                const texto = await res.clone().text().catch(() => '');
-                let resposta = texto;
-                try { resposta = JSON.parse(texto); } catch { /* texto puro */ }
-                const json = JSON.stringify(resposta) || '';
-                logEvent('rest-breeding', { metodo, url: url.replace(/^https?:\/\/[^/]+/, ''), corpo: corpo ?? null, status: res.status,
-                    resposta: json.length > 6000 ? json.slice(0, 6000) + '…' : resposta });
-            } catch (e) { logEvent('rest-breeding-erro', { url, erro: String((e && e.message) || e) }); }
-            return res;
-        };
-        wrapped.__pgDnSniff = true;
-        window.fetch = wrapped;
-    })();
 
     // Compra `qty` da bola `id`. Devolve { ok, bought, spent, gold, motivo }.
     function buyBalls(id, qty) { return buyFromShop('ball', id, qty); }
@@ -3180,15 +3149,16 @@
         for (const l of breedActiveLines()) {
             const t = breedTrunk(l);
             if (t && (l.name !== t.name || Number(l.speciesId) !== t.speciesId)) { l.name = t.name; l.speciesId = t.speciesId; mudou = true; }
-            if (!l.id && !l.eggId && l.pendingChild && breedAdoptChild(l, Array.isArray(list) ? list : lastPokesList)) mudou = true;
+            if (!l.id && !l.eggId && l.pendingChild && breedAdoptChild(l, Array.isArray(list) ? list : lastPokesList, null, l.pendingChild)) mudou = true;
         }
         if (mudou) saveCfg(cfg);
         breedNotify();
     }
     function breedOnFamily() { breedFamilySeq++; breedNotify(); }
-    // Filho de uma linhagem: id novo da espécie (quando se sabe o que havia antes), senão o ÚNICO da espécie com o IV de quem
-    // sobe (ou +1, do dobrar) e quality acima da dele. 0 ou 2+ candidatos = fica pendente (o painel deixa escolher à mão).
-    function breedAdoptChild(line, list, novosIds) {
+    // Filho de uma linhagem: id novo da espécie (quando se sabe o que havia antes); senão o ÚNICO da espécie com a quality e o IV
+    // que o `hatch` devolveu (`filho`, v3.29.1: a resposta traz `child{ quality, ivTotal }` mas NÃO o id); senão o ÚNICO com o IV
+    // de quem sobe (ou +1, do dobrar) e quality acima da dele. 0 ou 2+ candidatos = fica pendente (o painel deixa escolher à mão).
+    function breedAdoptChild(line, list, novosIds, filho) {
         const sp = Number(line.speciesId) || 0;
         const outros = breedActiveLines().filter(o => o !== line && o.id).map(o => String(o.id));
         let cand = (Array.isArray(list) ? list : []).filter(p => p && !p.team && !p.leader && !p.shiny && (!sp || Number(p.speciesId) === sp) && !outros.includes(String(p.id)));
@@ -3197,10 +3167,17 @@
             if (n.length === 1) return breedSetChild(line, n[0]);
             if (n.length > 1) cand = n;
         }
+        const fq = Number(filho?.quality), fiv = Number(filho?.ivTotal);
+        let exatos = null;
+        if (Number.isFinite(fq) && Number.isFinite(fiv)) {
+            exatos = cand.filter(p => Number(p.ivTotal) === fiv && Math.abs(Number(p.quality) - fq) < BREED_Q_EPS);
+            if (exatos.length === 1) return breedSetChild(line, exatos[0]);
+            if (exatos.length > 1) cand = exatos;
+        }
         const iv = Number(line.lastIv), q = Number(line.lastQ);
         const porIv = cand.filter(p => Number.isFinite(iv) && (Number(p.ivTotal) === iv || Number(p.ivTotal) === iv + 1) && (!Number.isFinite(q) || Number(p.quality) > q - BREED_Q_EPS));
         if (porIv.length === 1) return breedSetChild(line, porIv[0]);
-        logEvent('breeding-filho', { linhagem: line.name || null, achou: false, candidatos: porIv.length, novos: novosIds ? novosIds.size : null, iv: Number.isFinite(iv) ? iv : null });
+        logEvent('breeding-filho', { linhagem: line.name || null, achou: false, candidatos: porIv.length, exatos: exatos ? exatos.length : null, novos: novosIds ? novosIds.size : null, iv: Number.isFinite(iv) ? iv : null });
         return false;
     }
     function breedSetChild(line, p) {
@@ -3282,28 +3259,34 @@
         const txt = JSON.stringify(r) || '';
         logEvent('breeding-choca', { eggId: egg.id, especie: egg.speciesName, linhagem: line?.name || null, ok: true, campos: r && typeof r === 'object' ? Object.keys(r) : null, resposta: txt.length > 2500 ? txt.slice(0, 2500) + '…' : r });
         breedCenterAt = 0;
+        // CONFIRMADO no log em 09/10/2026 12:37Z (contas 2 e 3): `{ ok, child{ speciesId, shiny, quality, delta, growth{..}, ivTotal,
+        // bqs } }` — SEM o id do filho. O filho é achado no frame `pokes` pela quality e IV exatos (a dica fica em `pendingChild`
+        // para os frames seguintes, caso a lista demore).
         const child = r?.child && typeof r.child === 'object' ? r.child : null;
         let filho = null;
         if (line) {
-            line.eggId = null; line.pendingChild = { at: Date.now() };
+            line.eggId = null; line.pendingChild = { at: Date.now(), quality: Number.isFinite(Number(child?.quality)) ? Number(child.quality) : null, ivTotal: Number.isFinite(Number(child?.ivTotal)) ? Number(child.ivTotal) : null };
             if (child?.id) { breedSetChild(line, Object.assign({ speciesId: egg.speciesId, name: egg.speciesName }, child)); filho = child; }
             else {
                 await breedRefreshPokes();
                 const novos = new Set(lastPokesList.map(p => String(p?.id)).filter(id => !antes.has(id)));
-                // o frame novo já pode ter identificado o filho (breedOnPokes); senão tenta com os ids novos
-                if (line.id || breedAdoptChild(line, lastPokesList, novos)) filho = lastPokesList.find(p => String(p?.id) === line.id) || null;
+                // o frame novo já pode ter identificado o filho (breedOnPokes); senão tenta com os ids novos + quality/IV do hatch
+                if (line.id || breedAdoptChild(line, lastPokesList, novos, child)) filho = lastPokesList.find(p => String(p?.id) === line.id) || null;
             }
             saveCfg(cfg);
         }
+        const mostra = filho || (Number.isFinite(Number(child?.quality)) ? child : null);
+        const delta = Number.isFinite(Number(child?.delta)) ? ` (Δ +${Number(child.delta).toFixed(3)})` : '';
         const who = playerName();
         const gen = line ? Number(line.gen) || 0 : 0;
         const linhas = [
             line ? `Linhagem ${line.name || egg.speciesName}: geração ${gen}` : `Ovo sem linhagem no painel (${egg.speciesName})`,
-            filho ? `Filho: Q ${breedQ(filho.quality)} · IV ${filho.ivTotal}/${IV_MAX}${line?.q0 != null ? ` (começou em Q ${breedQ(line.q0)})` : ''}` : (line ? '⚠ Filho não identificado no box: escolha no painel 🥚 quem continua' : ''),
+            mostra ? `Filho: Q ${breedQ(mostra.quality)} · IV ${mostra.ivTotal}/${IV_MAX}${delta}${line?.q0 != null ? ` (começou em Q ${breedQ(line.q0)})` : ''}` : '',
+            line && !filho ? '⚠ Filho não identificado no box: escolha no painel 🥚 quem continua' : '',
             child?.shiny ? '✨ Nasceu shiny!' : '',
         ].filter(Boolean);
         postWebhook('alert', {
-            content: `🥚 ${who ? `**${who}**` : 'Sua conta'} chocou **${egg.speciesName}**${filho ? ` — Q ${breedQ(filho.quality)}, IV ${filho.ivTotal}` : ''}`,
+            content: `🥚 ${who ? `**${who}**` : 'Sua conta'} chocou **${egg.speciesName}**${mostra ? ` — Q ${breedQ(mostra.quality)}, IV ${mostra.ivTotal}` : ''}`,
             username: 'Poke Idle World',
             embeds: [{ title: 'Ovo chocou', description: `${who ? `Conta: ${who}\n` : ''}${linhas.join('\n')}\nEm ${new Date().toLocaleString('pt-BR')}`, color: filho ? 0x57f287 : 0xfee75c }],
         }, { evento: 'breeding-chocou', eggId: egg.id, filho: filho?.id || null });
@@ -4543,7 +4526,7 @@
     // o que importa para diagnóstico (import, viagem, clã...). Agora cada tipo barulhento tem cota própria e o resto dura horas.
     const LOG_KEY = 'pgDiscordNotifyLog';
     const LOG_MAX = 200;
-    const LOG_NOISY = { 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10, 'poke-delta': 15, 'pokes-frame': 10, 'pokes-get': 10, 'rest-breeding': 40 };
+    const LOG_NOISY = { 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10, 'poke-delta': 15, 'pokes-frame': 10, 'pokes-get': 10 };
 
     function logEvent(kind, data) {
         if (cfg.debug) console.log(TAG, kind, data);

@@ -194,18 +194,20 @@ function fakeApi(opts) {
         assert(f.state.trips.length === 0 && /incubadora cheia/.test(f.api.breedWait.motivo), 'cheia: ' + JSON.stringify(f.api.breedWait));
     }
 
-    // 7) ovo pronto: POST hatch; resposta sem `child` -> pokes-get; o Donphan novo com o IV de quem sobe vira a nova geração; aviso
+    // 7) ovo pronto: POST hatch; resposta real (09/10/2026 12:38Z, conta3) traz `child{ quality, ivTotal, delta, growth, bqs }` SEM id
+    //    -> pokes-get; o Donphan novo com a quality e o IV do `child` vira a nova geração; aviso
     {
         const cfg = { breedEnabled: true, breedLines: [{ eggId: EGG.id, gen: 0, name: 'Donphan', speciesId: 232, q0: 1.466, iv0: 126, lastQ: 1.466, lastIv: 126 }], breedFoodIvMax: 150, breedFamily: false, breedDouble: true };
         const filho = { id: 'filho1', speciesId: 232, name: 'Donphan', level: 1, team: false, quality: 1.476, ivTotal: 126 };
-        const fake = fakeApi({ eggs: [Object.assign({}, EGG, { killsDone: 3000, ready: true })], box: { filho1: filho } });
+        const HATCH = { ok: true, child: { speciesId: 232, shiny: false, quality: 1.476, delta: 0.01, growth: { hp: 4, atk: 26, def: 32, spAtk: 25, spDef: 9, speed: 30 }, ivTotal: 126, bqs: 49 } };
+        const fake = fakeApi({ eggs: [Object.assign({}, EGG, { killsDone: 3000, ready: true })], box: { filho1: filho }, hatch: HATCH });
         const { api, state } = loadBreedModule(cfg, { api: fake.api, pokes: [LIDER], freshPokes: () => [LIDER, filho] });
         await api.breedTick(true);
         assert(fake.posts.length === 1 && fake.posts[0].action === 'hatch' && fake.posts[0].eggId === EGG.id, 'POST hatch: ' + JSON.stringify(fake.posts));
         const l = cfg.breedLines[0];
         assert(l.id === 'filho1' && l.eggId === null && l.gen === 1 && l.lastQ === 1.476 && l.lastIv === 126 && !l.pendingChild, 'filho virou quem sobe: ' + JSON.stringify(l));
         const h = state.hooks.find(x => x.meta.evento === 'breeding-chocou');
-        assert(h && /chocou \*\*Donphan\*\* — Q 1\.476, IV 126/.test(h.content) && /geração 1/.test(h.desc) && /começou em Q 1\.466/.test(h.desc), 'aviso do chocar: ' + (h && h.content + ' | ' + h.desc));
+        assert(h && /chocou \*\*Donphan\*\* — Q 1\.476, IV 126/.test(h.content) && /geração 1/.test(h.desc) && /Δ \+0\.010/.test(h.desc) && /começou em Q 1\.466/.test(h.desc), 'aviso do chocar: ' + (h && h.content + ' | ' + h.desc));
         const lg = state.logs.find(x => x[0] === 'breeding-choca');
         assert(lg && lg[1].ok === true && Array.isArray(lg[1].campos), 'log do hatch guarda os campos da resposta');
         assert(state.trips.length === 0, 'sem comida para a nova geração: nada planejado ainda (parado)');
@@ -218,6 +220,22 @@ function fakeApi(opts) {
         await m2.api.breedTick(true);
         assert(cfg2.breedLines[0].id == null && cfg2.breedLines[0].pendingChild && cfg2.breedLines[0].eggId === null, 'ambíguo fica pendente: ' + JSON.stringify(cfg2.breedLines[0]));
         assert(/Filho não identificado/.test(m2.state.hooks[0].desc) && /filho não identificado/.test(m2.api.breedStatus().join('\n')), 'avisa para escolher no painel');
+        // 2 novos com o mesmo IV mas quality diferente: a quality do `child` do hatch desempata; o aviso mostra Q/IV mesmo sem achar no box
+        const cfg4 = { breedEnabled: true, breedLines: [{ eggId: EGG.id, gen: 0, name: 'Donphan', speciesId: 232, lastQ: 1.466, lastIv: 126 }], breedFoodIvMax: 150, breedFamily: false, breedDouble: true };
+        const fake4 = fakeApi({ eggs: [Object.assign({}, EGG, { ready: true })], hatch: HATCH });
+        const m4 = loadBreedModule(cfg4, { api: fake4.api, pokes: [LIDER], freshPokes: () => [LIDER, Object.assign({}, filho, { id: 'f1' }), Object.assign({}, filho, { id: 'f2', quality: 1.5 })] });
+        await m4.api.breedTick(true);
+        assert(cfg4.breedLines[0].id === 'f1' && cfg4.breedLines[0].gen === 1, 'quality do child desempata: ' + JSON.stringify(cfg4.breedLines[0]));
+        // lista muda (jogo não respondeu ao pokes-get): a dica quality/IV fica em pendingChild e o frame seguinte acha o filho
+        const cfg5 = { breedEnabled: true, breedLines: [{ eggId: EGG.id, gen: 0, name: 'Donphan', speciesId: 232, lastQ: 1.466, lastIv: 126 }], breedFoodIvMax: 150, breedFamily: false, breedDouble: true };
+        const fake5 = fakeApi({ eggs: [Object.assign({}, EGG, { ready: true })], hatch: HATCH });
+        const m5 = loadBreedModule(cfg5, { api: fake5.api, pokes: [LIDER] });
+        await m5.api.breedTick(true);
+        const p5 = cfg5.breedLines[0];
+        assert(p5.id == null && p5.pendingChild && p5.pendingChild.quality === 1.476 && p5.pendingChild.ivTotal === 126, 'dica do hatch guardada: ' + JSON.stringify(p5));
+        assert(/Filho: Q 1\.476 · IV 126\/192 \(Δ \+0\.010\)/.test(m5.state.hooks[0].desc) && /não identificado/.test(m5.state.hooks[0].desc), 'aviso mostra o filho do hatch mesmo sem achar no box: ' + m5.state.hooks[0].desc);
+        m5.api.breedOnPokes([LIDER, Object.assign({}, filho, { id: 'f1' }), Object.assign({}, filho, { id: 'f2', quality: 1.5 })]);
+        assert(p5.id === 'f1' && p5.gen === 1 && !p5.pendingChild, 'frame seguinte acha o filho pela dica: ' + JSON.stringify(p5));
         // hatch falhou (ex.: só na cidade): pede viagem uma vez
         const fake3 = fakeApi({ eggs: [Object.assign({}, EGG, { ready: true })], hatchError: 'Only in town' });
         const m3 = loadBreedModule({ breedEnabled: true, breedLines: [{ eggId: EGG.id, gen: 0, name: 'Donphan', speciesId: 232 }], breedFamily: false }, { api: fake3.api, pokes: [LIDER] });

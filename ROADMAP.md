@@ -686,8 +686,11 @@ filho copia o IV (e a distribuição por stat) do pai de MAIOR quality, não do 
 cobra 2.000.000 de gold + 20 stones (40 com dobrar, 5% de +1 IV) e dá Δ 0,005–0,04; 3000 abates para chocar; depot da família traz
 quality/ivTotal. Mock: `docs/mockup-breeding.html`. Formatos: `docs/mensagens-do-jogo.md` → "Breeding Center".
 
-**Pendente:** resposta do `POST hatch` (o farejador continua gravando; o módulo acha o filho pelo frame `pokes` de qualquer jeito);
-`family-action … dir:'withdraw'` (mesmo formato do depósito; o frame `family` confirma o movimento); se o `breed` funciona na hunt
+**v3.29.1:** `POST hatch` CONFIRMADO (09/10/2026 12:37Z, contas 2 e 3): `{ ok, child{ speciesId, shiny, quality, delta, growth, ivTotal,
+bqs } }`, sem id do filho — o módulo acha o filho no frame `pokes` pela quality+IV exatos (dica em `pendingChild`); o aviso mostra Q, IV e Δ
+mesmo quando a lista demora. Farejador `rest-breeding` removido.
+
+**Pendente:** `family-action … dir:'withdraw'` (mesmo formato do depósito; o frame `family` confirma o movimento); se o `breed` funciona na hunt
 (o script sempre cruza na viagem). Teste: `node test/breeding.test.js`, caso novo no `pokesell.test.js`, passo no smoke e fixture no
 round-trip.
 
