@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.29.3
+// @version      3.29.4
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.29.3';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.29.4';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -3457,19 +3457,28 @@
         if (breedLast) out.push(`Última viagem ${breedHora(breedLast.at)}: ${breedLast.feitos.length ? `criou ${breedLast.feitos.length} ovo(s)` : 'nada cruzado'}${breedLast.falhas.length ? ` · ⚠ ${breedLast.falhas[0].motivo}` : ''}`);
         return out;
     }
-    // Prévia da comida por linhagem: [{ text, ok }].
+    // Prévia da comida por linhagem: [{ text, ok }]. v3.29.4: com quem sobe dentro do ovo (ou filho por identificar) a lista continua
+    // visível, comparada com a Q e o IV de quem entrou no ovo (o filho nasce com o mesmo IV e Q um pouco maior, então quem serve
+    // hoje serve amanhã; quem está no limite pode deixar de servir). Mostra até BREED_FOOD_SHOW por linhagem.
+    const BREED_FOOD_SHOW = 20;
     function breedFoodStatus(d) {
         d = d || cfg;
         const out = [];
         breedLines(d).forEach((l, i) => {
             if (!l) return;
-            const t = breedTrunk(l);
-            if (!t) { out.push({ text: `Linhagem ${i + 1}: ${l.eggId ? 'ovo chocando' : (l.id ? 'quem sobe não está no box' : 'filho por identificar')}`, ok: false }); return; }
+            let t = breedTrunk(l), previa = '';
+            if (!t) {
+                const q = Number(l.lastQ), iv = Number(l.lastIv), sp = Number(l.speciesId) || 0;
+                const estado = l.eggId ? 'ovo chocando' : (l.id ? 'quem sobe não está no box (lista não lida?)' : 'filho por identificar');
+                if (!sp || !Number.isFinite(q) || !Number.isFinite(iv)) { out.push({ text: `Linhagem ${i + 1}: ${estado}`, ok: false }); return; }
+                t = { id: '', name: l.name || '?', speciesId: sp, quality: q, ivTotal: iv };
+                previa = ` · ${estado}, prévia contra Q ${breedQ(q)} IV ${iv} de quem entrou no ovo`;
+            }
             const lista = breedFoodList(t, d);
             const servem = lista.filter(f => !f.motivo);
-            out.push({ text: `Linhagem ${i + 1} (${t.name} Q ${breedQ(t.quality)} IV ${t.ivTotal}): ${servem.length} ${servem.length === 1 ? 'comida serve' : 'comidas servem'} de ${lista.length} da espécie`, ok: servem.length > 0 });
-            for (const f of lista.slice(0, 8)) out.push({ text: `  ${f.motivo ? '✖' : '✔'} ${f.name} Q ${breedQ(f.quality)} IV ${f.ivTotal}${f.origem === 'familia' ? ' (família)' : ''}${f.motivo ? ` — ${f.motivo}` : ''}`, ok: !f.motivo });
-            if (lista.length > 8) out.push({ text: `  … e mais ${lista.length - 8}`, ok: false });
+            out.push({ text: `Linhagem ${i + 1} (${t.name} Q ${breedQ(t.quality)} IV ${t.ivTotal}${previa}): ${servem.length} ${servem.length === 1 ? 'comida serve' : 'comidas servem'} de ${lista.length} da espécie${lista.length ? ` (${lista.filter(f => f.origem === 'box').length} no box, ${lista.filter(f => f.origem === 'familia').length} na família)` : ''}`, ok: servem.length > 0 });
+            for (const f of lista.slice(0, BREED_FOOD_SHOW)) out.push({ text: `  ${f.motivo ? '✖' : '✔'} ${f.name} Q ${breedQ(f.quality)} IV ${f.ivTotal}${f.level ? ` lv${f.level}` : ''} · ${f.origem === 'familia' ? 'família' : 'box'}${f.motivo ? ` — ${f.motivo}` : ''}`, ok: !f.motivo });
+            if (lista.length > BREED_FOOD_SHOW) out.push({ text: `  … e mais ${lista.length - BREED_FOOD_SHOW} (as mais fracas aparecem primeiro)`, ok: false });
         });
         return out;
     }
@@ -5706,7 +5715,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <label class="dn-toggle"><input id="pg-dn-breed-family" type="checkbox"><span class="sw"></span>Pegar da família também <span class="dn-hint">(comida e stones; a retirada acontece na viagem à cidade)</span></label>
                         <label class="dn-toggle"><input id="pg-dn-breed-double" type="checkbox"><span class="sw"></span>Dobrar stones <span class="dn-hint">(40 em vez de 20; 5% de chance de +1 IV no filho)</span></label>
                         <div class="dn-status col" id="pg-dn-breed-food"></div>
-                        <p class="dn-help">O jogo só aceita par com até 0,15 de diferença de quality. Shiny, time, inicial, Ditto, travado e anunciado no mercado nunca viram comida. Usa primeiro a comida mais fraca que serve (a de quality baixa deixa de servir quando quem sobe cresce).</p>
+                        <p class="dn-help">O jogo só aceita par com até 0,15 de diferença de quality. Shiny, time, inicial, Ditto, travado e anunciado no mercado nunca viram comida. Usa primeiro a comida mais fraca que serve (a de quality baixa deixa de servir quando quem sobe cresce). A lista acima vem do último frame do box e da última leitura da família (botão ↻ acima); com quem sobe dentro do ovo ela é uma prévia.</p>
                     </div>
                 </section>
                 <section class="dn-pane" data-pane="sistema" hidden>

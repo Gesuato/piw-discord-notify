@@ -251,6 +251,14 @@ function fakeApi(opts) {
         const { api, state } = loadBreedModule(cfg, { api: fake.api, pokes: [LIDER, neto] });
         await api.breedTick(true);
         assert(cfg.breedLines[0].id === 'neto' && cfg.breedLines[0].gen === 2 && state.logs.some(l => l[0] === 'breeding-ovo-sumiu'), 'chocado na mão: achou o filho (IV +1 do dobrar): ' + JSON.stringify(cfg.breedLines[0]));
+        // v3.29.4: prévia da comida com quem sobe dentro do ovo (compara com lastQ/lastIv) e com quem sobe no box
+        const cfgP = { breedEnabled: true, breedLines: [{ eggId: 'ovo1', gen: 1, name: 'Donphan', speciesId: 232, lastQ: 1.466, lastIv: 126 }, null], breedFoodIvMax: 150, breedFamily: true, breedDouble: true };
+        const fp = loadBreedModule(cfgP, { api: fake.api, pokes: [LIDER, COMIDA], family: { pokes: [{ id: 'fam1', speciesId: 232, name: 'Donphan', level: 3, quality: 1.5, ivTotal: 90 }], items: [] } });
+        const previa = fp.api.breedFoodStatus().map(x => x.text).join('\n');
+        assert(/Linhagem 1 \(Donphan Q 1\.466 IV 126 · ovo chocando, prévia contra Q 1\.466 IV 126/.test(previa) && /1 comida serve de 2 da espécie \(1 no box, 1 na família\)/.test(previa), 'prévia com ovo: ' + previa);
+        assert(/✔ Donphan Q 1\.345 IV 104 lv\d+ · box/.test(previa) && /✖ Donphan Q 1\.500 IV 90 lv3 · família — Q 1\.500 não é menor/.test(previa), 'prévia lista box e família com motivo: ' + previa);
+        const semDados = loadBreedModule({ breedEnabled: true, breedLines: [{ eggId: 'ovo1', gen: 0, name: 'Donphan', speciesId: 232 }] }, { api: fake.api, pokes: [LIDER] });
+        assert(/Linhagem 1: ovo chocando$/.test(semDados.api.breedFoodStatus()[0].text), 'sem lastQ/lastIv só diz o estado: ' + semDados.api.breedFoodStatus()[0].text);
         const off = loadBreedModule({ breedEnabled: false, breedLines: [{ id: TRONCO.id }] }, { api: fake.api, pokes: [LIDER, TRONCO, COMIDA] });
         await off.api.breedTick(true);
         assert(off.state.calls.length === 0 && off.api.breedWanted() === false, 'desligado não chama nada');
