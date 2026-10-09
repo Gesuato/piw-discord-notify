@@ -130,28 +130,40 @@ e `error { message }` (resposta de ação recusada; o script os trata em `handle
   { slot }`; `GET .../species?slot=` + `POST .../species { slot, speciesId }` (escolha direta, 5 cards); `POST .../unlock { slot, mode }`;
   `GET .../history?limit=`. Depois de mudar, o cliente manda `golden-stars-refresh` pelo socket. O script só usa GET, roll e pick.
 
-### Breeding Center (levantado no bundle em 08/10/2026 — NÃO confirmado no log; sniffer `rest-breeding` da v3.28.1 grava as chamadas da tela)
+### Breeding Center (bundle em 08/10/2026; `center`, `quote` e `breed` CONFIRMADOS no log em 09/10/2026 03:22–03:24Z, conta3; `hatch` ainda não visto)
 
-Janela "Breeding" do menu superior (abre em qualquer lugar; o cliente não checa cidade). Tudo por REST em `/api/game/breeding`,
-mesmo `gameApi` da loja. Textos pt-BR do jogo (i18n `window.breeding`): dois pais da MESMA espécie, do box (fora do time, não
-inicial, não Ditto), são CONSUMIDOS e viram um ovo; quality do filho = melhor pai + Δ; IV copiado do pai de maior quality
-(`ivPreview.donorId`); breed normal exige diferença de quality ≤ 0,15; um pai shiny = filho sempre shiny, sem trava de diferença,
-mas feromônio obrigatório; dois normais nunca geram shiny. Caminho "Feromônios" (Strange Pheromone, item 44417) dá Δ +0,15 a
-+0,30; caminho "Grátis" (`free=1`) dá Δ ~20× menor e só existe sem pai shiny. Sempre paga taxa em gold e "stones do elemento do
-filho" (categoria `stone` do catálogo); "Dobrar stones" (`double`) gasta 2× e dá 5% de +1 IV num stat. O ovo choca com abates em
-hunt (`killsDone/killsRequired`); "chocar agora" e slot extra custam diamante (o script nunca usa). Libera num nível de treinador.
+Janela "Breeding" do menu superior (abre em qualquer lugar). Tudo por REST em `/api/game/breeding`, mesmo `gameApi` da loja.
+Textos pt-BR do jogo (i18n `window.breeding`): dois pais da MESMA espécie, do box (fora do time, não inicial, não Ditto), são
+CONSUMIDOS e viram um ovo (confirmado: o frame `pokes` caiu de 9 para 7 logo após o `breed`); quality do filho = melhor pai + Δ;
+IV copiado de um dos pais (`ivPreview.donorId`); breed normal exige diferença de quality ≤ 0,15; um pai shiny = filho sempre shiny,
+sem trava de diferença, mas feromônio obrigatório; dois normais nunca geram shiny. Caminho "Feromônios" (Strange Pheromone, item
+44417) dá Δ +0,15 a +0,30; caminho "Grátis" (`free=1`) dá Δ 0,005–0,04 (esperado 0,01) e só existe sem pai shiny. **O Grátis NÃO
+dispensa gold nem stones**: no log a taxa foi `goldFee` 2.000.000 (gold 5.280.331 → 3.280.331) + 20 Earth Stone (40 com `double`).
+"Dobrar stones" (`double`) gasta 2× e dá 5% de +1 IV num stat (`ivPreview.bump`). O ovo choca com abates em hunt (`killsDone/
+killsRequired`, 3000 para um Donphan rank N); "chocar agora" e slot extra custam diamante (o script nunca usa). Libera no nível 60.
 
-- `GET ?action=center` → `{ unlocked, unlockLevel, level, gold, diamonds, pheromones, slots, usedSlots, maxSlots, nextSlotCost,
-  instantHatchCost, eggs[{ id, rank, killsDone, killsRequired, ready, shinyChild }] }` (a tela relê a cada 20 s; não há evento de
-  socket para o progresso do ovo).
-- `GET ?action=quote&parent1=ID&parent2=ID&free=0|1` → `{ goldFee, pheromoneCost, pheromonesHave, free, freeAllowed, rank,
-  childSpeciesId, childTypes[], shinyChild, delta{ baseQuality, minQuality, maxQuality, cap, table[{ delta, pct }] },
-  stones{ base[{ itemId, name, need, have, icon }], baseOk, double[], doubleOk }, ivPreview{ ivTotal, donorId, shinyRef,
-  bump{ possible, chance, maxTotal } }, partnerExcess?{ parceiro, shiny } }`.
-- `POST { action:'breed', parent1, parent2, free, double }` → `center` novo (a tela acha o ovo novo em `eggs`, depois `pokes-get`).
-- `POST { action:'hatch', eggId }` / `{ action:'hatch-now', eggId }` → `{ child{ speciesId, shiny, ivTotal, quality, ... } }`.
-- `POST { action:'buy-slot' }` → `center` novo.
+- `GET ?action=center` → `{ unlocked, unlockLevel: 60, level, slots: 2, maxSlots: 6, usedSlots, nextSlotCost, gold, diamonds,
+  pheromones, pheromoneItemId: 44417, instantHatchCost, shinyPartner{ min, hardCap, grades{ E..S{ floor, breedMax } } },
+  eggs[{ id, speciesId, speciesName, rank, shinyChild, killsDone, killsRequired, ready }] }` (a tela relê a cada 20 s; não há
+  evento de socket para o progresso do ovo). CONFIRMADO; a tela chamou tanto na hunt quanto na cidade.
+- `GET ?action=quote&parent1=ID&parent2=ID&free=0|1` → `{ childSpeciesId, childSpeciesName, childTypes[], stones{ base[{ itemId,
+  name, icon, need, have }], double[...], baseOk, doubleOk }, rank, free, freeAllowed, goldFee, pheromoneCost (0 com free=1),
+  pheromonesHave, killsRequired, shinyChild, partnerExcess, delta{ table[{ delta, pct }], baseQuality, minQuality, maxQuality,
+  expectedDelta, cap }, ivPreview{ growth{hp..speed}, ivTotal, donor: 'pai', shinyRef, bump{ chance, possible, maxTotal }, donorId },
+  parents{ a{ id, shiny, ivTotal, quality, bqs }, b{...} } }`. CONFIRMADO (chamada feita na hunt). `stones[].have` conta a mochila
+  do personagem (subiu 8 → 28 → 40 conforme o usuário tirava da família). No caso visto, `parent1` tinha Q 1,466 e `parent2` Q 1,345
+  e `donorId` = `parent1`; a ordem invertida (fraco no slot 1) ainda NÃO foi testada, então não se sabe se o doador segue o slot ou a
+  maior quality.
+- `POST { action:'breed', parent1, parent2, free, double }` → `center` novo (o ovo aparece em `eggs`, `usedSlots` sobe, `gold` já
+  descontado). CONFIRMADO com `free: true, double: true`, feito na cidade (não se sabe se o servidor aceita na hunt).
+- `POST { action:'hatch', eggId }` / `{ action:'hatch-now', eggId }` → `{ child{ speciesId, shiny, ivTotal, quality, ... } }`
+  (bundle; NÃO confirmado — o ovo precisa de 3000 abates).
+- `POST { action:'buy-slot' }` → `center` novo (bundle; o script nunca usa).
 - O box da tela é o frame `pokes` filtrado por `!team && !starter`; cada item traz `isDitto`.
+- Depósito da família (`familia-campos`, 09/10/2026): `depot.pokes[]` traz `{ id, speciesId, name, level, looktype, shiny, isDitto,
+  tms[], type1, type2, stats{...}, ivTotal, quality, power }` e `depot.items[]` traz `{ itemId, quantity, name, icon }`; `family`
+  tem `{ id, name, isOwner, frozen, movesUsed, movesCap, lockedUntil, leaveCost, members, pendingInvites }`. Ou seja, dá para
+  escolher comida na família por quality/IV sem tirar antes.
 
 ## Ideias que esses nomes destravam
 
