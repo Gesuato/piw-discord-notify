@@ -264,7 +264,8 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   em `pendingChild` para os frames seguintes), senão pelo IV igual/+1), planeja (comida mais fraca primeiro, cota se ela está no box) e
   `tripRequest('breeding')`;
   `breedCityWork` na viagem: tira stones/comida da família (`family-action … dir:'withdraw'`, mesmo formato do depósito, ainda não
-  visto no log), cota de novo, checklist e POST breed. Sem material: `breedWaitSet` avisa 1x por motivo e tenta a cada 30 min. Nunca
+  visto no log; v3.29.2: todo `family-action` enviado pela tela ou pelo script vira log `familia-envio { action, dir, itemId, quantity,
+  capturedId, campos }` em `handleOutgoing`, para confirmar), cota de novo, checklist e POST breed. Sem material: `breedWaitSet` avisa 1x por motivo e tenta a cada 30 min. Nunca
   usa cadeado do jogo em quem sobe (não se sabe se o servidor cruza Pokémon travado). Logs `breeding-centro`, `breeding-cotacao`,
   `breeding-cruzou`, `breeding-falhou`, `breeding-choca`, `breeding-filho`, `breeding-parado`. Teste: `node test/breeding.test.js`
   (`loadBreedModule`: do marcador até `// ---- Clã: subir de rank`; o Daily Gift agora termina no marcador do breeding).
