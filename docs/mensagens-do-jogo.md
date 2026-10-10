@@ -244,7 +244,7 @@ Ainda não visto: resposta de um `tribute` que deu certo.
 log `guild-campos` (chaves reais de cada bloco, 1x por carga), `guild` (resumo: guild, eu, tributo, caçadas, dailies, talentos) e
 `guild-envio` (todo `guild-action` que a tela do jogo mandar — doe gold / deposite tributo na mão uma vez para confirmar os campos).
 
-### Pesca (bundle em 10/10/2026; NADA visto no log ainda — farejador na v3.31.1)
+### Pesca (bundle em 10/10/2026; CONFIRMADO no log em 10/10/2026 01:55Z, conta1)
 
 NPC **Pescador** (`kind:"fishing"`, "Treine a habilidade de Pesca") abre a janela 🎣 (`window.fishing.*`): "Escolha o que pescar.
 Faixas com skill maior que a sua ficam trancadas 🔒"; faixa "atual" = a da sua skill (progresso cheio); faixa menor = "progresso de
@@ -259,10 +259,16 @@ skill reduzido (50%)"; "{{inLevel}}/{{forNext}} peixes para o próximo nível".
 - Servidor → cliente: `fishing-cooldown { ms }` (a tela reenvia `enter-hunt` ms + 100 ms depois, igual ao `hunt-cooldown`) e
   `fishing-levelup { level }` (HUD "🎣 Sua Pesca subiu para o nível N"). O perfil traz `fishInLevel`/`fishForNext`; o Rankings tem a aba
   "Top Pesca". A pokepedia não documenta (`/pokepedia/systems/fishing` = "not documented yet").
-- Para a guild: a Caçada kind `fish` ("Pescar peixes", meta vista: 750) conta os peixes de qualquer membro; uma rota "pescar para
-  a guild" = `POST fishing-tier { tierId: faixa natural }` + `switchHunt('pesca')`, voltar com `fishing-cooldown`, e sair quando a
-  caçada fechar. Pendente: ver se o servidor exige estar na cidade do Pescador para o POST e se `enter-hunt pesca` funciona
-  direto de outra hunt (a tela passa pelo `nL('pesca')`, que só carrega o mapa).
+- **Confirmado (`pesca-campos`, `pesca-abate`, `pesca-nivel`):** `GET fishing-tier` → `{ skill: 0, inLevel: 2, forNext: 12, selected: 0,
+  cooldownMs: 0, tiers[{ id, minSkill, species, names, fish, mobLevel, unlocked, natural }] }` com 10 faixas: 0 Magikarp (lv 5–10, skill 0),
+  1 Poliwag/Goldeen/Horsea (10), 2 Tentacool/Staryu/Krabby/Shellder (20), 3 Seel (30), 4 Poliwhirl/Seadra/Seaking (40), 5 Kingler/Starmie (50),
+  6 Dewgong (60), 7 Dratini/Dragonair (70), 8 Cloyster/Golduck (80), 9 Gyarados/Lapras/Mantine/Kingdra/Tentacruel (90). A tela entrou
+  na hunt `pesca` (log `hunt { slug:'pesca' }`) e o 1º Magikarp chegou 12 s depois como `field-kill` comum (`xpGained` 3, `loot: []`,
+  mesmos campos de qualquer abate); `fishing-levelup { level: 1 }` 1 min depois. Ainda não visto: `fishing-cooldown` e o POST feito
+  pelo script fora da cidade do Pescador (v3.32.0 faz o POST antes do `switchHunt('pesca')`; se o jogo recusar, log `pesca-erro`).
+- Para a guild (v3.32.0, `guildFishEnabled`): a Caçada kind `fish` ("Pescar peixes", meta vista: 750) conta os peixes de qualquer
+  membro; o script marca a faixa natural liberada (senão a mais alta liberada), entra em `pesca`, reentra depois de `fishing-cooldown
+  { ms }` e volta quando a caçada fecha.
 
 ## Ideias que esses nomes destravam
 

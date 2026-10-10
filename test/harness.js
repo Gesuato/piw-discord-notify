@@ -881,4 +881,62 @@ function loadBreedModule(cfg, init) {
     return { api, state, cfg, clock };
 }
 
-module.exports = { loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+
+// Extrai o módulo da Guild (v3.30.0+) junto com o da Pesca (`// ---- Guild` até `// ---- Clã`). `init.guild` = frame `guild`
+// entregue por `api.handleGuild`; `init.api(url, opts)` responde o REST da pesca; `init.huntCatalog`/`init.creatures` como no clã;
+// timers >= 1 s ficam em `state.timers` e `state.fire(ms)` dispara os desse prazo; `state.switches` = trocas de hunt pedidas.
+const GU_START = '    // ---- Guild (v3.30.0)';
+const GU_END = '    // ---- Clã: subir de rank sozinho';
+
+function loadGuildModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(GU_START), b = src.indexOf(GU_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo da guild não encontrados no script');
+    const mod = src.slice(a, b);
+    const clock = { now: Date.now() };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const state = { calls: [], sent: [], switches: [], hooks: [], logs: [], timers: [], fire: null };
+    const normalize = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+    const cr = init.creatures || [];
+    const creatureLoot = new Map(cr.map(c => [c.pokeId, c.loot || []]));
+    let tid = 0;
+    const ctx = {
+        cfg,
+        TAG: '[teste]',
+        gameApi: (url, opts) => { state.calls.push({ url, opts }); return Promise.resolve().then(() => init.api ? init.api(url, opts) : {}); },
+        sendGame: (m) => { state.sent.push(m); return true; },
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        normalize,
+        huntSlugFromName: (name) => normalize(name).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''),
+        switchHunt: (slug, tentativa, origem) => { state.switches.push({ slug, tentativa, origem }); },
+        huntSlug: init.huntSlug != null ? init.huntSlug : null,
+        CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'],
+        team: init.team || [],
+        huntCatalog: init.huntCatalog || null,
+        loadHuntCatalog: () => Promise.resolve(init.huntCatalog || null),
+        loadItemsCatalog: () => Promise.resolve(),
+        creatureLoot,
+        lootPerKill: (speciesId, itemName) => (creatureLoot.get(Number(speciesId)) || []).filter(l => normalize(l?.name) === normalize(itemName)).reduce((a, l) => a + (Number(l.chance) || 0) / 100000 * ((Number(l.minCount) || 1) + (Number(l.maxCount) || Number(l.minCount) || 1)) / 2, 0),
+        tripRunning: false, huntSwitch: null, swapPending: null,
+        dailyWantsHunt: () => Boolean(init.dailyOnHunt),
+        healBusy: () => false,
+        setTimeout: (fn, ms) => { const id = ++tid; if (ms >= 1000) state.timers.push({ id, fn, ms }); else fn(); return id; },
+        clearTimeout: (id) => { const i = state.timers.findIndex(t => t.id === id); if (i >= 0) state.timers.splice(i, 1); },
+        Date: FakeDate,
+        console,
+    };
+    state.fire = (ms) => { const due = state.timers.filter(t => t.ms <= ms); state.timers = state.timers.filter(t => t.ms > ms); clock.now += ms; for (const t of due) t.fn(); };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            handleGuild, guildRouteTick, guildPlan, guildStatus, guildRouteLine, guildKeepsItem, guildOnHuntChange, guildOnFishingCooldown, guildActionDone, guildOnError, fishOnMessage,
+            setHunt(slug) { huntSlug = slug; },
+            get guildTarget() { return guildTarget; }, get guildFrom() { return guildFrom; }, get guildWait() { return guildWait; }, get guildPending() { return guildPending; }, get guildLast() { return guildLast; },
+        };`);
+    const api = factory(...Object.values(ctx));
+    return { api, state, cfg, clock };
+}
+
+module.exports = { loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

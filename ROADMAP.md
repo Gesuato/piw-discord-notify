@@ -698,7 +698,7 @@ round-trip.
 
 ---
 
-## 🔧 32. Guild: doação diária de gold, tributo, caçadas e dailies (v3.30.0 farejador · v3.31.0 doação, tributo e avisos)
+## ✅ 32. Guild: doação diária de gold, tributo, caçadas e pesca (v3.30.0 farejador · v3.31.0 doação, tributo e avisos · v3.32.0 rota)
 
 **O que faz (pedido do usuário em 09/10/2026, dia do patch 1.9 que trouxe o sistema de Guild):** cuidar da parte repetitiva da
 guild em cada conta: doar o gold do dia para a próxima vaga, depositar o item do Tributo do Dia, avisar no Discord o andamento das
@@ -721,6 +721,18 @@ campos de `me` e `tribute`. Sem config nova.
 responde `error` com o texto ("Você já doou o máximo de hoje (500.000 gold)."). **01:39Z: teto POR MEMBRO** (conta2 doou 1.000 com a
 conta1 no teto; frame `guild` em 170 ms com `donatedToday` 1.000); "Você só pode doar mais 499.000 gold hoje." quando sobra menos que o
 pedido (v3.31.2 refaz com a sobra; "já doou o máximo" segura até `huntsEndAt`). `guild-dirty` chega a todo membro com a janela fechada.
+
+**Etapa 3 — v3.32.0 (feita): rota da guild**, 3 interruptores por conta (pedido do usuário: "configurar quem vai caçar e pescar"):
+`guildFarmTribute` (hunt que mais dropa o item do Tributo do Dia, `lootPerKill`; deposita mesmo sem `guildTributeEnabled`),
+`guildHuntEnabled` (hunt da espécie da caçada "Derrotar", até o nível do time) e `guildFishEnabled` (`GET/POST /api/game/fishing-tier`
+na faixa natural + `switchHunt('pesca')`, reentra após `fishing-cooldown`). Ordem tributo → Derrotar → pesca; 4ª rota excludente do
+Salvar; espera viagem/cura/troca/Daily; volta para `guildFrom` quando fecha, o dia reinicia ou desliga; `guildOnHuntChange` volta ao
+alvo 8 s depois de a tela trocar. Logs `guild-alvo`, `guild-espera`, `guild-volta`, `guild-reentrada`, `guild-hunt-falhou`, `pesca-faixa`,
+`pesca-reentra`. Teste: `node test/guild.test.js` (`loadGuildModule`). Dailies por região ficam para depois (o usuário não pediu).
+
+**Pesca confirmada no log (10/10/2026 01:55Z, conta1):** `fishing-tier` → skill 0, 2/12 peixes, 10 faixas (0 Magikarp lv5–10 … 9 Gyarados/
+Lapras/Mantine/Kingdra/Tentacruel, skill 90); hunt `pesca` entrou às 01:57:01; 1º Magikarp 12 s depois como `field-kill` normal (`xpGained`
+3, `loot: []`, campos iguais aos de qualquer abate); `fishing-levelup { level: 1 }` às 01:58.
 
 **Etapa 2 — v3.31.0 (feita): aba 🛡 Guild** com status (guild, próxima vaga, você, tributo, caçadas, dailies), doação diária
 (`guildDonateGold` + `guildDonateKeep`), Tributo do Dia (`guildTributeEnabled` + `guildTributeKeep`, item fora da venda/guardar via
