@@ -114,6 +114,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `switchHunt(slug, 1, 'cidade')`. Destino: alvo do clã > etapa da rota > `lastRealHunt` (desde a v3.24.3 as quedas da
   cura não excluem a hunt).
   Espera viagem/cura/troca/venda/recarga; a rota de captura tem volta própria. 3 voltas em 1 h sem frame = desiste e avisa.
+  v3.33.1: "parada" TAMBÉM é hunt preenchida no script sem nenhum frame (`field`/`field-init`/`field-kill`/`poke-xp`) há
+  `cityIdleMin` — antes um único frame depois da entrada fazia `idleSinceAt` devolver 0 para sempre, e a conta que o servidor
+  tirou da hunt sem a tela mandar `leave-hunt` (reconexão que caiu na cidade) ficava parada sem `cidade-parada` no log
+  (10/10/2026). Status/aviso dizem onde parou ("em <hunt> sem abates" / "fora de hunt"); o log `inicio` traz `ultimoFrame`.
 - REST do jogo (usado pela compra automática; confirmado no auto-refill de referência e no piwdex):
   tokens em `sessionStorage['pokeweb:tokens']` (`{accessToken, refreshToken}`), header
   `Authorization: Bearer`, renovação em `POST /api/auth/refresh {refreshToken}` quando vier 401.

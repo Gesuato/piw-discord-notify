@@ -90,5 +90,24 @@ const cfgOn = () => ({ cityIdleEnabled: true, cityIdleMin: 10 });
         assert(api.since() === 0 && !/parei/.test(api.status()), 'rearmou ao farmar: ' + api.status());
     }
 
-    console.log('OK idle.test — parada 10 min, Joy + volta, frames = farmando, hunt sem frame, falha da Joy, destinos, esperas, desligada e proteção de 3 voltas');
+    // 8) v3.33.1: estava farmando e os frames pararam (servidor tirou da hunt sem a tela mandar leave-hunt): 10 min depois sai, cura e volta
+    {
+        const { api, state, clock, env } = loadIdleModule(cfgOn(), { env: { huntSlug: 'rattata', lastRealHunt: 'rattata' }, pokesHp: [100] });
+        api.onHuntChange('rattata');
+        for (let i = 0; i < 10; i++) { clock.now += 30 * 1000; api.onAlive(); await api.tick(); }
+        assert(api.since() === 0 && /^farmando/.test(api.status()), 'farmando: ' + api.status());
+        clock.now += 9 * MIN; await api.tick();
+        assert(state.switches.length === 0 && /parada em rattata sem abates há 9 min/.test(api.status()), '9 min sem frame: espera: ' + api.status());
+        clock.now += 1 * MIN; await api.tick();
+        const tipos = state.sent.map(o => o.type);
+        assert(tipos[0] === 'leave-hunt' && tipos[1] === 'set-city' && tipos.includes('joy-heal'), 'sai da hunt morta e cura: ' + tipos.join(','));
+        assert(state.switches[0]?.slug === 'rattata' && state.switches[0]?.origem === 'cidade', 'volta para rattata: ' + JSON.stringify(state.switches));
+        assert(/parada em rattata sem abates há 10 min/.test(state.hooks[0]?.content || ''), 'avisa onde parou: ' + state.hooks[0]?.content);
+        const ini = state.logs.find(l => l[0] === 'cidade-parada' && l[1].fase === 'inicio');
+        assert(ini && ini[1].hunt === 'rattata' && ini[1].ultimoFrame, 'log traz a hunt e o último frame: ' + JSON.stringify(ini));
+        env.huntSlug = 'rattata'; api.onHuntChange('rattata'); api.onAlive();
+        assert(api.since() === 0, 'voltou a farmar');
+    }
+
+    console.log('OK idle.test — parada 10 min, Joy + volta, frames = farmando, hunt sem frame, falha da Joy, destinos, esperas, desligada, proteção de 3 voltas e frames que param no meio da hunt');
 })().catch(err => { console.error(err); process.exit(1); });

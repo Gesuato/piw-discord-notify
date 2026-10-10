@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.33.0
+// @version      3.33.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.33.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.33.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -5737,12 +5737,22 @@
         idleLeaderHp = lider && lider.hp != null ? Number(lider.hp) : null;
     }
 
-    // Desde quando a conta está parada (ms), ou 0 se está farmando.
+    // Desde quando a conta está parada (ms), ou 0 se está farmando. "Farmando" = algum frame de hunt (`field`, `field-init`,
+    // `field-kill`, `poke-xp`) no último minuto, não importa o que o script acha da hunt. v3.33.1: antes, com a hunt do
+    // script preenchida e UM frame visto depois da entrada, devolvia 0 para sempre — a conta que o servidor tirou da hunt
+    // sem a tela mandar `leave-hunt` (reconexão que caiu na cidade, hunt encerrada pelo servidor) aparecia "farmando" no
+    // painel e nunca voltava (10/10/2026: contas paradas na cidade sem nenhum `cidade-parada` no log).
     function idleSinceAt() {
-        if (idleIsHunt(huntSlug)) return idleAliveAt >= idleHuntAt ? 0 : idleHuntAt;   // pediu a hunt e nada chegou
-        if (idleAliveAt && Date.now() - idleAliveAt < 2 * IDLE_TICK_MS) return 0;       // o servidor farma (tela na cidade)
+        const vivo = idleAliveAt && Date.now() - idleAliveAt < 2 * IDLE_TICK_MS;
+        if (idleIsHunt(huntSlug)) {
+            if (vivo && idleAliveAt >= idleHuntAt) return 0;
+            return Math.max(idleHuntAt, idleAliveAt);        // pediu a hunt e nada chegou, ou os frames pararam
+        }
+        if (vivo) return 0;                                  // o servidor farma (tela na cidade)
         return Math.max(idleOutSince || idleLoadedAt, idleAliveAt);
     }
+    // Onde a conta parou, para o status e o aviso: hunt que o script ainda considera ativa ou fora de hunt.
+    function idleWhere() { return idleIsHunt(huntSlug) ? `em ${huntSlug} sem abates` : 'fora de hunt'; }
     function idleBusyReason() {
         if (tripRunning) return 'viagem à cidade em andamento';
         if (healBusy()) return 'cura na Nurse Joy em andamento';
@@ -5779,7 +5789,7 @@
         if (!desde) return `farmando${ult}`;
         const min = Math.floor((Date.now() - desde) / 60000);
         const falta = Math.max(0, Math.ceil((desde + idleMinMs(d) - Date.now()) / 60000));
-        return `parada fora de hunt há ${min} min${idleNote ? ` · esperando: ${idleNote}` : falta > 0 ? ` · volta em ${falta} min` : ''}${ult}`;
+        return `parada ${idleWhere()} há ${min} min${idleNote ? ` · esperando: ${idleNote}` : falta > 0 ? ` · volta em ${falta} min` : ''}${ult}`;
     }
 
     // Tique (30 s).
@@ -5802,7 +5812,7 @@
             idleGaveUp = true;
             logEvent('cidade-parada', { fase: 'desisti', slug: alvo.slug, voltas: idleBacks.length, min });
             postWebhook('alert', {
-                content: `🏙️ ${who ? `**${who}**` : 'Sua conta'}: parada fora de hunt e as últimas ${idleBacks.length} voltas para **${alvo.slug}** não pegaram`,
+                content: `🏙️ ${who ? `**${who}**` : 'Sua conta'}: parada ${idleWhere()} e as últimas ${idleBacks.length} voltas para **${alvo.slug}** não pegaram`,
                 username: 'Poke Idle World',
                 embeds: [{ title: 'Parada na cidade: desisti de voltar', description: (who ? `Conta: ${who}\n` : '') + `Entre numa hunt na mão; a volta automática rearma assim que a conta voltar a farmar.\nEm ${new Date().toLocaleString('pt-BR')}`, color: 0xed4245 }],
             }, { evento: 'cidade-parada', slug: alvo.slug });
@@ -5811,11 +5821,11 @@
         }
         idleBacks.push(Date.now());
         idleLast = { at: Date.now(), slug: alvo.slug, min, ok: false, motivo: null };
-        logEvent('cidade-parada', { fase: 'inicio', slug: alvo.slug, min, hunt: huntSlug || null, volta: idleBacks.length });
-        return idleGoBack(alvo.slug, min);
+        logEvent('cidade-parada', { fase: 'inicio', slug: alvo.slug, min, hunt: huntSlug || null, ultimoFrame: idleAliveAt ? new Date(idleAliveAt).toISOString() : null, volta: idleBacks.length });
+        return idleGoBack(alvo.slug, min, idleWhere());
     }
 
-    async function idleGoBack(slug, min) {
+    async function idleGoBack(slug, min, onde) {
         idleRunning = true;
         idleNotify();
         const who = playerName();
@@ -5842,7 +5852,7 @@
             if (idleLast) { idleLast.ok = !erro; idleLast.motivo = erro; }
             logEvent('cidade-parada', { fase: 'fim', slug, hpLider: hp === undefined || hp === null ? 'sem resposta' : hp, ok: !erro, erro });
             postWebhook('alert', {
-                content: `🏙️ ${who ? `**${who}**` : 'Sua conta'}: parada fora de hunt há ${min} min — ${erro ? `não voltei: ${erro}` : `curei na Nurse Joy e estou voltando para **${slug}**`}`,
+                content: `🏙️ ${who ? `**${who}**` : 'Sua conta'}: parada ${onde || 'fora de hunt'} há ${min} min — ${erro ? `não voltei: ${erro}` : `curei na Nurse Joy e estou voltando para **${slug}**`}`,
                 username: 'Poke Idle World',
                 embeds: [{ title: erro ? 'Parada na cidade: volta falhou' : 'Parada na cidade: curando e voltando', description: (who ? `Conta: ${who}
 ` : '') + `Limite: ${Math.round(idleMinMs() / 60000)} min sem farmar (aba Compras → 🏙️ Parada na cidade).${erro ? ' Cure e entre na hunt na mão.' : ''}
@@ -5875,7 +5885,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         if (message.type === 'guild-dirty') { guildOnDirty(); return; }
         if (message.type === 'fishing-cooldown' || message.type === 'fishing-levelup') { fishOnMessage(message); return; }
         if (message.type === 'error') { handleGameError(message); return; }
-        if (message.type === 'poke-xp') { handlePokeXp(message); evolveOnPokeXp(message); return; }
+        if (message.type === 'poke-xp') { idleOnAlive(); handlePokeXp(message); evolveOnPokeXp(message); return; }
         if (message.type === 'field' || message.type === 'field-init') {
             lastFieldAt = Date.now();
             if (message.type === 'field') healOnField(message);
