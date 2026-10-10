@@ -269,6 +269,18 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   usa cadeado do jogo em quem sobe (não se sabe se o servidor cruza Pokémon travado). Logs `breeding-centro`, `breeding-cotacao`,
   `breeding-cruzou`, `breeding-falhou`, `breeding-choca`, `breeding-filho`, `breeding-parado`. Teste: `node test/breeding.test.js`
   (`loadBreedModule`: do marcador até `// ---- Clã: subir de rank`; o Daily Gift agora termina no marcador do breeding).
+- Farm por lista (v3.33.0, aba 🎒 Farm, `cfg.farmEnabled` + `cfg.farmList` `[{ item, qty, hunt, got }]`; módulo `// ---- Farm por
+  lista` entre o Breeding e a Guild): pedido do usuário em 10/10/2026 ("coloco 1000 x item x e o nome do monstro; quando acabar vai para
+  o próximo"). Linha do painel `quantidade item @ monstro` (`parseFarmLine`; monstro = slug da hunt ou nome da espécie, vazio = a hunt
+  que mais dropa o item até o nível do time, `farmHuntFor`). `got` = drops do item contados no `field-kill` (`farmOnKill`, pelo NOME
+  do loot, de qualquer hunt; NÃO é a mochila), persistido no cfg (gravação no máximo a cada 10 s, na hora ao fechar); `readForm`
+  conserva o `got` por item+monstro (`parseFarmText`). Etapa atual = 1ª com `got < qty` não pulada; fechou → aviso em `alert` com a
+  próxima e `farmTick` na hora; lista toda fechada → volta para `farmFrom`. 5ª rota excludente do Salvar (`farmOn`); espera viagem,
+  cura, troca, líder e Daily Kill como a guild; `farmOnHuntChange` reentra 8 s depois; hunt inexistente ou `farmHuntFailed` sem outra
+  hunt da espécie = etapa pulada na sessão (`farmSkipped`, aviso) e o Salvar/"Zerar contagem" (`farmReset`) tenta de novo. Itens da
+  lista ficam fora da venda de drops e do guardar (`farmKeepsItem`, por nome no `items.json`/`huntLoot`). Botões "Pular item atual"
+  (got = qty, persistido) e "Zerar contagem". Logs `farm-alvo`, `farm-espera`, `farm-etapa`, `farm-pulada`, `farm-volta`,
+  `farm-reentrada`, `farm-hunt-falhou`, `farm-aviso`, `farm-zerado`. Teste: `node test/farm.test.js` (`loadFarmModule`).
 - Guild (patch 1.9 do jogo, 09/10/2026; v3.30.0 = farejador, ROADMAP #32; protocolo completo em `docs/mensagens-do-jogo.md` →
   "Guild"): tudo pelo socket, sem REST. `guild-get { withList }` → frame `guild { guild, me{ gold, donatedToday, donateCap, buff },
   members, hunts (3 Caçadas do dia: kind kill/catch/fish/berry/evolve/egg/boss/orre/nightmare/photo), dailies (por região kanto/
@@ -446,6 +458,8 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
   POST roll/pick, `init.city`; `clock.now` relógio, `clock.rnd` o Math.random) e `node test/breeding.test.js` (`loadBreedModule`:
   `// ---- Breeding automático` até `// ---- Clã: subir de rank`; `init.api` responde center/quote/breed/hatch, `init.pokes` lista do box
   mutável em `state.pokes`, `init.freshPokes(n)` resposta ao n-ésimo `pokes-get`, `init.family` depot, `init.familyAction(payload)`).
+  `node test/farm.test.js` (`loadFarmModule`: `// ---- Farm por lista` até `// ---- Guild (v3.30.0)`; `init.huntCatalog`, `init.creatures`,
+  `init.items`, `init.team`, `init.env` mutável em `state.env` para viagem/cura/troca/líder/daily).
   `test/harness.js` recorta módulos do userscript pelos marcadores (`loadLevelModule`: `// ---- Alerta de nível do
   líder` até `// ---- Alerta de estoque de bolas`; `loadPokeSellModule`: `// ---- Venda automática de Pokémon` até
   `// ---- Rota de captura`; `loadCatchModule`: `// ---- Rota de captura` até `// ---- Daily Kill`, com `init.fetchJson(url)` para os

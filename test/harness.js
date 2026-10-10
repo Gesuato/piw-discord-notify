@@ -939,4 +939,69 @@ function loadGuildModule(cfg, init) {
     return { api, state, cfg, clock };
 }
 
-module.exports = { loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+// Farm por lista (v3.33.0): `// ---- Farm por lista` até `// ---- Guild (v3.30.0)`. `init.huntCatalog` (map-markers já resolvido),
+// `init.creatures` (loot por speciesId), `init.items` (catálogo público id -> { name }), `init.huntSlug`, `init.team`, `init.env`
+// ({ tripRunning, huntSwitch, swapPending, dailyOnHunt, healBusy }, mutável em `state.env`). Timers >= 1 s ficam em `state.timers`;
+// `state.fire(ms)` dispara os desse prazo e avança o relógio; `state.saves` conta os saveCfg.
+const FM_START = '    // ---- Farm por lista';
+const FM_END = '    // ---- Guild (v3.30.0)';
+function loadFarmModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(FM_START), b = src.indexOf(FM_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo do farm não encontrados no script');
+    const mod = src.slice(a, b);
+    const clock = { now: Date.now() };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const env = Object.assign({ tripRunning: false, huntSwitch: null, swapPending: null, dailyOnHunt: false, healBusy: false }, init.env || {});
+    const state = { sent: [], switches: [], hooks: [], logs: [], timers: [], saves: 0, env, fire: null };
+    const normalize = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+    const cr = init.creatures || [];
+    const creatureLoot = new Map(cr.map(c => [c.pokeId, c.loot || []]));
+    const itemsCatalog = new Map((init.items || []).map(i => [Number(i.id), i]));
+    let tid = 0;
+    const ctx = {
+        cfg,
+        TAG: '[teste]',
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        saveCfg: () => { state.saves++; },
+        normalize,
+        huntSlugFromName: (name) => normalize(name).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''),
+        switchHunt: (slug, tentativa, origem) => { state.switches.push({ slug, tentativa, origem }); },
+        huntSlug: init.huntSlug != null ? init.huntSlug : null,
+        CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'],
+        team: init.team || [],
+        clanLevelCap: () => { const t = init.team || []; return t.length ? Math.max(...t.map(p => Number(p.level) || 0)) : 9999; },
+        huntCatalog: init.huntCatalog || null,
+        loadHuntCatalog: () => Promise.resolve(init.huntCatalog || null),
+        loadItemsCatalog: () => Promise.resolve(itemsCatalog),
+        itemsCatalog,
+        huntLoot: new Map(),
+        lootPerKill: (speciesId, itemName) => (creatureLoot.get(Number(speciesId)) || []).filter(l => normalize(l?.name) === normalize(itemName)).reduce((a, l) => a + (Number(l.chance) || 0) / 100000 * ((Number(l.minCount) || 1) + (Number(l.maxCount) || Number(l.minCount) || 1)) / 2, 0),
+        get tripRunning() { return env.tripRunning; }, get huntSwitch() { return env.huntSwitch; }, get swapPending() { return env.swapPending; },
+        dailyWantsHunt: () => Boolean(env.dailyOnHunt),
+        healBusy: () => Boolean(env.healBusy),
+        setTimeout: (fn, ms) => { const id = ++tid; if (ms >= 1000) state.timers.push({ id, fn, ms }); else fn(); return id; },
+        clearTimeout: (id) => { const i = state.timers.findIndex(t => t.id === id); if (i >= 0) state.timers.splice(i, 1); },
+        Date: FakeDate,
+        console,
+    };
+    state.fire = (ms) => { const due = state.timers.filter(t => t.ms <= ms); state.timers = state.timers.filter(t => t.ms > ms); clock.now += ms; for (const t of due) t.fn(); };
+    // getters do ctx viram parâmetros simples da Function: o módulo lê `tripRunning` etc. como variáveis, então passamos funções
+    // de leitura por meio de um objeto `__env` e reescrevemos as referências no recorte.
+    const modEnv = mod.replace(/\btripRunning\b/g, '__env.tripRunning').replace(/\bhuntSwitch\b/g, '__env.huntSwitch').replace(/\bswapPending\b/g, '__env.swapPending');
+    const names = Object.keys(ctx).filter(k => !['tripRunning', 'huntSwitch', 'swapPending'].includes(k)).concat('__env');
+    const values = names.map(k => (k === '__env' ? env : ctx[k]));
+    const factory = new Function(...names, modEnv + `
+        return {
+            farmTick, farmOnKill, farmOnHuntChange, farmHuntFailed, farmReset, farmLine, farmKeepsItem, farmCurrent, parseFarmLine, parseFarmText, farmHuntFor, farmList, farmOn,
+            setHunt(slug) { huntSlug = slug; },
+            get farmTarget() { return farmTarget; }, get farmFrom() { return farmFrom; }, get farmWait() { return farmWait; }, get farmSkipped() { return farmSkipped; },
+        };`);
+    const api = factory(...values);
+    return { api, state, cfg, clock };
+}
+
+module.exports = { loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

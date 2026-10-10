@@ -765,6 +765,35 @@ regiões das dailies (kanto/outland/orre/nightmare).
 
 ---
 
+## ✅ 33. Farm por lista: dropar N de cada item na hunt do monstro, um de cada vez (v3.33.0)
+
+**O que faz (pedido do usuário em 10/10/2026):** "uma aba para dropar recursos específicos e quantidade: eu coloco 1000 x item x e o
+nome do monstro; o script dropa isso e quando acabar vai para o próximo". Aba 🎒 Farm com uma lista de linhas
+`quantidade item @ monstro` (ex.: `1000 Magikarp Fin @ magikarp`); sem `@ monstro` o script escolhe a hunt que mais dropa o item até
+o nível do time (`lootPerKill`, `creatures.json`). Vai para a hunt da 1ª linha, conta os drops do item nos `field-kill` (pelo nome do
+loot; não olha a mochila), ao fechar a quantidade avisa no canal de Alertas (com a próxima linha) e segue; no fim avisa e volta para a
+hunt em que a conta estava. O progresso (`got`) fica no `cfg.farmList` e sobrevive à recarga; editar quantidade ou ordem conserva o
+contado de cada item+monstro.
+
+**Mensagens:** só o que já existe: `field-kill { loot[{ itemId, name, qty }] }` para contar, `leave-hunt`/`enter-hunt` (`switchHunt`,
+origem `farm`) para ir e voltar, `map-markers` + `creatures.json` para achar a hunt. Nenhuma REST nova.
+
+**Config:** `farmEnabled`, `farmList [{ item, qty, hunt, got }]`. **UI:** aba 🎒 Farm (liga/desliga, textarea, lista com ✔/▶/✖ e
+"~x/abate" por linha, botões "Pular item atual" e "Zerar contagem"). 5ª rota excludente do Salvar (treino/captura/clã/guild/farm).
+
+**Regras:** espera viagem à cidade, cura na Joy, troca de hunt/líder e Daily Kill (como a rota da guild); a tela trocando de hunt =
+reentra 8 s depois; monstro inexistente ou hunt em que a entrada não confirma (tenta antes outra hunt da mesma espécie) = linha pulada
+nesta sessão com aviso, a lista segue; Salvar ou "Zerar contagem" tentam de novo. Enquanto o farm está ligado, os itens da lista ficam
+fora da venda automática de drops e do guardar na cidade (`farmKeepsItem`). Item que não consta na tabela de drops do monstro vai mesmo
+assim (log `farm-aviso` e "item fora da tabela de drops" no painel). Lista já concluída na carga fica quieta (sem aviso nem troca).
+
+**Teste:** `node test/farm.test.js` (`loadFarmModule`); passo na aba no `test/ui.smoke.js`; chaves no fixture do `test/config.roundtrip.js`.
+
+**Ideias para depois (não pedidas):** contar pela mochila (`inventory`) em vez dos drops; repetir a lista em ciclo; linha com várias
+hunts alternativas.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

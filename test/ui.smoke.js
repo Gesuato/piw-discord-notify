@@ -346,7 +346,27 @@ setTimeout(() => {
             if (acoes3.length !== 2) errors.push('guild: depois de "já doou o máximo" não devia doar de novo no mesmo dia, veio ' + JSON.stringify(acoes3));
             const logG = JSON.parse(window.localStorage.getItem('pgDiscordNotifyLog') || '[]').filter(e => e.kind === 'guild-doacao').pop();
             if (!(logG && logG.data.ok === false && /máximo/.test(logG.data.erro))) errors.push('guild: log guild-doacao com o erro do jogo não gravado: ' + JSON.stringify(logG));
-            if (!/Small Stone/.test($('#pg-dn-guild-status').textContent) || !/Tributo/.test($('#pg-dn-guild-status').textContent)) errors.push('guild: status da aba não mostra o tributo');
+            if (!/Small Stone/.test($('#pg-dn-guild-status').textContent) || !/Tributo/.test($('#pg-dn-guild-status').textContent)) errors.push('guild: status da aba não mostra o tributo');
+            // v3.33.0: aba Farm: lista com linha ruim, salvar (vira a rota que manda), drops contam, etapa fecha com aviso e passa para a próxima
+            panel.querySelector('.dn-tab[data-tab=farm]').click();
+            $('#pg-dn-farm').checked = true; fire($('#pg-dn-farm'), 'change');
+            $('#pg-dn-farm-list').value = '3 Pidgey Feather @ pidgey\nabc\n2 Small Stone'; fire($('#pg-dn-farm-list'), 'input');
+            log('farm rascunho=' + $('#pg-dn-farm-status').textContent + ' | itens=' + $('#pg-dn-farm-items').textContent.replace(/\s+/g, ' ') + ' | badge=' + panel.querySelector('.dn-tab[data-tab=farm] .b').dataset.state);
+            $('#pg-dn-save').click();
+            log('farm salvo msg=' + $('#pg-dn-msg').textContent);
+            const cfgF = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+            if (!(cfgF.farmEnabled && cfgF.farmList.length === 2 && cfgF.farmList[0].item === 'Pidgey Feather' && cfgF.farmList[0].hunt === 'pidgey' && cfgF.farmList[1].hunt === '')) errors.push('farm: lista não salvou: ' + JSON.stringify(cfgF.farmList));
+            if (!/Farm: 1 linha/.test($('#pg-dn-msg').textContent)) errors.push('farm: Salvar não avisou a linha ruim: ' + $('#pg-dn-msg').textContent);
+            if (cfgF.routeEnabled || cfgF.catchRouteEnabled || cfgF.clanRoute) errors.push('farm: ligar o farm devia desligar as outras rotas');
+            recv({ type: 'field-kill', speciesName: 'Pidgey', loot: [{ itemId: 1, name: 'Pidgey Feather', qty: 2 }] });
+            if (!/2\/3 Pidgey Feather/.test($('#pg-dn-farm-items').textContent)) errors.push('farm: contagem não apareceu: ' + $('#pg-dn-farm-items').textContent);
+            recv({ type: 'field-kill', speciesName: 'Pidgey', loot: [{ itemId: 1, name: 'Pidgey Feather', qty: 1 }] });
+            const cfgF2 = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+            if (!(cfgF2.farmList[0].got === 3)) errors.push('farm: etapa fechada não gravou got=3: ' + JSON.stringify(cfgF2.farmList));
+            const logF = JSON.parse(window.localStorage.getItem('pgDiscordNotifyLog') || '[]').filter(e => e.kind.startsWith('farm')).map(e => e.kind);
+            log('farm log=' + logF.join(',') + ' | status=' + $('#pg-dn-farm-status').textContent);
+            if (!logF.includes('farm-etapa')) errors.push('farm: log farm-etapa não gravado: ' + logF.join(','));
+            if (!/3\/3 Pidgey Feather/.test($('#pg-dn-farm-items').textContent) || !/0\/2 Small Stone/.test($('#pg-dn-farm-items').textContent)) errors.push('farm: lista do painel errada: ' + $('#pg-dn-farm-items').textContent);
             {
                 const kindsG = JSON.parse(window.localStorage.getItem('pgDiscordNotifyLog') || '[]').filter(e => e.kind.startsWith('guild'));
                 log('guild: ' + kindsG.map(e => e.kind).join(',') + ' | campos=' + JSON.stringify((kindsG.find(e => e.kind === 'guild-campos') || {}).data && (kindsG.find(e => e.kind === 'guild-campos') || {}).data.tributo) + ' | envio=' + JSON.stringify((kindsG.find(e => e.kind === 'guild-envio') || {}).data));

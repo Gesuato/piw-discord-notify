@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.32.0
+// @version      3.33.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.32.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.33.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -93,6 +93,8 @@
         guildHuntEnabled: false, // v3.32.0 rota da guild (4ª rota excludente): caçar a espécie da caçada "Derrotar" até a meta fechar
         guildFishEnabled: false, // ...pescar (hunt `pesca`, faixa natural da skill) para a caçada "Pescar peixes"
         guildFarmTribute: false, // ...farmar o item do Tributo do Dia na hunt que mais o dropa (e depositar)
+        farmEnabled: false,     // v3.33.0 Farm por lista (aba 🎒): dropar N de cada item na hunt do monstro indicado, um item de cada vez
+        farmList: [],           // ...[{ item, qty, hunt, got }] em ordem; hunt '' = a que mais dropa o item até o nível do time; got = drops contados
         clanEnabled: false,     // v3.17.0 Clã (aba Profissão): acompanhar a tarefa de rank, guardar os itens base, converter na viagem
         clanKey: 'orebound',    // clã em que o script entra sozinho se a conta não tiver nenhum (1ª entrada é grátis)
         clanRankup: true,       // ...subir de rank sozinho quando a tarefa fechar (na viagem à cidade)
@@ -726,6 +728,7 @@
         const t = {
             recarga: { verbo: 'voltar para a', quando: 'depois da recarga automática', titulo: `Recarga: volta para ${slug} não confirmou`, dica: 'A conta deve estar na cidade: entre na hunt na mão.' },
             guild: { verbo: 'entrar na', quando: 'rota da guild', titulo: `Guild: entrada em ${slug} não confirmou`, dica: 'Essa hunt foi pulada nesta sessão; a rota da guild segue para o próximo objetivo.' },
+            farm: { verbo: 'entrar na', quando: 'farm por lista', titulo: `Farm: entrada em ${slug} não confirmou`, dica: 'Essa hunt foi pulada nesta sessão; o farm tenta outra hunt do mesmo monstro ou passa para o próximo item da lista.' },
             cla: { verbo: 'entrar na', quando: 'rota do clã', titulo: `Clã: entrada em ${slug} não confirmou`, dica: 'Essa hunt foi pulada nesta sessão; a rota do clã segue para a próxima melhor.' },
             'daily-ida': { verbo: 'entrar na', quando: 'Daily Kill sozinha', titulo: `Daily Kill: entrada em ${slug} não confirmou`, dica: 'O script devolveu o líder e voltou para a hunt de antes; faça a daily na mão hoje (o nível da hunt pode ser alto demais).' },
             daily: { verbo: 'voltar para a', quando: 'depois da Daily Kill', titulo: `Daily Kill: volta para ${slug} não confirmou`, dica: 'Confira o nome da hunt em "Voltar para" (ou entre na hunt na mão).' },
@@ -749,6 +752,7 @@
         if (origem === 'daily-ida') dailyGoFailed(slug);
         if (origem === 'cla') clanHuntFailed(slug);
         if (origem === 'guild') guildHuntFailed(slug);
+        if (origem === 'farm') farmHuntFailed(slug);
     }
 
     function handlePokeXp(message) {
@@ -1182,6 +1186,7 @@
         noteHuntChange(novo);
         catchOnHuntChange(novo);
         guildOnHuntChange(novo);
+        farmOnHuntChange(novo);
         idleOnHuntChange(novo);
         loadHuntProfile();
         logEvent('hunt', { slug: huntSlug });
@@ -1245,6 +1250,7 @@
                 if (protectedReason(item)) continue;
                 if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) continue;   // item base/de clã que a tarefa ainda pede
                 if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) continue;  // v3.31.0: item do Tributo do Dia da guild
+                if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) continue;    // v3.33.0: item da lista de farm
                 const keep = Math.max(0, Number(cfg.sellItems[id]?.keep) || 0);
                 const qty = Math.floor(Number(inv.quantity) || 0) - keep;
                 if (qty <= 0) continue;
@@ -3498,6 +3504,243 @@
         return out;
     }
 
+    // ---- Farm por lista (v3.33.0): dropar N de cada item na hunt do monstro escolhido, um item de cada vez -----------------
+    // Pedido do usuário (10/10/2026): "eu coloco 1000 x item x e o nome do monstro; o script dropa isso e quando acabar vai para o
+    // próximo". `cfg.farmList` = [{ item, qty, hunt, got }] em ordem; `got` = drops do item contados nos `field-kill` desde que a
+    // etapa começou (persistido no cfg: sobrevive à recarga; gravado no máximo a cada FARM_SAVE_MS). Etapa atual = a 1ª com
+    // `got < qty` e não pulada. Monstro = slug exato da hunt, senão nome da espécie/hunt (a de menor nível ao alcance do time);
+    // vazio = a hunt que mais dropa o item (`lootPerKill`, até o nível do time). 5ª rota excludente do Salvar; espera viagem, cura,
+    // troca de hunt/líder e Daily Kill como as rotas do clã e da guild; `farmOnHuntChange` volta ao alvo 8 s depois de a tela
+    // trocar. Os itens da lista ficam fora da venda automática de drops e do guardar na cidade (`farmKeepsItem`) enquanto o módulo
+    // está ligado. Hunt não encontrada ou entrada que não confirma (`farmHuntFailed`) = etapa pulada nesta sessão (aviso). Lista
+    // concluída = aviso e volta para a hunt de antes (`farmFrom`). Logs `farm-alvo`, `farm-espera`, `farm-etapa`, `farm-pulada`,
+    // `farm-volta`, `farm-reentrada`, `farm-hunt-falhou`, `farm-aviso`. Teste: `node test/farm.test.js` (`loadFarmModule`).
+    const FARM_TICK_MS = 60 * 1000;
+    const FARM_REENTER_MS = 8000;
+    const FARM_SAVE_MS = 10 * 1000;   // todo abate pode dropar: grava o progresso no cfg no máximo a cada 10 s (e na hora ao fechar)
+    let farmTarget = null;            // { key, idx, slug, name, level, item, qty, perKill }
+    let farmFrom = null;              // hunt de antes da lista (para onde voltar)
+    let farmWait = '';                // por que a lista ainda não anda (painel + log `farm-espera`)
+    const farmSkipped = new Map();    // chave da etapa -> motivo (pulada nesta sessão)
+    const farmFailed = new Set();     // hunts cuja entrada não confirmou nesta sessão
+    let farmReenterTimer = null, farmSaveTimer = null;
+    let farmBusy = false;
+    let onFarmChange = null;          // callback do painel
+    function farmNotify() { if (onFarmChange) { try { onFarmChange(); } catch { /* painel fechado */ } } }
+    const farmN = (n) => Number(n).toLocaleString('pt-BR');
+
+    function farmList(d) { d = d || cfg; return (Array.isArray(d.farmList) ? d.farmList : []).filter(e => e && typeof e === 'object' && e.item && Math.floor(Number(e.qty) || 0) > 0); }
+    function farmOn(d) { d = d || cfg; return Boolean(d.farmEnabled) && farmList(d).length > 0; }
+    function farmGot(e) { return Math.max(0, Math.floor(Number(e?.got) || 0)); }
+    function farmQty(e) { return Math.max(0, Math.floor(Number(e?.qty) || 0)); }
+    function farmEntryDone(e) { return farmGot(e) >= farmQty(e); }
+    function farmKey(e) { return `${normalize(e?.item || '')}|${normalize(e?.hunt || '')}`; }
+    function farmLevelCap() { return typeof clanLevelCap === 'function' ? clanLevelCap() : 9999; }
+    // Linha do painel: "1000 Magikarp Fin @ magikarp" | "1000x Magikarp Fin @ Magikarp" | "1000 Magikarp Fin" (monstro vazio).
+    function parseFarmLine(line) {
+        const m = String(line || '').trim().match(/^(\d+)\s*[x×]?\s+([^@]+?)\s*(?:@\s*(.+?))?\s*$/i);
+        if (!m) return null;
+        const qty = parseInt(m[1], 10);
+        if (!(qty > 0)) return null;
+        return { item: m[2].trim(), qty, hunt: m[3] ? huntSlugFromName(m[3]) : '' };
+    }
+    function farmLineText(e) { return `${farmQty(e)} ${e.item}${e.hunt ? ` @ ${e.hunt}` : ''}`; }
+    // Texto do painel -> lista no formato do cfg, conservando o progresso (`got`) das etapas que já existiam (mesmo item e monstro).
+    function parseFarmText(text, antes) {
+        const prev = new Map((Array.isArray(antes) ? antes : []).map(e => [farmKey(e), farmGot(e)]));
+        const list = [], ruins = [];
+        for (const raw of String(text || '').split(/\r?\n/)) {
+            const l = raw.trim();
+            if (!l) continue;
+            const e = parseFarmLine(l);
+            if (!e) { ruins.push(l); continue; }
+            e.got = prev.get(farmKey(e)) || 0;
+            prev.delete(farmKey(e));   // linha repetida não herda o progresso da primeira
+            list.push(e);
+        }
+        return { list, ruins };
+    }
+    // Ids dos itens da lista (pelo nome, no catálogo público e nos drops já vistos nesta hunt): ficam fora da venda e do guardar.
+    function farmItemIds() {
+        const names = new Set(farmList().map(e => normalize(e.item)));
+        const ids = new Set();
+        if (typeof itemsCatalog !== 'undefined' && itemsCatalog) for (const [id, it] of itemsCatalog) if (names.has(normalize(it?.name))) ids.add(Number(id));
+        if (typeof huntLoot !== 'undefined' && huntLoot) for (const [id, l] of huntLoot) if (names.has(normalize(l?.name))) ids.add(Number(id));
+        return ids;
+    }
+    function farmKeepsItem(id) { return farmOn() && farmItemIds().has(Number(id)); }
+    // Etapa atual: a 1ª não concluída e não pulada. { idx, e } ou null.
+    function farmCurrent(d) {
+        const list = farmList(d);
+        for (let i = 0; i < list.length; i++) if (!farmEntryDone(list[i]) && !farmSkipped.has(farmKey(list[i]))) return { idx: i, e: list[i] };
+        return null;
+    }
+    // Hunt da etapa: { slug, name, level, perKill } ou null (não achei / todas falharam nesta sessão).
+    function farmHuntFor(e) {
+        if (!Array.isArray(huntCatalog)) return null;
+        const cap = farmLevelCap();
+        const per = (h) => (typeof lootPerKill === 'function' && h.speciesId ? lootPerKill(h.speciesId, e.item) : 0);
+        let cands;
+        if (e.hunt) {
+            const slug = huntSlugFromName(e.hunt), k = normalize(e.hunt);
+            cands = huntCatalog.filter(h => h.slug === slug || normalize(h.speciesName || '') === k || normalize(h.name) === k)
+                .sort((a, b) => (a.slug === slug ? 0 : 1) - (b.slug === slug ? 0 : 1) || (a.level <= cap ? 0 : 1) - (b.level <= cap ? 0 : 1) || a.level - b.level);
+        } else {
+            cands = huntCatalog.filter(h => h.speciesId && h.level <= cap).map(h => ({ h, e: per(h) })).filter(x => x.e > 0)
+                .sort((a, b) => b.e - a.e || a.h.level - b.h.level).map(x => x.h);
+        }
+        const h = cands.find(x => !farmFailed.has(x.slug));
+        return h ? { slug: h.slug, name: h.name, level: h.level, perKill: per(h) } : null;
+    }
+    function farmSetWait(motivo) {
+        if (motivo === farmWait) return;
+        farmWait = motivo;
+        if (motivo) logEvent('farm-espera', { motivo, hunt: huntSlug || null });
+        farmNotify();
+    }
+    function farmSave() { clearTimeout(farmSaveTimer); farmSaveTimer = null; saveCfg(cfg); }
+    function farmHuntFailed(slug) {
+        farmFailed.add(slug);
+        if (farmTarget?.slug === slug) farmTarget = null;
+        logEvent('farm-hunt-falhou', { slug });
+    }
+    function farmReturn(motivo) {
+        const volta = farmFrom;
+        const atual = normalize(huntSlug || '');
+        farmTarget = null; farmFrom = null;
+        logEvent('farm-volta', { motivo, volta });
+        farmNotify();
+        if (volta && volta !== atual) switchHunt(volta, 1, 'farm');
+    }
+    // Etapa sem hunt possível: pula nesta sessão e avisa (corrigir a linha e salvar tenta de novo).
+    function farmSkip(e, motivo) {
+        farmSkipped.set(farmKey(e), motivo);
+        if (farmTarget?.key === farmKey(e)) farmTarget = null;
+        logEvent('farm-pulada', { item: e.item, qty: farmQty(e), hunt: e.hunt || null, motivo });
+        const who = playerName();
+        postWebhook('alert', {
+            content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: farm de **${farmN(farmQty(e))}× ${e.item}** pulado (${motivo})`,
+            username: 'Poke Idle World',
+            embeds: [{ title: `Farm: ${e.item} pulado`, description: `${who ? `Conta: ${who}\n` : ''}${motivo}. Corrija a linha na aba 🎒 Farm e salve para tentar de novo; a lista segue para a próxima etapa.`, color: 0xfee75c }],
+        }, { evento: 'farm-pulada', item: e.item });
+        farmNotify();
+    }
+    // Etapa fechou: avisa (com a próxima) e replaneja na hora.
+    function farmEntryFinished(cur) {
+        const list = farmList();
+        const next = farmCurrent();
+        logEvent('farm-etapa', { etapa: cur.idx + 1, de: list.length, item: cur.e.item, qty: farmQty(cur.e), got: farmGot(cur.e), hunt: farmTarget?.slug || huntSlug || null, proxima: next ? next.e.item : null });
+        const who = playerName();
+        postWebhook('alert', {
+            content: `🎒 ${who ? `**${who}**` : 'Sua conta'}: farm de **${farmN(farmQty(cur.e))}× ${cur.e.item}** concluído${next ? ` · próximo: ${farmN(farmQty(next.e))}× ${next.e.item}` : ' · lista concluída'}`,
+            username: 'Poke Idle World',
+            embeds: [{
+                title: `Farm: ${cur.e.item} ${farmN(farmGot(cur.e))}/${farmN(farmQty(cur.e))}`,
+                description: `${who ? `Conta: ${who}\n` : ''}Etapa ${cur.idx + 1} de ${list.length}${farmTarget?.slug ? ` na hunt ${farmTarget.slug}` : ''}.\n${next ? `Próxima: ${farmN(farmQty(next.e))}× ${next.e.item}${next.e.hunt ? ` em ${next.e.hunt}` : ' (hunt que mais dropa)'}` : `Todas as etapas fechadas${farmFrom ? `: voltando para ${farmFrom}` : ''}.`}`,
+                color: 0x57f287,
+            }],
+        }, { evento: 'farm-etapa', item: cur.e.item });
+        farmTarget = null;
+        farmNotify();
+        farmTick();
+    }
+    // `field-kill`: conta o drop do item da etapa atual (pelo nome, de qualquer hunt), grava e fecha a etapa quando chega lá.
+    function farmOnKill(message) {
+        if (!farmOn() || !Array.isArray(message?.loot) || !message.loot.length) return;
+        const cur = farmCurrent();
+        if (!cur) return;
+        const k = normalize(cur.e.item);
+        let n = 0;
+        for (const l of message.loot) {
+            const nome = l?.name || (typeof itemsCatalog !== 'undefined' && itemsCatalog ? itemsCatalog.get(Number(l?.itemId))?.name : null);
+            if (normalize(nome) === k) n += Math.max(0, Number(l?.qty) || 0);
+        }
+        if (!n) return;
+        cur.e.got = farmGot(cur.e) + n;
+        if (farmEntryDone(cur.e)) { farmSave(); farmEntryFinished(cur); return; }
+        if (!farmSaveTimer) farmSaveTimer = setTimeout(() => { farmSaveTimer = null; saveCfg(cfg); }, FARM_SAVE_MS);
+        farmNotify();
+    }
+    // Tique (60 s, ao fechar uma etapa e no Salvar): escolhe a etapa e a hunt, vai, volta no fim.
+    async function farmTick() {
+        if (farmBusy) return;
+        if (!farmOn()) { if (farmTarget || farmFrom) farmReturn('farm desligado'); farmSetWait(''); return; }
+        farmBusy = true;
+        try {
+            if (!Array.isArray(huntCatalog)) {
+                try { await loadHuntCatalog(); } catch (err) { farmSetWait(`não consegui baixar o mapa de hunts (${String(err?.message || err)})`); return; }
+            }
+            if (typeof loadItemsCatalog === 'function') await loadItemsCatalog();
+            let cur, h;
+            for (;;) {
+                cur = farmCurrent();
+                if (!cur) {
+                    const puladas = farmList().filter(e => farmSkipped.has(farmKey(e)));
+                    farmSetWait(puladas.length ? `lista concluída · ${puladas.length} pulada${puladas.length > 1 ? 's' : ''} (${puladas.map(e => e.item).join(', ')}): corrija e salve` : 'lista concluída · edite a lista ou zere a contagem');
+                    if (farmTarget || farmFrom) farmReturn('lista concluída');
+                    return;
+                }
+                h = farmHuntFor(cur.e);
+                if (h) break;
+                farmSkip(cur.e, cur.e.hunt ? `não achei a hunt de "${cur.e.hunt}" (ou a entrada nela não confirmou)` : `nenhuma hunt até lv ${farmLevelCap()} dropa ${cur.e.item}`);
+            }
+            if (tripRunning) { farmSetWait('esperando a viagem à cidade acabar'); return; }
+            if (typeof healBusy === 'function' && healBusy()) { farmSetWait('esperando a cura na Nurse Joy acabar'); return; }
+            if (huntSwitch) { farmSetWait(`esperando a troca para ${huntSwitch.slug} confirmar`); return; }
+            if (swapPending) { farmSetWait('esperando a troca de líder confirmar'); return; }
+            if (typeof dailyWantsHunt === 'function' && dailyWantsHunt()) { farmSetWait('a Daily Kill está usando a hunt (o farm segue quando ela acabar)'); return; }
+            farmSetWait('');
+            const key = farmKey(cur.e);
+            if (!farmTarget || farmTarget.key !== key || farmTarget.slug !== h.slug) {
+                farmTarget = { key, idx: cur.idx, slug: h.slug, name: h.name, level: h.level, item: cur.e.item, qty: farmQty(cur.e), perKill: h.perKill };
+                logEvent('farm-alvo', { etapa: cur.idx + 1, de: farmList().length, item: cur.e.item, qty: farmQty(cur.e), got: farmGot(cur.e), slug: h.slug, level: h.level, porAbate: Math.round(h.perKill * 1000) / 1000 });
+                if (!(h.perKill > 0)) logEvent('farm-aviso', { item: cur.e.item, slug: h.slug, motivo: 'o item não consta na tabela de drops desse monstro (creatures.json); o script conta os drops mesmo assim' });
+                farmNotify();
+            }
+            const atual = normalize(huntSlug || '');
+            if (atual === h.slug) return;
+            if (!farmFrom && atual && !CITY_SLUGS.includes(atual)) farmFrom = atual;
+            switchHunt(h.slug, 1, 'farm');
+        } finally { farmBusy = false; }
+    }
+    // O jogo entrou em outra hunt (tela reafirmando a escolhida na mão, reconexão): volta ao alvo 8 s depois.
+    function farmOnHuntChange(slug) {
+        clearTimeout(farmReenterTimer); farmReenterTimer = null;
+        if (!farmOn() || !farmTarget || tripRunning || (typeof healBusy === 'function' && healBusy())) return;
+        const h = normalize(slug || '');
+        if (!h || CITY_SLUGS.includes(h) || h === farmTarget.slug) return;
+        if (typeof dailyWantsHunt === 'function' && dailyWantsHunt()) return;
+        farmReenterTimer = setTimeout(() => {
+            farmReenterTimer = null;
+            if (!farmOn() || !farmTarget || huntSwitch) return;
+            const atual = normalize(huntSlug || '');
+            if (!atual || atual === farmTarget.slug || (typeof dailyWantsHunt === 'function' && dailyWantsHunt())) return;
+            logEvent('farm-reentrada', { de: atual, slug: farmTarget.slug, motivo: 'o jogo entrou em outra hunt' });
+            switchHunt(farmTarget.slug, 1, 'farm');
+        }, FARM_REENTER_MS);
+    }
+    // Salvar / botões do painel: esquece pulos e falhas da sessão e replaneja.
+    function farmReset() {
+        farmSkipped.clear(); farmFailed.clear();
+        farmTarget = null;
+        farmSetWait('');
+    }
+    // Linha de estado do painel.
+    function farmLine(d) {
+        d = d || cfg;
+        if (!d.farmEnabled) return 'Farm desligado';
+        if (!farmList(d).length) return 'Sem itens na lista: o farm fica desligado';
+        if (farmTarget) {
+            const cur = farmCurrent();
+            const got = cur && farmKey(cur.e) === farmTarget.key ? farmGot(cur.e) : 0;
+            const falta = Math.max(0, farmTarget.qty - got);
+            const est = farmTarget.perKill > 0 ? ` · ~${farmN(Math.ceil(falta / farmTarget.perKill))} abates` : '';
+            return `▶ ${farmTarget.item} ${farmN(got)}/${farmN(farmTarget.qty)} em ${farmTarget.slug} lv${farmTarget.level}${farmTarget.perKill > 0 ? ` (~${Math.round(farmTarget.perKill * 100) / 100}/abate)` : ' (item fora da tabela de drops)'}${est}${farmFrom ? ` · volta para ${farmFrom}` : ''}`;
+        }
+        if (farmWait) return `parado: ${farmWait}`;
+        return cfg.farmEnabled ? 'escolhendo a hunt… (confere a cada 1 min)' : 'salve para ligar';
+    }
+
     // ---- Guild (v3.30.0): ler o estado da guild e confirmar o formato no log ANTES de automatizar ---------------------
     // Levantado no bundle do cliente em 09/10/2026 (janela "Guild" do menu, patch 1.9 do mesmo dia; a pokepedia ainda não
     // documenta o sistema e o patch note completo está só no Discord do jogo). TUDO pelo socket, sem REST:
@@ -4532,6 +4775,7 @@
         if (cfg.sellEnabled && cfg.sellItems && cfg.sellItems[id]) return 'marcado para venda';
         if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) return 'tarefa do clã';
         if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) return 'tributo da guild';
+        if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) return 'lista de farm';
         return null;
     }
     // Motivo para um Pokémon NÃO ir para a família, ou null se vai.
@@ -4611,6 +4855,7 @@
                     if (DEPOSIT_SKIP_CATS.includes(String(item?.category || inv?.category || ''))) continue;   // consumível nunca sai
                     if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) continue;
                     if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) continue;
+                    if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) continue;
                     const qty = Math.floor(Number(inv.quantity) || 0) - e.keep;
                     if (qty <= 0) continue;
                     if (!familiaNaConta()) break;
@@ -5639,7 +5884,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             return;
         }
         if (message.type === 'field-teleport-city') { healOnTeleport(); return; }   // o sintético da viagem já saiu acima
-        if (message.type === 'field-kill') { idleOnAlive(); noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteDepositDrop(message); guildOnKill(message); fishOnKill(message); return; }
+        if (message.type === 'field-kill') { idleOnAlive(); noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteDepositDrop(message); guildOnKill(message); fishOnKill(message); farmOnKill(message); return; }
         if (message.type === 'inventory' && Array.isArray(message.items)) { clanOnInventory(message.items); supplyOnInventory(message.items); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
         if (message.type === 'pokes' && Array.isArray(message.list)) { logEvent('pokes-frame', { total: message.list.length, time: message.list.filter(p => p && p.team).map(p => `${p.name} lv${p.level}`), hunt: huntSlug || null }); updateTeam(message.list); healOnPokes(message.list); idleOnPokes(message.list);handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); evolveOnPokes(message.list); breedOnPokes(message.list); return; }
@@ -5911,6 +6156,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         { id: 'profissao', icon: '📖', label: 'Profissão' },
         { id: 'breeding', icon: '🥚', label: 'Breeding' },
         { id: 'guild', icon: '🛡', label: 'Guild' },
+        { id: 'farm', icon: '🎒', label: 'Farm' },
         { id: 'sistema', icon: '⚙', label: 'Sistema' },
     ];
 
@@ -5956,6 +6202,11 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
                 if (!temAlertas) return 'warn';
                 return 'on';
             }
+            case 'farm': {
+                if (!d.farmEnabled) return 'off';
+                if (!farmList(d).length || !temAlertas) return 'warn';
+                return 'on';
+            }
             case 'sistema': return d.reloadEnabled ? 'on' : 'off';
         }
         return 'off';
@@ -5971,6 +6222,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Breeding: ${d.breedEnabled ? `${breedActiveLines(d).length} ${breedActiveLines(d).length === 1 ? 'linhagem' : 'linhagens'}${d.breedDouble ? ' + dobrar' : ''}` : 'desligado'}`,
             `Guild: ${[guildDonateWanted(d) > 0 ? `doa ${guildN(guildDonateWanted(d))}/dia` : '', d.guildTributeEnabled ? 'tributo' : '', d.guildFarmTribute ? 'farma tributo' : '', d.guildHuntEnabled ? 'caça' : '', d.guildFishEnabled ? 'pesca' : '', d.guildAlerts ? 'avisos' : ''].filter(Boolean).join(' + ') || 'desligada'}`,
+            `Farm: ${d.farmEnabled && farmList(d).length ? `${farmList(d).filter(farmEntryDone).length}/${farmList(d).length} itens` : 'desligado'}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
         ].join(' · ');
     }
@@ -6283,6 +6535,20 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <p class="dn-help">A guild é a mesma nas 4 contas: ligue isto em UM painel só, senão cada aviso chega 4 vezes. As doações e os depósitos de cada conta avisam sempre (canal de Alertas).</p>
                     </div>
                 </section>
+                <section class="dn-pane" data-pane="farm" hidden>
+                    <div class="dn-section">
+                        <h3>🎒 Farm por lista</h3>
+                        <label class="dn-toggle"><input id="pg-dn-farm" type="checkbox"><span class="sw"></span>Dropar a lista abaixo, um item de cada vez</label>
+                        <textarea id="pg-dn-farm-list" class="dn-textarea" rows="5" placeholder="1000 Magikarp Fin @ magikarp&#10;500 Seed @ Grovyle&#10;200 Feather" spellcheck="false"></textarea>
+                        <p class="dn-help">Uma linha por item: <b>quantidade item @ monstro</b> (ex.: <b>1000 Magikarp Fin @ magikarp</b>). O monstro é o nome da hunt (o mesmo de "Hunt atual") ou da espécie; sem <b>@ monstro</b> o script escolhe a hunt que mais dropa o item até o nível do time. Conta os drops que caem nos abates (não o que já está na mochila) e, ao fechar a quantidade, passa para a próxima linha; no fim volta para a hunt em que estava. O progresso fica salvo e sobrevive à recarga.</p>
+                        <div class="dn-status col"><div id="pg-dn-farm-status"></div><ol class="dn-route" id="pg-dn-farm-items"></ol></div>
+                        <div class="dn-actions">
+                            <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-farm-skip" title="Marca o item atual como feito (quantidade = contado) e passa para o próximo.">Pular item atual</button>
+                            <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-farm-reset" title="Zera o contado de todos os itens e recomeça pela 1ª linha.">Zerar contagem</button>
+                        </div>
+                        <p class="dn-help">É a 5ª rota que manda na hunt: ligar aqui desliga a rota de treino, a de captura, a do clã e a da guild (e vice-versa). A Daily Kill, a viagem à cidade e a cura têm prioridade. Enquanto o farm está ligado, os itens da lista ficam fora da venda automática de drops e do guardar na cidade. Linha com monstro que não existe ou hunt em que a conta não consegue entrar é pulada com aviso (canal de Alertas) e a lista segue.</p>
+                    </div>
+                </section>
                 <section class="dn-pane" data-pane="sistema" hidden>
                     <div class="dn-section">
                         <h3>Recarga do painel</h3>
@@ -6418,8 +6684,11 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
         }
         function readForm() {
             const { route, linhasRuins } = readRoute();
+            const farm = parseFarmText($('#pg-dn-farm-list').value, cfg.farmList);
             const lv = $('#pg-dn-level');
             const draft = {
+                farmEnabled: $('#pg-dn-farm').checked,
+                farmList: farm.list,
                 webhookUrl: $('#pg-dn-hook').value.trim(),
                 webhookShiny: $('#pg-dn-hook-shiny').value.trim(),
                 webhookAlerts: $('#pg-dn-hook-alerts').value.trim(),
@@ -6505,7 +6774,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 reloadEveryMin: Math.max(1, parseInt($('#pg-dn-reload-min').value, 10) || 60),
                 reloadEveryMaxMin: Math.max(0, parseInt($('#pg-dn-reload-max').value, 10) || 0),
             };
-            return { draft, linhasRuins };
+            return { draft, linhasRuins, farmRuins: farm.ruins };
         }
         // Com o painel aberto os badges refletem o que está na tela; fechado, o que está salvo.
         function current() { return panel.hidden ? cfg : readForm().draft; }
@@ -6831,6 +7100,49 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-guild-route').textContent = guildRouteLine(current());
         }
         onGuildChange = () => { if (!panel.hidden) renderGuild(); };
+        // ---- Farm por lista (v3.33.0) ----
+        function renderFarm() {
+            const d = current();
+            const { list, ruins } = parseFarmText($('#pg-dn-farm-list').value, cfg.farmList);
+            const cur = farmCurrent({ farmList: list });
+            const items = $('#pg-dn-farm-items');
+            const lines = $('#pg-dn-farm-list').value.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+            let vi = 0;
+            items.innerHTML = lines.map(l => {
+                const e = parseFarmLine(l);
+                if (!e) return `<li class="bad"><span class="m">✖</span><span>${escHtml(l)}</span><span class="hint">use "quantidade item @ monstro"</span></li>`;
+                const it = list[vi++];
+                const feito = farmEntryDone(it), pulada = farmSkipped.get(farmKey(it)), atual = cur && cur.e === it;
+                const h = Array.isArray(huntCatalog) ? farmHuntFor(it) : null;
+                const cls = feito ? 'done' : atual ? 'cur' : pulada ? 'bad' : '';
+                const mark = feito ? '✔' : atual ? '▶' : pulada ? '✖' : '';
+                const onde = h ? `${h.slug} lv${h.level}${h.perKill > 0 ? ` · ~${Math.round(h.perKill * 100) / 100}/abate` : ' · item fora da tabela de drops'}` : (Array.isArray(huntCatalog) ? (it.hunt ? 'hunt não encontrada' : 'nenhuma hunt ao alcance dropa') : 'mapa de hunts ainda não carregado');
+                return `<li class="${cls}"><span class="m">${mark}</span><span>${farmN(farmGot(it))}/${farmN(farmQty(it))} ${escHtml(it.item)}</span><span class="hint">${escHtml(pulada ? `pulada: ${pulada}` : onde)}</span></li>`;
+            }).join('');
+            const salvo = JSON.stringify(list.map(e => [e.item, farmQty(e), e.hunt])) === JSON.stringify(farmList().map(e => [e.item, farmQty(e), e.hunt]));
+            $('#pg-dn-farm-status').textContent = `${farmLine(d)}${!salvo ? ' · (lista alterada: salve)' : ''}${ruins.length ? ` · ${ruins.length} linha(s) inválida(s)` : ''}`;
+        }
+        onFarmChange = () => { if (!panel.hidden) renderFarm(); };
+        $('#pg-dn-farm-skip').onclick = () => {
+            const cur = farmCurrent();
+            if (!cur) { flash('⚠ Nenhum item em andamento na lista salva.', 'warn'); return; }
+            cur.e.got = farmQty(cur.e);
+            logEvent('farm-pulada', { item: cur.e.item, qty: farmQty(cur.e), hunt: cur.e.hunt || null, motivo: 'botão Pular item atual' });
+            farmTarget = null;
+            farmSave();
+            renderFarm();
+            if (cfg.farmEnabled) setTimeout(() => farmTick(), 300);
+            flash(`✔ ${cur.e.item} marcado como feito.`, 'ok', 3000);
+        };
+        $('#pg-dn-farm-reset').onclick = () => {
+            for (const e of farmList()) e.got = 0;
+            farmReset();
+            farmSave();
+            logEvent('farm-zerado', { itens: farmList().length });
+            renderFarm();
+            if (cfg.farmEnabled) setTimeout(() => farmTick(), 300);
+            flash('✔ Contagem zerada: recomeça pela 1ª linha.', 'ok', 3000);
+        };
         $('#pg-dn-guild-refresh').onclick = () => {
             const ok = guildRequest('botão Atualizar guild');
             flash(ok ? 'Pedi o estado da guild ao jogo.' : 'Socket do jogo não rastreado.', ok ? 'info' : 'warn');
@@ -7228,7 +7540,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
 
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderEvolve(); renderSlot(); renderBreed(); renderGuild(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderEvolve(); renderSlot(); renderBreed(); renderGuild(); renderFarm(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -7301,6 +7613,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-guild-hunt').checked = Boolean(cfg.guildHuntEnabled);
             $('#pg-dn-guild-fish').checked = Boolean(cfg.guildFishEnabled);
             $('#pg-dn-guild-farm').checked = Boolean(cfg.guildFarmTribute);
+            $('#pg-dn-farm').checked = Boolean(cfg.farmEnabled);
+            $('#pg-dn-farm-list').value = farmList(cfg).map(farmLineText).join('\n');
             for (const n of [1, 2]) delete $(`#pg-dn-breed-l${n}`).dataset.ready;   // menus refeitos a partir do cfg salvo
             $('#pg-dn-gift-center').value = giftCenterMode(cfg);
             $('#pg-dn-clan').checked = Boolean(cfg.clanEnabled);
@@ -7388,7 +7702,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
 
         // ---- Salvar (global; mantém os efeitos colaterais de antes) ----
         $('#pg-dn-save').onclick = () => {
-            const { draft, linhasRuins } = readForm();
+            const { draft, linhasRuins, farmRuins } = readForm();
             const alvoAntes = levelTarget(), swapAntes = swapEnabled();
             const rotaAntes = JSON.stringify(routeList());
             const recargaAntes = JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]);
@@ -7403,6 +7717,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const ligouRota = draft.routeEnabled && !cfg.routeEnabled;
             const ligouCla = draft.clanEnabled && draft.clanRoute && !(cfg.clanEnabled && cfg.clanRoute);
             const ligouGuild = guildRouteOn(draft) && !guildRouteOn(cfg);
+            const ligouFarm = draft.farmEnabled && !cfg.farmEnabled;
+            const farmAntes = JSON.stringify([cfg.farmEnabled, farmList(cfg).map(e => [e.item, farmQty(e), e.hunt])]);
             const clanAntes = JSON.stringify([cfg.clanEnabled, cfg.clanRoute, cfg.clanKey]);
             Object.assign(cfg, draft);
             sellDrafts = {};                                  // listas de venda das outras hunts já foram para cfg.sellProfiles
@@ -7413,6 +7729,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 { on: () => cfg.catchRouteEnabled, off: () => { cfg.catchRouteEnabled = false; }, ligou: ligouCaptura, nome: 'Rota de captura' },
                 { on: () => cfg.clanEnabled && cfg.clanRoute, off: () => { cfg.clanRoute = false; }, ligou: ligouCla, nome: '"Caçar o que falta" (clã)' },
                 { on: () => guildRouteOn(cfg), off: () => { cfg.guildHuntEnabled = false; cfg.guildFishEnabled = false; cfg.guildFarmTribute = false; }, ligou: ligouGuild, nome: 'Caçar/pescar para a guild' },
+                { on: () => farmOn(cfg), off: () => { cfg.farmEnabled = false; }, ligou: ligouFarm, nome: 'Farm por lista' },
             ];
             const ligadas = rotas.filter(r => r.on());
             if (ligadas.length > 1) {
@@ -7452,6 +7769,11 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 if (!guildRouteOn() && guildTarget) guildReturn('rota da guild desligada');
                 if (guildOn()) setTimeout(() => guildRequest('salvar'), 500);
             }
+            if (JSON.stringify([cfg.farmEnabled, farmList(cfg).map(e => [e.item, farmQty(e), e.hunt])]) !== farmAntes) { // farm mudou: esquece pulos e replaneja já
+                farmReset();
+                if (!farmOn() && (farmTarget || farmFrom)) farmReturn('farm desligado');
+                if (farmOn()) setTimeout(() => farmTick(), 500);
+            }
             if (JSON.stringify([cfg.clanEnabled, cfg.clanRoute, cfg.clanKey]) !== clanAntes) {
                 if (!(cfg.clanEnabled && cfg.clanRoute) && clanTarget) clanReturn('rota do clã desligada');
                 if (cfg.clanEnabled) setTimeout(() => clanTick(), 500);
@@ -7467,9 +7789,11 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const avisos = exclusivo.map(t => `⚠ ${t}`);
             if (cfg.autoBuy && !cfg.ballsMin) avisos.push('⚠ Compra com limite 0: só compra quando a bola acabar.');
             if (linhasRuins.length) avisos.push(`⚠ Rota: ${linhasRuins.length} linha(s) ignorada(s) (formato "hunt nível"): ${linhasRuins.map(l => `"${l}"`).join(', ')}`);
+            if (farmRuins && farmRuins.length) avisos.push(`⚠ Farm: ${farmRuins.length} linha(s) ignorada(s) (formato "quantidade item @ monstro"): ${farmRuins.map(l => `"${l}"`).join(', ')}`);
+            if (cfg.farmEnabled && !farmList(cfg).length) avisos.push('⚠ Farm ligado sem nenhuma linha válida: nada será farmado.');
             if (!cfg.webhookUrl) avisos.push('⚠ Sem canal de Capturas: capturas não serão enviadas.');
             if (cfg.pokeSellEnabled && !pokeSellHasRules(cfg)) avisos.push('⚠ Venda de Pokémon ligada sem nenhum limite: nada será vendido.');
-            const usaAlertas = [effectiveBallsMin() > 0 && 'bolas', supplyOn() && 'poções/revives', cfg.sellEnabled && 'venda', cfg.pokeSellEnabled && 'venda de Pokémon', routeActive() && 'troca de hunt', cfg.dailyEnabled && 'daily', cfg.catchRouteEnabled && 'rota de captura'].filter(Boolean);
+            const usaAlertas = [effectiveBallsMin() > 0 && 'bolas', supplyOn() && 'poções/revives', cfg.sellEnabled && 'venda', cfg.pokeSellEnabled && 'venda de Pokémon', routeActive() && 'troca de hunt', cfg.dailyEnabled && 'daily', cfg.catchRouteEnabled && 'rota de captura', farmOn(cfg) && 'farm por lista'].filter(Boolean);
             if (usaAlertas.length && !cfg.webhookAlerts) avisos.push(`⚠ Sem canal de Alertas: avisos de ${usaAlertas.join(', ')} não serão enviados.`);
             if (levelEnabled() && !cfg.webhookLevel) avisos.push('⚠ Sem canal de Nível: avisos de nível/troca de líder não serão enviados.');
             const nivel = levelEnabled() ? ` · conferindo o time para o nível ${levelTarget()}${swapEnabled() ? ' (com troca)' : ''}…` : '';
@@ -7681,6 +8005,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
     setInterval(slotTick, SLOT_TICK_MS);
     setInterval(breedTick, BREED_TICK_MS);
     setInterval(guildTick, GUILD_TICK_MS);
+    setInterval(farmTick, FARM_TICK_MS);
+    if (cfg.farmEnabled) setTimeout(farmTick, 9000);   // v3.33.0: farm por lista logo após a carga (depois do socket/retomada da recarga)
     setTimeout(fishSniff, 12000);   // v3.31.1: lê a janela de pesca uma vez (REST) para confirmar o formato no log
     if (cfg.breedEnabled) setTimeout(() => breedTick(true), 9000);   // 1ª leitura da incubadora logo após a carga
     if (cfg.slotEnabled) setTimeout(() => slotTick(true), 8000);   // 1ª leitura da slot machine logo após a carga
