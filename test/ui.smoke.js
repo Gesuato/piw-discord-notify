@@ -337,6 +337,13 @@ setTimeout(() => {
             const acoes2 = ws.sent.slice(antesG).map(x => JSON.parse(x)).filter(x => x.type === 'guild-action');
             log('guild acoes depois do erro=' + JSON.stringify(acoes2.slice(1)));
             if (!(acoes2.length === 2 && acoes2[1].action === 'tribute' && acoes2[1].amount === 40)) errors.push('guild: tributo esperado de 40 (45 − 5), veio ' + JSON.stringify(acoes2));
+            // v3.31.2: "já doou o máximo de hoje" segura a doação até o reinício do dia (frame com espaço não dispara outra); o tributo fica pendente
+            recv({ type: 'error', message: 'Erro qualquer no tributo' });
+            recv({ type: 'guild', guild: { id: 'g1', name: 'Guilda', tag: 'GLD', tier: 1, points: 12, members: 3, slots: 5, maxSlots: 11, nextSlot: { slot: 6, points: 50, gold: 100000 }, goldDonated: 2500, bonusPct: 1.5, online: 2 },
+                me: { rank: 2, isPresident: false, canInvite: false, gold: 123456, donatedToday: 0, donateCap: 500000, buff: null }, members: [], hunts: [], dailies: [], dailyRegions: [], huntsEndAt: Date.now() + 3600000,
+                tribute: { id: 't1', itemId: 7, itemName: 'Small Stone', progress: 200, goal: 3000, points: 3, mine: 45, done: false }, talents: [], points: { available: 2 }, dex: { caught: 0, total: 1, recent: [] }, history: [], invites: [] });
+            const acoes3 = ws.sent.slice(antesG).map(x => JSON.parse(x)).filter(x => x.type === 'guild-action');
+            if (acoes3.length !== 2) errors.push('guild: depois de "já doou o máximo" não devia doar de novo no mesmo dia, veio ' + JSON.stringify(acoes3));
             const logG = JSON.parse(window.localStorage.getItem('pgDiscordNotifyLog') || '[]').filter(e => e.kind === 'guild-doacao').pop();
             if (!(logG && logG.data.ok === false && /máximo/.test(logG.data.erro))) errors.push('guild: log guild-doacao com o erro do jogo não gravado: ' + JSON.stringify(logG));
             if (!/Small Stone/.test($('#pg-dn-guild-status').textContent) || !/Tributo/.test($('#pg-dn-guild-status').textContent)) errors.push('guild: status da aba não mostra o tributo');

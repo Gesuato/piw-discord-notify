@@ -234,8 +234,11 @@ sai só entra em outra depois de um cooldown em horas. Ranks fixos 0 Presidente 
 fish 0/750, catch 45/45; dailies kill/catch para kanto (20000/30), outland (12500/15) e orre (7500/10), nightmare `active: false`;
 tributo Magikarp Fin 0/3770 (+2 pontos); `huntsEndAt` 07:00Z e `tributeEndAt` 17:00Z. `guild-envio { action:'donate', amount:500000 }`
 pela tela → `error "Você já doou o máximo de hoje (500.000 gold)."` em ~150 ms; acima do teto → `error "Você só pode doar até 500.000
-gold por dia."`. O estado chega a cada `guild-get` sem precisar da janela aberta. Ainda não visto: resposta de um `donate`/`tribute`
-que deu certo (o script confere por `me.donatedToday`/`tribute.progress` no frame seguinte) e se `guild-dirty` chega com a janela fechada.
+gold por dia."`; sobra menor que o pedido → `error "Você só pode doar mais 499.000 gold hoje."`. **Teto POR MEMBRO, confirmado em
+01:39Z:** com a conta1 no teto, a conta2 doou 1.000 e recebeu o frame `guild` 170 ms depois (`me.donatedToday` 1.000, `me.gold` −1.000,
+`guild.goldDonated` +1.000, `flash: null`); outros membros doaram 500k em seguida. **`guild-dirty` chega a todo membro com a janela
+fechada** (convite enviado na conta1 às 01:28:11 → contas 2–4 releram às 01:28:13). O estado chega a cada `guild-get` sem a janela aberta.
+Ainda não visto: resposta de um `tribute` que deu certo.
 
 **O que o script faz (v3.30.0 farejador, v3.31.0 aba 🛡 Guild):** `guild-get` 6 s após o socket, a cada 30 min e até 30 s depois de um `guild-dirty`;
 log `guild-campos` (chaves reais de cada bloco, 1x por carga), `guild` (resumo: guild, eu, tributo, caçadas, dailies, talentos) e

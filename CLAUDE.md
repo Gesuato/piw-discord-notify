@@ -277,7 +277,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   do dia, consumido), talent{ key } (só Presidente) etc. Módulo `// ---- Guild` antes do Clã: lê 6 s após o socket, a cada 30 min e
   30 s após `guild-dirty`; logs `guild-campos`, `guild`, `guild-get` e `guild-envio` (o que a tela manda). Frame CONFIRMADO no log em
   10/10/2026 01:25Z (4 contas; extras `lifetimeGold`, `daily.kind`, `tribute.id`/`buffKind`, `points{total,spent,available}`,
-  `nextSlot.slot`); `donateCap` 500.000; teto batido = `error "Você já doou o máximo de hoje (500.000 gold)."`. v3.31.0 (aba 🛡 Guild,
+  `nextSlot.slot`); `donateCap` 500.000 POR MEMBRO (conta2 doou com a conta1 no teto; frame `guild` 170 ms depois, `flash` null);
+  erros: "Você já doou o máximo de hoje (500.000 gold)." (v3.31.2: segura até `huntsEndAt`), "Você só pode doar mais N gold hoje."
+  (refaz 1x com N), "Você só pode doar até 500.000 gold por dia."; `guild-dirty` chega a todo membro com a janela fechada. v3.31.0 (aba 🛡 Guild,
   ROADMAP #32 etapa 2): `guildDonateGold`/`guildDonateKeep` (doa min(quer − doado, teto − doado, gold − reserva) ao ler o frame),
   `guildTributeEnabled`/`guildTributeKeep` (deposita min(mine − guardar, meta − progresso); `guildKeepsItem` tira o item do dia da
   venda e do guardar), `guildAlerts` (transições entre frames; ligar em UM painel). Toda ação fica em `guildPending` até o frame

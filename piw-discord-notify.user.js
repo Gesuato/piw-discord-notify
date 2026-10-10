@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.31.1
+// @version      3.31.2
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.31.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.31.2';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -3514,9 +3514,12 @@
     //   o progresso de todos os membros soma. Dailies por região: kanto, outland, orre, nightmare (derrotar / capturar).
     //   Tributo do Dia: item e meta (2.000–4.000) mudam às 10h; fechar dá pontos e 15 min de +50% (xp/loot/captura) a quem está online.
     // CONFIRMADO no log em 10/10/2026 01:25Z (4 contas, guild Cocorico): o frame é exatamente este, com os extras `member.lifetimeGold`,
-    // `daily.kind`, `tribute.id`/`buffKind`, `points{ total, spent, available }` e `nextSlot.slot`. `donateCap` = 500.000;
-    // doar acima do teto → `error "Você só pode doar até 500.000 gold por dia."`; teto já batido → `error "Você já doou o máximo
-    // de hoje (500.000 gold)."` (~150 ms depois do envio). O estado chega 6 s após o socket, a cada 30 min e quando chega
+    // `daily.kind`, `tribute.id`/`buffKind`, `points{ total, spent, available }` e `nextSlot.slot`. `donateCap` = 500.000 POR MEMBRO
+    // (01:39Z: conta2 doou 1.000 com a conta1 já no teto; o frame `guild` chegou 170 ms depois com `me.donatedToday` 1.000, `me.gold`
+    // −1.000, `guild.goldDonated` +1.000 e `flash: null`; outros membros doaram 500k em seguida). Erros (`error`, ~150 ms):
+    // acima do teto → "Você só pode doar até 500.000 gold por dia."; teto batido → "Você já doou o máximo de hoje (500.000 gold).";
+    // sobra menor que o pedido → "Você só pode doar mais 499.000 gold hoje." (o script refaz com a sobra). `guild-dirty` chega a
+    // todo membro, com a janela fechada (convite feito na conta1 → contas 2–4 releram 2 s depois). O estado chega 6 s após o socket, a cada 30 min e quando chega
     // `guild-dirty` (logs `guild-campos` 1x por carga, `guild` resumo, `guild-envio` = o que a TELA manda).
     // v3.31.0 (aba 🛡 Guild): doação diária de gold (`guildDonateGold`/`guildDonateKeep`), Tributo do Dia (`guildTributeEnabled`/
     // `guildTributeKeep`; o item do dia fica fora da venda e do guardar via `guildKeepsItem`) e avisos (`guildAlerts`, transições
@@ -3540,6 +3543,7 @@
     const GUILD_VERB_LABEL = { kill: 'derrotar', catch: 'capturar' };
     const GUILD_BUFF_LABEL = { xp: 'XP', loot: 'Loot', catch: 'Captura' };
     let guildPending = null;      // ação enviada pelo script esperando resposta: { action, amount, antes, at, timer }
+    let guildDonateDoneUntil = 0; // "já doou o máximo de hoje": não tenta de novo antes disto (reinício do dia da guild, `huntsEndAt`)
     let guildTriedAt = {};        // { donate: ts, tribute: ts } última tentativa (não insiste antes de GUILD_ACTION_RETRY_MS)
     let guildLast = {};           // { donate: { at, ok, amount, erro }, tribute: {...} } resultado da última ação, para o painel
     let onGuildChange = null;     // callback do painel
@@ -3624,7 +3628,7 @@
         if (!g || !me || guildPending) return;
         const now = Date.now();
         const quer = guildDonateWanted();
-        if (quer > 0 && now - (guildTriedAt.donate || 0) >= GUILD_ACTION_RETRY_MS) {
+        if (quer > 0 && now - (guildTriedAt.donate || 0) >= GUILD_ACTION_RETRY_MS && now >= guildDonateDoneUntil) {
             const cap = Number(me.donateCap) || 0, feito = Number(me.donatedToday) || 0, gold = Number(me.gold) || 0;
             const keep = Math.max(0, Number(cfg.guildDonateKeep) || 0);
             const amount = Math.floor(Math.min(quer - feito, cap - feito, gold - keep));
@@ -3664,6 +3668,22 @@
         if (!erro && !ok) erro = frame ? 'o jogo não registrou' : 'o jogo não respondeu';
         guildLast[p.action] = { at: Date.now(), ok, amount: p.amount, erro: erro || null, depois: Number.isFinite(depois) ? depois : null, item: p.dados.item || null };
         if (ok) guildTriedAt[p.action] = 0;   // deu certo: pode doar/depositar de novo assim que o frame mostrar espaço
+        if (p.action === 'donate' && erro) {   // v3.31.2: os textos do jogo (confirmados em 10/10/2026)
+            const sobra = /doar mais ([\d.]+)/i.exec(erro);
+            if (/máximo de hoje/i.test(erro)) {   // teto do dia batido: só volta a tentar no reinício do dia da guild
+                const fim = Number(lastGuild?.huntsEndAt) || 0;
+                guildDonateDoneUntil = fim > Date.now() ? fim : Date.now() + GUILD_ACTION_RETRY_MS;
+            } else if (sobra && !p.dados.refeita) {   // "só pode doar mais N gold hoje": refaz uma vez com a sobra
+                const n = Math.floor(Number(sobra[1].replace(/\./g, '')) || 0);
+                if (n > 0 && n < p.amount) {
+                    logEvent('guild-doacao', { ok: false, amount: p.amount, antes: p.antes, depois: null, erro, refazCom: n });
+                    guildTriedAt.donate = 0;
+                    setTimeout(() => guildAct('donate', n, p.antes, Object.assign({}, p.dados, { refeita: true })), 300);
+                    guildNotify();
+                    return;
+                }
+            }
+        }
         logEvent(p.action === 'donate' ? 'guild-doacao' : 'guild-tributo', { ok, amount: p.amount, antes: p.antes, depois, erro: erro || null, flash: frame?.flash ?? null });
         const who = playerName();
         const quem = who ? `**${who}**` : 'Sua conta';

@@ -718,7 +718,9 @@ campos de `me` e `tribute`. Sem config nova.
 
 **Confirmado em 10/10/2026 01:25Z (log das 4 contas):** frame `guild` igual ao bundle (+ `lifetimeGold`, `daily.kind`, `tribute.id`/
 `buffKind`, `points{ total, spent, available }`, `nextSlot.slot`); `donateCap` 500.000; `donate` acima do teto ou com o teto batido
-responde `error` com o texto ("Você já doou o máximo de hoje (500.000 gold).").
+responde `error` com o texto ("Você já doou o máximo de hoje (500.000 gold)."). **01:39Z: teto POR MEMBRO** (conta2 doou 1.000 com a
+conta1 no teto; frame `guild` em 170 ms com `donatedToday` 1.000); "Você só pode doar mais 499.000 gold hoje." quando sobra menos que o
+pedido (v3.31.2 refaz com a sobra; "já doou o máximo" segura até `huntsEndAt`). `guild-dirty` chega a todo membro com a janela fechada.
 
 **Etapa 2 — v3.31.0 (feita): aba 🛡 Guild** com status (guild, próxima vaga, você, tributo, caçadas, dailies), doação diária
 (`guildDonateGold` + `guildDonateKeep`), Tributo do Dia (`guildTributeEnabled` + `guildTributeKeep`, item fora da venda/guardar via
