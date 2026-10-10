@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.31.0
+// @version      3.31.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.31.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.31.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -3762,6 +3762,35 @@
         return out;
     }
 
+    // ---- Pesca (v3.31.1, farejador): como a pesca funciona, levantado no bundle em 10/10/2026 ----------------------------
+    // NPC "Pescador" (kind `fishing`) abre a janela 🎣: `GET /api/game/fishing-tier` → `{ skill, inLevel, forNext, selected,
+    // cooldownMs, tiers[{ id, unlocked, natural, minSkill, mobLevel[min,max], names[], fish[{ dex, name, looktype }] }] }`;
+    // o botão "Pescar" faz `POST /api/game/fishing-tier { tierId }` e a tela viaja para o mapa `pesca` = `enter-hunt { slug:'pesca' }`
+    // (a pesca é uma hunt comum de slug fixo `pesca`; o treinador vira o outfit de pescador 6753/6754 e cada peixe leva ~12 s,
+    // barra "Pescando…"). Servidor: `fishing-cooldown { ms }` (a tela reenvia `enter-hunt` depois de ms) e `fishing-levelup
+    // { level }`. Faixa "natural" = a da skill atual (progresso cheio); faixa abaixo = 50% de progresso de skill. As Caçadas da
+    // guild com kind `fish` ("Pescar peixes") contam os peixes. NADA visto no log ainda: este módulo lê a janela uma vez na carga
+    // (`pesca-campos`), registra os dois frames (`pesca-cooldown`, `pesca-nivel`) e o 1º `field-kill` dentro de `pesca` (`pesca-abate`).
+    const FISH_SLUG = 'pesca';
+    let fishKillLogged = false;
+    async function fishSniff() {
+        try {
+            const r = await gameApi('/api/game/fishing-tier');
+            logEvent('pesca-campos', { raiz: Object.keys(r || {}), skill: r?.skill ?? null, inLevel: r?.inLevel ?? null, forNext: r?.forNext ?? null, selected: r?.selected ?? null, cooldownMs: r?.cooldownMs ?? null,
+                tier: Array.isArray(r?.tiers) && r.tiers[0] ? Object.keys(r.tiers[0]) : null,
+                tiers: Array.isArray(r?.tiers) ? r.tiers.map(t => ({ id: t?.id, liberada: t?.unlocked, natural: t?.natural, minSkill: t?.minSkill, nivel: t?.mobLevel, peixes: Array.isArray(t?.names) ? t.names : (Array.isArray(t?.fish) ? t.fish.map(f => f?.name) : null) })) : null });
+        } catch (err) { logEvent('pesca-erro', { erro: String(err?.message || err) }); }
+    }
+    function fishOnMessage(message) {
+        if (message.type === 'fishing-cooldown') logEvent('pesca-cooldown', { ms: message.ms ?? null, campos: Object.keys(message) });
+        else if (message.type === 'fishing-levelup') logEvent('pesca-nivel', { level: message.level ?? null, campos: Object.keys(message) });
+    }
+    function fishOnKill(message) {
+        if (fishKillLogged || normalize(huntSlug || '') !== FISH_SLUG) return;
+        fishKillLogged = true;
+        logEvent('pesca-abate', { campos: Object.keys(message), speciesName: message.speciesName ?? null, level: message.level ?? null, xpGained: message.xpGained ?? null, loot: Array.isArray(message.loot) ? message.loot.map(l => `${l?.name}×${l?.qty}`) : null });
+    }
+
     // ---- Clã: subir de rank sozinho (Orebound e os outros 9) ------------------------
     // Levantado no bundle em 27/09/2026 (janela "Clãs" e mochila) e na pokepedia (systems/clans):
     //   GET  /api/game/clans -> { clan, clanRank, level, diamonds, canJoin, joinLevel, nextTask } ; nextTask (null = rank
@@ -5389,6 +5418,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         if (message.type === 'family') { handleFamily(message); return; }
         if (message.type === 'guild') { handleGuild(message); return; }
         if (message.type === 'guild-dirty') { guildOnDirty(); return; }
+        if (message.type === 'fishing-cooldown' || message.type === 'fishing-levelup') { fishOnMessage(message); return; }
         if (message.type === 'error') { handleGameError(message); return; }
         if (message.type === 'poke-xp') { handlePokeXp(message); evolveOnPokeXp(message); return; }
         if (message.type === 'field' || message.type === 'field-init') {
@@ -5399,7 +5429,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             return;
         }
         if (message.type === 'field-teleport-city') { healOnTeleport(); return; }   // o sintético da viagem já saiu acima
-        if (message.type === 'field-kill') { idleOnAlive(); noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteDepositDrop(message); guildOnKill(message); return; }
+        if (message.type === 'field-kill') { idleOnAlive(); noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteDepositDrop(message); guildOnKill(message); fishOnKill(message); return; }
         if (message.type === 'inventory' && Array.isArray(message.items)) { clanOnInventory(message.items); supplyOnInventory(message.items); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
         if (message.type === 'pokes' && Array.isArray(message.list)) { logEvent('pokes-frame', { total: message.list.length, time: message.list.filter(p => p && p.team).map(p => `${p.name} lv${p.level}`), hunt: huntSlug || null }); updateTeam(message.list); healOnPokes(message.list); idleOnPokes(message.list);handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); evolveOnPokes(message.list); breedOnPokes(message.list); return; }
@@ -7422,6 +7452,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
     setInterval(slotTick, SLOT_TICK_MS);
     setInterval(breedTick, BREED_TICK_MS);
     setInterval(guildTick, GUILD_TICK_MS);
+    setTimeout(fishSniff, 12000);   // v3.31.1: lê a janela de pesca uma vez (REST) para confirmar o formato no log
     if (cfg.breedEnabled) setTimeout(() => breedTick(true), 9000);   // 1ª leitura da incubadora logo após a carga
     if (cfg.slotEnabled) setTimeout(() => slotTick(true), 8000);   // 1ª leitura da slot machine logo após a carga
     setInterval(catchTick, CATCH_TICK_MS);

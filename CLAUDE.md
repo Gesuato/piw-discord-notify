@@ -284,6 +284,12 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `guild`/`error` (4 s; senão `guild-get` para conferir) e é conferida por `donatedToday`/`tribute.progress`; erro = 1 h sem insistir
   (`guildTriedAt`). Logs `guild-acao`, `guild-doacao`, `guild-tributo`, `guild-aviso`. Nunca automatizar talentos, convites, cargos,
   brasão ou dissolver. Etapa 3 (caçar para a guild) ainda não feita.
+- Pesca (v3.31.1, farejador; bundle em 10/10/2026, `docs/mensagens-do-jogo.md` → "Pesca"): NPC Pescador → `GET /api/game/fishing-tier`
+  `{ skill, inLevel, forNext, selected, cooldownMs, tiers[{ id, unlocked, natural, minSkill, mobLevel, names, fish }] }`;
+  `POST /api/game/fishing-tier { tierId }` e depois a tela faz `enter-hunt { slug:'pesca' }` (a pesca É uma hunt de slug fixo
+  `pesca`, `FISH_SLUG`); `fishing-cooldown { ms }` = reentrar depois de ms; `fishing-levelup { level }`. Módulo `// ---- Pesca` antes
+  do Clã só registra (`pesca-campos` 12 s após a carga, `pesca-cooldown`, `pesca-nivel`, `pesca-abate` = 1º `field-kill` em `pesca`).
+  Caçada da guild kind `fish` conta peixes. Antes de automatizar, confirmar no log.
 - Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
   `guardar` no fim de toda viagem; drops → Depot (`POST /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou
   família (`family-action item`); Pokémon não vendidos → só família (o box JÁ é o Depot comum de Pokémon). Lista escolhida

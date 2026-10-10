@@ -739,6 +739,10 @@ responde `error` com o texto ("Você já doou o máximo de hoje (500.000 gold)."
   espécie não concluída (`huntSlugFromName`, confere em `map-markers`); daily `kill` por região → hunt da região (`area` do
   `map-markers`) mais próxima do nível do líder; `catch` → joga bola como a rota de captura. Concluídas = volta para a hunt de
   origem (`prevHuntSlug`). Respeita Daily Kill, cura e viagem como a rota do clã (`clanWait`).
+- **Pescar para a guild** (caçada kind `fish` e, no futuro, dailies de pesca): a pesca é a hunt `pesca` (ver `docs/mensagens-do-jogo.md`
+  → "Pesca"): `POST /api/game/fishing-tier { tierId }` na faixa natural da skill + `switchHunt('pesca', 1, 'guild')`; respeitar
+  `fishing-cooldown { ms }`; voltar para a hunt de origem quando a caçada fechar. v3.31.1 = farejador (`pesca-campos` na carga,
+  `pesca-cooldown`, `pesca-nivel`, `pesca-abate`).
 - Talentos, convites, cargos, brasão e dissolver: NUNCA automatizar (decisões do Presidente).
 
 **Pendências (etapa 3 = caçar para a guild, `guildRoute`):** ver no log `guild-doacao`/`guild-tributo` a 1ª ação que deu certo e se `donate`/`tribute` funcionam na hunt; ver se `guild-dirty`

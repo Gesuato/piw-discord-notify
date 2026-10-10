@@ -55,7 +55,7 @@ Confirmados no bundle. Os marcados com ✔ já são usados ou interceptados pelo
 
 `addon-used`, `analyzer`, `autohelper`, `balls` ✔, `berry-used`, `borage-used`, `candy-used`,
 `catch-cooldown`, `catch-result` ✔, `chat`, `chat-blocked`, `chat-deleted`, `field` ✔ (só para marcar
-"hunt viva"), `field-init` ✔, `field-kill` ✔, `field-none`, `field-teleport-city`, `fishing-levelup`,
+"hunt viva"), `field-init` ✔, `field-kill` ✔, `field-none`, `field-teleport-city`, `fishing-cooldown`, `fishing-levelup` (ver "Pesca"),
 `guild` ✔, `guild-dirty` ✔, `guild-history`, `gym-global`, `heal-used`, `held-replace-confirm`, `held-used`, `history`, `hunt-cooldown`, `hunt-resume`,
 `inventory`, `mail-badge`, `pending` ✔, `poke-delta` ✔, `poke-xp` ✔, `pokes` ✔, `profession-gather`,
 `profession-photo`, `pvp-*`, `shiny-global`, `sleep-ok`, `tm-replace-confirm`, `tm-used`, `trade-invite`,
@@ -240,6 +240,26 @@ que deu certo (o script confere por `me.donatedToday`/`tribute.progress` no fram
 **O que o script faz (v3.30.0 farejador, v3.31.0 aba 🛡 Guild):** `guild-get` 6 s após o socket, a cada 30 min e até 30 s depois de um `guild-dirty`;
 log `guild-campos` (chaves reais de cada bloco, 1x por carga), `guild` (resumo: guild, eu, tributo, caçadas, dailies, talentos) e
 `guild-envio` (todo `guild-action` que a tela do jogo mandar — doe gold / deposite tributo na mão uma vez para confirmar os campos).
+
+### Pesca (bundle em 10/10/2026; NADA visto no log ainda — farejador na v3.31.1)
+
+NPC **Pescador** (`kind:"fishing"`, "Treine a habilidade de Pesca") abre a janela 🎣 (`window.fishing.*`): "Escolha o que pescar.
+Faixas com skill maior que a sua ficam trancadas 🔒"; faixa "atual" = a da sua skill (progresso cheio); faixa menor = "progresso de
+skill reduzido (50%)"; "{{inLevel}}/{{forNext}} peixes para o próximo nível".
+
+- `GET /api/game/fishing-tier` → `{ skill, inLevel, forNext, selected, cooldownMs, tiers[{ id, unlocked, natural, minSkill,
+  mobLevel:[min, max], names[], fish[{ dex, name, looktype }] }] }`.
+- `POST /api/game/fishing-tier { tierId }` (botão "🎣 Pescar"; erro vem como `{ message }`) e em seguida a tela viaja para o mapa
+  **`pesca`** — ou seja, pescar é **`enter-hunt { slug:'pesca' }`**, uma hunt comum de slug fixo (constante `dd="pesca"` no
+  bundle; o treinador troca para o outfit de pescador 6753/6754; cada peixe leva ~12 s com a barra "Pescando…"). Os peixes
+  são os mobs da faixa escolhida; o abate deve chegar como `field-kill` normal (a confirmar: `pesca-abate` no log).
+- Servidor → cliente: `fishing-cooldown { ms }` (a tela reenvia `enter-hunt` ms + 100 ms depois, igual ao `hunt-cooldown`) e
+  `fishing-levelup { level }` (HUD "🎣 Sua Pesca subiu para o nível N"). O perfil traz `fishInLevel`/`fishForNext`; o Rankings tem a aba
+  "Top Pesca". A pokepedia não documenta (`/pokepedia/systems/fishing` = "not documented yet").
+- Para a guild: a Caçada kind `fish` ("Pescar peixes", meta vista: 750) conta os peixes de qualquer membro; uma rota "pescar para
+  a guild" = `POST fishing-tier { tierId: faixa natural }` + `switchHunt('pesca')`, voltar com `fishing-cooldown`, e sair quando a
+  caçada fechar. Pendente: ver se o servidor exige estar na cidade do Pescador para o POST e se `enter-hunt pesca` funciona
+  direto de outra hunt (a tela passa pelo `nL('pesca')`, que só carrega o mapa).
 
 ## Ideias que esses nomes destravam
 
