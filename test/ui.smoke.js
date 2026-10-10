@@ -306,6 +306,23 @@ setTimeout(() => {
             $('#pg-dn-sell-view-cur').click();
             log('apos delta: fetch=' + fetchCalls.map(c => c.split(' ')[0]).join(',') + ' | enviados=' + ws.sent.slice(1).map(x => JSON.parse(x).type + (JSON.parse(x).capturedId ? ':' + JSON.parse(x).capturedId : '')).join(','));
             recv({ type: 'family', family: { name: 'Fam', movesUsed: 3, movesCap: 50, frozen: false, members: [] }, depot: { items: [], pokes: [{ id: 'cuid-bagon-1', name: 'Bagon', level: 5 }] } });
+            // v3.30.0: frame `guild` (formato do bundle), `guild-dirty` e um `guild-action` enviado pela tela passam sem erro e entram no log
+            recv({ type: 'guild', guild: { id: 'g1', name: 'Guilda', tag: 'GLD', tier: 1, points: 12, members: 3, slots: 5, maxSlots: 11, nextSlot: { points: 50, gold: 100000 }, goldDonated: 2500, bonusPct: 1.5, online: 2 },
+                me: { rank: 2, isPresident: false, canInvite: false, gold: 123456, donatedToday: 0, donateCap: 50000, buff: null },
+                members: [{ characterId: 'c1', name: 'Eu', level: 90, rank: 2, online: true, lastSeenMs: 0, isMe: true, clan: null, clanRank: 0, weekKills: 10, weekGold: 0, team: [] }],
+                hunts: [{ id: 'h1', kind: 'kill', tier: 1, species: [{ dex: 16, name: 'Pidgey' }, { dex: 19, name: 'Rattata' }], progress: 40, goal: 500, done: false }, { id: 'h2', kind: 'catch', tier: 1, species: [], progress: 3, goal: 30, done: false }],
+                huntsEndAt: Date.now() + 3600000, dailies: [{ id: 'd1', region: 'kanto', verb: 'kill', progress: 100, goal: 1000, points: 20, done: false }], dailyRegions: [{ region: 'kanto', active: true }, { region: 'nightmare', active: false }],
+                tribute: { itemId: 7, itemName: 'Small Stone', progress: 200, goal: 3000, points: 3, mine: 45, done: false }, tributeEndAt: Date.now() + 7200000,
+                talents: [{ key: 'xp', level: 0, max: 5, per: 1, value: 0, next: 10 }], points: { available: 2 }, dex: { caught: 40, total: 600, recent: [] }, history: [{ kind: 'joined', actor: 'Eu', at: Date.now(), payload: {} }], invites: [], list: [], canCreate: false, createCost: 500000, myGold: 123456 });
+            recv({ type: 'guild-dirty' });
+            ws.send(JSON.stringify({ type: 'guild-action', action: 'donate', amount: 100 }));
+            {
+                const kindsG = JSON.parse(window.localStorage.getItem('pgDiscordNotifyLog') || '[]').filter(e => e.kind.startsWith('guild'));
+                log('guild: ' + kindsG.map(e => e.kind).join(',') + ' | campos=' + JSON.stringify((kindsG.find(e => e.kind === 'guild-campos') || {}).data && (kindsG.find(e => e.kind === 'guild-campos') || {}).data.tributo) + ' | envio=' + JSON.stringify((kindsG.find(e => e.kind === 'guild-envio') || {}).data));
+                for (const k of ['guild-campos', 'guild', 'guild-envio']) if (!kindsG.some(e => e.kind === k)) errors.push('guild: log ' + k + ' não gravado');
+                const resumo = (kindsG.find(e => e.kind === 'guild') || {}).data || {};
+                if (!(resumo.cacadas && resumo.cacadas.length === 2 && resumo.cacadas[0].especies.join('&') === 'Pidgey&Rattata' && resumo.eu && resumo.eu.tetoDoacao === 50000)) errors.push('guild: resumo do frame errado: ' + JSON.stringify(resumo));
+            }
             setTimeout(() => {
                 const hook = fetchCalls.find(c => c.startsWith('https://discord.com/'));
                 log('webhook enviado=' + Boolean(hook) + ' travado=' + (hook || '').includes('Travado no jogo') + ' familia=' + (hook || '').includes('depósito da família'));

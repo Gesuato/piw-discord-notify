@@ -47,6 +47,7 @@ Confirmados no bundle. Os marcados com ✔ já são usados ou interceptados pelo
 | `send`, `dm`, `chat-delete` | `channel`, `body` | chat |
 | `trade-*` (`invite`, `respond`, `slot`, `money`, `confirm`, `cancel`, `get`) | vários | troca entre jogadores |
 | `pvp-*` (`queue`, `challenge`, `accept`, `decline`, `action`, `leave`, `watch`, `unwatch`, `state`) e `switch { teamIndex }`, `move { moveIndex }`, `forfeit` | vários | PvP (o `switch` é troca de Pokémon **na batalha**, não do líder) |
+| `guild-get`, `guild-action`, `guild-history-get` ✔ (só leitura/log) | `guild-get { withList }`; `guild-action { action, ... }` | Guild (patch 1.9, 09/10/2026): ver a seção "Guild" abaixo; o script lê o estado e registra o que a tela envia (v3.30.0) |
 | `golden-stars-refresh` | — | Poke Slot Machine: o HUD relê os bônus depois de roll/pick (o estado em si é REST, ver abaixo) |
 | `family-get`, `family-action` ✔ | `family-action { action:'poke', dir:'deposit'\|'withdraw', capturedId }`; `{ action:'item', dir, itemId, quantity }`; `create`/`invite`/`respond` | clã/família: depósito compartilhado (limite diário de movimentos `movesUsed/movesCap`; responde `family` ou `error`). As 4 combinações CONFIRMADAS no log em 09/10/2026 13:15Z (conta1, janela Família do jogo, log `familia-envio`): `withdraw` usa exatamente os mesmos campos do `deposit` (`itemId`+`quantity` para item, `capturedId` para Pokémon); o frame `family` chega ~0,3 s depois e cada movimento soma 1 em `movesUsed` |
 
@@ -55,7 +56,7 @@ Confirmados no bundle. Os marcados com ✔ já são usados ou interceptados pelo
 `addon-used`, `analyzer`, `autohelper`, `balls` ✔, `berry-used`, `borage-used`, `candy-used`,
 `catch-cooldown`, `catch-result` ✔, `chat`, `chat-blocked`, `chat-deleted`, `field` ✔ (só para marcar
 "hunt viva"), `field-init` ✔, `field-kill` ✔, `field-none`, `field-teleport-city`, `fishing-levelup`,
-`gym-global`, `heal-used`, `held-replace-confirm`, `held-used`, `history`, `hunt-cooldown`, `hunt-resume`,
+`guild` ✔, `guild-dirty` ✔, `guild-history`, `gym-global`, `heal-used`, `held-replace-confirm`, `held-used`, `history`, `hunt-cooldown`, `hunt-resume`,
 `inventory`, `mail-badge`, `pending` ✔, `poke-delta` ✔, `poke-xp` ✔, `pokes` ✔, `profession-gather`,
 `profession-photo`, `pvp-*`, `shiny-global`, `sleep-ok`, `tm-replace-confirm`, `tm-used`, `trade-invite`,
 `trade-settled`.
@@ -169,6 +170,67 @@ killsRequired`, 3000 para um Donphan rank N); "chocar agora" e slot extra custam
   tms[], type1, type2, stats{...}, ivTotal, quality, power }` e `depot.items[]` traz `{ itemId, quantity, name, icon }`; `family`
   tem `{ id, name, isOwner, frozen, movesUsed, movesCap, lockedUntil, leaveCost, members, pendingInvites }`. Ou seja, dá para
   escolher comida na família por quality/IV sem tirar antes.
+
+### Guild (bundle em 09/10/2026, patch 1.9 do mesmo dia; NADA visto no log ainda)
+
+Janela "Guild" do menu (`/assets/topmenu/guild.png`), canal `guild` no chat (tag `[TAG]` ao lado do nome, `guildTag` nas mensagens
+de `chat`/`history`) e aba "Guilds" no Rankings. A pokepedia (`/pokepedia/systems/guild`) ainda diz "This system hasn't been
+documented yet"; o patch note completo (números dos bônus, requisitos de tier, regras de entrada/saída) está só no Discord do jogo.
+Tudo pelo **socket**, não há REST (`grep '/api/.*guild'` no bundle não acha nada).
+
+Texto do jogo (strings pt-BR do bundle): "Uma guild reúne até 11 treinadores e paga +{{pct}}% de XP por membro — para TODOS
+(+0,5% por membro). As Caçadas do dia contam os kills de qualquer membro, de qualquer mundo, e cada vaga nova é conquistada com
+pontos e gold doado." Fundar custa gold (`createCost`), sem requisito de nível, começa com 5 vagas e o fundador é Presidente; quem
+sai só entra em outra depois de um cooldown em horas. Ranks fixos 0 Presidente · 1 Oficial · 2 Membro (títulos renomeáveis).
+"Dia perfeito" = 3 caçadas concluídas (+1 ponto). O bônus de XP aparece como parte `guild` do `xpParts` do `field-kill`.
+
+**Cliente → servidor**
+
+- `guild-get { withList }` — estado completo; `withList: true` traz também `list` (todas as guilds do servidor). A tela manda
+  `withList: true` ao abrir e, em cada `guild-dirty`, relê com `withList` = aba "Lista" aberta.
+- `guild-action { action, ... }` — uma mensagem para tudo; resposta = frame `guild` novo (com `flash` de texto) ou `error { message }`
+  (a tela só mostra o `error` que chega até 4 s depois do envio):
+  - `create { name (3–20), tag (2–3, A–Z0–9), crest{ shape, color, gem, text, bg } }` · `dissolve { confirm: nome exato }` · `leave`
+  - `invite { name }` (nome do personagem; Presidente ou `canInvite`) · `respond { inviteId, accept }` · `kick { targetId }` ·
+    `rank { targetId, rank }` (▲ = rank−1, ▼ = rank+1) · `rename-rank { rank, title }` · `motd { text }` · `crest { crest }`
+  - **`donate { amount }`** — gold para a próxima vaga; teto diário por membro (`me.donateCap`, usado `me.donatedToday`).
+  - **`tribute { amount }`** — deposita o item do dia (`tribute.itemId`) da mochila (`tribute.mine` = quantos tenho); itens são
+    consumidos; meta `tribute.goal` (2.000–4.000, muda às 10h); fechar dá `tribute.points` pontos e 15 min de +50% XP/Loot/Captura
+    (sorteado) para quem está online.
+  - `talent { key }` — só o Presidente; gasta `points.available`; keys `xp` (Instinto de Batalha, +pp de XP), `loot` (Olho de
+    Colecionador), `catch` (Mestre das Pokébolas), `egg` (Calor do Ninho, choco), `buff` (Eco do Tributo, +min no buff).
+- `guild-history-get` — chat: relê as mensagens do canal `guild` (resposta `guild-history { guild[], guildTag }`).
+
+**Servidor → cliente**
+
+- `guild-dirty` — sem campos; o servidor avisa que algo mudou (a janela refaz `guild-get`, o chat refaz `guild-history-get`).
+  Não se sabe ainda se chega a todo membro ou só com a janela aberta.
+- `guild { ... }` — campos lidos pela tela (nomes exatos do bundle):
+  - raiz: `guild` (null = sem guild), `me`, `members[]`, `rankTitles{ 0,1,2 }`, `hunts[]`, `huntsEndAt` (ms), `dailies[]`,
+    `dailyRegions[{ region, active }]`, `tribute`, `tributeEndAt` (ms), `talents[]`, `points{ available }`, `dex{ caught, total,
+    recent[{ dex, name, shiny, by }] }`, `history[]`, `invites[{ id, guildName, fromName, tag, crest }]`, `list[]`, `canCreate`,
+    `createCost`, `myGold`, `flash`.
+  - `guild{ id, name, tag, crest, motd, tier (1–5, mostrado I–V), points, members (n), slots, maxSlots, nextSlot{ points, gold } | null,
+    goldDonated, bonusPct, online }`.
+  - `me{ rank, isPresident, canInvite, gold, donatedToday, donateCap, buff{ kind: 'xp'|'loot'|'catch', pct } | null }`.
+  - `members[{ characterId, name, level, rank, online, lastSeenMs, isMe, clan, clanRank, weekKills, weekGold, team[{ slot, dex,
+    level, shiny }] }]`.
+  - **Caçadas** `hunts[{ id, kind, tier, species[{ dex, name }], progress, goal, done }]` — 3 por dia (`huntsEndAt` = reinício);
+    `kind` em kill (texto "Derrotar A & B", com `species`), catch, fish, berry, evolve, egg, boss, orre, nightmare, photo (fotos de
+    shiny). `tier` = até que tier da guild a caçada vale ("caça até o tier X"). Concluir = `history` kind `hunt` (+pontos).
+  - **Dailies** `dailies[{ id, region: 'kanto'|'outland'|'orre'|'nightmare', verb: 'kill'|'catch', progress, goal, points, done }]` —
+    "Missões diárias por mundo: derrote e capture em cada região. Fechar uma daily paga Guild Tokens a quem ajudou e XP para a
+    guild"; o progresso de todos soma, sem limite individual; região com `active: false` = "Em breve".
+  - **Tributo** `tribute{ itemId, itemName, progress, goal, points, mine, done } | null`.
+  - `talents[{ key, level, max, per, value, next (custo em pontos; null = máximo) }]`.
+  - `history[{ kind, actor, at, payload }]` com kind em joined, left, kicked{ target }, donated{ gold }, hunt{ species[], points },
+    daily{ region, verb, points, paid }, tribute{ n, kind }, tribute-deposit{ amount }, perfect, tier{ tier }, slot{ n }, crown{ name },
+    crown-idle{ from, to }, promote, demote, rename{ title }, motd, created{ name }, crest, talent{ key, level }.
+  - `list[{ id, name, tag, crest, tier, leader, members, slots, points, bonusPct }]`.
+
+**O que o script faz na v3.30.0 (farejador):** `guild-get` 6 s após o socket, a cada 30 min e até 30 s depois de um `guild-dirty`;
+log `guild-campos` (chaves reais de cada bloco, 1x por carga), `guild` (resumo: guild, eu, tributo, caçadas, dailies, talentos) e
+`guild-envio` (todo `guild-action` que a tela do jogo mandar — doe gold / deposite tributo na mão uma vez para confirmar os campos).
 
 ## Ideias que esses nomes destravam
 

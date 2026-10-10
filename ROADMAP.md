@@ -698,6 +698,47 @@ round-trip.
 
 ---
 
+## 🔧 32. Guild: doação diária de gold, tributo, caçadas e dailies (v3.30.0 = farejador)
+
+**O que faz (pedido do usuário em 09/10/2026, dia do patch 1.9 que trouxe o sistema de Guild):** cuidar da parte repetitiva da
+guild em cada conta: doar o gold do dia para a próxima vaga, depositar o item do Tributo do Dia, avisar no Discord o andamento das
+3 Caçadas e das Dailies por região e, depois, caçar o que a guild precisa.
+
+**Mensagens (socket, levantadas no bundle em 09/10/2026; formatos em `docs/mensagens-do-jogo.md` → "Guild"; NADA confirmado no
+log ainda):** `guild-get { withList }` → frame `guild { guild, me{ gold, donatedToday, donateCap, buff }, members, hunts[{ kind,
+species, progress, goal, done, tier }], huntsEndAt, dailies[{ region, verb, progress, goal, points, done }], tribute{ itemId,
+itemName, progress, goal, points, mine, done }, tributeEndAt, talents, points, dex, history, invites, list }`; `guild-dirty` (algo
+mudou); `guild-action { action:'donate', amount }`, `{ action:'tribute', amount }` e os outros (create/invite/respond/leave/kick/
+rank/rename-rank/motd/crest/dissolve/talent). Erro vem como `error { message }`. Não há REST de guild.
+
+**Etapa 1 — v3.30.0 (feita): farejador.** Módulo `// ---- Guild` antes do Clã: pede `guild-get` 6 s após o socket, a cada 30 min e
+até 30 s depois de um `guild-dirty`; logs `guild-campos` (chaves reais), `guild` (resumo) e `guild-envio` (todo `guild-action` que a
+tela mandar). O usuário doa gold e deposita tributo na mão UMA vez com o painel ligado → o log confirma `donate`/`tribute` e os
+campos de `me` e `tribute`. Sem config nova.
+
+**Etapa 2 — automações (depois da confirmação), aba nova 🛡️ Guild:**
+- **Doar gold todo dia** (`guildDonateGold`, 0 = desligado; `guildDonateKeep` = gold que sempre fica na conta): ao ler o frame,
+  se `donatedToday < donateCap` e `gold − keep > 0`, `guild-action donate { amount: min(cfg, cap − doadoHoje, gold − keep) }`; uma
+  tentativa por dia (reset pelo `huntsEndAt`/10h), log `guild-doacao`. Falta saber se o jogo aceita `donate` durante a hunt (a
+  janela abre em qualquer lugar; se recusar com `error`, passa a ser tarefa da viagem à cidade).
+- **Tributo do Dia** (`guildTributeEnabled`, `guildTributeKeep` = quantos do item guardar): com `tribute.mine > keep` e
+  `!done`, deposita `min(mine − keep, goal − progress)`; o item do dia sai da venda automática de drops enquanto o tributo estiver
+  ligado (`guildKeepsItem(itemId)`, mesmo gate de `clanKeepsItem`). Mochila vem de `tribute.mine` (sem precisar de `inv-get`).
+- **Avisos no canal de Alertas** (`guildAlerts`): caçada concluída, dia perfeito, daily fechada, tributo fechado (+ buff ativo em
+  `me.buff`), tier subiu, vaga desbloqueada, convite recebido — detectados pela transição `done`/`tier`/`slots` entre dois frames
+  (não pelo `history`, que não tem id). Resumo diário das caçadas no painel.
+- **Caçar para a guild** (`guildRoute`, 4ª rota excludente do Salvar, depois de treino/captura/clã): caçada `kill` → hunt da 1ª
+  espécie não concluída (`huntSlugFromName`, confere em `map-markers`); daily `kill` por região → hunt da região (`area` do
+  `map-markers`) mais próxima do nível do líder; `catch` → joga bola como a rota de captura. Concluídas = volta para a hunt de
+  origem (`prevHuntSlug`). Respeita Daily Kill, cura e viagem como a rota do clã (`clanWait`).
+- Talentos, convites, cargos, brasão e dissolver: NUNCA automatizar (decisões do Presidente).
+
+**Pendências:** confirmar `guild-campos`/`guild-envio` no log; saber se `donate`/`tribute` funcionam na hunt; ver se `guild-dirty`
+chega sem a janela aberta (senão o script relê só a cada 30 min); região de cada hunt (`area` do `map-markers`) × nomes das
+regiões das dailies (kanto/outland/orre/nightmare).
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

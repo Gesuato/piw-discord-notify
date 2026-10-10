@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.29.4
+// @version      3.30.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.29.4';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.30.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -1186,6 +1186,9 @@
         else if (m?.type === 'set-city') { tripOnSetCity(); healOnSetCity(); pokesOnSetCity(); armResume(RESUME_AFTER_CITY_MS); } // SPA na cidade: viagem chegou / hora de voltar pra hunt
         // v3.29.2: todo `family-action` enviado (pela tela OU pelo script) entra no log com os campos, para confirmar o formato da
         // retirada (`dir:'withdraw'`) que o breeding usa — a janela "Família" do jogo passa por aqui também.
+        // v3.30.0: todo `guild-action` enviado (pela tela do jogo; o script ainda não envia nenhum) entra no log com os campos,
+        // para confirmar o formato de doação de gold, tributo etc. antes de automatizar.
+        else if (m?.type === 'guild-action') logEvent('guild-envio', { action: m.action ?? null, dados: Object.fromEntries(Object.entries(m).filter(([k]) => k !== 'type' && k !== 'action')) });
         else if (m?.type === 'family-action') logEvent('familia-envio', { action: m.action ?? null, dir: m.dir ?? null, itemId: m.itemId ?? null, quantity: m.quantity ?? null, capturedId: m.capturedId ?? null, campos: Object.keys(m).filter(k => k !== 'type') });
     }
 
@@ -3483,6 +3486,98 @@
         return out;
     }
 
+    // ---- Guild (v3.30.0): ler o estado da guild e confirmar o formato no log ANTES de automatizar ---------------------
+    // Levantado no bundle do cliente em 09/10/2026 (janela "Guild" do menu, patch 1.9 do mesmo dia; a pokepedia ainda não
+    // documenta o sistema e o patch note completo está só no Discord do jogo). TUDO pelo socket, sem REST:
+    //   cliente -> `guild-get { withList }` (true = traz também a lista de guilds do servidor) · `guild-history-get` (chat) ·
+    //              `guild-action { action, ... }` com action em: create{ name, tag, crest } · invite{ name } · respond{ inviteId,
+    //              accept } · leave · kick{ targetId } · rank{ targetId, rank } · rename-rank{ rank, title } · motd{ text } ·
+    //              crest{ crest } · dissolve{ confirm } · donate{ amount } (gold; teto diário por membro) · tribute{ amount }
+    //              (item do dia, consumido da mochila) · talent{ key } (só o Presidente).
+    //   servidor -> `guild { guild{ id, name, tag, crest, motd, tier, points, members, slots, maxSlots, nextSlot{ points, gold },
+    //              goldDonated, bonusPct, online }, me{ rank (0 Presidente, 1 Oficial, 2 Membro), isPresident, canInvite, gold,
+    //              donatedToday, donateCap, buff{ kind: xp|loot|catch, pct } }, members[{ characterId, name, level, rank, online,
+    //              lastSeenMs, isMe, clan, clanRank, weekKills, weekGold, team[{ slot, dex, level, shiny }] }], rankTitles,
+    //              hunts[{ id, kind, tier, species[{ dex, name }], progress, goal, done }], huntsEndAt, dailies[{ id, region,
+    //              verb: kill|catch, progress, goal, points, done }], dailyRegions[{ region, active }], tribute{ itemId, itemName,
+    //              progress, goal, points, mine, done }, tributeEndAt, talents[{ key, level, max, per, value, next }],
+    //              points{ available }, dex{ caught, total, recent[] }, history[{ kind, actor, at, payload }], invites[{ id,
+    //              guildName, fromName, tag, crest }], list[{ id, name, tag, tier, leader, members, slots, points, bonusPct }],
+    //              canCreate, createCost, myGold, flash }` · `guild-dirty` (sem campos: algo mudou, a tela relê) · `error { message }`.
+    //   Caçadas (`hunts[].kind`): kill (com `species`), catch, fish, berry, evolve, egg, boss, orre, nightmare, photo — 3 por dia,
+    //   o progresso de todos os membros soma. Dailies por região: kanto, outland, orre, nightmare (derrotar / capturar).
+    //   Tributo do Dia: item e meta (2.000–4.000) mudam às 10h; fechar dá pontos e 15 min de +50% (xp/loot/captura) a quem está online.
+    // NADA disso foi visto no log ainda. Este módulo só pede o estado (6 s após o socket, a cada 30 min e quando chega
+    // `guild-dirty`), registra os campos reais (`guild-campos` uma vez por carga, `guild` com o resumo a cada leitura) e todo
+    // `guild-action` que a TELA enviar (`guild-envio`, em handleOutgoing). Doação de gold, tributo e caçadas automáticas vêm
+    // depois que o formato estiver confirmado (ROADMAP #32).
+    const GUILD_AFTER_SOCKET_MS = 6000;
+    const GUILD_TICK_MS = 60 * 1000;
+    const GUILD_REFRESH_MS = 30 * 60 * 1000;   // releitura de rotina (o servidor avisa mudanças com `guild-dirty`)
+    const GUILD_DIRTY_GAP_MS = 30 * 1000;      // vários `guild-dirty` seguidos (abates da guild inteira) = uma leitura só
+    let lastGuild = null;        // último frame `guild` recebido (null = ainda não leu)
+    let lastGuildAt = 0;
+    let guildAskedAt = 0;
+    let guildDirtyTimer = null;
+    let guildFieldsLogged = false;
+
+    function guildRequest(motivo, withList) {
+        guildAskedAt = Date.now();
+        const enviado = sendGame({ type: 'guild-get', withList: Boolean(withList) });
+        logEvent('guild-get', { motivo: motivo || null, lista: Boolean(withList), enviado });
+        return enviado;
+    }
+
+    function guildOnDirty() {
+        if (guildDirtyTimer) return;
+        const wait = Math.max(500, GUILD_DIRTY_GAP_MS - (Date.now() - guildAskedAt));
+        guildDirtyTimer = setTimeout(() => { guildDirtyTimer = null; guildRequest('dirty'); }, wait);
+    }
+
+    function guildTick() {
+        if (Date.now() - Math.max(lastGuildAt, guildAskedAt) < GUILD_REFRESH_MS) return;
+        guildRequest('rotina');
+    }
+
+    function guildKeys(o) {
+        if (Array.isArray(o)) return `array(${o.length})`;
+        if (o && typeof o === 'object') return Object.keys(o);
+        return o === undefined ? undefined : typeof o;
+    }
+
+    function handleGuild(message) {
+        lastGuild = message;
+        lastGuildAt = Date.now();
+        const g = message.guild && typeof message.guild === 'object' ? message.guild : null;
+        const me = message.me && typeof message.me === 'object' ? message.me : null;
+        const first = (arr) => (Array.isArray(arr) && arr.length ? arr[0] : null);
+        if (!guildFieldsLogged) {
+            guildFieldsLogged = true;
+            logEvent('guild-campos', {
+                raiz: guildKeys(message), guild: guildKeys(g), me: guildKeys(me), buff: guildKeys(me?.buff), proximaVaga: guildKeys(g?.nextSlot),
+                membro: guildKeys(first(message.members)), cacada: guildKeys(first(message.hunts)), especie: guildKeys(first(first(message.hunts)?.species)),
+                daily: guildKeys(first(message.dailies)), regiao: guildKeys(first(message.dailyRegions)), tributo: guildKeys(message.tribute),
+                talento: guildKeys(first(message.talents)), pontos: guildKeys(message.points), dex: guildKeys(message.dex),
+                historico: guildKeys(first(message.history)), convite: guildKeys(first(message.invites)), lista: guildKeys(first(message.list)),
+            });
+        }
+        const t = message.tribute && typeof message.tribute === 'object' ? message.tribute : null;
+        logEvent('guild', {
+            guild: g ? { nome: g.name ?? null, tag: g.tag ?? null, tier: g.tier ?? null, pontos: g.points ?? null, membros: g.members ?? null, vagas: g.slots ?? null, online: g.online ?? null, bonusPct: g.bonusPct ?? null, goldDoado: g.goldDonated ?? null, proximaVaga: g.nextSlot ?? null } : null,
+            eu: me ? { rank: me.rank ?? null, presidente: Boolean(me.isPresident), gold: me.gold ?? null, doadoHoje: me.donatedToday ?? null, tetoDoacao: me.donateCap ?? null, buff: me.buff ?? null } : null,
+            tributo: t ? { item: t.itemName ?? null, itemId: t.itemId ?? null, progresso: t.progress ?? null, meta: t.goal ?? null, tenho: t.mine ?? null, pontos: t.points ?? null, feito: Boolean(t.done) } : null,
+            cacadas: Array.isArray(message.hunts) ? message.hunts.map(h => ({ tipo: h?.kind ?? null, especies: Array.isArray(h?.species) ? h.species.map(x => x?.name).filter(Boolean) : [], progresso: h?.progress ?? null, meta: h?.goal ?? null, feito: Boolean(h?.done), tier: h?.tier ?? null })) : null,
+            dailies: Array.isArray(message.dailies) ? message.dailies.map(d => ({ regiao: d?.region ?? null, verbo: d?.verb ?? null, progresso: d?.progress ?? null, meta: d?.goal ?? null, pontos: d?.points ?? null, feito: Boolean(d?.done) })) : null,
+            regioes: Array.isArray(message.dailyRegions) ? message.dailyRegions : null,
+            fimCacadas: message.huntsEndAt ?? null, fimTributo: message.tributeEndAt ?? null,
+            talentos: Array.isArray(message.talents) ? message.talents.map(x => `${x?.key} ${x?.level}/${x?.max}`) : null,
+            pontosDisponiveis: message.points?.available ?? null,
+            convites: Array.isArray(message.invites) ? message.invites.length : null,
+            lista: Array.isArray(message.list) ? message.list.length : null,
+            podeFundar: message.canCreate ?? null, custoFundar: message.createCost ?? null, flash: message.flash ?? null,
+        });
+    }
+
     // ---- Clã: subir de rank sozinho (Orebound e os outros 9) ------------------------
     // Levantado no bundle em 27/09/2026 (janela "Clãs" e mochila) e na pokepedia (systems/clans):
     //   GET  /api/game/clans -> { clan, clanRank, level, diamonds, canJoin, joinLevel, nextTask } ; nextTask (null = rank
@@ -4540,7 +4635,7 @@
     // o que importa para diagnóstico (import, viagem, clã...). Agora cada tipo barulhento tem cota própria e o resto dura horas.
     const LOG_KEY = 'pgDiscordNotifyLog';
     const LOG_MAX = 200;
-    const LOG_NOISY = { 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10, 'poke-delta': 15, 'pokes-frame': 10, 'pokes-get': 10 };
+    const LOG_NOISY = { 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10, 'poke-delta': 15, 'pokes-frame': 10, 'pokes-get': 10, guild: 10, 'guild-get': 10 };
 
     function logEvent(kind, data) {
         if (cfg.debug) console.log(TAG, kind, data);
@@ -5105,6 +5200,8 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
 
         if (message.type === 'poke-delta') { handlePokeDelta(message); return; }
         if (message.type === 'family') { handleFamily(message); return; }
+        if (message.type === 'guild') { handleGuild(message); return; }
+        if (message.type === 'guild-dirty') { guildOnDirty(); return; }
         if (message.type === 'error') { handleGameError(message); return; }
         if (message.type === 'poke-xp') { handlePokeXp(message); evolveOnPokeXp(message); return; }
         if (message.type === 'field' || message.type === 'field-init') {
@@ -5184,6 +5281,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         setTimeout(requestSupplies, SUPPLY_AFTER_SOCKET_MS);
         requestPokes(POKES_AFTER_SOCKET_MS);
         armResume(RESUME_AFTER_SOCKET_MS);
+        setTimeout(() => guildRequest('socket'), GUILD_AFTER_SOCKET_MS);
     }
 
     const NativeWebSocket = window.WebSocket;
@@ -7080,6 +7178,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
     setInterval(giftTick, GIFT_TICK_MS);
     setInterval(slotTick, SLOT_TICK_MS);
     setInterval(breedTick, BREED_TICK_MS);
+    setInterval(guildTick, GUILD_TICK_MS);
     if (cfg.breedEnabled) setTimeout(() => breedTick(true), 9000);   // 1ª leitura da incubadora logo após a carga
     if (cfg.slotEnabled) setTimeout(() => slotTick(true), 8000);   // 1ª leitura da slot machine logo após a carga
     setInterval(catchTick, CATCH_TICK_MS);

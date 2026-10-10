@@ -269,6 +269,15 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   usa cadeado do jogo em quem sobe (não se sabe se o servidor cruza Pokémon travado). Logs `breeding-centro`, `breeding-cotacao`,
   `breeding-cruzou`, `breeding-falhou`, `breeding-choca`, `breeding-filho`, `breeding-parado`. Teste: `node test/breeding.test.js`
   (`loadBreedModule`: do marcador até `// ---- Clã: subir de rank`; o Daily Gift agora termina no marcador do breeding).
+- Guild (patch 1.9 do jogo, 09/10/2026; v3.30.0 = farejador, ROADMAP #32; protocolo completo em `docs/mensagens-do-jogo.md` →
+  "Guild"): tudo pelo socket, sem REST. `guild-get { withList }` → frame `guild { guild, me{ gold, donatedToday, donateCap, buff },
+  members, hunts (3 Caçadas do dia: kind kill/catch/fish/berry/evolve/egg/boss/orre/nightmare/photo), dailies (por região kanto/
+  outland/orre/nightmare, verb kill/catch), tribute{ itemId, itemName, progress, goal, mine, done }, talents, history, invites, list }`;
+  `guild-dirty` = releia; `guild-action { action, ... }` com donate{ amount } (gold, teto diário por membro), tribute{ amount } (item
+  do dia, consumido), talent{ key } (só Presidente) etc. Módulo `// ---- Guild` antes do Clã: lê 6 s após o socket, a cada 30 min e
+  30 s após `guild-dirty`; logs `guild-campos`, `guild`, `guild-get` e `guild-envio` (o que a tela manda). NADA confirmado no log
+  ainda: antes de automatizar doação/tributo/caçadas, ler os logs (`python tools/read-panel-logs.py`). Nunca automatizar talentos,
+  convites, cargos, brasão ou dissolver.
 - Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
   `guardar` no fim de toda viagem; drops → Depot (`POST /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou
   família (`family-action item`); Pokémon não vendidos → só família (o box JÁ é o Depot comum de Pokémon). Lista escolhida
