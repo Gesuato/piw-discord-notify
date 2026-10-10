@@ -316,6 +316,30 @@ setTimeout(() => {
                 talents: [{ key: 'xp', level: 0, max: 5, per: 1, value: 0, next: 10 }], points: { available: 2 }, dex: { caught: 40, total: 600, recent: [] }, history: [{ kind: 'joined', actor: 'Eu', at: Date.now(), payload: {} }], invites: [], list: [], canCreate: false, createCost: 500000, myGold: 123456 });
             recv({ type: 'guild-dirty' });
             ws.send(JSON.stringify({ type: 'guild-action', action: 'donate', amount: 100 }));
+            // v3.31.0: com a doação e o tributo ligados, o frame `guild` dispara `guild-action donate` (teto − doado, respeitando a reserva)
+            // e, depois da resposta, `guild-action tribute`; o `error` do jogo encerra a doação sem travar o tributo
+            $('#pg-dn-guild-donate').value = '500000'; fire($('#pg-dn-guild-donate'), 'input');
+            $('#pg-dn-guild-keep').value = '100000'; fire($('#pg-dn-guild-keep'), 'input');
+            $('#pg-dn-guild-tribute').checked = true; fire($('#pg-dn-guild-tribute'), 'change');
+            $('#pg-dn-guild-tribute-keep').value = '5'; fire($('#pg-dn-guild-tribute-keep'), 'change');
+            $('#pg-dn-save').click();
+            const antesG = ws.sent.length;
+            recv({ type: 'guild', guild: { id: 'g1', name: 'Guilda', tag: 'GLD', tier: 1, points: 12, members: 3, slots: 5, maxSlots: 11, nextSlot: { slot: 6, points: 50, gold: 100000 }, goldDonated: 2500, bonusPct: 1.5, online: 2 },
+                me: { rank: 2, isPresident: false, canInvite: false, gold: 123456, donatedToday: 0, donateCap: 500000, buff: null }, members: [], hunts: [], dailies: [], dailyRegions: [],
+                tribute: { id: 't1', itemId: 7, itemName: 'Small Stone', progress: 200, goal: 3000, points: 3, mine: 45, done: false }, talents: [], points: { available: 2 }, dex: { caught: 0, total: 1, recent: [] }, history: [], invites: [] });
+            const acoes = ws.sent.slice(antesG).map(x => JSON.parse(x)).filter(x => x.type === 'guild-action');
+            log('guild acoes=' + JSON.stringify(acoes));
+            if (!(acoes.length === 1 && acoes[0].action === 'donate' && acoes[0].amount === 23456)) errors.push('guild: doação esperada de 23456 (gold − reserva), veio ' + JSON.stringify(acoes));
+            recv({ type: 'error', message: 'Você já doou o máximo de hoje (500.000 gold).' });
+            recv({ type: 'guild', guild: { id: 'g1', name: 'Guilda', tag: 'GLD', tier: 1, points: 12, members: 3, slots: 5, maxSlots: 11, nextSlot: { slot: 6, points: 50, gold: 100000 }, goldDonated: 2500, bonusPct: 1.5, online: 2 },
+                me: { rank: 2, isPresident: false, canInvite: false, gold: 123456, donatedToday: 500000, donateCap: 500000, buff: null }, members: [], hunts: [], dailies: [], dailyRegions: [],
+                tribute: { id: 't1', itemId: 7, itemName: 'Small Stone', progress: 200, goal: 3000, points: 3, mine: 45, done: false }, talents: [], points: { available: 2 }, dex: { caught: 0, total: 1, recent: [] }, history: [], invites: [] });
+            const acoes2 = ws.sent.slice(antesG).map(x => JSON.parse(x)).filter(x => x.type === 'guild-action');
+            log('guild acoes depois do erro=' + JSON.stringify(acoes2.slice(1)));
+            if (!(acoes2.length === 2 && acoes2[1].action === 'tribute' && acoes2[1].amount === 40)) errors.push('guild: tributo esperado de 40 (45 − 5), veio ' + JSON.stringify(acoes2));
+            const logG = JSON.parse(window.localStorage.getItem('pgDiscordNotifyLog') || '[]').filter(e => e.kind === 'guild-doacao').pop();
+            if (!(logG && logG.data.ok === false && /máximo/.test(logG.data.erro))) errors.push('guild: log guild-doacao com o erro do jogo não gravado: ' + JSON.stringify(logG));
+            if (!/Small Stone/.test($('#pg-dn-guild-status').textContent) || !/Tributo/.test($('#pg-dn-guild-status').textContent)) errors.push('guild: status da aba não mostra o tributo');
             {
                 const kindsG = JSON.parse(window.localStorage.getItem('pgDiscordNotifyLog') || '[]').filter(e => e.kind.startsWith('guild'));
                 log('guild: ' + kindsG.map(e => e.kind).join(',') + ' | campos=' + JSON.stringify((kindsG.find(e => e.kind === 'guild-campos') || {}).data && (kindsG.find(e => e.kind === 'guild-campos') || {}).data.tributo) + ' | envio=' + JSON.stringify((kindsG.find(e => e.kind === 'guild-envio') || {}).data));

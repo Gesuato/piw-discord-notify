@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.30.0
+// @version      3.31.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.30.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.31.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -85,6 +85,11 @@
         breedFoodIvMax: 150,    // ...comida só com IV abaixo disto (além de quality e IV menores que quem sobe); 0 = sem teto
         breedFamily: true,      // ...comida e stones também do depot da família (retirada na viagem à cidade)
         breedDouble: true,      // ...dobrar stones (40 em vez de 20): 5% de +1 IV no filho
+        guildDonateGold: 0,     // v3.31.0 Guild (aba 🛡): gold a doar por dia para a próxima vaga (0 = não doa; o jogo limita a 500.000/dia por membro)
+        guildDonateKeep: 0,     // ...gold que fica sempre na conta (não doa o que faria o saldo cair abaixo disto)
+        guildTributeEnabled: false, // ...depositar o item do Tributo do Dia que estiver na mochila (o item fica fora da venda enquanto o tributo está aberto)
+        guildTributeKeep: 0,    // ...quantos do item do dia guardar na mochila
+        guildAlerts: false,     // ...avisar no canal de Alertas caçada/daily/tributo concluídos, tier, vaga nova e convites (ligar em UM painel só)
         clanEnabled: false,     // v3.17.0 Clã (aba Profissão): acompanhar a tarefa de rank, guardar os itens base, converter na viagem
         clanKey: 'orebound',    // clã em que o script entra sozinho se a conta não tiver nenhum (1ª entrada é grátis)
         clanRankup: true,       // ...subir de rank sozinho quando a tarefa fechar (na viagem à cidade)
@@ -1233,6 +1238,7 @@
                 const item = catalog.get(id) || inv;
                 if (protectedReason(item)) continue;
                 if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) continue;   // item base/de clã que a tarefa ainda pede
+                if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) continue;  // v3.31.0: item do Tributo do Dia da guild
                 const keep = Math.max(0, Number(cfg.sellItems[id]?.keep) || 0);
                 const qty = Math.floor(Number(inv.quantity) || 0) - keep;
                 if (qty <= 0) continue;
@@ -3507,10 +3513,16 @@
     //   Caçadas (`hunts[].kind`): kill (com `species`), catch, fish, berry, evolve, egg, boss, orre, nightmare, photo — 3 por dia,
     //   o progresso de todos os membros soma. Dailies por região: kanto, outland, orre, nightmare (derrotar / capturar).
     //   Tributo do Dia: item e meta (2.000–4.000) mudam às 10h; fechar dá pontos e 15 min de +50% (xp/loot/captura) a quem está online.
-    // NADA disso foi visto no log ainda. Este módulo só pede o estado (6 s após o socket, a cada 30 min e quando chega
-    // `guild-dirty`), registra os campos reais (`guild-campos` uma vez por carga, `guild` com o resumo a cada leitura) e todo
-    // `guild-action` que a TELA enviar (`guild-envio`, em handleOutgoing). Doação de gold, tributo e caçadas automáticas vêm
-    // depois que o formato estiver confirmado (ROADMAP #32).
+    // CONFIRMADO no log em 10/10/2026 01:25Z (4 contas, guild Cocorico): o frame é exatamente este, com os extras `member.lifetimeGold`,
+    // `daily.kind`, `tribute.id`/`buffKind`, `points{ total, spent, available }` e `nextSlot.slot`. `donateCap` = 500.000;
+    // doar acima do teto → `error "Você só pode doar até 500.000 gold por dia."`; teto já batido → `error "Você já doou o máximo
+    // de hoje (500.000 gold)."` (~150 ms depois do envio). O estado chega 6 s após o socket, a cada 30 min e quando chega
+    // `guild-dirty` (logs `guild-campos` 1x por carga, `guild` resumo, `guild-envio` = o que a TELA manda).
+    // v3.31.0 (aba 🛡 Guild): doação diária de gold (`guildDonateGold`/`guildDonateKeep`), Tributo do Dia (`guildTributeEnabled`/
+    // `guildTributeKeep`; o item do dia fica fora da venda e do guardar via `guildKeepsItem`) e avisos (`guildAlerts`, transições
+    // entre dois frames: caçada/daily/tributo concluídos, dia perfeito, tier, vaga, convite). Cada ação espera a resposta do jogo
+    // (frame `guild` novo ou `error`) e confere pelo próprio frame (`donatedToday`/`tribute.progress`); erro = 1 h sem insistir.
+    // Talentos, convites, cargos, brasão e dissolver NUNCA são automatizados. Caçar para a guild fica para a etapa 3 (ROADMAP #32).
     const GUILD_AFTER_SOCKET_MS = 6000;
     const GUILD_TICK_MS = 60 * 1000;
     const GUILD_REFRESH_MS = 30 * 60 * 1000;   // releitura de rotina (o servidor avisa mudanças com `guild-dirty`)
@@ -3520,6 +3532,20 @@
     let guildAskedAt = 0;
     let guildDirtyTimer = null;
     let guildFieldsLogged = false;
+    const GUILD_ACTION_RETRY_MS = 60 * 60 * 1000;   // depois de um erro (ou sem resposta), 1 h antes de tentar a mesma ação
+    const GUILD_REPLY_MS = 4000;                    // o jogo responde em ~150 ms; sem nada em 4 s o script pede `guild-get` para conferir
+    const GUILD_DROP_GAP_MS = 5 * 60 * 1000;        // releitura por drop do item do tributo: no máximo 1 a cada 5 min
+    const GUILD_KIND_LABEL = { kill: 'Derrotar', catch: 'Capturar Pokémon', fish: 'Pescar peixes', berry: 'Colher ervas e berries', evolve: 'Evoluir Pokémon', egg: 'Chocar ovos', boss: 'Derrotar bosses', orre: 'Caçar em Orre', nightmare: 'Caçar na Nightmare', photo: 'Fotos de Pokémon shiny' };
+    const GUILD_REGION_LABEL = { kanto: 'Kanto', outland: 'Outland', orre: 'Orre', nightmare: 'Nightmare' };
+    const GUILD_VERB_LABEL = { kill: 'derrotar', catch: 'capturar' };
+    const GUILD_BUFF_LABEL = { xp: 'XP', loot: 'Loot', catch: 'Captura' };
+    let guildPending = null;      // ação enviada pelo script esperando resposta: { action, amount, antes, at, timer }
+    let guildTriedAt = {};        // { donate: ts, tribute: ts } última tentativa (não insiste antes de GUILD_ACTION_RETRY_MS)
+    let guildLast = {};           // { donate: { at, ok, amount, erro }, tribute: {...} } resultado da última ação, para o painel
+    let onGuildChange = null;     // callback do painel
+    function guildNotify() { if (onGuildChange) { try { onGuildChange(); } catch { /* painel fechado */ } } }
+    const guildHora = (ts) => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const guildN = (n) => Number(n).toLocaleString('pt-BR');
 
     function guildRequest(motivo, withList) {
         guildAskedAt = Date.now();
@@ -3546,6 +3572,7 @@
     }
 
     function handleGuild(message) {
+        const prev = lastGuild;
         lastGuild = message;
         lastGuildAt = Date.now();
         const g = message.guild && typeof message.guild === 'object' ? message.guild : null;
@@ -3576,6 +3603,163 @@
             lista: Array.isArray(message.list) ? message.list.length : null,
             podeFundar: message.canCreate ?? null, custoFundar: message.createCost ?? null, flash: message.flash ?? null,
         });
+        if (guildPending) guildActionDone(message, null);
+        try { guildAlertChanges(prev, message); } catch (err) { console.warn(TAG, 'guild avisos:', err); }
+        guildAutomate(message);
+        guildNotify();
+    }
+
+    // ---- automação: doação diária de gold e Tributo do Dia
+    function guildDonateWanted(d) { return Math.max(0, Math.floor(Number((d || cfg).guildDonateGold) || 0)); }
+    function guildOn(d) { d = d || cfg; return guildDonateWanted(d) > 0 || Boolean(d.guildTributeEnabled) || Boolean(d.guildAlerts); }
+    // Item do Tributo do Dia enquanto o tributo está aberto: fica fora da venda de drops e do guardar na cidade.
+    function guildKeepsItem(id) {
+        const t = lastGuild?.tribute;
+        return Boolean(cfg.guildTributeEnabled && lastGuild?.guild && t && !t.done && Number(t.itemId) === Number(id));
+    }
+
+    function guildAutomate(m) {
+        const g = m.guild && typeof m.guild === 'object' ? m.guild : null;
+        const me = m.me && typeof m.me === 'object' ? m.me : null;
+        if (!g || !me || guildPending) return;
+        const now = Date.now();
+        const quer = guildDonateWanted();
+        if (quer > 0 && now - (guildTriedAt.donate || 0) >= GUILD_ACTION_RETRY_MS) {
+            const cap = Number(me.donateCap) || 0, feito = Number(me.donatedToday) || 0, gold = Number(me.gold) || 0;
+            const keep = Math.max(0, Number(cfg.guildDonateKeep) || 0);
+            const amount = Math.floor(Math.min(quer - feito, cap - feito, gold - keep));
+            if (amount > 0) { guildAct('donate', amount, feito, { quer, teto: cap, doadoHoje: feito, gold, manter: keep }); return; }
+        }
+        const t = m.tribute && typeof m.tribute === 'object' ? m.tribute : null;
+        if (cfg.guildTributeEnabled && t && !t.done && now - (guildTriedAt.tribute || 0) >= GUILD_ACTION_RETRY_MS) {
+            const keep = Math.max(0, Number(cfg.guildTributeKeep) || 0);
+            const amount = Math.floor(Math.min((Number(t.mine) || 0) - keep, (Number(t.goal) || 0) - (Number(t.progress) || 0)));
+            if (amount > 0) guildAct('tribute', amount, Number(t.progress) || 0, { item: t.itemName ?? null, itemId: t.itemId ?? null, tenho: t.mine ?? null, guardar: keep, meta: t.goal ?? null });
+        }
+    }
+
+    function guildAct(action, amount, antes, dados) {
+        guildTriedAt[action] = Date.now();
+        const enviado = sendGame({ type: 'guild-action', action, amount });
+        logEvent('guild-acao', Object.assign({ action, amount, enviado }, dados || {}));
+        if (!enviado) return;
+        guildPending = { action, amount, antes, at: Date.now(), dados: dados || {}, timer: null };
+        guildPending.timer = setTimeout(() => {   // sem `guild` nem `error`: pede o estado e confere por ele
+            if (!guildPending) return;
+            guildRequest('confirmar ' + action);
+            guildPending.timer = setTimeout(() => { if (guildPending) guildActionDone(null, 'o jogo não respondeu'); }, 10000);
+        }, GUILD_REPLY_MS);
+    }
+
+    // Resposta de uma ação do script: frame `guild` novo (confere pelos números) ou `error { message }`.
+    function guildOnError(message) {
+        if (guildPending && Date.now() - guildPending.at <= GUILD_REPLY_MS + 10000) guildActionDone(null, String(message?.message || 'erro do jogo'));
+    }
+    function guildActionDone(frame, erro) {
+        const p = guildPending; if (!p) return;
+        clearTimeout(p.timer); guildPending = null;
+        let depois = null, ok = false;
+        if (p.action === 'donate') { depois = Number(frame?.me?.donatedToday); ok = !erro && Number.isFinite(depois) && depois >= p.antes + p.amount; }
+        else { depois = Number(frame?.tribute?.progress); ok = !erro && ((Number.isFinite(depois) && depois >= p.antes + p.amount) || Boolean(frame?.tribute?.done)); }
+        if (!erro && !ok) erro = frame ? 'o jogo não registrou' : 'o jogo não respondeu';
+        guildLast[p.action] = { at: Date.now(), ok, amount: p.amount, erro: erro || null, depois: Number.isFinite(depois) ? depois : null, item: p.dados.item || null };
+        if (ok) guildTriedAt[p.action] = 0;   // deu certo: pode doar/depositar de novo assim que o frame mostrar espaço
+        logEvent(p.action === 'donate' ? 'guild-doacao' : 'guild-tributo', { ok, amount: p.amount, antes: p.antes, depois, erro: erro || null, flash: frame?.flash ?? null });
+        const who = playerName();
+        const quem = who ? `**${who}**` : 'Sua conta';
+        const texto = p.action === 'donate'
+            ? (ok ? `doou **${guildN(p.amount)} gold** para a guild${frame?.guild ? ` **${frame.guild.name}**` : ''} (hoje: ${guildN(depois)} / ${guildN(frame?.me?.donateCap ?? 0)})` : `não conseguiu doar ${guildN(p.amount)} gold para a guild: ${erro}`)
+            : (ok ? `depositou **${guildN(p.amount)}× ${p.dados.item || 'item'}** no Tributo do Dia (${guildN(depois)} / ${guildN(frame?.tribute?.goal ?? 0)}${frame?.tribute?.done ? ' · concluído!' : ''})` : `não conseguiu depositar ${guildN(p.amount)}× ${p.dados.item || 'item'} no tributo: ${erro}`);
+        postWebhook('alert', {
+            content: `🛡️ ${quem} ${texto}`,
+            username: 'Poke Idle World',
+            embeds: [{ title: p.action === 'donate' ? 'Doação para a guild' : 'Tributo do Dia', description: `${who ? `Conta: ${who}\n` : ''}${texto.replace(/\*\*/g, '')}\nEm ${new Date().toLocaleString('pt-BR')}`, color: ok ? 0x57f287 : 0xed4245 }],
+        }, { evento: p.action === 'donate' ? 'guild-doacao' : 'guild-tributo', ok });
+        guildNotify();
+    }
+
+    // Drop do item do tributo na hunt: relê a guild (no máximo 1x a cada 5 min) para depositar sem esperar os 30 min.
+    function guildOnKill(message) {
+        if (!cfg.guildTributeEnabled || !Array.isArray(message?.loot)) return;
+        const t = lastGuild?.tribute;
+        if (!t || t.done || !message.loot.some(l => Number(l?.itemId) === Number(t.itemId))) return;
+        if (Date.now() - guildAskedAt < GUILD_DROP_GAP_MS) return;
+        guildRequest('drop do tributo');
+    }
+
+    // ---- avisos: o que mudou entre o frame anterior e este (só com `guildAlerts`)
+    function guildHuntLabel(h) {
+        if (!h) return '?';
+        if (h.kind === 'kill') return `Derrotar ${(Array.isArray(h.species) ? h.species.map(x => x?.name).filter(Boolean) : []).join(' & ') || 'Pokémon'}`;
+        return GUILD_KIND_LABEL[h.kind] || String(h.kind || '?');
+    }
+    function guildDailyLabel(d) { return `${GUILD_VERB_LABEL[d?.verb] || d?.verb || '?'} em ${GUILD_REGION_LABEL[d?.region] || d?.region || '?'}`; }
+    function guildAlertChanges(prev, m) {
+        if (!cfg.guildAlerts) return;
+        const linhas = [];
+        const g = m.guild && typeof m.guild === 'object' ? m.guild : null;
+        const invAntes = new Set(Array.isArray(prev?.invites) ? prev.invites.map(i => String(i?.id)) : []);
+        for (const i of (Array.isArray(m.invites) ? m.invites : [])) if (!invAntes.has(String(i?.id))) linhas.push(`✉️ Convite para a guild **${i?.guildName || '?'}** de ${i?.fromName || '?'}`);
+        if (g && prev && prev.guild) {
+            const pg = prev.guild;
+            const doneAntes = (arr) => new Set((Array.isArray(arr) ? arr : []).filter(x => x?.done).map(x => String(x.id)));
+            const hd = doneAntes(prev.hunts);
+            const hunts = Array.isArray(m.hunts) ? m.hunts : [];
+            for (const h of hunts) if (h?.done && !hd.has(String(h.id))) linhas.push(`🎯 Caçada concluída: **${guildHuntLabel(h)}** (${guildN(h.progress)} / ${guildN(h.goal)})`);
+            if (hunts.length >= 3 && hunts.every(h => h?.done) && !(Array.isArray(prev.hunts) && prev.hunts.length && prev.hunts.every(h => h?.done))) linhas.push('🏆 Dia perfeito: as 3 caçadas do dia fechadas (+1 ponto)');
+            const dd = doneAntes(prev.dailies);
+            for (const d of (Array.isArray(m.dailies) ? m.dailies : [])) if (d?.done && !dd.has(String(d.id))) linhas.push(`🌍 Daily concluída: **${guildDailyLabel(d)}** (+${d.points ?? 0} XP de guild)`);
+            if (m.tribute?.done && !(prev.tribute?.done && String(prev.tribute?.id) === String(m.tribute?.id))) linhas.push(`🏺 Tributo do Dia concluído: **${m.tribute.itemName || 'item'}**${m.me?.buff ? ` · buff +${m.me.buff.pct}% ${GUILD_BUFF_LABEL[m.me.buff.kind] || m.me.buff.kind} para quem está online` : ''}`);
+            if (Number(g.tier) > Number(pg.tier)) linhas.push(`⬆️ A guild subiu para o **Tier ${['', 'I', 'II', 'III', 'IV', 'V'][Number(g.tier)] || g.tier}**`);
+            if (Number(g.slots) > Number(pg.slots)) linhas.push(`🔓 Vaga desbloqueada: agora **${g.slots} vagas**`);
+        }
+        if (!linhas.length) return;
+        const who = playerName();
+        postWebhook('alert', {
+            content: `🛡️ Guild${g ? ` **${g.name}**` : ''}: ${linhas[0].replace(/\*\*/g, '')}${linhas.length > 1 ? ` (+${linhas.length - 1})` : ''}`,
+            username: 'Poke Idle World',
+            embeds: [{ title: g ? `${g.name} [${g.tag || ''}]` : 'Guild', description: `${linhas.join('\n')}${who ? `\nVisto por: ${who}` : ''}\nEm ${new Date().toLocaleString('pt-BR')}`, color: 0x5865f2 }],
+        }, { evento: 'guild-aviso', linhas: linhas.length });
+        logEvent('guild-aviso', { linhas });
+    }
+
+    // Linhas do painel (bloco de estado). { text, ok?, dim? }
+    function guildStatus(d) {
+        d = d || cfg;
+        const m = lastGuild;
+        const out = [];
+        if (!m) { out.push({ text: 'Guild ainda não lida (o script pede 6 s depois de conectar).', dim: true }); return out; }
+        const g = m.guild && typeof m.guild === 'object' ? m.guild : null;
+        const me = m.me || {};
+        if (!g) {
+            out.push({ text: `Esta conta não está em uma guild.${Array.isArray(m.invites) && m.invites.length ? ` Convites: ${m.invites.map(i => i?.guildName).filter(Boolean).join(', ')}` : ''}`, dim: true });
+            return out;
+        }
+        const tierTxt = ['', 'I', 'II', 'III', 'IV', 'V'][Number(g.tier)] || g.tier;
+        out.push({ text: `${g.name} [${g.tag || ''}] · Tier ${tierTxt} · ${guildN(g.points)} pontos · ${g.members}/${g.slots} membros (${g.online ?? '?'} online) · bônus +${String(g.bonusPct ?? 0).replace('.', ',')}% XP · lido ${guildHora(lastGuildAt)}` });
+        if (g.nextSlot) out.push({ text: `Próxima vaga (${g.nextSlot.slot ?? g.slots + 1}ª): ${guildN(g.points)}/${guildN(g.nextSlot.points)} pontos · ${guildN(g.goldDonated)}/${guildN(g.nextSlot.gold)} gold doado` });
+        else out.push({ text: `Todas as ${g.maxSlots} vagas desbloqueadas.`, ok: true });
+        const rankNome = ['Presidente', 'Oficial', 'Membro'][Number(me.rank)] || `rank ${me.rank}`;
+        const quer = guildDonateWanted(d);
+        out.push({ text: `Você: ${rankNome} · gold ${guildN(me.gold ?? 0)} · doou hoje ${guildN(me.donatedToday ?? 0)}/${guildN(me.donateCap ?? 0)}${quer ? ` · o script doa até ${guildN(quer)}/dia${Number(d.guildDonateKeep) > 0 ? `, mantendo ${guildN(d.guildDonateKeep)}` : ''}` : ' · doação automática desligada'}${me.buff ? ` · buff +${me.buff.pct}% ${GUILD_BUFF_LABEL[me.buff.kind] || me.buff.kind}` : ''}`, ok: Boolean(quer) && Number(me.donatedToday) >= Number(me.donateCap) });
+        if (guildLast.donate) out.push({ text: `Última doação ${guildHora(guildLast.donate.at)}: ${guildLast.donate.ok ? `${guildN(guildLast.donate.amount)} gold ✔` : `⚠ ${guildLast.donate.erro}`}`, ok: guildLast.donate.ok, dim: !guildLast.donate.ok });
+        const t = m.tribute;
+        if (t) out.push({ text: `Tributo do Dia: ${t.itemName || '?'} ${guildN(t.progress)}/${guildN(t.goal)}${t.done ? ' · concluído ✔' : ` · você tem ${guildN(t.mine ?? 0)}`} · +${t.points ?? 0} pontos${d.guildTributeEnabled ? (t.done ? '' : ` · o script deposita${Number(d.guildTributeKeep) > 0 ? `, guardando ${guildN(d.guildTributeKeep)}` : ''}`) : ' · depósito automático desligado'} · reinicia ${m.tributeEndAt ? guildHora(m.tributeEndAt) : '?'}`, ok: Boolean(t.done) });
+        if (guildLast.tribute) out.push({ text: `Último depósito ${guildHora(guildLast.tribute.at)}: ${guildLast.tribute.ok ? `${guildN(guildLast.tribute.amount)}× ${guildLast.tribute.item || 'item'} ✔` : `⚠ ${guildLast.tribute.erro}`}`, ok: guildLast.tribute.ok, dim: !guildLast.tribute.ok });
+        const hunts = Array.isArray(m.hunts) ? m.hunts : [];
+        out.push({ text: `Caçadas de hoje (${hunts.filter(h => h?.done).length}/${hunts.length} · reiniciam ${m.huntsEndAt ? guildHora(m.huntsEndAt) : '?'}):`, dim: true });
+        for (const h of hunts) out.push({ text: `  ${h?.done ? '✔' : '•'} ${guildHuntLabel(h)} ${guildN(h?.progress ?? 0)}/${guildN(h?.goal ?? 0)}`, ok: Boolean(h?.done) });
+        const dailies = Array.isArray(m.dailies) ? m.dailies : [];
+        if (dailies.length) {
+            out.push({ text: `Dailies por região (${dailies.filter(x => x?.done).length}/${dailies.length}):`, dim: true });
+            for (const r of Object.keys(GUILD_REGION_LABEL)) {
+                const ds = dailies.filter(x => x?.region === r);
+                if (!ds.length) continue;
+                out.push({ text: `  ${ds.every(x => x?.done) ? '✔' : '•'} ${GUILD_REGION_LABEL[r]}: ${ds.map(x => `${GUILD_VERB_LABEL[x.verb] || x.verb} ${guildN(x.progress ?? 0)}/${guildN(x.goal ?? 0)}${x.done ? ' ✔' : ''}`).join(' · ')}`, ok: ds.every(x => x?.done) });
+            }
+        }
+        if (guildPending) out.push({ text: `Esperando o jogo responder: ${guildPending.action === 'donate' ? 'doação' : 'tributo'} de ${guildN(guildPending.amount)}…`, dim: true });
+        return out;
     }
 
     // ---- Clã: subir de rank sozinho (Orebound e os outros 9) ------------------------
@@ -4108,6 +4292,7 @@
         if (DEPOSIT_SKIP_CATS.includes(String(item?.category || inv?.category || ''))) return 'consumível';
         if (cfg.sellEnabled && cfg.sellItems && cfg.sellItems[id]) return 'marcado para venda';
         if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) return 'tarefa do clã';
+        if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) return 'tributo da guild';
         return null;
     }
     // Motivo para um Pokémon NÃO ir para a família, ou null se vai.
@@ -4186,6 +4371,7 @@
                     feitos.add(id);
                     if (DEPOSIT_SKIP_CATS.includes(String(item?.category || inv?.category || ''))) continue;   // consumível nunca sai
                     if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) continue;
+                    if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) continue;
                     const qty = Math.floor(Number(inv.quantity) || 0) - e.keep;
                     if (qty <= 0) continue;
                     if (!familiaNaConta()) break;
@@ -4825,6 +5011,7 @@
     }
     function handleGameError(message) {
         logEvent('erro-jogo', { message: message.message || null });
+        if (typeof guildOnError === 'function') guildOnError(message);
         if (familyPending) familyPending.resolve({ ok: false, motivo: message.message || 'erro do jogo' });
         if (huntSwitch?.origem === 'captura' && huntSwitch.at && catchTarget && huntSwitch.slug === catchTarget.slug) {
             const slug = huntSwitch.slug;
@@ -5212,7 +5399,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             return;
         }
         if (message.type === 'field-teleport-city') { healOnTeleport(); return; }   // o sintético da viagem já saiu acima
-        if (message.type === 'field-kill') { idleOnAlive(); noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteDepositDrop(message); return; }
+        if (message.type === 'field-kill') { idleOnAlive(); noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteDepositDrop(message); guildOnKill(message); return; }
         if (message.type === 'inventory' && Array.isArray(message.items)) { clanOnInventory(message.items); supplyOnInventory(message.items); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
         if (message.type === 'pokes' && Array.isArray(message.list)) { logEvent('pokes-frame', { total: message.list.length, time: message.list.filter(p => p && p.team).map(p => `${p.name} lv${p.level}`), hunt: huntSlug || null }); updateTeam(message.list); healOnPokes(message.list); idleOnPokes(message.list);handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); evolveOnPokes(message.list); breedOnPokes(message.list); return; }
@@ -5483,6 +5670,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         { id: 'treino', icon: '⚔', label: 'Treino' },
         { id: 'profissao', icon: '📖', label: 'Profissão' },
         { id: 'breeding', icon: '🥚', label: 'Breeding' },
+        { id: 'guild', icon: '🛡', label: 'Guild' },
         { id: 'sistema', icon: '⚙', label: 'Sistema' },
     ];
 
@@ -5523,6 +5711,11 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
                 if (!breedActiveLines(d).length || !temAlertas) return 'warn';
                 return 'on';
             }
+            case 'guild': {
+                if (!guildOn(d)) return 'off';
+                if (!temAlertas) return 'warn';
+                return 'on';
+            }
             case 'sistema': return d.reloadEnabled ? 'on' : 'off';
         }
         return 'off';
@@ -5537,6 +5730,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? 'daily sozinha' : 'daily') : '', d.giftEnabled ? 'gift' : '', d.evolveEnabled ? 'evolução' : '', d.slotEnabled ? 'slot machine' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Breeding: ${d.breedEnabled ? `${breedActiveLines(d).length} ${breedActiveLines(d).length === 1 ? 'linhagem' : 'linhagens'}${d.breedDouble ? ' + dobrar' : ''}` : 'desligado'}`,
+            `Guild: ${[guildDonateWanted(d) > 0 ? `doa ${guildN(guildDonateWanted(d))}/dia` : '', d.guildTributeEnabled ? 'tributo' : '', d.guildAlerts ? 'avisos' : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
         ].join(' · ');
     }
@@ -5816,6 +6010,31 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <p class="dn-help">O jogo só aceita par com até 0,15 de diferença de quality. Shiny, time, inicial, Ditto, travado e anunciado no mercado nunca viram comida. Usa primeiro a comida mais fraca que serve (a de quality baixa deixa de servir quando quem sobe cresce). A lista acima vem do último frame do box e da última leitura da família (botão ↻ acima); com quem sobe dentro do ovo ela é uma prévia.</p>
                     </div>
                 </section>
+                <section class="dn-pane" data-pane="guild" hidden>
+                    <div class="dn-section">
+                        <h3>🛡 Guild</h3>
+                        <p class="dn-help">O script lê a guild 6 s depois de conectar, a cada 30 min e quando o jogo avisa que algo mudou. Tudo pelo socket, sem viagem à cidade. Talentos, convites, cargos, brasão e dissolver ficam com você, sempre.</p>
+                        <div class="dn-status col" id="pg-dn-guild-status"></div>
+                        <div class="dn-actions"><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-guild-refresh" title="Pede o estado da guild ao jogo agora.">Atualizar guild</button></div>
+                    </div>
+                    <div class="dn-section">
+                        <h3>💰 Doação diária de gold</h3>
+                        <div class="dn-inline">Doar por dia <input id="pg-dn-guild-donate" class="dn-input dn-input--sm" type="number" min="0" step="1000"> gold <span class="dn-hint">(0 = não doa; o jogo limita a 500.000 por membro por dia)</span></div>
+                        <div class="dn-inline">Deixar sempre na conta <input id="pg-dn-guild-keep" class="dn-input dn-input--sm" type="number" min="0" step="100000"> gold <span class="dn-hint">(não doa o que faria o gold cair abaixo disto; 0 = sem reserva)</span></div>
+                        <p class="dn-help">O gold doado conta para desbloquear a próxima vaga da guild. O script doa o que falta até o valor acima (respeitando o teto do dia e a reserva) assim que lê a guild; a resposta do jogo é conferida pelo próprio frame e o resultado vai para o canal de Alertas. Erro = espera 1 h antes de tentar de novo.</p>
+                    </div>
+                    <div class="dn-section">
+                        <h3>🏺 Tributo do Dia</h3>
+                        <label class="dn-toggle"><input id="pg-dn-guild-tribute" type="checkbox"><span class="sw"></span>Depositar o item do dia que estiver na mochila</label>
+                        <div class="dn-inline">Guardar <input id="pg-dn-guild-tribute-keep" class="dn-input dn-input--sm" type="number" min="0" step="1"> na mochila <span class="dn-hint">(0 = deposita tudo)</span></div>
+                        <p class="dn-help">O item e a meta (2.000–4.000) mudam todo dia; fechar o tributo dá pontos e 15 min de +50% (XP, Loot ou Captura) para quem está online. Enquanto o tributo do dia está aberto, o item fica fora da venda automática e do guardar na cidade. Deposita ao ler a guild e relê até 5 min depois de um drop do item.</p>
+                    </div>
+                    <div class="dn-section">
+                        <h3>🔔 Avisos da guild</h3>
+                        <label class="dn-toggle"><input id="pg-dn-guild-alerts" type="checkbox"><span class="sw"></span>Avisar no canal de Alertas: caçada, daily e tributo concluídos, dia perfeito, tier, vaga nova e convites</label>
+                        <p class="dn-help">A guild é a mesma nas 4 contas: ligue isto em UM painel só, senão cada aviso chega 4 vezes. As doações e os depósitos de cada conta avisam sempre (canal de Alertas).</p>
+                    </div>
+                </section>
                 <section class="dn-pane" data-pane="sistema" hidden>
                     <div class="dn-section">
                         <h3>Recarga do painel</h3>
@@ -5979,6 +6198,11 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 breedFoodIvMax: Math.max(0, Math.min(IV_MAX, parseInt($('#pg-dn-breed-ivmax').value, 10) || 0)),
                 breedFamily: $('#pg-dn-breed-family').checked,
                 breedDouble: $('#pg-dn-breed-double').checked,
+                guildDonateGold: Math.max(0, parseInt($('#pg-dn-guild-donate').value, 10) || 0),
+                guildDonateKeep: Math.max(0, parseInt($('#pg-dn-guild-keep').value, 10) || 0),
+                guildTributeEnabled: $('#pg-dn-guild-tribute').checked,
+                guildTributeKeep: Math.max(0, parseInt($('#pg-dn-guild-tribute-keep').value, 10) || 0),
+                guildAlerts: $('#pg-dn-guild-alerts').checked,
                 giftCenterMode: ['daily', 'all', ''].includes($('#pg-dn-gift-center').value) ? $('#pg-dn-gift-center').value : 'daily',
                 clanEnabled: $('#pg-dn-clan').checked,
                 depositItems: $('#pg-dn-dep-items').value || '',
@@ -6350,6 +6574,15 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-breed-food').innerHTML = linhas.length ? linhas.map(l => `<div class="${l.ok ? 'ok' : 'dim'}">${breedEsc(l.text)}</div>`).join('') : '<div class="dim">Escolha quem sobe para ver a comida.</div>';
         }
         onBreedChange = () => { if (!panel.hidden) renderBreed(); };
+        function renderGuild() {
+            const linhas = guildStatus(current());
+            $('#pg-dn-guild-status').innerHTML = linhas.map(l => `<div class="${l.ok ? 'ok' : (l.dim ? 'dim' : '')}">${breedEsc(l.text)}</div>`).join('') || '<div class="dim">—</div>';
+        }
+        onGuildChange = () => { if (!panel.hidden) renderGuild(); };
+        $('#pg-dn-guild-refresh').onclick = () => {
+            const ok = guildRequest('botão Atualizar guild');
+            flash(ok ? 'Pedi o estado da guild ao jogo.' : 'Socket do jogo não rastreado.', ok ? 'info' : 'warn');
+        };
         $('#pg-dn-breed-refresh').onclick = () => {
             lastPokesReqAt = 0;
             const ok = sendGame({ type: 'pokes-get' });
@@ -6743,7 +6976,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
 
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderEvolve(); renderSlot(); renderBreed(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderEvolve(); renderSlot(); renderBreed(); renderGuild(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -6808,6 +7041,11 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-breed-ivmax').value = Math.max(0, Math.min(IV_MAX, Number(cfg.breedFoodIvMax) || 0));
             $('#pg-dn-breed-family').checked = cfg.breedFamily !== false;
             $('#pg-dn-breed-double').checked = cfg.breedDouble !== false;
+            $('#pg-dn-guild-donate').value = Math.max(0, Number(cfg.guildDonateGold) || 0);
+            $('#pg-dn-guild-keep').value = Math.max(0, Number(cfg.guildDonateKeep) || 0);
+            $('#pg-dn-guild-tribute').checked = Boolean(cfg.guildTributeEnabled);
+            $('#pg-dn-guild-tribute-keep').value = Math.max(0, Number(cfg.guildTributeKeep) || 0);
+            $('#pg-dn-guild-alerts').checked = Boolean(cfg.guildAlerts);
             for (const n of [1, 2]) delete $(`#pg-dn-breed-l${n}`).dataset.ready;   // menus refeitos a partir do cfg salvo
             $('#pg-dn-gift-center').value = giftCenterMode(cfg);
             $('#pg-dn-clan').checked = Boolean(cfg.clanEnabled);
@@ -6903,6 +7141,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const giftAntes = JSON.stringify([cfg.giftEnabled, cfg.giftCenterMode]);
             const slotAntes = JSON.stringify([cfg.slotEnabled, cfg.slotWanted]);
             const breedAntes = JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble]);
+            const guildAntes = JSON.stringify([cfg.guildDonateGold, cfg.guildDonateKeep, cfg.guildTributeEnabled, cfg.guildTributeKeep, cfg.guildAlerts]);
             const capturaAntes = JSON.stringify([cfg.catchRouteEnabled, cfg.catchRouteAreas, cfg.catchRouteMaxLevel]);
             const viagemAntes = JSON.stringify([cfg.tripEveryMin, cfg.tripEveryMaxMin]);
             const ligouCaptura = draft.catchRouteEnabled && !cfg.catchRouteEnabled;
@@ -6949,6 +7188,10 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             if (JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble]) !== breedAntes) { // breeding mudou: replaneja já
                 breedReset();
                 if (cfg.breedEnabled) setTimeout(() => breedTick(true), 500);
+            }
+            if (JSON.stringify([cfg.guildDonateGold, cfg.guildDonateKeep, cfg.guildTributeEnabled, cfg.guildTributeKeep, cfg.guildAlerts]) !== guildAntes) { // guild mudou: rearma e relê já
+                guildTriedAt = {};
+                if (guildOn()) setTimeout(() => guildRequest('salvar'), 500);
             }
             if (JSON.stringify([cfg.clanEnabled, cfg.clanRoute, cfg.clanKey]) !== clanAntes) {
                 if (!(cfg.clanEnabled && cfg.clanRoute) && clanTarget) clanReturn('rota do clã desligada');
@@ -7204,6 +7447,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
         '| captura:', cfg.catchRouteEnabled ? `${catchAreas().join('+')}${cfg.catchRouteMaxLevel ? ` até lv ${cfg.catchRouteMaxLevel}` : ''}${cfg.catchRouteAuto ? ' + bola' : ''}` : 'não',
         '| daily:', cfg.dailyEnabled ? `${cfg.dailyAuto ? 'sozinha, ' : ''}volta para ${dailyReturnTarget() || 'a hunt anterior'}${cfg.dailyClaim ? ' + resgate' : ''}` : 'não',
         '| gift:', cfg.giftEnabled ? `sim (Gift Center: ${giftCenterMode() || 'não mexe'})` : 'não',
+        '| guild:', guildOn() ? [guildDonateWanted() > 0 ? `doa ${guildDonateWanted()}/dia` : '', cfg.guildTributeEnabled ? 'tributo' : '', cfg.guildAlerts ? 'avisos' : ''].filter(Boolean).join(' + ') : 'não',
         '| venda pokes:', cfg.pokeSellEnabled ? TIERS_ASC.filter(t => pokeSellLimit(cfg, t.key) > 0).map(t => `${t.name}<${pokeSellLimit(cfg, t.key)}`).join(' ') || 'sem limites' : 'não',
         '| venda drops:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens` : 'não',
         '| viagem à cidade:', `${cfg.tripCity} a cada ${cfg.tripEveryMin}${cfg.tripEveryMaxMin > cfg.tripEveryMin ? `–${cfg.tripEveryMaxMin}` : ''} min`,

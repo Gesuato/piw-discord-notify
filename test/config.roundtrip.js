@@ -36,6 +36,8 @@ const rica = {
   // v3.26.0 (Poke Slot Machine)
   slotEnabled: true, slotWanted: 'Dratini, Larvitar',
   // v3.29.0 (Breeding)
+  // v3.31.0 (Guild)
+  guildDonateGold: 500000, guildDonateKeep: 2000000, guildTributeEnabled: true, guildTributeKeep: 5, guildAlerts: true,
   breedEnabled: true, breedLines: [{ id: 'tronco1', name: 'Donphan', speciesId: 232, gen: 2, q0: 1.466, iv0: 126, lastQ: 1.48, lastIv: 126 }, null], breedFoodIvMax: 140, breedFamily: false, breedDouble: false,
 };
 setTimeout(() => {

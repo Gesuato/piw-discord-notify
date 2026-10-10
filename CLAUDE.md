@@ -275,9 +275,15 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   outland/orre/nightmare, verb kill/catch), tribute{ itemId, itemName, progress, goal, mine, done }, talents, history, invites, list }`;
   `guild-dirty` = releia; `guild-action { action, ... }` com donate{ amount } (gold, teto diário por membro), tribute{ amount } (item
   do dia, consumido), talent{ key } (só Presidente) etc. Módulo `// ---- Guild` antes do Clã: lê 6 s após o socket, a cada 30 min e
-  30 s após `guild-dirty`; logs `guild-campos`, `guild`, `guild-get` e `guild-envio` (o que a tela manda). NADA confirmado no log
-  ainda: antes de automatizar doação/tributo/caçadas, ler os logs (`python tools/read-panel-logs.py`). Nunca automatizar talentos,
-  convites, cargos, brasão ou dissolver.
+  30 s após `guild-dirty`; logs `guild-campos`, `guild`, `guild-get` e `guild-envio` (o que a tela manda). Frame CONFIRMADO no log em
+  10/10/2026 01:25Z (4 contas; extras `lifetimeGold`, `daily.kind`, `tribute.id`/`buffKind`, `points{total,spent,available}`,
+  `nextSlot.slot`); `donateCap` 500.000; teto batido = `error "Você já doou o máximo de hoje (500.000 gold)."`. v3.31.0 (aba 🛡 Guild,
+  ROADMAP #32 etapa 2): `guildDonateGold`/`guildDonateKeep` (doa min(quer − doado, teto − doado, gold − reserva) ao ler o frame),
+  `guildTributeEnabled`/`guildTributeKeep` (deposita min(mine − guardar, meta − progresso); `guildKeepsItem` tira o item do dia da
+  venda e do guardar), `guildAlerts` (transições entre frames; ligar em UM painel). Toda ação fica em `guildPending` até o frame
+  `guild`/`error` (4 s; senão `guild-get` para conferir) e é conferida por `donatedToday`/`tribute.progress`; erro = 1 h sem insistir
+  (`guildTriedAt`). Logs `guild-acao`, `guild-doacao`, `guild-tributo`, `guild-aviso`. Nunca automatizar talentos, convites, cargos,
+  brasão ou dissolver. Etapa 3 (caçar para a guild) ainda não feita.
 - Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
   `guardar` no fim de toda viagem; drops → Depot (`POST /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou
   família (`family-action item`); Pokémon não vendidos → só família (o box JÁ é o Depot comum de Pokémon). Lista escolhida

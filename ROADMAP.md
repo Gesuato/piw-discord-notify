@@ -698,7 +698,7 @@ round-trip.
 
 ---
 
-## 🔧 32. Guild: doação diária de gold, tributo, caçadas e dailies (v3.30.0 = farejador)
+## 🔧 32. Guild: doação diária de gold, tributo, caçadas e dailies (v3.30.0 farejador · v3.31.0 doação, tributo e avisos)
 
 **O que faz (pedido do usuário em 09/10/2026, dia do patch 1.9 que trouxe o sistema de Guild):** cuidar da parte repetitiva da
 guild em cada conta: doar o gold do dia para a próxima vaga, depositar o item do Tributo do Dia, avisar no Discord o andamento das
@@ -716,7 +716,15 @@ até 30 s depois de um `guild-dirty`; logs `guild-campos` (chaves reais), `guild
 tela mandar). O usuário doa gold e deposita tributo na mão UMA vez com o painel ligado → o log confirma `donate`/`tribute` e os
 campos de `me` e `tribute`. Sem config nova.
 
-**Etapa 2 — automações (depois da confirmação), aba nova 🛡️ Guild:**
+**Confirmado em 10/10/2026 01:25Z (log das 4 contas):** frame `guild` igual ao bundle (+ `lifetimeGold`, `daily.kind`, `tribute.id`/
+`buffKind`, `points{ total, spent, available }`, `nextSlot.slot`); `donateCap` 500.000; `donate` acima do teto ou com o teto batido
+responde `error` com o texto ("Você já doou o máximo de hoje (500.000 gold).").
+
+**Etapa 2 — v3.31.0 (feita): aba 🛡 Guild** com status (guild, próxima vaga, você, tributo, caçadas, dailies), doação diária
+(`guildDonateGold` + `guildDonateKeep`), Tributo do Dia (`guildTributeEnabled` + `guildTributeKeep`, item fora da venda/guardar via
+`guildKeepsItem`) e avisos (`guildAlerts`, transições entre frames). Ação = `guild-action` + espera do frame `guild`/`error`
+(`guildPending`), conferência pelos números, 1 h de pausa por erro, aviso no canal de Alertas. Logs `guild-acao`, `guild-doacao`,
+`guild-tributo`, `guild-aviso`. Detalhes do plano original:
 - **Doar gold todo dia** (`guildDonateGold`, 0 = desligado; `guildDonateKeep` = gold que sempre fica na conta): ao ler o frame,
   se `donatedToday < donateCap` e `gold − keep > 0`, `guild-action donate { amount: min(cfg, cap − doadoHoje, gold − keep) }`; uma
   tentativa por dia (reset pelo `huntsEndAt`/10h), log `guild-doacao`. Falta saber se o jogo aceita `donate` durante a hunt (a
@@ -733,7 +741,7 @@ campos de `me` e `tribute`. Sem config nova.
   origem (`prevHuntSlug`). Respeita Daily Kill, cura e viagem como a rota do clã (`clanWait`).
 - Talentos, convites, cargos, brasão e dissolver: NUNCA automatizar (decisões do Presidente).
 
-**Pendências:** confirmar `guild-campos`/`guild-envio` no log; saber se `donate`/`tribute` funcionam na hunt; ver se `guild-dirty`
+**Pendências (etapa 3 = caçar para a guild, `guildRoute`):** ver no log `guild-doacao`/`guild-tributo` a 1ª ação que deu certo e se `donate`/`tribute` funcionam na hunt; ver se `guild-dirty`
 chega sem a janela aberta (senão o script relê só a cada 30 min); região de cada hunt (`area` do `map-markers`) × nomes das
 regiões das dailies (kanto/outland/orre/nightmare).
 

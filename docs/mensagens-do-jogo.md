@@ -171,7 +171,7 @@ killsRequired`, 3000 para um Donphan rank N); "chocar agora" e slot extra custam
   tem `{ id, name, isOwner, frozen, movesUsed, movesCap, lockedUntil, leaveCost, members, pendingInvites }`. Ou seja, dá para
   escolher comida na família por quality/IV sem tirar antes.
 
-### Guild (bundle em 09/10/2026, patch 1.9 do mesmo dia; NADA visto no log ainda)
+### Guild (bundle em 09/10/2026, patch 1.9 do mesmo dia; frame `guild` CONFIRMADO no log em 10/10/2026 01:25Z)
 
 Janela "Guild" do menu (`/assets/topmenu/guild.png`), canal `guild` no chat (tag `[TAG]` ao lado do nome, `guildTag` nas mensagens
 de `chat`/`history`) e aba "Guilds" no Rankings. A pokepedia (`/pokepedia/systems/guild`) ainda diz "This system hasn't been
@@ -228,7 +228,16 @@ sai só entra em outra depois de um cooldown em horas. Ranks fixos 0 Presidente 
     crown-idle{ from, to }, promote, demote, rename{ title }, motd, created{ name }, crest, talent{ key, level }.
   - `list[{ id, name, tag, crest, tier, leader, members, slots, points, bonusPct }]`.
 
-**O que o script faz na v3.30.0 (farejador):** `guild-get` 6 s após o socket, a cada 30 min e até 30 s depois de um `guild-dirty`;
+**CONFIRMADO no log em 10/10/2026 01:25Z (4 contas, guild Cocorico, `guild-campos`):** o frame tem exatamente os campos acima, mais
+`members[].lifetimeGold`, `dailies[].kind`, `tribute.id` e `tribute.buffKind`, `points{ total, spent, available }` e `nextSlot.slot`
+(número da vaga). Valores vistos: `donateCap` 500.000; `nextSlot { slot: 6, points: 50, gold: 3.000.000 }`; caçadas kill Grovyle 0/20000,
+fish 0/750, catch 45/45; dailies kill/catch para kanto (20000/30), outland (12500/15) e orre (7500/10), nightmare `active: false`;
+tributo Magikarp Fin 0/3770 (+2 pontos); `huntsEndAt` 07:00Z e `tributeEndAt` 17:00Z. `guild-envio { action:'donate', amount:500000 }`
+pela tela → `error "Você já doou o máximo de hoje (500.000 gold)."` em ~150 ms; acima do teto → `error "Você só pode doar até 500.000
+gold por dia."`. O estado chega a cada `guild-get` sem precisar da janela aberta. Ainda não visto: resposta de um `donate`/`tribute`
+que deu certo (o script confere por `me.donatedToday`/`tribute.progress` no frame seguinte) e se `guild-dirty` chega com a janela fechada.
+
+**O que o script faz (v3.30.0 farejador, v3.31.0 aba 🛡 Guild):** `guild-get` 6 s após o socket, a cada 30 min e até 30 s depois de um `guild-dirty`;
 log `guild-campos` (chaves reais de cada bloco, 1x por carga), `guild` (resumo: guild, eu, tributo, caçadas, dailies, talentos) e
 `guild-envio` (todo `guild-action` que a tela do jogo mandar — doe gold / deposite tributo na mão uma vez para confirmar os campos).
 
