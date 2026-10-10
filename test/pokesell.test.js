@@ -46,6 +46,21 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         assert(api.pokeSellLimit({ pokeSellLimits: { common: 999 } }, 'common') === 192, 'limite corta em 192');
     }
 
+    // 2b) v3.34.0: piso de qualidade — quality >= pokeSellKeepQuality nunca vende, mesmo abaixo do limite da raridade
+    {
+        const { api } = loadPokeSellModule({}, { api: okApi() });
+        const lista = LISTA.concat([P({ id: 'l179', name: 'Dratini', ivTotal: 20, quality: 1.79 }), P({ id: 'l185', name: 'Dratini', ivTotal: 20, quality: 1.805 })]);
+        assert(api.pokeSellCandidates({ pokeSellLimits: REGRAS }, lista).map(p => p.id).join(',') === 'c40,e99,l90,l179,l185', 'sem piso, Legendary fraco vende');
+        const cfg = { pokeSellLimits: REGRAS, pokeSellKeepQuality: 1.79 };
+        assert(api.pokeSellCandidates(cfg, lista).map(p => p.id).join(',') === 'c40,e99,l90', 'piso 1.79 guarda 1.79 e 1.805: ' + api.pokeSellCandidates(cfg, lista).map(p => p.id));
+        assert(api.pokeSellReason(lista.find(p => p.id === 'l179'), cfg) === 'qualidade 1.79 ≥ 1.79', 'motivo do piso: ' + api.pokeSellReason(lista.find(p => p.id === 'l179'), cfg));
+        assert(api.pokeSellReason(lista.find(p => p.id === 'l90'), cfg) === null, '1.7 abaixo do piso segue a regra da raridade');
+        assert(api.pokeSellCandidates({ pokeSellLimits: REGRAS, pokeSellKeepQuality: '1,7' }, lista).map(p => p.id).join(',') === 'c40,e99', 'vírgula decimal vale (1,7 guarda os Legendary)');
+        assert(api.pokeSellCandidates({ pokeSellLimits: REGRAS, pokeSellKeepQuality: 'abc' }, lista).length === 5 && api.pokeSellCandidates({ pokeSellLimits: REGRAS, pokeSellKeepQuality: 0 }, lista).length === 5, 'piso inválido/0 = desligado');
+        assert(api.pokeSellKeepQ({ pokeSellKeepQuality: '2.0' }) === 2 && api.pokeSellKeepQ({}) === 0, 'pokeSellKeepQ');
+        assert(api.pokeSellReason(P({ id: 'q', ivTotal: undefined, quality: 1.9 }), cfg) === 'qualidade 1.9 ≥ 1.79', 'sem IV mas com qualidade acima do piso: o piso fala primeiro');
+    }
+
     // 3) frame pokes só atualiza a lista e a prévia (desde a v3.15.0 a venda vai na viagem à cidade); a venda em si funciona
     {
         const cfg = { pokeSellEnabled: true, pokeSellLimits: REGRAS };

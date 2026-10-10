@@ -403,6 +403,10 @@ raridade não vende. Config da v3.11.x (duas faixas `pokeSellTier`/`pokeSellIvLo
 10–15 min, sorteado a cada ciclo como a venda de itens); o ciclo conta a partir da carga/ativação e da última venda,
 `pokeSellTick` (30 s) pede a lista ao jogo quando vence e o frame `pokes` vende; sem candidatos o ciclo recomeça.
 O início do ciclo sobrevive à recarga automática (`lastPokeSellAt` no registro). Teste: `node test/pokesell.test.js`.
+**v3.34.0 — piso de qualidade:** `pokeSellKeepQuality` (campo "Guardar com qualidade a partir de", ex.: 1.79): Pokémon com
+`quality` igual ou acima disso NUNCA é vendido, qualquer que seja o poder ou o limite da raridade (motivo "qualidade 1.805 ≥
+1.79" na prévia). 0 = desligado. Aceita vírgula decimal. Pedido do usuário em 10/10/2026: a raridade é uma faixa larga
+(Legendary = 1.7 a 1.99) e o breeding gera 1.805, 1.84…; ele quer guardar pelo número exato.
 
 **Pendências:** confirmar no log que o frame `pokes` traz `starter`/`locked`/`sellValue` (levantado do bundle, v3.6.0);
 sem esses campos o script só confia em `team`/`shiny`/IV.

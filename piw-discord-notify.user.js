@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.33.1
+// @version      3.34.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.33.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.34.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -54,6 +54,7 @@
         sellProfiles: {},       // por hunt: slug -> { items, everyMin, everyMaxMin } (carregado ao entrar)
         pokeSellEnabled: false, // vender Pokémon fora do time pelas regras abaixo (v3.11.0)
         pokeSellLimits: {},     // v3.12.0: raridade (chave: weak..divine) -> vende se poder (ivTotal) < limite; ausente/0 = não vende
+        pokeSellKeepQuality: 0, // v3.34.0: qualidade (multiplicador) a partir da qual NUNCA vende, ex.: 1.8; 0 = só as regras por raridade
         pokeSellEveryMin: 10,   // v3.13.0: intervalo mínimo entre vendas de Pokémon (minutos)
         pokeSellEveryMaxMin: 15, // intervalo máximo; 0 ou <= mínimo = fixo. Entre os dois é sorteado a cada ciclo
         boxAlertAt: 200,        // v3.28.0: box (Pokémon na conta, estimado) acima disso = alerta + viagem de venda; 0 = desligado
@@ -1329,6 +1330,9 @@
     //   venda  : POST /api/game/pokemon/sell { pokeIds:[...] } -> { gold, goldGained, sold } (bundle, v3.6.0).
     // Regra (escolhida pelo usuário no mock docs/mockup-venda-pokemon.html, v3.12.0): UM limite de poder por
     // raridade em `pokeSellLimits[tier.key]`: vende se ivTotal < limite; raridade sem limite (vazio/0) não vende.
+    // v3.34.0: `pokeSellKeepQuality` (ex.: 1.8) = piso de qualidade: `quality` igual ou acima disso NUNCA vende, qualquer que
+    // seja o poder/raridade (pedido do usuário: "qualidade acima de 1.79 não vende"; a raridade é uma faixa larga, a qualidade é
+    // o número exato do indivíduo, e o breeding cria 1.805, 1.84…). 0 = desligado.
     // Nunca vende: no time/líder, inicial, shiny, com cadeado do jogo (o 🔒 de "guardar o avisado" entra aqui),
     // sem valor de venda, sem IV/qualidade na lista, ou capturado nos últimos POKE_SELL_RECENT_MS (dá tempo do
     // aviso/cadeado da captura acontecer antes). Desde a v3.15.0 não há relógio próprio: a venda vai na viagem à
@@ -1462,6 +1466,8 @@
     }
     function pokeSellLimit(d, tierKey) { return Math.min(IV_MAX, Math.max(0, Number(((d || cfg).pokeSellLimits || {})[tierKey]) || 0)); }
     function pokeSellHasRules(d) { return TIERS.some(t => pokeSellLimit(d, t.key) > 0); }
+    // v3.34.0: piso de qualidade protegido (0 = desligado). Aceita vírgula decimal ("1,79") vinda do painel.
+    function pokeSellKeepQ(d) { const v = parseFloat(String((d || cfg).pokeSellKeepQuality ?? '').replace(',', '.')); return Number.isFinite(v) && v > 0 ? v : 0; }
 
     // Motivo para NÃO vender `p` com as regras `d` (cfg ou rascunho do painel); null = vende.
     function pokeSellReason(p, d) {
@@ -1478,6 +1484,8 @@
         if (at && Date.now() - at < POKE_SELL_RECENT_MS) return 'capturado agora';
         if (typeof clanKeepsSpecies === 'function' && clanKeepsSpecies(Number(p.speciesId))) return 'tarefa do clã';
         if (typeof breedKeepsPoke === 'function' && breedKeepsPoke(p)) return 'breeding';   // v3.29.0: quem sobe e a espécie dele, SEMPRE
+        const keepQ = pokeSellKeepQ(d), q = Number(p.quality);
+        if (keepQ && Number.isFinite(q) && q >= keepQ) return `qualidade ${q} ≥ ${keepQ}`;   // v3.34.0: piso de qualidade
         const tier = qualityTier(Number(p.quality));
         const iv = Number(p.ivTotal);
         if (!tier || !Number.isFinite(iv)) return 'sem IV';
@@ -6227,7 +6235,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         return [
             `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
             `Bolas: ${!((Number(d.ballsMin) || 0) > 0 || d.autoBuy) ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}${supplyOn(d) ? ` · refil: ${supplySlots(d).map(s => `${s.name} < ${s.min}`).join(', ')}` : ''}${d.healJoyEnabled ? ' · Joy' : ''}${d.cityIdleEnabled ? ` · volta da cidade ${Number(d.cityIdleMin) || IDLE_MIN_DEFAULT} min` : ''}`,
-            `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades)` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
+            `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades${pokeSellKeepQ(d) ? `, guarda ≥ ${pokeSellKeepQ(d)}` : ''})` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
             `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? 'daily sozinha' : 'daily') : '', d.giftEnabled ? 'gift' : '', d.evolveEnabled ? 'evolução' : '', d.slotEnabled ? 'slot machine' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Breeding: ${d.breedEnabled ? `${breedActiveLines(d).length} ${breedActiveLines(d).length === 1 ? 'linhagem' : 'linhagens'}${d.breedDouble ? ' + dobrar' : ''}` : 'desligado'}`,
@@ -6357,9 +6365,11 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                     <div class="dn-section dn-blk" id="pg-dn-blk-pokes" data-blk="pokes">
                         <h3><span class="chev">▶</span>Pokémon fora do time <span class="sum" id="pg-dn-sum-pokes"></span><span class="spacer"></span><label class="dn-toggle"><input id="pg-dn-psell" type="checkbox"><span class="sw"></span>Vender sozinho</label></h3>
                         <div class="in">
-                        <p class="dn-help">Nunca vende: no time, inicial, shiny, com cadeado 🔒, anunciado no mercado ou capturado há menos de 2 min. Vazio = essa raridade não vende. A proteção de venda do PokeGrid não pergunta nas vendas do script.</p>
+                        <p class="dn-help">Nunca vende: no time, inicial, shiny, com cadeado 🔒, anunciado no mercado, capturado há menos de 2 min ou com qualidade igual ou acima do piso abaixo. Vazio = essa raridade não vende. A proteção de venda do PokeGrid não pergunta nas vendas do script.</p>
                         <div class="dn-tiers">${TIERS_ASC.map(t => `<label for="pg-dn-psell-${t.key}"><span class="dn-chip" style="--c:#${t.color.toString(16).padStart(6, '0')}">${t.name}</span></label><span class="dn-inline">poder &lt; <input id="pg-dn-psell-${t.key}" class="dn-input dn-input--sm pg-dn-psell-lim" data-tier="${t.key}" type="number" min="0" max="${IV_MAX}" step="1" placeholder="—"></span>`).join('')}</div>
                         <p class="dn-help">Poder = 0 a ${IV_MAX}.</p>
+                        <label class="dn-field"><span>Guardar com qualidade a partir de</span><input id="pg-dn-psell-keepq" class="dn-input dn-input--sm" type="number" min="0" step="0.01" placeholder="0 = desligado"></label>
+                        <p class="dn-help">Qualidade = multiplicador do indivíduo (Common 1.0, Rare 1.3, Epic 1.5, Legendary 1.7, Mythic 2.0…). Ex.: 1.79 guarda todo Pokémon com qualidade 1.79 ou mais, qualquer que seja o poder, mesmo com limite na raridade dele.</p>
                         <label class="dn-field"><span>Avisar com box acima de</span><input id="pg-dn-box-alert" class="dn-input dn-input--sm" type="number" min="0" step="10" placeholder="0 = desligado"></label>
                         <p class="dn-help">Pokémon na conta, estimado pelas capturas. Acima disso avisa no canal de Alertas e pede uma viagem de venda. Box grande demais = o jogo para de mandar a lista e nada vende sozinho; sem a lista, o script vende pela fila das capturas (dados da própria captura).</p>
                         <div class="dn-status col">
@@ -6779,6 +6789,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 tripEveryMin: Math.max(1, parseInt($('#pg-dn-trip-min').value, 10) || 10),
                 tripEveryMaxMin: Math.max(0, parseInt($('#pg-dn-trip-max').value, 10) || 0),
                 pokeSellLimits: Object.fromEntries([...panel.querySelectorAll('.pg-dn-psell-lim')].map(i => [i.dataset.tier, Math.min(IV_MAX, Math.max(0, parseInt(i.value, 10) || 0))]).filter(([, v]) => v > 0)),
+                pokeSellKeepQuality: pokeSellKeepQ({ pokeSellKeepQuality: $('#pg-dn-psell-keepq').value }),
                 tripCity: $('#pg-dn-trip-city').value || 'cerulean',
                 reloadEnabled: $('#pg-dn-reload').checked,
                 reloadEveryMin: Math.max(1, parseInt($('#pg-dn-reload-min').value, 10) || 60),
@@ -6987,7 +6998,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const cand = linhas.filter(l => !l.motivo);
             const gold = cand.reduce((s, l) => s + (Number(l.p.sellValue) || 0), 0);
             st.textContent = `${fora.length} fora do time · ${cand.length} ${d.pokeSellEnabled ? 'serão vendidos' : 'dentro das regras (desligado)'}${gold ? ` · ~${fmtNum(gold)} gold` : ''}${boxTxt}${filaTxt}`;
-            sum.textContent = `· ${nLim} raridades com limite · ${cand.length} ${cand.length === 1 ? 'seria vendido' : 'seriam vendidos'}${d.pokeSellEnabled ? '' : ' · desligado'}`;
+            sum.textContent = `· ${nLim} raridades com limite${pokeSellKeepQ(d) ? ` · guarda qualidade ≥ ${pokeSellKeepQ(d)}` : ''} · ${cand.length} ${cand.length === 1 ? 'seria vendido' : 'seriam vendidos'}${d.pokeSellEnabled ? '' : ' · desligado'}`;
             ls.innerHTML = linhas.slice(0, 40).map(l => `<tr class="${l.motivo ? 'keep' : 'sell'}"><td>${escHtml(l.p.name || '?')} <span class="k">lv${Number(l.p.level) || 0}</span></td><td style="color:#${(l.t?.color ?? 0x9aa4b2).toString(16).padStart(6, '0')}">${l.t ? l.t.name : '?'}</td><td class="n">${Number.isFinite(Number(l.p.ivTotal)) ? Number(l.p.ivTotal) : '?'}</td><td class="why">${l.motivo ? escHtml(l.motivo) : '✔ vende'}</td></tr>`).join('')
                 + (linhas.length > 40 ? `<tr class="keep"><td colspan="4">… e mais ${linhas.length - 40}</td></tr>` : '');
         }
@@ -7588,6 +7599,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-trip-min').value = cfg.tripEveryMin || 10;
             $('#pg-dn-trip-max').value = cfg.tripEveryMaxMin || '';
             for (const i of panel.querySelectorAll('.pg-dn-psell-lim')) i.value = pokeSellLimit(cfg, i.dataset.tier) || '';
+            $('#pg-dn-psell-keepq').value = pokeSellKeepQ(cfg) || '';
             sellDrafts = {};
             loadItemsCatalog().then(() => { if (!panel.hidden) rerenderSell(); });
             renderSellList();
@@ -7980,7 +7992,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 `Joy ${cfg.healJoyEnabled ? 'ligada' : 'desligada'}`,
                 `volta da cidade ${cfg.cityIdleEnabled ? `${cfg.cityIdleMin} min` : 'desligada'}`,
                 `drops ${cfg.sellEnabled ? 'ligado' : 'desligado'}, listas de ${Object.keys(cfg.sellProfiles || {}).length} hunts (${perfisVindos.length} vieram${soDaqui.length ? `, ${soDaqui.length} já eram daqui e ficaram` : ''})`,
-                `Pokémon ${cfg.pokeSellEnabled ? 'ligado' : 'desligado'}, ${Object.keys(cfg.pokeSellLimits || {}).length} raridades com limite`,
+                `Pokémon ${cfg.pokeSellEnabled ? 'ligado' : 'desligado'}, ${Object.keys(cfg.pokeSellLimits || {}).length} raridades com limite${pokeSellKeepQ(cfg) ? `, guarda qualidade ≥ ${pokeSellKeepQ(cfg)}` : ''}`,
                 `viagem ${cfg.tripEveryMin}${cfg.tripEveryMaxMin > cfg.tripEveryMin ? `–${cfg.tripEveryMaxMin}` : ''} min (${cfg.tripCity})`,
                 `${Object.keys(cfg.routes || {}).length} rotas de treino${cfg.routeName ? ` (ativa: ${cfg.routeName})` : ''}`,
                 `captura ${cfg.catchRouteEnabled ? 'ligada' : 'desligada'}`, `daily ${cfg.dailyEnabled ? (cfg.dailyAuto ? 'sozinha' : 'ligada') : 'desligada'}`,

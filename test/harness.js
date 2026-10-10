@@ -278,7 +278,7 @@ function loadPokeSellModule(cfg, init) {
     };
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
-            pokeSellReason, pokeSellCandidates, runPokeSellCycle, pokeSellOnPokes, noteRecentCapture, pokeSellLimit, pokeSellHasRules, pokeLabel,
+            pokeSellReason, pokeSellCandidates, runPokeSellCycle, pokeSellOnPokes, noteRecentCapture, pokeSellLimit, pokeSellHasRules, pokeSellKeepQ, pokeLabel,
             boxNoteCapture, boxNoteLocked, boxEstimate, pokeSellQueueCandidates, pokesNoteSilent,
             get captureQueue() { return captureQueue; },
             get lastPokesList() { return lastPokesList; },

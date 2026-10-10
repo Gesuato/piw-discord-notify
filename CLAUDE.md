@@ -155,7 +155,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
 - Venda de Pokémon (v3.11.0, aba Venda → "Pokémon fora do time"): desde a v3.12.0 UM limite por raridade em
   `cfg.pokeSellLimits[tierKey]` (vende se ivTotal < limite; ausente = não vende; escolhido pelo usuário no mock
   `docs/mockup-venda-pokemon.html`, alternativa B; `migrateCfg` converte as duas faixas antigas). Ver `pokeSellReason`;
-  `migrateCfg` roda ANTES de `TIERS` existir (TDZ), por isso não usa `tierByKey`. Intervalo sorteado em
+  `migrateCfg` roda ANTES de `TIERS` existir (TDZ), por isso não usa `tierByKey`. v3.34.0: `cfg.pokeSellKeepQuality`
+  (painel "Guardar com qualidade a partir de", ex.: 1.79; `pokeSellKeepQ(d)`, aceita vírgula) = `quality` ≥ piso NUNCA vende,
+  antes de qualquer regra por raridade (pedido do usuário em 10/10/2026). Intervalo sorteado em
   `pokeSellEveryMin`–`pokeSellEveryMaxMin` (v3.13.0, padrão 10–15 min; `restartPokeSellCycle` na carga, no Salvar e
   após cada venda; `pokeSellTick` pede `pokes-get` quando vence). Lote recusado pelo jogo (ex.: "anunciados no mercado",
   flag `listed` na lista) é retentado um por um; recusados ficam em `pokeSellRejected` na sessão (log `venda-pokes-recusado`
