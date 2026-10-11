@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.34.0
+// @version      3.35.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.34.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.35.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -2053,7 +2053,25 @@
     let dailyKillTimer = null;
     let dailySig = '';
     let prevHuntSlug = null;        // hunt (não cidade) anterior à atual: para onde voltar depois da daily
-    let lastRealHunt = null;        // última hunt (não cidade) vista
+    let lastRealHunt = null;        // última hunt (não cidade) vista (v3.35.0: também em localStorage, ver loadLastHunt)
+    // v3.35.0: a última hunt sobrevive à recarga (⟳ do PokeGrid, F5, PokeGrid fechado e aberto). Antes, depois de uma recarga
+    // manual, `lastRealHunt` nascia nulo e a parada na cidade ficava "não sei de que hunt veio" para sempre sem rota/clã.
+    const LAST_HUNT_KEY = 'pgDiscordNotifyLastHunt';
+    const LAST_HUNT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+    function saveLastHunt(slug) {
+        try { localStorage.setItem(LAST_HUNT_KEY, JSON.stringify({ slug, at: Date.now() })); } catch { /* sem localStorage: vale só nesta carga */ }
+    }
+    // Lida na carga (loadResume): { slug, at } da última hunt, ou null se não há, é cidade ou tem mais de 24 h.
+    function loadLastHunt() {
+        try {
+            const r = JSON.parse(localStorage.getItem(LAST_HUNT_KEY) || 'null');
+            const slug = r && r.slug ? normalize(r.slug) : null;
+            if (!slug || CITY_SLUGS.includes(slug)) return null;
+            const idade = Date.now() - (Number(r.at) || 0);
+            if (idade < 0 || idade > LAST_HUNT_MAX_AGE_MS) return null;
+            return { slug, at: Number(r.at) || 0 };
+        } catch { return null; }
+    }
     let onDailyChange = null;       // callback do painel para redesenhar o status
     let dailyAutoBusy = false;
     let dailyPickTried = 0;         // resetAt da missão que já tentamos escolher (não repete o POST /pick)
@@ -2093,6 +2111,7 @@
         if (lastRealHunt && lastRealHunt !== slug) prevHuntSlug = lastRealHunt;
         if (lastRealHunt !== slug) dailyKillsHere = 0;
         lastRealHunt = slug;
+        saveLastHunt(slug);
         if (dailyEnabled()) scheduleDailyCheck(DAILY_AFTER_KILL_MS); // hunt nova: consulta a daily logo
     }
 
@@ -5194,6 +5213,13 @@
     //   - lastSellAt, avisos de bola e de nível já dados: para não vender/avisar de novo a cada recarga.
     // Não recarrega com venda, troca de hunt ou de líder em andamento nem com captura esperando poke-delta
     // (adia e tenta no tique seguinte; depois de RELOAD_POSTPONE_MAX_MS recarrega mesmo assim).
+    // v3.35.0: o registro de retomada também é gravado em `pagehide`/`beforeunload` (saveResume), ou seja, a recarga MANUAL
+    // (⟳ Atualizar tudo do PokeGrid, F5) volta para a hunt do mesmo jeito que a automática — antes só o `location.reload()` do
+    // script gravava o registro, e na recarga manual a conta nascia em Cerulean sem `resumeHunt`, sem `lastRealHunt` e ficava
+    // parada "sem saber de que hunt veio". Recarga no meio de viagem/cura/volta da cidade guarda a hunt de volta
+    // (`lastRealHunt`). A volta é armada também por um fallback de RESUME_FALLBACK_MS na carga (sem socket nem `set-city`,
+    // `resumeHunt` ficava pendurado e travava a parada na cidade em "volta da recarga pendente"). `loadLastHunt()` restaura a
+    // última hunt (até 24 h) para a parada na cidade ter destino mesmo com o registro velho (PokeGrid fechado por horas).
 
     const RESUME_KEY = 'pgDiscordNotifyResume';
     const RELOAD_CHECK_MS = 30 * 1000;
@@ -5201,6 +5227,7 @@
     const RESUME_MAX_AGE_MS = 5 * 60 * 1000;
     const RESUME_AFTER_CITY_MS = 3000;
     const RESUME_AFTER_SOCKET_MS = 12000;
+    const RESUME_FALLBACK_MS = 45000;      // v3.35.0: sem socket rastreado nem set-city, volta mesmo assim
     const CITY_SLUGS = ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping']; // lista `o4` do bundle (26/09/2026)
 
     let nextReloadAt = 0;           // quando recarregar (ms); 0 = ainda não sorteado
@@ -5242,10 +5269,22 @@
         const hora = new Date(nextReloadAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
         return `próxima em ${min} min (${hora})`;
     }
-    function doReload(motivo) {
+    // Hunt para retomar na carga seguinte: a hunt atual ou, no meio de viagem/cura/volta da cidade (conta na cidade de
+    // passagem), a hunt de volta. Na cidade por vontade do jogador: null (a parada na cidade decide depois).
+    function resumeSlugNow() {
+        const h = huntSlug ? normalize(huntSlug) : null;
+        if (h && !CITY_SLUGS.includes(h)) return h;
+        const voltando = tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof idleRunning !== 'undefined' && idleRunning);
+        const ult = typeof lastRealHunt === 'string' && lastRealHunt ? normalize(lastRealHunt) : null;
+        return voltando && ult && !CITY_SLUGS.includes(ult) ? ult : null;
+    }
+    // Grava o registro de retomada (lido por loadResume na carga seguinte). origem: 'recarga' (location.reload do script)
+    // ou 'tela' (pagehide/beforeunload: ⟳ do PokeGrid, F5, fechar o PokeGrid).
+    function saveResume(origem) {
         const rec = {
             at: Date.now(),
-            slug: huntSlug,
+            origem: origem || 'recarga',
+            slug: resumeSlugNow(),
             prevSlug: prevHuntSlug,
             lastSellAt,
             lastPokeSellAt,
@@ -5256,8 +5295,16 @@
             levelAlerted: Array.from(levelAlerted),
         };
         try { localStorage.setItem(RESUME_KEY, JSON.stringify(rec)); } catch { /* sem espaço: recarrega mesmo assim */ }
-        logEvent('recarga', { motivo, hunt: huntSlug, adiadaMin: reloadDueSince ? Math.round((Date.now() - reloadDueSince) / 60000) : 0 });
+        return rec;
+    }
+    function doReload(motivo) {
+        const rec = saveResume('recarga');
+        logEvent('recarga', { motivo, hunt: huntSlug, volta: rec.slug, adiadaMin: reloadDueSince ? Math.round((Date.now() - reloadDueSince) / 60000) : 0 });
         location.reload();
+    }
+    // v3.35.0: recarga manual (⟳ do PokeGrid, F5) e fechamento do PokeGrid gravam o mesmo registro.
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        for (const ev of ['pagehide', 'beforeunload']) window.addEventListener(ev, () => { try { saveResume('tela'); } catch { /* nada a fazer na saída */ } });
     }
     function reloadTick() {
         if (!cfg.reloadEnabled) return;
@@ -5274,11 +5321,16 @@
 
     // Carga nova: restaura o que a carga anterior guardou (se foi há pouco).
     function loadResume() {
+        // v3.35.0: última hunt (até 24 h) para a parada na cidade/viagem/cura terem destino depois de qualquer recarga.
+        if (typeof lastRealHunt !== 'undefined' && !lastRealHunt && typeof loadLastHunt === 'function') {
+            const ult = loadLastHunt();
+            if (ult) { lastRealHunt = ult.slug; logEvent('hunt-lembrada', { slug: ult.slug, idadeMin: Math.round((Date.now() - ult.at) / 60000) }); }
+        }
         let rec = null;
         try { rec = JSON.parse(localStorage.getItem(RESUME_KEY) || 'null'); localStorage.removeItem(RESUME_KEY); } catch { rec = null; }
         if (!rec || typeof rec !== 'object') return;
         const idade = Date.now() - (Number(rec.at) || 0);
-        if (idade < 0 || idade > RESUME_MAX_AGE_MS) { logEvent('recarga-ignorada', { idadeMin: Math.round(idade / 60000) }); return; }
+        if (idade < 0 || idade > RESUME_MAX_AGE_MS) { logEvent('recarga-ignorada', { idadeMin: Math.round(idade / 60000), origem: rec.origem || 'recarga', hunt: rec.slug || null }); return; }
         if (Number(rec.lastSellAt) > 0) lastSellAt = Number(rec.lastSellAt);
         if (Number(rec.lastPokeSellAt) > 0) lastPokeSellAt = Number(rec.lastPokeSellAt);
         if (Number(rec.lastTripAt) > 0) { lastTripAt = Number(rec.lastTripAt); nextTripDelayMs = Number(rec.nextTripDelayMs) || 0; }
@@ -5288,7 +5340,8 @@
         const slug = rec.slug ? normalize(rec.slug) : null;
         resumeHunt = slug && !CITY_SLUGS.includes(slug) ? slug : null;
         if (rec.prevSlug) prevHuntSlug = normalize(rec.prevSlug);   // para onde a daily volta
-        logEvent('recarga-retomada', { hunt: resumeHunt, idadeS: Math.round(idade / 1000) });
+        logEvent('recarga-retomada', { hunt: resumeHunt, idadeS: Math.round(idade / 1000), origem: rec.origem || 'recarga' });
+        armResume(RESUME_FALLBACK_MS);   // v3.35.0: socket (12 s) e set-city (3 s) encurtam; sem nenhum dos dois, volta em 45 s
     }
     // Arma a volta para a hunt: chamado ao rastrear o socket (fallback) e quando a SPA manda `set-city`.
     function armResume(delayMs) {
@@ -5301,6 +5354,8 @@
             resumeHunt = null;
             if (lastFieldAt > 0) { logEvent('recarga-hunt', { slug, jaNaHunt: true }); return; }
             if ((typeof healBusy === 'function' && healBusy())) { logEvent('recarga-hunt', { slug, cura: true }); return; }   // a cura volta para a hunt
+            if (huntSwitch) { logEvent('recarga-hunt', { slug, trocando: huntSwitch.slug }); return; }   // outra troca já em andamento (rota/clã/farm)
+            logEvent('recarga-hunt', { slug, enviando: true });
             switchHunt(slug, 1, 'recarga');
         }, delayMs);
     }

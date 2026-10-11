@@ -24,7 +24,7 @@ Tampermonkey/Violentmonkey no navegador.
 - ✅ **Troca automática de líder**: ao atingir o nível, passa a vez para o próximo do time que ainda está abaixo
 - ✅ **Rota de treino**: etapas "hunt + nível"; quando todos do time chegam ao nível, troca de hunt sozinho
 - ✅ **Evolução automática**: quem do time chega ao nível de evolução vai à cidade, evolui com as pedras da mochila (mantém o nível) e volta para a hunt
-- ✅ **Recarga automática**: recarrega o painel sozinho a cada X–Y minutos (sorteado), como o "⟳ Atualizar tudo" do PokeGrid, e volta para a hunt em que estava
+- ✅ **Recarga automática**: recarrega o painel sozinho a cada X–Y minutos (sorteado), como o "⟳ Atualizar tudo" do PokeGrid, e volta para a hunt em que estava — também depois do ⟳/F5 feito na mão (a última hunt fica guardada por 24 h para a parada na cidade)
 - ✅ **Exportar / importar** a configuração entre contas e painéis
 - ✅ **Box sob controle**: estima quantos Pokémon há na conta, avisa e pede venda acima do limite, e vende pela fila das
   capturas quando o jogo para de mandar a lista (acontece com o box grande demais)

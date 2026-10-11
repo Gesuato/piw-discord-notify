@@ -67,12 +67,25 @@ function loadReloadModule(cfg, init) {
     const clock = { now: Date.now() };
     const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
     const store = init.store || {};
-    const state = { logs: [], reloads: 0, switches: [], longTimers: [], store };
+    const state = { logs: [], reloads: 0, switches: [], longTimers: [], listeners: [], store };
     const ctx = {
         cfg,
         logEvent: (k, d) => state.logs.push([k, d]),
         normalize: (s) => String(s || '').toLowerCase().trim(),
         switchHunt: (slug, tentativa, origem) => state.switches.push({ slug, tentativa, origem }),
+        // v3.35.0: pagehide/beforeunload gravam o registro; `state.listeners` guarda os handlers para o teste disparar
+        window: { addEventListener: (ev, fn) => state.listeners.push({ ev, fn }) },
+        lastRealHunt: init.lastRealHunt || null,
+        // espelho de loadLastHunt() do módulo da daily (o real é testado em daily.test.js)
+        loadLastHunt: () => {
+            try {
+                const r = JSON.parse(store.pgDiscordNotifyLastHunt || 'null');
+                const slug = r && r.slug ? String(r.slug).toLowerCase() : null;
+                if (!slug || ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'].includes(slug)) return null;
+                const idade = clock.now - (Number(r.at) || 0);
+                return idade < 0 || idade > 24 * 60 * 60 * 1000 ? null : { slug, at: Number(r.at) || 0 };
+            } catch { return null; }
+        },
         localStorage: {
             getItem: (k) => (k in store ? store[k] : null),
             setItem: (k, v) => { store[k] = String(v); },
@@ -85,8 +98,8 @@ function loadReloadModule(cfg, init) {
         lastPokeSellAt: init.lastPokeSellAt || 0,
         lastTripAt: 0,
         nextTripDelayMs: 0,
-        tripRunning: false,
-        huntSwitch: null,
+        tripRunning: Boolean(init.tripRunning),
+        huntSwitch: init.huntSwitch || null,
         swapPending: null,
         awaitingDetails: init.awaitingDetails || [],
         ballAlerted: init.ballAlerted || {},
@@ -100,8 +113,10 @@ function loadReloadModule(cfg, init) {
     };
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
-            reloadIntervalRange, scheduleReload, reloadTick, reloadStatus, doReload, loadResume, armResume,
+            reloadIntervalRange, scheduleReload, reloadTick, reloadStatus, doReload, loadResume, armResume, saveResume,
             fieldArrived() { lastFieldAt = Date.now(); },
+            get lastRealHunt() { return lastRealHunt; },
+            set huntSlug(v) { huntSlug = v; },
             get nextReloadAt() { return nextReloadAt; },
             get resumeHunt() { return resumeHunt; },
             get lastSellAt() { return lastSellAt; },
@@ -109,6 +124,7 @@ function loadReloadModule(cfg, init) {
             get prevHuntSlug() { return prevHuntSlug; },
         };`);
     const api = factory(...Object.values(ctx));
+    api.unload = () => { for (const l of state.listeners) l.fn(); };   // simula o ⟳ do PokeGrid / F5 (pagehide + beforeunload)
     return { api, state, cfg, clock };
 }
 
@@ -160,7 +176,9 @@ function loadDailyModule(cfg, init) {
     const factory = new Function(...Object.keys(ctx), 'function teamLeader() { return team.find(p => p.leader) || team[0] || null; }\n' + mod + `
         return {
             dailyTick, noteDailyKill, noteHuntChange, dailyStatus, dailyReturnTarget, dailyOnHunt, dailyHoldsLeader, dailyWantsHunt, dailyGoFailed,
+            loadLastHunt,
             setHunt(slug) { huntSlug = slug; noteHuntChange(slug); },
+            get lastRealHunt() { return lastRealHunt; },
             setTeam(t) { team = t; },
             get dailyRun() { return dailyRun; },
             get daily() { return daily; },

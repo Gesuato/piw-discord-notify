@@ -62,8 +62,9 @@ const MIN = 60 * 1000;
     assert(api.lastSellAt === 777, 'lastSellAt restaurado');
     assert(api.levelAlerted.has('p1'), 'levelAlerted restaurado');
     assert(api.resumeHunt === 'pidgey', 'hunt normalizada guardada');
+    assert(state.longTimers.length === 1 && state.switches.length === 0, 'v3.35.0: fallback de 45 s armado na carga, nada enviado ainda');
     api.armResume(12000);                       // socket rastreado: fallback longo fica pendente
-    assert(state.longTimers.length === 1 && state.switches.length === 0, 'fallback de 12 s armado, nada enviado ainda');
+    assert(state.longTimers.length === 2 && state.switches.length === 0, 'fallback de 12 s armado, nada enviado ainda');
     api.armResume(3000);                        // set-city saiu: 3 s (curto, roda na hora no stub)
     assert(state.switches.length === 1 && state.switches[0].slug === 'pidgey' && state.switches[0].origem === 'recarga', 'enter-hunt via switchHunt origem recarga');
     assert(api.resumeHunt === null, 'só volta uma vez');
@@ -96,4 +97,61 @@ const MIN = 60 * 1000;
     assert(api.resumeHunt === null && state.switches.length === 0, 'cidade não é hunt');
 }
 
-console.log('OK reload.test — faixa, adiamento, registro e volta para a hunt');
+// 8) v3.35.0: recarga MANUAL (⟳ do PokeGrid / F5): pagehide grava o mesmo registro, com origem 'tela'
+{
+    const { api, state } = loadReloadModule({ reloadEnabled: false }, { huntSlug: 'Rhyhorn', lastSellAt: 4242 });
+    assert(state.listeners.some(l => l.ev === 'pagehide') && state.listeners.some(l => l.ev === 'beforeunload'), 'escuta pagehide e beforeunload');
+    api.unload();
+    const rec = JSON.parse(state.store.pgDiscordNotifyResume);
+    assert(rec.slug === 'rhyhorn' && rec.origem === 'tela' && rec.lastSellAt === 4242, 'registro gravado na saída: ' + JSON.stringify(rec));
+    assert(state.reloads === 0, 'pagehide não recarrega nada');
+}
+// 9) carga depois da recarga manual: volta para a hunt como na automática (fallback de 45 s sem socket/set-city)
+{
+    const store = {};
+    let r = loadReloadModule({ reloadEnabled: false }, { huntSlug: 'rhyhorn', store });
+    r.api.unload();
+    r = loadReloadModule({ reloadEnabled: false }, { store });
+    r.api.loadResume();
+    assert(r.api.resumeHunt === 'rhyhorn', 'hunt da recarga manual retomada');
+    assert(r.state.logs.some(l => l[0] === 'recarga-retomada' && l[1].origem === 'tela'), 'log diz que veio da tela');
+    assert(r.state.longTimers.length === 1 && r.state.switches.length === 0, 'fallback armado sem socket nem set-city');
+    r.state.longTimers[0]();                    // nem socket nem set-city vieram: o fallback volta mesmo assim
+    assert(r.state.switches.length === 1 && r.state.switches[0].slug === 'rhyhorn' && r.state.switches[0].origem === 'recarga', 'fallback mandou enter-hunt: ' + JSON.stringify(r.state.switches));
+    assert(r.api.resumeHunt === null, 'retomada consumida');
+}
+// 10) recarga no meio da viagem (conta na cidade de passagem): guarda a hunt de volta; na cidade por vontade própria: nada
+{
+    const { api, state } = loadReloadModule({ reloadEnabled: false }, { huntSlug: null, tripRunning: true, lastRealHunt: 'pupitar' });
+    api.unload();
+    assert(JSON.parse(state.store.pgDiscordNotifyResume).slug === 'pupitar', 'viagem: volta para a hunt de origem');
+}
+{
+    const { api, state } = loadReloadModule({ reloadEnabled: false }, { huntSlug: 'cerulean', lastRealHunt: 'pupitar' });
+    api.unload();
+    assert(JSON.parse(state.store.pgDiscordNotifyResume).slug === null, 'na cidade parado: não força hunt (a parada na cidade decide)');
+}
+// 11) PokeGrid fechado por horas: registro velho ignorado, mas a última hunt (até 24 h) é lembrada para a parada na cidade
+{
+    const HORA = 60 * MIN;
+    let r = loadReloadModule({ reloadEnabled: false }, { store: { pgDiscordNotifyResume: JSON.stringify({ at: Date.now() - 3 * HORA, slug: 'pidgey', origem: 'tela' }), pgDiscordNotifyLastHunt: JSON.stringify({ slug: 'Pidgey', at: Date.now() - 3 * HORA }) } });
+    r.api.loadResume();
+    assert(r.api.resumeHunt === null && r.api.lastRealHunt === 'pidgey', 'registro velho ignorado, última hunt lembrada: ' + r.api.lastRealHunt);
+    assert(r.state.logs.some(l => l[0] === 'hunt-lembrada' && l[1].slug === 'pidgey'), 'log hunt-lembrada');
+    r = loadReloadModule({ reloadEnabled: false }, { store: { pgDiscordNotifyLastHunt: JSON.stringify({ slug: 'pidgey', at: Date.now() - 30 * HORA }) } });
+    r.api.loadResume();
+    assert(r.api.lastRealHunt === null, 'mais de 24 h: não lembra');
+    r = loadReloadModule({ reloadEnabled: false }, { lastRealHunt: 'onix', store: { pgDiscordNotifyLastHunt: JSON.stringify({ slug: 'pidgey', at: Date.now() }) } });
+    r.api.loadResume();
+    assert(r.api.lastRealHunt === 'onix', 'já sabe a hunt nesta carga: não sobrescreve');
+}
+// 12) outra troca de hunt já em andamento (rota/clã/farm entrou antes): a retomada não atropela
+{
+    const store = { pgDiscordNotifyResume: JSON.stringify({ at: Date.now(), slug: 'pidgey' }) };
+    const { api, state } = loadReloadModule({ reloadEnabled: false }, { store, huntSwitch: { slug: 'geodude' } });
+    api.loadResume();
+    api.armResume(3000);
+    assert(state.switches.length === 0 && state.logs.some(l => l[0] === 'recarga-hunt' && l[1].trocando === 'geodude'), 'troca em andamento: não reenvia');
+}
+
+console.log('OK reload.test — faixa, adiamento, registro (automático e manual), última hunt lembrada e volta para a hunt');

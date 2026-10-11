@@ -194,6 +194,16 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   guarda `localStorage.pgDiscordNotifyResume` antes do `location.reload()` e, na carga nova, `loadResume()` +
   `armResume()` reenviam `enter-hunt` via `switchHunt(slug, 1, 'recarga')` 3 s após o `set-city`. Slugs de cidade
   (`cerulean`, `pewter`, `viridian`, `cassino`, `arena_pvp`) nunca são reenviados.
+  v3.35.0 (pedido do usuário em 11/10/2026: "após atualizar a página no PokeGrid ele não volta para a hunt e fica parado"):
+  o registro de retomada também é gravado em `pagehide`/`beforeunload` (`saveResume('tela')`), então a recarga MANUAL
+  (⟳ do PokeGrid, F5) volta para a hunt como a automática — antes só o `location.reload()` do script gravava, e a conta
+  nascia em Cerulean sem `resumeHunt` nem `lastRealHunt`. Recarga no meio de viagem/cura/volta da cidade guarda a hunt de
+  volta (`resumeSlugNow`); parado na cidade por vontade própria = sem hunt. `loadResume()` arma um fallback de 45 s
+  (`RESUME_FALLBACK_MS`): sem socket nem `set-city`, `resumeHunt` ficava pendurado e a parada na cidade esperava "volta da
+  recarga pendente" para sempre. A última hunt também fica em `localStorage.pgDiscordNotifyLastHunt` (`saveLastHunt` em
+  `noteHuntChange`, `loadLastHunt` até 24 h, log `hunt-lembrada`): com o registro velho (PokeGrid fechado por horas) a
+  parada na cidade ainda tem destino em vez de "não sei de que hunt veio". Logs `recarga-retomada { origem }`,
+  `recarga-hunt { enviando | jaNaHunt | cura | trocando }`. Teste: `node test/reload.test.js` (casos 8–12) e `daily.test.js`.
 - Guardar o Pokémon avisado (v3.6.0, levantado no bundle em 24/09/2026): a aba "Pokémon" da loja do NPC vende
   os Pokémon FORA do time (`!team && !starter && !shiny && sellValue > 0`) que não estejam `locked`, via
   `POST /api/game/pokemon/sell { pokeIds }`. O cadeado é `POST /api/game/pokemon/lock { id, locked }` (mesmo

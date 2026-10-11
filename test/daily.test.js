@@ -176,5 +176,20 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         assert(state.logs.some(l => l[0] === 'daily-erro') && /não consegui ler/.test(api.dailyStatus()), 'erro logado: ' + api.dailyStatus());
     }
 
+    // v3.35.0: a última hunt (não cidade) fica em localStorage[pgDiscordNotifyLastHunt] e loadLastHunt() a devolve (até 24 h)
+    {
+        const { api, state, clock } = loadDailyModule({ dailyEnabled: false }, { api: () => ({}) });
+        api.setHunt('Rhyhorn');
+        const rec = JSON.parse(state.store.pgDiscordNotifyLastHunt);
+        assert(rec.slug === 'rhyhorn' && rec.at === clock.now, 'última hunt gravada: ' + JSON.stringify(rec));
+        api.setHunt('cerulean');
+        assert(JSON.parse(state.store.pgDiscordNotifyLastHunt).slug === 'rhyhorn', 'cidade não sobrescreve');
+        assert(api.loadLastHunt()?.slug === 'rhyhorn', 'loadLastHunt devolve a hunt');
+        clock.now += 25 * 60 * 60 * 1000;
+        assert(api.loadLastHunt() === null, 'mais de 24 h: null');
+        state.store.pgDiscordNotifyLastHunt = JSON.stringify({ slug: 'pewter', at: clock.now });
+        assert(api.loadLastHunt() === null, 'cidade gravada por engano: null');
+    }
+
     console.log('OK daily.test — leitura, abates, resgate, volta para a hunt e casos sem ação');
 })().catch(e => { console.error(e); process.exit(1); });
