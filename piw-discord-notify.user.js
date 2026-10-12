@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.35.0
+// @version      3.36.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.35.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.36.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -47,6 +47,7 @@
         healJoyEnabled: false,  // v3.22.0 time caiu (líder desmaiado / mandado para a cidade): curar na Nurse Joy e voltar para a hunt
         cityIdleEnabled: true,  // v3.23.0 conta parada fora de hunt há cityIdleMin minutos (bugada): cura na Joy e volta para a hunt
         cityIdleMin: 10,
+        cityIdleHunt: '',       // v3.36.0 hunt padrão: destino de último recurso da volta (sem rota, clã nem última hunt conhecida)
         sellEnabled: false,     // vender drops marcados da hunt atual periodicamente
         sellEveryMin: 10,       // intervalo mínimo da venda automática (minutos)
         sellEveryMaxMin: 0,     // intervalo máximo; 0 ou <= mínimo = intervalo fixo. Entre os dois é sorteado
@@ -5065,7 +5066,7 @@
         if (catchRouteActive() && catchTarget) return catchTarget.slug;
         const st = routeStep();
         if (st?.slug) return st.slug;
-        return lastRealHunt || null;
+        return lastRealHunt || (typeof idleDefaultSlug === 'function' ? idleDefaultSlug() : null) || null;   // v3.36.0: hunt padrão
     }
     const TRIP_PHASE_PCT = { 'indo para a cidade': 15, 'na cidade': 50, 'voltando': 90 };
     function tripLastText() {
@@ -5684,7 +5685,8 @@
         const noRevive = Boolean(faintSeen?.noRevive);
         faintSeen = null;
         if (!cfg.healJoyEnabled || healRun) return false;
-        const slug = (healIsHunt(slugHint) ? normalize(slugHint) : null) || (typeof lastRealHunt !== 'undefined' && healIsHunt(lastRealHunt) ? normalize(lastRealHunt) : null);
+        const slug = (healIsHunt(slugHint) ? normalize(slugHint) : null) || (typeof lastRealHunt !== 'undefined' && healIsHunt(lastRealHunt) ? normalize(lastRealHunt) : null)
+            || (typeof idleDefaultSlug === 'function' ? idleDefaultSlug() : null);   // v3.36.0: hunt padrão
         healRun = { slug, motivo, caiu: Boolean(caiu), at: Date.now(), fase: 'indo para a cidade', tries: 0, cityArrived: Boolean(naCidade), hpWait: null };
         if (slug) healDeaths = healDeaths.filter(d => Date.now() - d.at < HEAL_DEATH_WINDOW_MS).concat([{ slug, at: Date.now() }]);
         const quedas = slug ? healDeaths.filter(d => d.slug === slug).length : 0;
@@ -5785,6 +5787,9 @@
     const idleRnd = (par) => par[0] + Math.floor(Math.random() * (par[1] - par[0] + 1));
     const idleWait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     function idleIsHunt(slug) { const h = normalize(slug || ''); return Boolean(h) && !CITY_SLUGS.includes(h); }
+    // v3.36.0: hunt padrão do painel ("NÃO PODEMOS PERDER TEMPO PARADO"): último recurso da parada na cidade, da volta da
+    // viagem e da cura quando não há rota do clã, etapa de treino nem última hunt conhecida. Nome ou slug; null = vazio/cidade.
+    function idleDefaultSlug(d) { const h = huntSlugFromName((d || cfg).cityIdleHunt || ''); return idleIsHunt(h) ? h : null; }
 
     // Chamado por setHunt() a cada troca de hunt.
     function idleOnHuntChange(slug) {
@@ -5832,7 +5837,8 @@
         if (clanRouteOn() && clanTarget) slug = clanTarget.slug;
         else if (routeStep()?.slug) slug = normalize(routeStep().slug);
         else if (idleIsHunt(lastRealHunt)) slug = normalize(lastRealHunt);
-        if (!slug) return { motivo: 'não sei de que hunt veio (entre numa hunt uma vez)' };
+        else if (idleDefaultSlug()) slug = idleDefaultSlug();
+        if (!slug) return { motivo: 'não sei de que hunt veio (entre numa hunt uma vez ou preencha a hunt padrão)' };
         return { slug };
     }
     function idleSetNote(motivo) {
@@ -6289,7 +6295,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         const st = Number(cfg.routeStage) || 0;
         return [
             `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
-            `Bolas: ${!((Number(d.ballsMin) || 0) > 0 || d.autoBuy) ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}${supplyOn(d) ? ` · refil: ${supplySlots(d).map(s => `${s.name} < ${s.min}`).join(', ')}` : ''}${d.healJoyEnabled ? ' · Joy' : ''}${d.cityIdleEnabled ? ` · volta da cidade ${Number(d.cityIdleMin) || IDLE_MIN_DEFAULT} min` : ''}`,
+            `Bolas: ${!((Number(d.ballsMin) || 0) > 0 || d.autoBuy) ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}${supplyOn(d) ? ` · refil: ${supplySlots(d).map(s => `${s.name} < ${s.min}`).join(', ')}` : ''}${d.healJoyEnabled ? ' · Joy' : ''}${d.cityIdleEnabled ? ` · volta da cidade ${Number(d.cityIdleMin) || IDLE_MIN_DEFAULT} min${idleDefaultSlug(d) ? ` (padrão ${idleDefaultSlug(d)})` : ''}` : ''}`,
             `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades${pokeSellKeepQ(d) ? `, guarda ≥ ${pokeSellKeepQ(d)}` : ''})` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
             `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? 'daily sozinha' : 'daily') : '', d.giftEnabled ? 'gift' : '', d.evolveEnabled ? 'evolução' : '', d.slotEnabled ? 'slot machine' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
@@ -6402,8 +6408,9 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                     <div class="dn-section">
                         <h3>🏙️ Parada na cidade <span class="spacer"></span><label class="dn-toggle"><input id="pg-dn-cityidle" type="checkbox"><span class="sw"></span>Voltar para a hunt</label></h3>
                         <div class="dn-inline">Depois de <input id="pg-dn-cityidle-min" class="dn-input dn-input--sm" type="number" min="1" step="1" placeholder="5"> min parada fora de hunt (padrão 10)</div>
+                        <label class="dn-field"><span>Hunt padrão</span><input id="pg-dn-cityidle-hunt" class="dn-input" type="text" placeholder="ex.: rhyhorn — usada quando não sei de que hunt a conta veio" spellcheck="false"></label>
                         <div class="dn-status" id="pg-dn-cityidle-status"></div>
-                        <p class="dn-help">Se a conta ficar esse tempo na cidade sem farmar (a volta da viagem ou da recarga não pegou, o jogo mandou para a cidade, você saiu e esqueceu), a conta está bugada: o script cura o time na Nurse Joy e volta para a hunt: a da rota do clã, a etapa da rota de treino ou a última em que esteve. Não mexe durante viagem, cura, troca de hunt ou de líder; a rota de captura já tem a própria volta. Não volta se a Joy não curar. Voltou 3 vezes em 1 h sem a hunt pegar: para e avisa. Avisos no canal de Alertas.</p>
+                        <p class="dn-help">Se a conta ficar esse tempo na cidade sem farmar (a volta da viagem ou da recarga não pegou, o jogo mandou para a cidade, você saiu e esqueceu), a conta está bugada: o script cura o time na Nurse Joy e volta para a hunt: a da rota do clã, a etapa da rota de treino, a última em que esteve ou, sem nenhuma delas, a hunt padrão (também vale para a volta da viagem e da cura). Não mexe durante viagem, cura, troca de hunt ou de líder; a rota de captura já tem a própria volta. Não volta se a Joy não curar. Voltou 3 vezes em 1 h sem a hunt pegar: para e avisa. Avisos no canal de Alertas.</p>
                     </div>
                 </section>
                 <section class="dn-pane" data-pane="venda" hidden>
@@ -6829,6 +6836,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 healJoyEnabled: $('#pg-dn-healjoy').checked,
                 cityIdleEnabled: $('#pg-dn-cityidle').checked,
                 cityIdleMin: Math.max(1, parseInt($('#pg-dn-cityidle-min').value, 10) || IDLE_MIN_DEFAULT),
+                cityIdleHunt: huntSlugFromName($('#pg-dn-cityidle-hunt').value),
                 mentionUserId: $('#pg-dn-mention').value.trim(),
                 cooldownSeconds: Math.max(0, parseInt($('#pg-dn-cooldown').value, 10) || 0),
                 debug: $('#pg-dn-debug').checked,
@@ -7647,6 +7655,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-healjoy').checked = Boolean(cfg.healJoyEnabled);
             $('#pg-dn-cityidle').checked = Boolean(cfg.cityIdleEnabled);
             $('#pg-dn-cityidle-min').value = Number(cfg.cityIdleMin) || IDLE_MIN_DEFAULT;
+            $('#pg-dn-cityidle-hunt').value = cfg.cityIdleHunt || '';
             $('#pg-dn-sell').checked = Boolean(cfg.sellEnabled);
 
             $('#pg-dn-psell').checked = Boolean(cfg.pokeSellEnabled);
@@ -8104,7 +8113,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
         '| compra auto:', cfg.autoBuy ? `${cfg.autoBuyQty} un.` : 'não',
         '| refil:', supplyOn() ? supplySlots().map(s => `${s.name} < ${s.min} (+${s.qty})`).join(', ') : 'não',
         '| Joy:', cfg.healJoyEnabled ? 'cura e volta' : 'não',
-        '| parada na cidade:', cfg.cityIdleEnabled ? `volta após ${cfg.cityIdleMin} min` : 'não',
+        '| parada na cidade:', cfg.cityIdleEnabled ? `volta após ${cfg.cityIdleMin} min${cfg.cityIdleHunt ? `, padrão ${cfg.cityIdleHunt}` : ''}` : 'não',
         '| nível:', levelEnabled() ? `${levelTarget()}${swapEnabled() ? ' + troca' : ''}` : 'não',
         '| rota:', routeActive() ? routeStatus() : 'não',
         '| captura:', cfg.catchRouteEnabled ? `${catchAreas().join('+')}${cfg.catchRouteMaxLevel ? ` até lv ${cfg.catchRouteMaxLevel}` : ''}${cfg.catchRouteAuto ? ' + bola' : ''}` : 'não',

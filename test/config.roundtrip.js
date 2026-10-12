@@ -28,7 +28,7 @@ const rica = {
   depositItems: 'depot', depositPokes: 'family', depositPokesRare: true,
   depositFamilyList: [{ id: 13115, name: 'Devoted Token', keep: 0 }, { id: 44417, name: 'Strange Pheromone', keep: 2 }],
   // v3.21.0 (refil de poções e revives)
-  healBuy: true, healItemId: 203, healMin: 30, healQty: 150, reviveBuy: true, reviveItemId: 206, reviveMin: 3, reviveQty: 12, healJoyEnabled: true, cityIdleEnabled: false, cityIdleMin: 25,
+  healBuy: true, healItemId: 203, healMin: 30, healQty: 150, reviveBuy: true, reviveItemId: 206, reviveMin: 3, reviveQty: 12, healJoyEnabled: true, cityIdleEnabled: false, cityIdleMin: 25, cityIdleHunt: 'rhyhorn',
   // v3.24.0 (Daily Gift)
   giftEnabled: true, giftCenterMode: 'all',
   // v3.25.0 (evolução)

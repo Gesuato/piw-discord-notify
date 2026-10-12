@@ -651,6 +651,7 @@ function loadIdleModule(cfg, init) {
         CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'],
         healBusy: () => env.heal,
         healLeader: (list) => list.find(p => p.team && p.leader) || null,
+        huntSlugFromName: (name) => String(name || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''),
         clanRouteOn: () => env.clanRoute,
         routeStep: () => env.route,
         catchRouteActive: () => env.catchRoute,

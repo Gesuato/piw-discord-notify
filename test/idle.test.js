@@ -61,6 +61,16 @@ const cfgOn = () => ({ cityIdleEnabled: true, cityIdleMin: 10 });
         r = loadIdleModule(cfgOn(), {});
         r.api.onHuntChange(null); r.clock.now += 10 * MIN; await r.api.tick();
         assert(r.state.switches.length === 0 && /não sei de que hunt/.test(r.api.status()), 'sem destino: ' + r.api.status());
+        // v3.36.0: hunt padrão = último recurso (nome vira slug); a última hunt conhecida ganha dela; cidade não vale
+        r = loadIdleModule(Object.assign(cfgOn(), { cityIdleHunt: 'Ancient Pinsir' }), { pokesHp: [100] });
+        r.api.onHuntChange(null); r.clock.now += 10 * MIN; await r.api.tick();
+        assert(r.state.switches[0]?.slug === 'ancient_pinsir', 'hunt padrão: ' + JSON.stringify(r.state.switches));
+        r = loadIdleModule(Object.assign(cfgOn(), { cityIdleHunt: 'rhyhorn' }), { env: { lastRealHunt: 'pidgey' }, pokesHp: [100] });
+        r.api.onHuntChange(null); r.clock.now += 10 * MIN; await r.api.tick();
+        assert(r.state.switches[0]?.slug === 'pidgey', 'última hunt ganha da padrão: ' + JSON.stringify(r.state.switches));
+        r = loadIdleModule(Object.assign(cfgOn(), { cityIdleHunt: 'cerulean' }), {});
+        r.api.onHuntChange(null); r.clock.now += 10 * MIN; await r.api.tick();
+        assert(r.state.switches.length === 0 && /hunt padrão/.test(r.api.status()), 'cidade como padrão não vale: ' + r.api.status());
     }
 
     // 6) espera o que estiver em andamento; rota de captura cuida da própria volta; desligada não faz nada

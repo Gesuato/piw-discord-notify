@@ -236,8 +236,10 @@ setTimeout(() => {
         // ---- parada na cidade (v3.23.0): ligada por padrão, 10 min; mudar o tempo e salvar ----
         if (!$('#pg-dn-cityidle').checked || $('#pg-dn-cityidle-min').value !== '10') throw new Error('parada na cidade não veio ligada com 10 min');
         $('#pg-dn-cityidle-min').value = 15; fire($('#pg-dn-cityidle-min'), 'input');
+        $('#pg-dn-cityidle-hunt').value = 'Ancient Pinsir'; fire($('#pg-dn-cityidle-hunt'), 'input');   // v3.36.0: hunt padrão (nome vira slug)
         $('#pg-dn-save').click();
         if (JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg')).cityIdleMin !== 15) throw new Error('tempo da parada na cidade não salvou');
+        if (JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg')).cityIdleHunt !== 'ancient_pinsir') throw new Error('hunt padrão da parada na cidade não salvou');
         log('cidade: ' + $('#pg-dn-cityidle-status').textContent);
         if (!/Volta:/.test($('#pg-dn-cityidle-status').textContent)) throw new Error('status da parada na cidade vazio');
         panel.querySelector('.dn-tab[data-tab=sistema]').click(); log('socket=' + $('#pg-dn-socket').textContent);
