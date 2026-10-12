@@ -67,7 +67,10 @@ function fakeApi(opts) {
         const semFam = loadBreedModule(Object.assign({}, cfg, { breedFamily: false }), { pokes, family });
         assert(!semFam.api.breedFoodList(semFam.api.breedTrunk(cfg.breedLines[0])).some(f => f.id === 'fam'), 'sem família não olha o depot');
         // proteção da venda/depósito: quem sobe, a espécie (id, speciesId ou nome), não o resto; desligado = nada
-        assert(api.breedKeepsPoke(TRONCO) && api.breedKeepsPoke(COMIDA) && api.breedKeepsPoke({ id: 'x', name: 'Donphan' }) && !api.breedKeepsPoke({ id: 'r', speciesId: 19, name: 'Rattata' }), 'breedKeepsPoke protege a espécie inteira');
+        assert(api.breedKeepsPoke(TRONCO) && api.breedKeepsPoke(COMIDA) && api.breedKeepsPoke({ id: 'x', name: 'Donphan' }) && !api.breedKeepsPoke({ id: 'r', speciesId: 19, name: 'Rattata' }), 'breedKeepsPoke protege quem sobe, a comida e quem não tem quality');
+        // v3.36.1: da espécie, só quem pode servir de comida (Q a partir de 0,15 abaixo) ou é tão bom quanto quem sobe; o resto vende
+        assert(api.breedKeepsPoke({ id: 'qMaior', speciesId: 232, quality: 1.8, ivTotal: 50 }) && api.breedKeepsPoke({ id: 'noLimite', speciesId: 232, quality: 1.316, ivTotal: 50 }), 'Q maior e Q no limite dos 0,15 seguem protegidos');
+        assert(!api.breedKeepsPoke({ id: 'longe', speciesId: 232, quality: 1.31, ivTotal: 50 }) && !api.breedKeepsPoke({ id: 'lixo', name: 'Donphan', quality: 0.9, ivTotal: 150 }), 'Q longe demais (nunca serve) não é protegido');
         api.breedOnPokes(pokes);   // guarda nome/espécie na linhagem
         assert(cfg.breedLines[0].name === 'Donphan' && cfg.breedLines[0].speciesId === 232, 'linhagem ganha nome/espécie: ' + JSON.stringify(cfg.breedLines[0]));
         const off = loadBreedModule({ breedEnabled: false, breedLines: [{ id: TRONCO.id, speciesId: 232, name: 'Donphan' }] }, { pokes });
@@ -132,7 +135,7 @@ function fakeApi(opts) {
         const l = cfg.breedLines[0];
         assert(l.id === null && l.eggId === 'ovo-1' && l.gen === 0 && l.q0 === 1.466 && l.iv0 === 126 && l.lastQ === 1.466 && l.name === 'Donphan' && l.speciesId === 232 && l.eggs === 1, 'linhagem virou ovo: ' + JSON.stringify(l));
         assert(state.saves >= 1, 'cfg salvo');
-        assert(api.breedKeepsPoke(COMIDA) && api.breedKeepsPoke({ id: 'n', speciesId: 232 }), 'espécie segue protegida com o ovo chocando');
+        assert(api.breedKeepsPoke(COMIDA) && api.breedKeepsPoke({ id: 'n', speciesId: 232 }) && !api.breedKeepsPoke({ id: 'longe', speciesId: 232, quality: 1.2, ivTotal: 50 }), 'com o ovo chocando a referência é quem entrou no ovo (lastQ): comida e sem quality protegidos, Q longe vende');
         const h = state.hooks.find(x => x.meta.evento === 'breeding-cruzou');
         assert(h && /criou um ovo de \*\*Donphan\*\*/.test(h.content) && /geração 1: Q 1\.466 → 1\.471–1\.506 · IV 126 mantido · comida Q 1\.345 IV 104 · choca em 3000 abates/.test(h.desc) && /40x Earth Stone \(dobrado\)/.test(h.desc), 'aviso: ' + (h && h.content + ' | ' + h.desc));
         assert(!api.breedWanted() && Object.keys(api.breedPlanned).length === 0, 'plano consumido');

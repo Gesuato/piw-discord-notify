@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.36.0
+// @version      3.36.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.36.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.36.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -2994,8 +2994,9 @@
     //       abaixo, IV abaixo do teto do painel (`breedFoodIvMax`), nunca shiny/time/inicial/travado/Ditto/anunciado;
     //     - antes de todo breed a cotação (free=1) tem de dizer `donorId` = quem sobe, `growth` somando o IV dele, `baseQuality` =
     //       quality dele, sem feromônio e sem filho shiny; qualquer diferença = NÃO cruza, avisa e espera;
-    //     - quem sobe e toda a espécie dele ficam fora da venda automática e do depósito na família (`breedKeepsPoke`, usado em
-    //       `pokeSellReason`/`depositPokeReason`), mesmo com IV abaixo da tabela;
+    //     - quem sobe e, da espécie dele, quem pode servir de comida ou é tão bom quanto ele (Q a partir de 0,15 abaixo) ficam fora
+    //       da venda automática e do depósito na família (`breedKeepsPoke`, usado em `pokeSellReason`/`depositPokeReason`), mesmo
+    //       com IV abaixo da tabela; o resto da espécie (Q longe demais, nunca vai servir) segue as regras normais da venda (v3.36.1);
     //     - só o caminho Grátis (que mesmo assim cobra gold + stones); nunca `hatch-now`/`buy-slot` (diamante).
     //   Comida e stones podem vir do depot da família (`breedFamily`): o frame `family` traz quality/ivTotal dos Pokémon e
     //   itemId/quantity dos itens (confirmado em `familia-campos`); a retirada (`family-action … dir:'withdraw'`, mesmo formato
@@ -3055,7 +3056,18 @@
         if (!p) return null;
         return { id: String(p.id), name: p.name || '?', speciesId: Number(p.speciesId), quality: Number(p.quality), ivTotal: Number(p.ivTotal), level: Number(p.level) || 0, shiny: Boolean(p.shiny), team: Boolean(p.team || p.leader), starter: Boolean(p.starter) };
     }
-    // Proteção: quem sobe e toda a espécie dele ficam fora da venda automática e do depósito na família.
+    // Quality de referência da linhagem: quem sobe no box; senão o filho chocado (`pendingChild`), senão quem entrou no ovo.
+    function breedLineQ(l) {
+        const t = breedTrunk(l);
+        if (t && Number.isFinite(t.quality)) return t.quality;
+        const pc = Number(l?.pendingChild?.quality);
+        return Number.isFinite(pc) ? pc : Number(l?.lastQ);
+    }
+    // Proteção: quem sobe e, da espécie dele, quem ainda pode servir de comida ou já é tão bom quanto ele (quality a partir de
+    // 0,15 abaixo da referência) ficam fora da venda automática e do depósito na família. v3.36.1: antes a espécie INTEIRA
+    // ficava fora da venda — na conta1 (12/10/2026) 312 Rhyhorn de Q 0,9–1,3 (que nunca serviriam: quem sobe só cresce)
+    // entupiram o box (313 ≥ 200), o servidor parou de mandar o frame `pokes`, o filho chocado nunca foi identificado
+    // ("filho não identificado") e a venda não tinha lista nem candidatos: ciclo fechado. Sem quality conhecida, protege.
     function breedKeepsPoke(p) {
         if (!cfg.breedEnabled || !p || typeof p !== 'object') return false;
         const id = String(p.id ?? ''), sp = Number(p.speciesId) || 0, nome = normalize(p.name || '');
@@ -3063,8 +3075,10 @@
             if (l.id && String(l.id) === id) return true;
             const t = l.speciesId ? null : breedTrunk(l);   // linhagem recém-escolhida: espécie pelo box
             const lsp = Number(l.speciesId) || (t ? t.speciesId : 0), lnome = normalize(l.name || (t ? t.name : ''));
-            if (lsp && sp && lsp === sp) return true;
-            if (lnome && nome && lnome === nome) return true;
+            if (!((lsp && sp && lsp === sp) || (lnome && nome && lnome === nome))) continue;
+            const ref = breedLineQ(l), q = Number(p.quality);
+            if (!Number.isFinite(ref) || !Number.isFinite(q)) return true;
+            if (q >= ref - BREED_Q_GAP - BREED_Q_EPS) return true;
         }
         return false;
     }
@@ -3499,6 +3513,7 @@
             let estado;
             if (l.id) estado = t ? `Q ${breedQ(t.quality)} · IV ${t.ivTotal}/${IV_MAX}${breedPlanned[l.id] ? ' · viagem pedida para cruzar' : ''}` : 'não está no box (lista não lida?)';
             else if (l.eggId) estado = 'ovo chocando';
+            else if (!lastPokesList.length) estado = '⚠ filho não identificado: o jogo ainda não mandou a lista de Pokémon (box grande demais? venda na mão)';
             else estado = '⚠ filho não identificado: escolha no menu';
             out.push(`Linhagem ${i + 1}: ${t?.name || l.name || '?'} · geração ${Number(l.gen) || 0}${l.q0 != null ? ` · começou em Q ${breedQ(l.q0)}` : ''} · ${estado}`);
         });

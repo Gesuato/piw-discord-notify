@@ -278,8 +278,12 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   a LINHAGEM: "quem sobe" vira o ovo e o filho vira quem sobe (geração +1). Regras fixas do usuário ("SUPER IMPORTANTE"): quem sobe
   sempre em `parent1`; comida da mesma espécie com quality E IV menores (até 0,15 abaixo, IV < teto), nunca shiny/time/inicial/Ditto/
   travado; antes de todo breed a cotação (free=1) tem de dar `donorId` = quem sobe, `growth` somando o IV dele e `baseQuality` = Q
-  dele (`breedCheckQuote`), senão NÃO cruza e avisa; quem sobe e a espécie dele ficam fora da venda de Pokémon e do depósito na
-  família (`breedKeepsPoke` em `pokeSellReason`/`depositPokeReason`). Grátis cobra 2.000.000 de gold + 20 stones (40 com dobrar);
+  dele (`breedCheckQuote`), senão NÃO cruza e avisa; quem sobe e, da espécie dele, quem ainda pode servir de comida ou é tão bom
+  quanto ele (quality ≥ referência − 0,15; `breedLineQ` = quem sobe no box > `pendingChild` > `lastQ`) ficam fora da venda de Pokémon
+  e do depósito na família (`breedKeepsPoke` em `pokeSellReason`/`depositPokeReason`); sem quality conhecida, protege. v3.36.1: antes
+  a espécie INTEIRA era protegida e a conta1 (12/10/2026) juntou 312 Rhyhorn de Q 0,9–1,3 no box → 313 ≥ 200 → o servidor calou o
+  frame `pokes` (40 `pokes-mudo` seguidos) → filho chocado nunca identificado ("filho não identificado — escolha abaixo") e venda
+  sem lista: ciclo fechado. Status da linhagem diz quando a lista nunca veio. Grátis cobra 2.000.000 de gold + 20 stones (40 com dobrar);
   3000 abates para chocar. Fluxo: `breedTick` (1 min) lê o centro a cada 2 min, choca o `ready` (POST hatch → `{ ok, child{ quality,
   delta, ivTotal, growth, bqs } }` SEM id; o filho é achado no frame `pokes` por id novo, senão pela quality+IV do `child` (dica guardada
   em `pendingChild` para os frames seguintes), senão pelo IV igual/+1), planeja (comida mais fraca primeiro, cota se ela está no box) e
