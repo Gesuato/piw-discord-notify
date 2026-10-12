@@ -254,6 +254,32 @@ function fakeApi(opts) {
         const { api, state } = loadBreedModule(cfg, { api: fake.api, pokes: [LIDER, neto] });
         await api.breedTick(true);
         assert(cfg.breedLines[0].id === 'neto' && cfg.breedLines[0].gen === 2 && state.logs.some(l => l[0] === 'breeding-ovo-sumiu'), 'chocado na mão: achou o filho (IV +1 do dobrar): ' + JSON.stringify(cfg.breedLines[0]));
+        // v3.36.2: cruzou NA MÃO — linhagem com filho por identificar (lista nunca veio) e um ovo novo da espécie no centro = o ovo é dela
+        {
+            const cfgM = { breedEnabled: true, breedLines: [{ id: null, gen: 11, name: 'Rhyhorn', speciesId: 111, lastQ: 1.493, lastIv: 173, eggId: null, pendingChild: { at: 1, quality: 1.533, ivTotal: 173 }, eggs: 12 }, null], breedFoodIvMax: 150, breedFamily: false, breedDouble: true };
+            const ovoR = Object.assign({}, EGG, { id: 'ovo-mao', speciesId: 111, speciesName: 'Rhyhorn' });
+            const fm = fakeApi({ eggs: [ovoR] });
+            const m = loadBreedModule(cfgM, { api: fm.api, pokes: [] });
+            await m.api.breedTick(true);
+            const l = cfgM.breedLines[0];
+            assert(l.eggId === 'ovo-mao' && !l.pendingChild && l.id === null && l.gen === 12 && l.lastQ === 1.533 && l.lastIv === 173 && l.eggs === 13, 'ovo feito na mão adotado pela linhagem (filho pendente entrou no ovo): ' + JSON.stringify(l));
+            assert(m.state.logs.some(x => x[0] === 'breeding-ovo-adotado' && x[1].origem === 'filho por identificar'), 'log breeding-ovo-adotado');
+            assert(/Ovo: Rhyhorn 0\/3000 abates · linhagem 1 \(geração 13\)/.test(m.api.breedStatus().join('\n')), 'status mostra o ovo adotado: ' + m.api.breedStatus().join(' | '));
+            // ovo de OUTRA espécie não é adotado; dois ovos livres da espécie também não (ambíguo)
+            const cfgO = { breedEnabled: true, breedLines: [{ id: null, gen: 1, name: 'Rhyhorn', speciesId: 111, pendingChild: { at: 1 } }, null], breedFamily: false };
+            const mo = loadBreedModule(cfgO, { api: fakeApi({ eggs: [EGG] }).api, pokes: [] });
+            await mo.api.breedTick(true);
+            assert(!cfgO.breedLines[0].eggId && cfgO.breedLines[0].pendingChild, 'ovo de Donphan não vai para a linhagem de Rhyhorn');
+            const cfg2 = { breedEnabled: true, breedLines: [{ id: null, gen: 1, name: 'Rhyhorn', speciesId: 111, pendingChild: { at: 1 } }, null], breedFamily: false };
+            const m2 = loadBreedModule(cfg2, { api: fakeApi({ eggs: [ovoR, Object.assign({}, ovoR, { id: 'ovo-mao-2' })] }).api, pokes: [] });
+            await m2.api.breedTick(true);
+            assert(!cfg2.breedLines[0].eggId && cfg2.breedLines[0].pendingChild, 'dois ovos livres = ambíguo, segue pendente');
+            // quem sobe sumiu de uma lista LIDA (cruzado na mão) e há um ovo livre da espécie: também adota, sem mexer na geração
+            const cfgS = { breedEnabled: true, breedLines: [{ id: 'sumido', gen: 3, name: 'Rhyhorn', speciesId: 111, lastQ: 1.4, lastIv: 100 }, null], breedFamily: false };
+            const ms = loadBreedModule(cfgS, { api: fakeApi({ eggs: [ovoR] }).api, pokes: [LIDER] });
+            await ms.api.breedTick(true);
+            assert(cfgS.breedLines[0].eggId === 'ovo-mao' && cfgS.breedLines[0].id === null && cfgS.breedLines[0].gen === 3, 'quem sobe sumiu + ovo livre = adota: ' + JSON.stringify(cfgS.breedLines[0]));
+        }
         // v3.29.4: prévia da comida com quem sobe dentro do ovo (compara com lastQ/lastIv) e com quem sobe no box
         const cfgP = { breedEnabled: true, breedLines: [{ eggId: 'ovo1', gen: 1, name: 'Donphan', speciesId: 232, lastQ: 1.466, lastIv: 126 }, null], breedFoodIvMax: 150, breedFamily: true, breedDouble: true };
         const fp = loadBreedModule(cfgP, { api: fake.api, pokes: [LIDER, COMIDA], family: { pokes: [{ id: 'fam1', speciesId: 232, name: 'Donphan', level: 3, quality: 1.5, ivTotal: 90 }], items: [] } });

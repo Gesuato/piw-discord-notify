@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.36.1
+// @version      3.36.2
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.36.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.36.2';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -3254,16 +3254,34 @@
         return true;
     }
     // Ovos das linhagens x centro: ovo sem id conhecido ganha o único livre da espécie; ovo que sumiu (chocado na mão) vira filho pendente.
+    // v3.36.2: o usuário cruzou NA MÃO (conta1, 12/10/2026 04:25Z: linhagem com filho por identificar — a lista `pokes` nunca veio —
+    // e um ovo novo de Rhyhorn no centro que o script ignorava; "não está continuando o breeding"): linhagem sem quem sobe nem ovo
+    // (filho por identificar) ou com quem sobe que sumiu de uma lista lida, e UM ovo livre da espécie no centro = o ovo é dela
+    // (`breeding-ovo-adotado`). Quem entrou no ovo foi o filho pendente (geração +1, Q/IV do `hatch` quando se sabe).
     function breedSyncLines(c) {
         let mudou = false;
         const claimed = new Set(breedActiveLines().map(l => l.eggId).filter(id => id && c.eggs.some(e => e.id === id)));
+        const livresDe = (l) => c.eggs.filter(e => !claimed.has(e.id) && (!l.speciesId || e.speciesId === Number(l.speciesId)));
         for (const l of breedActiveLines()) {
             if (!l.eggId || c.eggs.some(e => e.id === l.eggId)) continue;
-            const livres = c.eggs.filter(e => !claimed.has(e.id) && (!l.speciesId || e.speciesId === Number(l.speciesId)));
+            const livres = livresDe(l);
             if (livres.length === 1) { l.eggId = livres[0].id; claimed.add(l.eggId); mudou = true; continue; }
             logEvent('breeding-ovo-sumiu', { linhagem: l.name || null, eggId: l.eggId, ovosNoCentro: c.eggs.length });
             l.eggId = null; l.pendingChild = { at: Date.now() }; mudou = true;
             breedAdoptChild(l, lastPokesList);
+        }
+        for (const l of breedActiveLines()) {
+            if (l.eggId) continue;
+            const semTronco = l.id ? (lastPokesList.length > 0 && !breedTrunk(l)) : Boolean(l.pendingChild);
+            if (!semTronco) continue;
+            const livres = livresDe(l);
+            if (livres.length !== 1) continue;
+            const pc = l.pendingChild || null;
+            const q = Number(pc?.quality), iv = Number(pc?.ivTotal);
+            if (!l.id) { l.gen = (Number(l.gen) || 0) + 1; if (Number.isFinite(q)) l.lastQ = q; if (Number.isFinite(iv)) l.lastIv = iv; }
+            logEvent('breeding-ovo-adotado', { linhagem: l.name || null, eggId: livres[0].id, especie: livres[0].speciesName, origem: l.id ? 'quem sobe sumiu do box' : 'filho por identificar', geracao: l.gen, lastQ: l.lastQ ?? null, lastIv: l.lastIv ?? null });
+            l.eggId = livres[0].id; l.id = null; l.pendingChild = null; l.eggAt = Date.now(); l.eggs = (Number(l.eggs) || 0) + 1;
+            claimed.add(l.eggId); mudou = true;
         }
         if (mudou) saveCfg(cfg);
     }

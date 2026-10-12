@@ -283,7 +283,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   e do depósito na família (`breedKeepsPoke` em `pokeSellReason`/`depositPokeReason`); sem quality conhecida, protege. v3.36.1: antes
   a espécie INTEIRA era protegida e a conta1 (12/10/2026) juntou 312 Rhyhorn de Q 0,9–1,3 no box → 313 ≥ 200 → o servidor calou o
   frame `pokes` (40 `pokes-mudo` seguidos) → filho chocado nunca identificado ("filho não identificado — escolha abaixo") e venda
-  sem lista: ciclo fechado. Status da linhagem diz quando a lista nunca veio. Grátis cobra 2.000.000 de gold + 20 stones (40 com dobrar);
+  sem lista: ciclo fechado. Status da linhagem diz quando a lista nunca veio. v3.36.2: cruzamento feito NA MÃO é adotado em
+  `breedSyncLines` — linhagem com filho por identificar (ou quem sobe sumido de uma lista lida) + UM ovo livre da espécie no centro =
+  o ovo é dela (`breeding-ovo-adotado`, geração +1 com Q/IV do `hatch`); 0 ou 2+ ovos livres = segue pendente. Grátis cobra 2.000.000 de gold + 20 stones (40 com dobrar);
   3000 abates para chocar. Fluxo: `breedTick` (1 min) lê o centro a cada 2 min, choca o `ready` (POST hatch → `{ ok, child{ quality,
   delta, ivTotal, growth, bqs } }` SEM id; o filho é achado no frame `pokes` por id novo, senão pela quality+IV do `child` (dica guardada
   em `pendingChild` para os frames seguintes), senão pelo IV igual/+1), planeja (comida mais fraca primeiro, cota se ela está no box) e
