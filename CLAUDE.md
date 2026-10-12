@@ -139,7 +139,11 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   Depot DURANTE a hunt.** Toda venda/compra do script passa pela viagem à cidade (módulo "Viagem à cidade", v3.14.0):
   `tripRequest(key, dados, motivo)` acumula, `tripTick` faz uma viagem só (`cityTrip`), com carona (`tripAugment`).
   Ida = `leave-hunt` + `field-teleport-city` sintético (a tela viaja e manda `set-city`; `tripOnSetCity` confirma) ou
-  `set-city` manual após 10 s; volta = `switchHunt(slug, 1, 'viagem')`. `runSellCycle(manual, wantedIds, huntName)`
+  `set-city` manual após 10 s; volta = `switchHunt(slug, 1, 'viagem')`. v3.36.3: a tela pode mandar `enter-hunt` NO MEIO da viagem
+  (conta2, 12/10/2026 23:12Z: o usuário foi à cidade na mão, a viagem começou já na cidade e 5 s depois a tela voltou à hunt; a retirada
+  da comida do breeding na família falhou com "não está disponível durante a hunt"): antes de cada tarefa `tripInHunt()` = `tripLeaveHunt()`
+  de novo (log `viagem-hunt-no-meio`); falha do breeding "durante a hunt" tenta em 3 min (`BREED_HUNT_RETRY_MS`), não em 30. No harness da
+  viagem `leave-hunt` zera a hunt e `switchHunt` a preenche, como no script. `runSellCycle(manual, wantedIds, huntName)`
   recebe a lista congelada (na cidade `huntSlug` é null e `huntLoot` zera). NUNCA chamar `runSellCycle`,
   `runPokeSellCycle` ou `autoBuyBalls` direto de dentro da hunt de novo. Cidades: `CITY_SLUGS` (lista `o4` do bundle).
   Relógio ÚNICO (v3.15.0): `tripEveryMin`/`tripEveryMaxMin` (`drawTripDelay`/`restartTripCycle`/`tripDueAt`); vencido,

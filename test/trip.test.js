@@ -169,5 +169,27 @@ const MIN = 60 * 1000;
         assert(api.lastTripInfo.tarefas[0].ok === false && /não respondeu/.test(api.lastTripInfo.tarefas[0].motivo), 'jogo mudo: ' + JSON.stringify(api.lastTripInfo.tarefas));
     }
 
+    // v3.36.3: a tela volta para a hunt NO MEIO da viagem (conta2, 12/10/2026 23:12Z): antes da próxima tarefa o script sai de novo
+    {
+        const init = { huntSlug: null, lastRealHunt: 'pidgey' };
+        const { api, state } = loadTripModule({ tripCity: 'cerulean', tripMinGapMin: 3 }, init);
+        state.onTeleport = () => api.tripOnSetCity();
+        Object.defineProperty(init, 'itens', { get() { api.setHunt('pidgey'); return { ok: true, total: 1, ganho: 10 }; } });   // durante a venda a tela entrou na hunt
+        api.tripRequest('itens', { wanted: [39], hunt: null }, 'x');
+        api.tripRequest('bolas', { id: 4, qty: 0, min: 1 }, 'acabou');
+        await api.tripTick();
+        assert(state.tasks.map(t => t[0]).join(',') === 'itens,bolas', 'as duas tarefas rodaram: ' + state.tasks.map(t => t[0]));
+        assert(state.sent.filter(o => o.type === 'leave-hunt').length === 1 && state.nudges.length === 1, 'saiu da hunt de novo antes da 2ª tarefa (começou na cidade): ' + JSON.stringify(state.sent));
+        assert(state.logs.some(l => l[0] === 'viagem-hunt-no-meio' && l[1].tarefa === 'bolas' && l[1].slug === 'pidgey'), 'log viagem-hunt-no-meio');
+        assert(api.lastTripInfo.tarefas.every(t => t.ok) && state.switches.length === 1 && state.switches[0].slug === 'pidgey', 'terminou e voltou para a última hunt');
+        // sem volta para a hunt no meio: não sai de novo
+        const { api: b, state: sb } = loadTripModule({ tripMinGapMin: 3 }, { huntSlug: 'pidgey' });
+        sb.onTeleport = () => b.tripOnSetCity();
+        b.tripRequest('itens', { wanted: [39], hunt: 'pidgey' }, 'x');
+        b.tripRequest('bolas', { id: 4, qty: 0, min: 1 }, 'acabou');
+        await b.tripTick();
+        assert(sb.sent.filter(o => o.type === 'leave-hunt').length === 1 && !sb.logs.some(l => l[0] === 'viagem-hunt-no-meio'), 'viagem normal: um leave-hunt só');
+    }
+
     console.log('OK trip.test — pedidos juntos numa viagem, ida pela tela ou manual, intervalo, cidade, volta e falhas');
 })().catch(e => { console.error(e); process.exit(1); });

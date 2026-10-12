@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.36.2
+// @version      3.36.3
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.36.2';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.36.3';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -3010,6 +3010,7 @@
     const BREED_POLL_MS = 2 * 60 * 1000;           // relê a incubadora (o progresso do ovo só existe por REST; a tela lê a cada 20 s)
     const BREED_FAMILY_POLL_MS = 10 * 60 * 1000;   // relê o depot da família
     const BREED_RETRY_MS = 30 * 60 * 1000;         // parado por falta de comida/stone/gold: volta a planejar depois disso
+    const BREED_HUNT_RETRY_MS = 3 * 60 * 1000;     // v3.36.3: falhou porque a conta estava na hunt: tenta de novo depois disso
     const BREED_Q_GAP = 0.15;                      // o jogo exige diferença de quality ≤ 0,15 no breed normal
     const BREED_Q_EPS = 0.0005;
     const BREED_MAX_LINES = 2;
@@ -3498,7 +3499,9 @@
             breedWorking = false;
         }
         breedLast = { at: Date.now(), feitos, falhas };
-        if (falhas.length) breedWait = { motivo: falhas.map(f => `${f.name}: ${f.motivo}`).join(' · '), at: Date.now() };   // não insiste antes do retry
+        // v3.36.3: "durante a hunt" (a conta voltou para a hunt no meio da viagem) não é falta de material: tenta de novo em 3 min, não em 30.
+        const transitorio = falhas.length > 0 && falhas.every(f => /durante a hunt/i.test(f.motivo));
+        if (falhas.length) breedWait = { motivo: falhas.map(f => `${f.name}: ${f.motivo}`).join(' · '), at: Date.now() - (transitorio ? BREED_RETRY_MS - BREED_HUNT_RETRY_MS : 0) };   // não insiste antes do retry
         if (feitos.length || falhas.length) {
             const who = playerName();
             const linhas = feitos.map(f => `**${f.name}** geração ${f.gen}: Q ${breedQ(f.q)} → ${breedQ(f.min)}–${breedQ(f.max)} · IV ${f.iv} mantido · comida Q ${breedQ(f.foodQ)} IV ${f.foodIv}${f.kills ? ` · choca em ${fmtNum(f.kills)} abates` : ''}\nCustou ${fmtNum(f.gold)} gold + ${f.stones}${f.dobrar ? ' (dobrado)' : ''}`)
@@ -5152,31 +5155,46 @@
         return tarefas;
     }
 
+    function tripInHunt() { return Boolean(normalize(huntSlug || '')) && !CITY_SLUGS.includes(normalize(huntSlug || '')); }
+    // Sai da hunt e espera a tela chegar à cidade (`set-city`); a tela não viajou = avisa o servidor nós mesmos. Devolve o que o teleporte disse.
+    async function tripLeaveHunt() {
+        tripCityArrived = false;
+        sendGame({ type: 'leave-hunt' });
+        const tela = nudgeClientToCity();
+        const limite = Date.now() + TRIP_CITY_WAIT_MS;
+        while (!tripCityArrived && Date.now() < limite) await tripWait(500);
+        if (!tripCityArrived) sendGame({ type: 'set-city', slug: tripCity() }); // a tela não viajou: avisa o servidor nós mesmos
+        return tela;
+    }
     async function cityTrip(motivo, tarefas) {
         if (tripRunning) return { ok: false, motivo: 'viagem em andamento' };
         if (!tarefas.length) return { ok: false, motivo: 'nada a fazer' };
         tripRunning = true;
         const t0 = Date.now();
         const volta = tripReturnSlug();
-        const emHunt = Boolean(normalize(huntSlug || '')) && !CITY_SLUGS.includes(normalize(huntSlug || ''));
+        const emHunt = tripInHunt();
         const res = [];
         tripNotify();
         try {
             tripPhase = 'indo para a cidade';
             tripCityArrived = false;
             let tela = null;
-            if (emHunt) {
-                sendGame({ type: 'leave-hunt' });
-                tela = nudgeClientToCity();
-                const limite = Date.now() + TRIP_CITY_WAIT_MS;
-                while (!tripCityArrived && Date.now() < limite) await tripWait(500);
-                if (!tripCityArrived) sendGame({ type: 'set-city', slug: tripCity() }); // a tela não viajou: avisa o servidor nós mesmos
-            }
+            if (emHunt) tela = await tripLeaveHunt();
             logEvent('viagem', { fase: 'cidade', motivo, cidade: tripCity(), estavaEmHunt: emHunt, pelaTela: tripCityArrived, tela, volta, tarefas: tarefas.map(t => t.key) });
             tripPhase = 'na cidade';
             tripNotify();
             await tripWait(tripRnd(TRIP_WALK_MS));
             for (const t of tarefas) {
+                // v3.36.3: a tela pode mandar `enter-hunt` NO MEIO da viagem (conta2, 12/10/2026 23:12Z: o usuário foi para a cidade na
+                // mão, a viagem começou já na cidade e 5 s depois a tela voltou para a hunt; a retirada da comida do breeding na família
+                // falhou com "não está disponível durante a hunt"). De volta na hunt = sai de novo e espera a tela chegar à cidade.
+                if (tripInHunt()) {
+                    logEvent('viagem-hunt-no-meio', { tarefa: t.key, slug: huntSlug });
+                    tripPhase = 'indo para a cidade'; tripNotify();
+                    await tripLeaveHunt();
+                    tripPhase = 'na cidade'; tripNotify();
+                    await tripWait(tripRnd(TRIP_WALK_MS));
+                }
                 let r;
                 try { r = await t.run(); } catch (err) { r = { ok: false, motivo: String(err?.message || err) }; }
                 res.push({ key: t.key, ok: Boolean(r?.ok), motivo: r?.motivo || null, r });

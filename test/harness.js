@@ -362,9 +362,10 @@ function loadTripModule(cfg, init) {
     const state = { sent: [], switches: [], logs: [], nudges: [], tasks: [], onTeleport: null };
     const ctx = {
         cfg,
-        sendGame: (o) => { state.sent.push(o); return true; },
+        // v3.36.3: como no script, `leave-hunt` enviado zera a hunt (setHunt(null) em handleOutgoing) e switchHunt a preenche
+        sendGame: (o) => { state.sent.push(o); if (o?.type === 'leave-hunt' && state.api) state.api.setHunt(null); return true; },
         logEvent: (k, d) => state.logs.push([k, d]),
-        switchHunt: (slug, tentativa, origem) => state.switches.push({ slug, tentativa, origem }),
+        switchHunt: (slug, tentativa, origem) => { state.switches.push({ slug, tentativa, origem }); if (state.api) state.api.setHunt(slug); },
         normalize: (v) => String(v || '').toLowerCase().trim(),
         CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'],
         huntSlug: init.huntSlug != null ? init.huntSlug : null,
@@ -407,6 +408,7 @@ function loadTripModule(cfg, init) {
         };`);
     const api = factory(...Object.values(ctx));
     state.huntLoot = ctx.huntLoot;
+    state.api = api;
     return { api, state, cfg, clock };
 }
 
