@@ -118,6 +118,11 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `cityIdleMin` — antes um único frame depois da entrada fazia `idleSinceAt` devolver 0 para sempre, e a conta que o servidor
   tirou da hunt sem a tela mandar `leave-hunt` (reconexão que caiu na cidade) ficava parada sem `cidade-parada` no log
   (10/10/2026). Status/aviso dizem onde parou ("em <hunt> sem abates" / "fora de hunt"); o log `inicio` traz `ultimoFrame`.
+  v3.36.0: `cfg.cityIdleHunt` (painel "Hunt padrão", nome ou slug via `huntSlugFromName`; `idleDefaultSlug(d)`) é o destino
+  de ÚLTIMO recurso da parada na cidade, da volta da viagem (`tripReturnSlug`) e da cura (`healStart`), depois de clã > rota
+  > última hunt. Pedido do usuário em 11/10/2026: "o personagem nunca deve ficar parado; NÃO PODEMOS PERDER TEMPO PARADO".
+  Sintoma sem ela (visto na 3.35.0 no outro PC, 11/10/2026): conta recém-atualizada parada na cidade, sem hunt lembrada,
+  status "não sei de que hunt veio" para sempre.
 - REST do jogo (usado pela compra automática; confirmado no auto-refill de referência e no piwdex):
   tokens em `sessionStorage['pokeweb:tokens']` (`{accessToken, refreshToken}`), header
   `Authorization: Bearer`, renovação em `POST /api/auth/refresh {refreshToken}` quando vier 401.
