@@ -241,6 +241,11 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   nível e entra via `switchHunt(slug, 1, 'daily-ida')`; origem e líder em `localStorage.pgDiscordNotifyDaily`
   (`dailyRun`); na meta devolve o líder (`dailyRestoreLeader`) e volta para `dailyRun.from`. `dailyHoldsLeader()` pausa
   `checkLeaderLevel` enquanto a ida vale (guardado com `typeof`, porque o harness do nível não tem o módulo da daily).
+  v3.37.0 (pedido do usuário em 12/10/2026: "bloquear os monstros da daily em Orre, só Outland ou Kanto"): `cfg.dailyAreas`
+  (painel "Regiões aceitas" na Daily Kill; padrão kanto + outland; vazio = padrão) — `dailyHuntFor` só devolve hunt dessas
+  regiões (`dailyHuntsFor` lista todas as hunts da espécie; a de menor nível permitida ganha). Missão sem hunt permitida não é
+  escolhida; escolhida na mão, a ida não acontece e o status diz "fica em orre (região bloqueada)". Mudar as regiões no Salvar
+  zera `dailyPickTried`. Hunt sem `area` (catálogo de teste) passa. Casos 5–8 do `test/dailyauto.test.js`.
 - Daily Gift (v3.24.0, aba Treino → 🎁 Daily Gift, `cfg.giftEnabled` + `cfg.giftCenterMode` 'daily'|'all'|''; módulo
   `// ---- Daily Gift` entre a Daily Kill e o Clã; bundle em 30/09/2026, campos ainda não vistos no log): calendário de 28 dias
   por REST: `GET /api/game/daily` → `{ canClaim, claimedToday, blockedByVip, nextDay, total, rewards[{ day, label, qty, tag,

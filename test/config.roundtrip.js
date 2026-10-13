@@ -24,7 +24,7 @@ const rica = {
   catchRouteSkipped: ['abra'], catchRouteDone: [16, 19], dailyEnabled: true, dailyClaim: false, dailyReturnSlug: 'larvitar', tripCity: 'pewter', tripMinGapMin: 5, tripEveryMin: 12, tripEveryMaxMin: 20,
   reloadEnabled: true, reloadEveryMin: 45, reloadEveryMaxMin: 90, mentionUserId: '123', cooldownSeconds: 7, cfgVersion: 2, debug: true,
   // v3.16+ (daily sozinha, clã, guardar na cidade)
-  dailyAuto: true, clanEnabled: true, clanKey: 'naturia', clanRankup: false, clanRoute: false,
+  dailyAuto: true, dailyAreas: ['kanto', 'outland', 'nightmare'], clanEnabled: true, clanKey: 'naturia', clanRankup: false, clanRoute: false,
   depositItems: 'depot', depositPokes: 'family', depositPokesRare: true,
   depositFamilyList: [{ id: 13115, name: 'Devoted Token', keep: 0 }, { id: 44417, name: 'Strange Pheromone', keep: 2 }],
   // v3.21.0 (refil de poções e revives)

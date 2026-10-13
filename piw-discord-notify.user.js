@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.36.3
+// @version      3.37.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.36.3';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.37.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -76,6 +76,7 @@
         dailyEnabled: false,    // Daily Kill: ao bater a meta da missão do dia, voltar para a hunt de antes
         dailyClaim: true,       // ...e resgatar a recompensa sozinho (POST /api/game/daily-kill/claim)
         dailyReturnSlug: '',    // hunt fixa para voltar; vazio = etapa da rota, senão a hunt anterior à daily
+        dailyAreas: ['kanto', 'outland'], // v3.37.0: regiões de hunt aceitas pela daily sozinha (orre fica de fora por padrão)
         dailyAuto: false,       // v3.16.0: fazer a daily sozinho (escolhe missão e Pokémon do time, vai e volta)
         giftEnabled: false,     // v3.24.0 Daily Gift: resgatar o presente do dia (calendário de 28 dias) sozinho
         giftCenterMode: 'daily', // ...e no Gift Center (correio): 'daily' = entregar só o do dia | 'all' = tudo que aparecer | '' = não mexer
@@ -2011,6 +2012,10 @@
     // era o líder ficam em localStorage.pgDiscordNotifyDaily (sobrevivem à recarga). Na meta: resgata, devolve o
     // líder e volta para a hunt de antes. Enquanto a ida vale, a troca de líder do treino espera (dailyHoldsLeader).
     // Só o time entra na conta (box não: tirar do box mexe na composição do time).
+    // v3.37.0 (pedido do usuário em 12/10/2026: "bloquear os monstros da daily em Orre"): `cfg.dailyAreas` (padrão kanto +
+    // outland) limita as regiões de hunt que a daily sozinha aceita. `dailyHuntFor` só devolve hunt dessas regiões (a espécie
+    // pode ter hunt em mais de uma; a de menor nível entre as permitidas); missão sem hunt permitida não é escolhida e, se o
+    // usuário a escolheu na mão, a ida não acontece (status/log `daily-auto-espera` dizem a região bloqueada).
 
     const DAILY_URL = '/api/game/daily-kill';
     const DAILY_CLAIM_URL = '/api/game/daily-kill/claim';
@@ -2022,6 +2027,8 @@
     const DAILY_RUN_KEY = 'pgDiscordNotifyDaily';
     const DAILY_GO_RETRY_MS = 5 * 60 * 1000;    // saiu da hunt da daily (ex.: na mão): espera isso antes de ir de novo
     const DAILY_GO_MAX = 3;                     // idas por missão
+    const DAILY_AREAS_ALL = ['kanto', 'orre', 'outland', 'nightmare'];
+    const DAILY_AREAS_DEFAULT = ['kanto', 'outland'];
     // Dano do tipo do golpe (linha) no tipo do defensor (coluna); ausente = 1. É a tabela do jogo, copiada do
     // Tierlist do PokeGrid (`CHART` no index.html dele).
     const TYPE_CHART = {
@@ -2081,6 +2088,13 @@
 
     function dailyEnabled() { return Boolean(cfg.dailyEnabled); }
     function dailyAutoOn() { return Boolean(cfg.dailyEnabled && cfg.dailyAuto); }
+    // Regiões de hunt aceitas pela daily sozinha (d = cfg ou rascunho); lista vazia/inválida = padrão (kanto + outland).
+    function dailyAreas(d) {
+        d = d || cfg;
+        const a = Array.isArray(d.dailyAreas) ? d.dailyAreas.map(x => normalize(x)).filter(x => DAILY_AREAS_ALL.includes(x)) : [];
+        return a.length ? a : DAILY_AREAS_DEFAULT.slice();
+    }
+    function dailyAreaOk(h) { return !h?.area || dailyAreas().includes(normalize(h.area)); } // hunt sem área (catálogo velho) passa
     function loadDailyRun() {
         try { const r = JSON.parse(localStorage.getItem(DAILY_RUN_KEY) || 'null'); return r && typeof r === 'object' ? r : null; }
         catch { return null; }
@@ -2194,13 +2208,21 @@
         return Math.max(...meus.map(a => typeMult(a, t1, t2)));
     }
     function effLabel(e) { return `x${Math.round(e * 100) / 100}`; }
-    // Hunt da espécie da missão (a de menor nível: o catálogo vem ordenado por nível).
-    function dailyHuntFor(o) {
-        if (!Array.isArray(huntCatalog) || !o) return null;
+    // Hunts da espécie da missão, em qualquer região (o catálogo vem ordenado por nível).
+    function dailyHuntsFor(o) {
+        if (!Array.isArray(huntCatalog) || !o) return [];
         const nome = normalize(o.name);
-        return huntCatalog.find(h => o.speciesId && h.speciesId === o.speciesId)
-            || huntCatalog.find(h => normalize(h.speciesName || '') === nome || normalize(h.name) === nome || h.slug === huntSlugFromName(o.name))
-            || null;
+        const porId = o.speciesId ? huntCatalog.filter(h => h.speciesId === o.speciesId) : [];
+        if (porId.length) return porId;
+        return huntCatalog.filter(h => normalize(h.speciesName || '') === nome || normalize(h.name) === nome || h.slug === huntSlugFromName(o.name));
+    }
+    // Hunt da espécie da missão: a de menor nível entre as regiões permitidas (v3.37.0); null = nenhuma permitida.
+    function dailyHuntFor(o) {
+        return dailyHuntsFor(o).find(dailyAreaOk) || null;
+    }
+    // Regiões em que a espécie tem hunt mas que estão bloqueadas (para explicar no status/log).
+    function dailyBlockedAreas(o) {
+        return [...new Set(dailyHuntsFor(o).filter(h => !dailyAreaOk(h)).map(h => normalize(h.area)))];
     }
     // Nota de um Pokémon do time para a missão: efetividade × nível, com desconto (quadrático) abaixo do nível da hunt.
     function dailyBestPoke(o, hunt) {
@@ -2252,11 +2274,18 @@
         const plano = dailyRankOptions();
         const melhor = plano[0];
         dailyPickTried = daily.resetAt;
-        if (!melhor) { noteDailyAuto('nenhuma opção com hunt conhecida', { opcoes: daily.options.map(o => o.name) }); return; }
+        if (!melhor) {
+            const bloqueadas = daily.options.map(o => ({ nome: o.name, regioes: dailyBlockedAreas(o) })).filter(x => x.regioes.length);
+            const motivo = bloqueadas.length === daily.options.length
+                ? `todas as opções ficam em região bloqueada (${[...new Set(bloqueadas.flatMap(x => x.regioes))].join(', ')})`
+                : 'nenhuma opção com hunt conhecida';
+            noteDailyAuto(motivo, { opcoes: daily.options.map(o => o.name), bloqueadas, regioes: dailyAreas() });
+            return;
+        }
         try {
             await gameApi(DAILY_PICK_URL, { method: 'POST', body: JSON.stringify({ idx: melhor.o.idx }) });
         } catch (err) { noteDailyAuto('o jogo recusou a escolha da missão', { erro: String(err?.message || err) }); return; }
-        logEvent('daily-auto-escolha', { missao: melhor.o.name, idx: melhor.o.idx, hunt: melhor.hunt.slug, pokemon: melhor.best.p.name, eff: melhor.best.eff,
+        logEvent('daily-auto-escolha', { missao: melhor.o.name, idx: melhor.o.idx, hunt: melhor.hunt.slug, regiao: melhor.hunt.area || null, regioes: dailyAreas(), pokemon: melhor.best.p.name, eff: melhor.best.eff,
             opcoes: plano.map(x => ({ nome: x.o.name, pokemon: x.best.p.name, eff: x.best.eff, nota: Math.round(x.nota * 100) / 100 })) });
         noteDailyAuto('');
         await refreshDaily();
@@ -2265,7 +2294,11 @@
     function dailyAutoGo() {
         const o = daily.options[daily.pickedIdx];
         const hunt = dailyHuntFor(o);
-        if (!hunt) { noteDailyAuto(`não achei a hunt de ${daily.name}`); return; }
+        if (!hunt) {
+            const bloq = dailyBlockedAreas(o);
+            noteDailyAuto(bloq.length ? `a hunt de ${daily.name} fica em ${bloq.join('/')} (região bloqueada): faça na mão ou libere a região` : `não achei a hunt de ${daily.name}`, { regioes: dailyAreas() });
+            return;
+        }
         let run = dailyRun && dailyRun.resetAt === daily.resetAt ? dailyRun : null;
         if (run?.over) { noteDailyAuto('a ida de hoje já falhou: faça na mão'); return; }
         if (run && (run.goes || 0) >= DAILY_GO_MAX) { noteDailyAuto(`já fui ${DAILY_GO_MAX} vezes hoje`); return; }
@@ -6348,7 +6381,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
             `Bolas: ${!((Number(d.ballsMin) || 0) > 0 || d.autoBuy) ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}${supplyOn(d) ? ` · refil: ${supplySlots(d).map(s => `${s.name} < ${s.min}`).join(', ')}` : ''}${d.healJoyEnabled ? ' · Joy' : ''}${d.cityIdleEnabled ? ` · volta da cidade ${Number(d.cityIdleMin) || IDLE_MIN_DEFAULT} min${idleDefaultSlug(d) ? ` (padrão ${idleDefaultSlug(d)})` : ''}` : ''}`,
             `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades${pokeSellKeepQ(d) ? `, guarda ≥ ${pokeSellKeepQ(d)}` : ''})` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
-            `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? 'daily sozinha' : 'daily') : '', d.giftEnabled ? 'gift' : '', d.evolveEnabled ? 'evolução' : '', d.slotEnabled ? 'slot machine' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
+            `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? `daily sozinha (${dailyAreas(d).join('+')})` : 'daily') : '', d.giftEnabled ? 'gift' : '', d.evolveEnabled ? 'evolução' : '', d.slotEnabled ? 'slot machine' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Breeding: ${d.breedEnabled ? `${breedActiveLines(d).length} ${breedActiveLines(d).length === 1 ? 'linhagem' : 'linhagens'}${d.breedDouble ? ' + dobrar' : ''}` : 'desligado'}`,
             `Guild: ${[guildDonateWanted(d) > 0 ? `doa ${guildN(guildDonateWanted(d))}/dia` : '', d.guildTributeEnabled ? 'tributo' : '', d.guildFarmTribute ? 'farma tributo' : '', d.guildHuntEnabled ? 'caça' : '', d.guildFishEnabled ? 'pesca' : '', d.guildAlerts ? 'avisos' : ''].filter(Boolean).join(' + ') || 'desligada'}`,
@@ -6554,6 +6587,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <label class="dn-toggle"><input id="pg-dn-daily" type="checkbox"><span class="sw"></span>Voltar para a hunt quando a missão do dia terminar</label>
                         <label class="dn-toggle"><input id="pg-dn-daily-claim" type="checkbox"><span class="sw"></span>Resgatar a recompensa sozinho</label>
                         <label class="dn-toggle"><input id="pg-dn-daily-auto" type="checkbox"><span class="sw"></span>Fazer a daily sozinho <span class="dn-hint">(escolhe a missão e o Pokémon do time, vai e volta)</span></label>
+                        <div class="dn-inline" id="pg-dn-daily-areas">Regiões aceitas: ${DAILY_AREAS_ALL.map(a => `<label class="dn-toggle dn-toggle--sm"><input type="checkbox" class="pg-dn-daily-area" value="${a}"><span class="sw"></span>${a}</label>`).join('')} <span class="dn-hint">(missão com hunt só em região desmarcada não é escolhida nem feita)</span></div>
                         <label class="dn-field"><span>Voltar para</span><input id="pg-dn-daily-return" class="dn-input" type="text" placeholder="vazio = hunt de antes (ou a etapa da rota)" spellcheck="false"></label>
                         <p class="dn-help">Escolha a missão em Dailys e entre na hunt do Pokémon no jogo. Quando a meta bater, o script resgata (se marcado), sai da hunt e volta. Com "Fazer a daily sozinho", o script escolhe a missão (se você não escolheu), põe de líder o Pokémon do time com mais vantagem de tipo contra ela (tabela do jogo × nível), entra na hunt e, no fim, devolve o líder e volta. Aviso no canal de Alertas.</p>
                         <div class="dn-status"><span>⚔️</span><span id="pg-dn-daily-status"></span></div>
@@ -6839,6 +6873,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 dailyEnabled: $('#pg-dn-daily').checked,
                 dailyClaim: $('#pg-dn-daily-claim').checked,
                 dailyAuto: $('#pg-dn-daily-auto').checked,
+                dailyAreas: [...panel.querySelectorAll('.pg-dn-daily-area:checked')].map(c => c.value),
                 giftEnabled: $('#pg-dn-gift').checked,
                 evolveEnabled: $('#pg-dn-evolve').checked,
                 slotEnabled: $('#pg-dn-slot').checked,
@@ -7734,6 +7769,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-daily').checked = Boolean(cfg.dailyEnabled);
             $('#pg-dn-daily-claim').checked = cfg.dailyClaim !== false;
             $('#pg-dn-daily-auto').checked = Boolean(cfg.dailyAuto);
+            for (const c of panel.querySelectorAll('.pg-dn-daily-area')) c.checked = dailyAreas().includes(c.value);
             $('#pg-dn-gift').checked = Boolean(cfg.giftEnabled);
             $('#pg-dn-evolve').checked = Boolean(cfg.evolveEnabled);
             $('#pg-dn-slot').checked = Boolean(cfg.slotEnabled);
@@ -7843,7 +7879,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const alvoAntes = levelTarget(), swapAntes = swapEnabled();
             const rotaAntes = JSON.stringify(routeList());
             const recargaAntes = JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]);
-            const dailyAntes = JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug, cfg.dailyAuto]);
+            const dailyAntes = JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug, cfg.dailyAuto, cfg.dailyAreas]);
             const giftAntes = JSON.stringify([cfg.giftEnabled, cfg.giftCenterMode]);
             const slotAntes = JSON.stringify([cfg.slotEnabled, cfg.slotWanted]);
             const breedAntes = JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble]);
@@ -7889,7 +7925,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             if (JSON.stringify([cfg.tripEveryMin, cfg.tripEveryMaxMin]) !== viagemAntes) restartTripCycle(); // faixa da viagem mudou: sorteia de novo
             saveHuntProfile();
             if (JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]) !== recargaAntes) scheduleReload(); // faixa mudou: sorteia de novo
-            if (JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug, cfg.dailyAuto]) !== dailyAntes) scheduleDailyCheck(500); // daily mudou: lê a missão já
+            if (JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug, cfg.dailyAuto, cfg.dailyAreas]) !== dailyAntes) { dailyPickTried = 0; scheduleDailyCheck(500); } // daily mudou: lê a missão já (e pode escolher de novo)
             if (JSON.stringify([cfg.giftEnabled, cfg.giftCenterMode]) !== giftAntes) { giftFetchedAt = 0; scheduleGiftCheck(500); } // gift mudou: lê o calendário já
             if (JSON.stringify([cfg.slotEnabled, cfg.slotWanted]) !== slotAntes) { // slot machine mudou: rearma e relê a máquina já
                 slotFailedAt = 0;
@@ -8168,7 +8204,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
         '| nível:', levelEnabled() ? `${levelTarget()}${swapEnabled() ? ' + troca' : ''}` : 'não',
         '| rota:', routeActive() ? routeStatus() : 'não',
         '| captura:', cfg.catchRouteEnabled ? `${catchAreas().join('+')}${cfg.catchRouteMaxLevel ? ` até lv ${cfg.catchRouteMaxLevel}` : ''}${cfg.catchRouteAuto ? ' + bola' : ''}` : 'não',
-        '| daily:', cfg.dailyEnabled ? `${cfg.dailyAuto ? 'sozinha, ' : ''}volta para ${dailyReturnTarget() || 'a hunt anterior'}${cfg.dailyClaim ? ' + resgate' : ''}` : 'não',
+        '| daily:', cfg.dailyEnabled ? `${cfg.dailyAuto ? `sozinha (${dailyAreas().join('+')}), ` : ''}volta para ${dailyReturnTarget() || 'a hunt anterior'}${cfg.dailyClaim ? ' + resgate' : ''}` : 'não',
         '| gift:', cfg.giftEnabled ? `sim (Gift Center: ${giftCenterMode() || 'não mexe'})` : 'não',
         '| guild:', guildOn() ? [guildDonateWanted() > 0 ? `doa ${guildDonateWanted()}/dia` : '', cfg.guildTributeEnabled ? 'tributo' : '', cfg.guildFarmTribute ? 'farma tributo' : '', cfg.guildHuntEnabled ? 'caça' : '', cfg.guildFishEnabled ? 'pesca' : '', cfg.guildAlerts ? 'avisos' : ''].filter(Boolean).join(' + ') : 'não',
         '| venda pokes:', cfg.pokeSellEnabled ? TIERS_ASC.filter(t => pokeSellLimit(cfg, t.key) > 0).map(t => `${t.name}<${pokeSellLimit(cfg, t.key)}`).join(' ') || 'sem limites' : 'não',

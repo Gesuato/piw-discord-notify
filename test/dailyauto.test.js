@@ -20,9 +20,16 @@ function fakeApi(s) {
     };
 }
 const CATALOGO = [
-    { slug: 'pidgey', name: 'Pidgey', level: 5, speciesId: 16, speciesName: 'Pidgey' },
-    { slug: 'oddish', name: 'Oddish', level: 10, speciesId: 43, speciesName: 'Oddish' },
-    { slug: 'charmander', name: 'Charmander', level: 12, speciesId: 4, speciesName: 'Charmander' },
+    { slug: 'pidgey', name: 'Pidgey', level: 5, area: 'kanto', speciesId: 16, speciesName: 'Pidgey' },
+    { slug: 'oddish', name: 'Oddish', level: 10, area: 'kanto', speciesId: 43, speciesName: 'Oddish' },
+    { slug: 'charmander', name: 'Charmander', level: 12, area: 'kanto', speciesId: 4, speciesName: 'Charmander' },
+];
+// v3.37.0: Pidgey só em Orre (bloqueada por padrão) e Oddish em Orre (lv 8) E em Outland (lv 30)
+const CATALOGO_ORRE = [
+    { slug: 'pidgey_orre', name: 'Pidgey', level: 5, area: 'orre', speciesId: 16, speciesName: 'Pidgey' },
+    { slug: 'oddish_orre', name: 'Oddish', level: 8, area: 'orre', speciesId: 43, speciesName: 'Oddish' },
+    { slug: 'oddish_out', name: 'Oddish', level: 30, area: 'outland', speciesId: 43, speciesName: 'Oddish' },
+    { slug: 'charmander_orre', name: 'Charmander', level: 12, area: 'orre', speciesId: 4, speciesName: 'Charmander' },
 ];
 // Squirtle é o líder; Geodude (Pedra/Terra) bate x2 em Pidgey; Charmander bate x2 em Oddish.
 const TIME = () => [
@@ -117,5 +124,57 @@ const cfgBase = () => ({ dailyEnabled: true, dailyClaim: true, dailyAuto: true }
         assert(!state.calls.some(c => c.url.endsWith('/pick')) && state.switches.length === 0 && state.sent.length === 0, 'sem a opção não age');
     }
 
-    console.log('OK dailyauto.test — escolha da missão e do Pokémon, ida, volta com o líder, falha e recarga');
+    // 5) regiões (v3.37.0): Pidgey e Charmander só em Orre → escolhe Oddish e vai para a hunt de Outland, não a de Orre
+    {
+        const s = { pickedIdx: -1 };
+        const { api, state } = loadDailyModule(cfgBase(), { api: fakeApi(s), team: TIME(), huntCatalog: CATALOGO_ORRE });
+        api.setHunt('larvitar');
+        await flush(); await flush();
+        const pick = state.calls.find(c => c.url.endsWith('/pick'));
+        assert(pick && JSON.parse(pick.opts.body).idx === 1, 'escolheu Oddish (idx 1), a única fora de Orre: ' + JSON.stringify(state.calls.map(c => c.url)));
+        const ida = state.switches.find(x => x.origem === 'daily-ida');
+        assert(ida && ida.slug === 'oddish_out', 'foi para a hunt de Outland: ' + JSON.stringify(state.switches));
+        const esc = state.logs.find(l => l[0] === 'daily-auto-escolha');
+        assert(esc && esc[1].regiao === 'outland' && esc[1].regioes.join('+') === 'kanto+outland', 'log com a região: ' + JSON.stringify(esc && esc[1]));
+    }
+
+    // 6) todas as opções em Orre: não escolhe e explica
+    {
+        const s = { pickedIdx: -1 };
+        const soOrre = CATALOGO_ORRE.filter(h => h.area === 'orre');
+        const { api, state } = loadDailyModule(cfgBase(), { api: fakeApi(s), team: TIME(), huntCatalog: soOrre });
+        api.setHunt('larvitar');
+        await flush(); await flush();
+        assert(!state.calls.some(c => c.url.endsWith('/pick')) && state.switches.length === 0, 'não escolheu nem foi');
+        assert(/região bloqueada \(orre\)/.test(api.dailyStatus()), 'status explica: ' + api.dailyStatus());
+        const esp = state.logs.find(l => l[0] === 'daily-auto-espera');
+        assert(esp && esp[1].bloqueadas.length === 3 && esp[1].bloqueadas[0].regioes[0] === 'orre', 'log lista as bloqueadas: ' + JSON.stringify(esp && esp[1]));
+    }
+
+    // 7) missão escolhida pelo usuário com hunt só em Orre: não vai; liberando orre no cfg, vai
+    {
+        const s = { pickedIdx: 2 };
+        const cfg = cfgBase();
+        const { api, state } = loadDailyModule(cfg, { api: fakeApi(s), team: TIME(), huntCatalog: CATALOGO_ORRE });
+        api.setHunt('larvitar');
+        await flush(); await flush();
+        assert(state.switches.length === 0 && state.sent.length === 0, 'não foi para Orre: ' + JSON.stringify(state.switches));
+        assert(/Charmander fica em orre/.test(api.dailyStatus()), 'status explica: ' + api.dailyStatus());
+        cfg.dailyAreas = ['kanto', 'outland', 'orre'];
+        await api.dailyTick(true); await flush();
+        assert(state.switches.some(x => x.slug === 'charmander_orre' && x.origem === 'daily-ida'), 'com orre liberada, foi: ' + JSON.stringify(state.switches));
+    }
+
+    // 8) cfg sem a chave (config antiga) ou lista vazia = padrão kanto + outland
+    {
+        const s = { pickedIdx: -1 };
+        const cfg = Object.assign(cfgBase(), { dailyAreas: [] });
+        const { api, state } = loadDailyModule(cfg, { api: fakeApi(s), team: TIME(), huntCatalog: CATALOGO_ORRE });
+        api.setHunt('larvitar');
+        await flush(); await flush();
+        const pick = state.calls.find(c => c.url.endsWith('/pick'));
+        assert(pick && JSON.parse(pick.opts.body).idx === 1, 'lista vazia usa o padrão e escolhe Oddish');
+    }
+
+    console.log('OK dailyauto.test — escolha da missão e do Pokémon, ida, volta com o líder, falha, recarga e regiões (orre bloqueada)');
 })().catch(e => { console.error(e); process.exit(1); });

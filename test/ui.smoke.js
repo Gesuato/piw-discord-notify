@@ -61,7 +61,8 @@ setTimeout(() => {
         $('#pg-dn-blk-pokes').querySelector('h3').click(); log('clicou pokes: aberto=' + [...panel.querySelectorAll('.dn-blk.open')].map(b => b.dataset.blk) + ' ui=' + window.localStorage.getItem('pgDiscordNotifyUi'));
         log('treino level.disabled=' + $('#pg-dn-level').disabled + ' value=' + $('#pg-dn-level').value + ' | ' + $('#pg-dn-route-status').textContent + ' | itens=' + $('#pg-dn-route-list').children.length);
         log('team=' + $('#pg-dn-team').textContent);
-        log('daily=' + $('#pg-dn-daily-status').textContent + ' | claimPadrao=' + $('#pg-dn-daily-claim').checked);
+        log('daily=' + $('#pg-dn-daily-status').textContent + ' | claimPadrao=' + $('#pg-dn-daily-claim').checked + ' | regioes=' + [...panel.querySelectorAll('.pg-dn-daily-area:checked')].map(c => c.value));
+        if ([...panel.querySelectorAll('.pg-dn-daily-area:checked')].map(c => c.value).join('+') !== 'kanto+outland') throw new Error('regiões padrão da daily deviam ser kanto+outland');
         panel.querySelector('.dn-tab[data-tab=profissao]').click();
         log('profissao=' + $('#pg-dn-catch-status').textContent + ' | areas=' + [...panel.querySelectorAll('.pg-dn-catch-area:checked')].map(c => c.value) + ' | prof=' + $('#pg-dn-prof-status').textContent);
         $('#pg-dn-catch').checked = true; fire($('#pg-dn-catch'), 'change');
