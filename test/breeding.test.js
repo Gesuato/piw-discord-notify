@@ -293,5 +293,32 @@ function fakeApi(opts) {
         assert(off.state.calls.length === 0 && off.api.breedWanted() === false, 'desligado não chama nada');
     }
 
+    // 12) v3.37.1: "sem resposta do jogo" na retirada da família é falha transitória: tenta de novo em 3 min, não em 30
+    {
+        const cfg = { breedEnabled: true, breedLines: [{ id: TRONCO.id, gen: 0 }], breedFoodIvMax: 150, breedFamily: true, breedDouble: false };
+        const fake = fakeApi({ box: { [TRONCO.id]: TRONCO, [COMIDA.id]: COMIDA }, have: 20 });
+        const fam = { pokes: [COMIDA], items: [] };
+        const box = [LIDER, TRONCO];
+        let mudo = true;
+        const { api, state, clock } = loadBreedModule(cfg, {
+            api: fake.api, pokes: box, family: fam, freshPokes: () => box,
+            familyAction: (payload) => { if (mudo) return { ok: false, motivo: 'sem resposta do jogo' }; if (payload.action === 'poke') { fam.pokes = []; box.push(COMIDA); } return { ok: true }; },
+        });
+        await api.breedTick(true);
+        assert(state.trips.length === 1, 'viagem pedida: ' + JSON.stringify(state.trips));
+        const r = await api.breedCityWork();
+        assert(!r.ok && /sem resposta do jogo/.test(r.motivo) && api.breedWait, 'jogo mudo: falhou: ' + JSON.stringify(r));
+        const retryEm = api.breedWait.at + api.BREED_RETRY_MS - clock.now;
+        assert(retryEm > 0 && retryEm <= 3 * 60 * 1000, 'retry em 3 min, não em 30: ' + retryEm);
+        await api.breedTick(true);
+        assert(state.trips.length === 1, 'não insiste antes do retry');
+        clock.now += 3 * 60 * 1000 + 1000;
+        mudo = false;
+        await api.breedTick(true);
+        assert(state.trips.length === 2, 'depois de 3 min pede a viagem de novo: ' + state.trips.length);
+        const r2 = await api.breedCityWork();
+        assert(r2.ok && fake.posts.length === 1, 'cruzou na 2ª tentativa: ' + JSON.stringify(r2));
+    }
+
     console.log('OK breeding.test — filtro da comida (Q e IV menores, teto, família), checklist da cotação (donorId/growth/baseQuality), plano + viagem, cidade (stones e comida da família, POST breed), parado/retry, hatch e filho');
 })().catch(e => { console.error(e); process.exit(1); });

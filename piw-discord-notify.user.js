@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.37.0
+// @version      3.37.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.37.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.37.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -3533,7 +3533,9 @@
         }
         breedLast = { at: Date.now(), feitos, falhas };
         // v3.36.3: "durante a hunt" (a conta voltou para a hunt no meio da viagem) não é falta de material: tenta de novo em 3 min, não em 30.
-        const transitorio = falhas.length > 0 && falhas.every(f => /durante a hunt/i.test(f.motivo));
+        // v3.37.1: "sem resposta do jogo" (servidor lento, 14/10/2026: a retirada da família respondeu 12–56 s depois e TINHA acontecido)
+        // também é transitório: o material já está na mão ou vem na próxima viagem.
+        const transitorio = falhas.length > 0 && falhas.every(f => /durante a hunt|sem resposta do jogo/i.test(f.motivo));
         if (falhas.length) breedWait = { motivo: falhas.map(f => `${f.name}: ${f.motivo}`).join(' · '), at: Date.now() - (transitorio ? BREED_RETRY_MS - BREED_HUNT_RETRY_MS : 0) };   // não insiste antes do retry
         if (feitos.length || falhas.length) {
             const who = playerName();
@@ -5570,6 +5572,7 @@
     // O id do indivíduo vem do `poke-delta`; sem ele, avisa sem guardar e registra no log.
     const POKE_LOCK_URL = '/api/game/pokemon/lock';
     const KEEP_TIMEOUT_MS = 5000;
+    const KEEP_CONFIRM_MS = 10000;  // v3.37.1: ação da família sem resposta em 5 s → `family-get` e mais essa espera para ver se o movimento apareceu
 
     async function lockPokemon(pokeId, name) {
         try {
@@ -5594,11 +5597,11 @@
     function familyAction(payload, evento, dados, check) {
         return new Promise((resolve) => {
             if (familyPending) familyPending.resolve({ ok: false, motivo: 'outro depósito em andamento' });
-            const entry = { check, timer: null, resolve: null };
+            const entry = { check, timer: null, resolve: null, conferindo: false };
             entry.resolve = (r) => {
                 clearTimeout(entry.timer);
                 if (familyPending === entry) familyPending = null;
-                logEvent(evento, Object.assign({}, dados, { ok: r.ok, motivo: r.motivo || null }));
+                logEvent(evento, Object.assign({}, dados, { ok: r.ok, motivo: r.motivo || null, conferido: entry.conferindo || undefined }));
                 resolve(r);
             };
             familyPending = entry;
@@ -5606,7 +5609,16 @@
                 entry.resolve({ ok: false, motivo: 'socket do jogo não rastreado' });
                 return;
             }
-            entry.timer = setTimeout(() => entry.resolve({ ok: false, motivo: 'sem resposta do jogo' }), KEEP_TIMEOUT_MS);
+            entry.timer = setTimeout(() => {
+                // v3.37.1: com o servidor lento (14/10/2026, "Transaction API error") o frame `family` chegou 12–56 s depois e o
+                // movimento TINHA acontecido; o script dava "sem resposta do jogo" e o breeding/guardar desistiam. Antes de falhar,
+                // pede o estado da família: qualquer frame `family` que chegar (o atrasado ou a resposta do `family-get`) passa
+                // pelo mesmo `check` em `handleFamily`.
+                entry.conferindo = true;
+                logEvent('familia-confere', { evento, action: payload.action, dir: payload.dir, esperaMs: KEEP_CONFIRM_MS });
+                if (!sendGame({ type: 'family-get' })) { entry.resolve({ ok: false, motivo: 'sem resposta do jogo' }); return; }
+                entry.timer = setTimeout(() => entry.resolve({ ok: false, motivo: 'sem resposta do jogo' }), KEEP_CONFIRM_MS);
+            }, KEEP_TIMEOUT_MS);
         });
     }
     function familyDeposit(pokeId, name) {

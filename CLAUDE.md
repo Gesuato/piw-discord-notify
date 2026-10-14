@@ -353,6 +353,11 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   v3.24.2: sem resposta ao `family-get` em 5 s o guardar pede de novo (mais 15 s) e, ainda mudo, erra com "o jogo não
   respondeu" — antes `lastFamily` null virava "a conta não está numa família" (bobosky, 02/10/2026, jogo lento). O log
   `familia` traz `chaves` do frame quando vem sem `family`. Harness: `init.familyReply: false` = jogo mudo.
+  v3.37.1: `familyAction` sem frame em 5 s (`KEEP_TIMEOUT_MS`) NÃO falha na hora: manda `family-get` (log `familia-confere`) e
+  espera mais 10 s (`KEEP_CONFIRM_MS`); qualquer frame `family` passa pelo mesmo `check`, e o log da ação sai com `conferido: true`.
+  Causa (14/10/2026, 4 contas, "Transaction API error: Unable to start a transaction in the given time."): a retirada/depósito
+  respondeu 12–56 s depois e TINHA acontecido, mas o breeding desistia e esperava 30 min. No breeding, "sem resposta do jogo" é
+  falha transitória como "durante a hunt" (retry em `BREED_HUNT_RETRY_MS` 3 min). Caso 12 do `test/breeding.test.js`.
 - Clã (v3.17.0, aba Profissão, ROADMAP #22, módulo `// ---- Clã` antes da Viagem): `GET /api/game/clans` (tarefa em
   `nextTask`: items/caught/kills), `POST /clans/rankup`, `/clans/change { clan, targetRank }` (só a 1ª entrada, grátis;
   NUNCA trocar de clã, custa diamante), `POST /api/game/convert { baseItemId, packs }` (100 base = 1 item de clã, mapa
