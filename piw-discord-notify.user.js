@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.37.1
+// @version      3.38.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.37.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.38.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -1478,6 +1478,7 @@
         if (p.team || p.leader) return 'no time';
         if (p.starter) return 'inicial';
         if (p.shiny) return 'shiny';
+        if (Number(p.level) > 1) return `nível ${Number(p.level)}`;   // v3.38.0: quem já treinou (nível > 1) NUNCA vende (pedido do usuário em 16/10/2026)
         if (p.locked) return 'cadeado';
         if (p.listed || p.tradeId) return 'anunciado no mercado';   // `listed` = anúncio no mercado (bundle: o depósito também bloqueia)
         if (p.sellValue != null && !(Number(p.sellValue) > 0)) return 'sem valor';
@@ -6523,7 +6524,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                     <div class="dn-section dn-blk" id="pg-dn-blk-pokes" data-blk="pokes">
                         <h3><span class="chev">▶</span>Pokémon fora do time <span class="sum" id="pg-dn-sum-pokes"></span><span class="spacer"></span><label class="dn-toggle"><input id="pg-dn-psell" type="checkbox"><span class="sw"></span>Vender sozinho</label></h3>
                         <div class="in">
-                        <p class="dn-help">Nunca vende: no time, inicial, shiny, com cadeado 🔒, anunciado no mercado, capturado há menos de 2 min ou com qualidade igual ou acima do piso abaixo. Vazio = essa raridade não vende. A proteção de venda do PokeGrid não pergunta nas vendas do script.</p>
+                        <p class="dn-help">Nunca vende: no time, inicial, shiny, com nível acima de 1, com cadeado 🔒, anunciado no mercado, capturado há menos de 2 min ou com qualidade igual ou acima do piso abaixo. Vazio = essa raridade não vende. A proteção de venda do PokeGrid não pergunta nas vendas do script.</p>
                         <div class="dn-tiers">${TIERS_ASC.map(t => `<label for="pg-dn-psell-${t.key}"><span class="dn-chip" style="--c:#${t.color.toString(16).padStart(6, '0')}">${t.name}</span></label><span class="dn-inline">poder &lt; <input id="pg-dn-psell-${t.key}" class="dn-input dn-input--sm pg-dn-psell-lim" data-tier="${t.key}" type="number" min="0" max="${IV_MAX}" step="1" placeholder="—"></span>`).join('')}</div>
                         <p class="dn-help">Poder = 0 a ${IV_MAX}.</p>
                         <label class="dn-field"><span>Guardar com qualidade a partir de</span><input id="pg-dn-psell-keepq" class="dn-input dn-input--sm" type="number" min="0" step="0.01" placeholder="0 = desligado"></label>

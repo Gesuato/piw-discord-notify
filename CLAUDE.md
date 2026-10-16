@@ -170,7 +170,7 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `pokeSellEveryMin`–`pokeSellEveryMaxMin` (v3.13.0, padrão 10–15 min; `restartPokeSellCycle` na carga, no Salvar e
   após cada venda; `pokeSellTick` pede `pokes-get` quando vence). Lote recusado pelo jogo (ex.: "anunciados no mercado",
   flag `listed` na lista) é retentado um por um; recusados ficam em `pokeSellRejected` na sessão (log `venda-pokes-recusado`
-  com os campos; `pokes-campos` registra as chaves do frame na 1ª leitura). Nunca vende time/líder, inicial, shiny, `locked`, `listed`, `sellValue` 0, sem IV ou
+  com os campos; `pokes-campos` registra as chaves do frame na 1ª leitura). Nunca vende time/líder, inicial, shiny, nível > 1 (v3.38.0, regra fixa, pedido em 16/10/2026), `locked`, `listed`, `sellValue` 0, sem IV ou
   capturado há < 2 min (`recentCaptureIds`, alimentado pelo `poke-delta`). Usa o frame `pokes` (por isso
   `requestPokes` roda mesmo sem alvo de nível quando `pokeSellEnabled`) e `POST /api/game/pokemon/sell { pokeIds }`.
   v3.24.7: `runPokeSellCycle` pede `pokes-get` e espera a lista fresca até 5 s (`pokeSellRefreshList`, log
