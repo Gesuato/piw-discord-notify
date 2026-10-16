@@ -773,10 +773,19 @@ function loadEvolveModule(cfg, init) {
     const a = src.indexOf(E_START), b = src.indexOf(E_END);
     if (a < 0 || b < 0) throw new Error('marcadores do módulo de evolução não encontrados no script');
     const mod = src.slice(a, b);
-    const state = { sent: [], hooks: [], logs: [], trips: [], calls: [], pokesReqs: 0 };
+    // v3.39.0: `init.family` = itens do depot da família ({ itemId, quantity, name }); `init.familyReply: false` = `family-get`
+    // sem resposta; `init.familyWithdraw(itemId, qty)` responde à retirada ({ ok, motivo }; padrão ok e desconta de `state.family`).
+    // Timers avançam o relógio falso (`clock.now`) na hora.
+    const clock = { now: Date.UTC(2026, 9, 16, 12, 0, 0) };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const state = { sent: [], hooks: [], logs: [], trips: [], calls: [], pokesReqs: 0, family: Array.isArray(init.family) ? init.family.map(i => Object.assign({}, i)) : [], familyAt: 0, familyWithdraws: [] };
     const ctx = {
         cfg,
-        sendGame: (o) => { state.sent.push(o); return true; },
+        sendGame: (o) => {
+            state.sent.push(o);
+            if (o.type === 'family-get' && init.familyReply !== false) state.familyAt = clock.now + 1;
+            return true;
+        },
         gameApi: (url, opts) => { state.calls.push({ url, method: opts?.method || 'GET', body: opts?.body ? JSON.parse(opts.body) : null }); return Promise.resolve().then(() => (init.api ? init.api(url, opts) : {})); },
         tripRequest: (key, dados, motivo) => state.trips.push({ key, dados, motivo }),
         requestPokes: () => { state.pokesReqs++; },
@@ -784,17 +793,27 @@ function loadEvolveModule(cfg, init) {
         logEvent: (k, d) => state.logs.push([k, d]),
         postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
         playerName: () => 'Teste',
-        setTimeout: (fn) => { fn(); return 1; },
-        Date,
+        familyDepotItems: () => state.family,
+        familyDepotAt: () => state.familyAt,
+        familyItemWithdraw: (itemId, quantity, name) => {
+            state.familyWithdraws.push({ itemId, quantity, name });
+            if (init.familyWithdraw) return Promise.resolve(init.familyWithdraw(itemId, quantity));
+            const it = state.family.find(i => Number(i.itemId) === Number(itemId));
+            if (!it || Number(it.quantity) < quantity) return Promise.resolve({ ok: false, motivo: 'o jogo respondeu, mas o movimento não apareceu no depósito' });
+            it.quantity -= quantity;
+            return Promise.resolve({ ok: true });
+        },
+        setTimeout: (fn, ms) => { clock.now += Number(ms) || 0; fn(); return 1; },
+        Date: FakeDate,
     };
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
-            evolveOnPokes, evolveOnPokeXp, evolveCityWork, evolveCandidates, evolveWanted, evolveStatus,
+            evolveOnPokes, evolveOnPokeXp, evolveCityWork, evolveCandidates, evolveWanted, evolveStatus, evolveMissing, evolveCovered,
             get evolveAttempted() { return evolveAttempted; },
             get evolveTeam() { return evolveTeam; },
         };`);
     const api = factory(...Object.values(ctx));
-    return { api, state, cfg };
+    return { api, state, cfg, clock };
 }
 
 // Extrai o módulo "Poke Slot Machine" (v3.26.0). `init.api(url, opts)` responde GET /api/game/golden-stars e POST .../roll,

@@ -264,6 +264,14 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `evolveAttempted`; carona via `evolveWanted`). Com `tripCity` ≠ cerulean manda `set-city cerulean` antes. Linha ramificada
   só evolui com pedra para UM destino. Sem pedra: aviso 1x por motivo (`evolveFailed`), tenta nas próximas viagens.
   Logs `evolucao { campos }`, `evolucao-cidade`. Teste: `node test/evolve.test.js` (`loadEvolveModule`).
+  v3.39.0 (pedido do usuário em 16/10/2026: "ir buscar no depot pessoal ou família as pedras necessárias"): pedra que falta
+  na mochila é buscada NA CIDADE, nessa ordem, no Depot comum (`GET /api/game/depot` → `depot[]`; `POST /api/game/depot/move
+  { itemId, dir:'withdraw' }` traz a PILHA inteira; `cfg.evolveFromDepot`, padrão ligado) e no depósito da família (`family-get`
+  → `depot.items`; `familyItemWithdraw` com a quantidade exata; `cfg.evolveFromFamily`, padrão ligado). Só busca com `canEvolve`
+  (nível ok) e quando as duas fontes JUNTAS completam a conta (nunca tira pedra à toa); linha ramificada só se completam UM
+  destino; depois relê a janela e só evolui com `hasStones`. Helpers `familyDepotItems()`/`familyDepotAt()` ao lado de
+  `lastFamilyDepot` (o harness da evolução não enxerga as variáveis). Log `evolucao-pedras { item, doDepot, daFamilia }`;
+  `evolucao` traz `buscouPedras`. Casos 7–12 do `test/evolve.test.js`.
 - Poke Slot Machine (v3.26.0, aba Treino → Poke Slot Machine, `cfg.slotEnabled` + `cfg.slotWanted` lista por vírgula em ordem de
   preferência; módulo `// ---- Poke Slot Machine` entre a Evolução e o Daily Gift; bundle em 02/10/2026, formato CONFIRMADO no log em
   03/10/2026 03:44Z: raiz traz também `now, gold, diamonds, level`, cada slot traz `rolls`; 1º giro real na conta4 às 03:47Z, viagem a

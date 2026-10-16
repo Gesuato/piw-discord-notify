@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.38.0
+// @version      3.39.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.38.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.39.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -81,6 +81,8 @@
         giftEnabled: false,     // v3.24.0 Daily Gift: resgatar o presente do dia (calendário de 28 dias) sozinho
         giftCenterMode: 'daily', // ...e no Gift Center (correio): 'daily' = entregar só o do dia | 'all' = tudo que aparecer | '' = não mexer
         evolveEnabled: false,   // v3.25.0 Evolução: quem do time chega ao nível vai à cidade (Cerulean) e evolui com as pedras da mochila
+        evolveFromDepot: true,  // v3.39.0 ...pedra que falta na mochila: busca no Depot comum (POST /api/game/depot/move withdraw)
+        evolveFromFamily: true, // v3.39.0 ...e no depósito da família (family-action item withdraw), nessa ordem
         slotEnabled: false,     // v3.26.0 Poke Slot Machine: na viagem à cidade (shopping) gira o roll grátis e ativa o bônus
         slotWanted: '',         // ...Pokémon pedidos, em ordem de preferência (vírgula); nenhum sorteado = escolhe um qualquer
         breedEnabled: false,    // v3.29.0 Breeding (aba 🥚): cruzar quem sobe com comida mais fraca (Grátis), chocar e repetir
@@ -2480,10 +2482,22 @@
     //   (`evolveAttempted`); rearma no Salvar, quando ele evolui/sai do time ou deixa de estar no nível. Faltando pedra,
     //   avisa uma vez (repete só se o motivo mudar) e tenta de novo a cada viagem (carona).
     //   Formatos só valem como confirmados depois de aparecerem no log `evolucao` (traz `campos` da resposta).
+    //   v3.39.0 (pedido do usuário em 16/10/2026: "ir buscar no depot pessoal ou família as pedras necessárias"): pedra que
+    //   falta na mochila é buscada, nessa ordem, no Depot comum (`GET /api/game/depot` → `depot[]`; `POST /api/game/depot/move
+    //   { itemId, dir:'withdraw' }` traz a PILHA inteira para a mochila; `cfg.evolveFromDepot`) e no depósito da família
+    //   (`family-get` → `depot.items[{ itemId, quantity }]`; `familyItemWithdraw` = `family-action item withdraw` com a quantidade
+    //   exata; `cfg.evolveFromFamily`). Só busca quando o jogo diz `canEvolve` (nível ok) e quando Depot + família completam a
+    //   conta; depois relê a janela de evolução e só evolui se `hasStones` virar true. Linha ramificada: busca só se as pedras
+    //   completam UM destino. Log `evolucao-pedras` por pedra buscada.
 
     const EVOLVE_URL = '/api/game/evolve';
+    const EVOLVE_DEPOT_URL = '/api/game/depot';
+    const EVOLVE_DEPOT_MOVE_URL = '/api/game/depot/move';
     const EVOLVE_CITY = 'cerulean';
     const EVOLVE_CITY_WAIT_MS = 2000;
+    const EVOLVE_FAMILY_WAIT_MS = 5000;     // espera pelo frame `family` depois do `family-get`
+    const EVOLVE_FAMILY_FRESH_MS = 60000;   // frame `family` mais novo que isso não é pedido de novo
+    const EVOLVE_AFTER_MOVE_MS = 700;       // pausa entre movimentos (o servidor é lento)
 
     let evolveTeam = [];            // [{ id, name, level, need, dest }] do último frame `pokes` (time com evolução por nível)
     const evolveAttempted = {};     // id -> true depois de pedir a viagem neste episódio
@@ -2516,6 +2530,82 @@
     function evolveOnPokeXp(message) { if (cfg.evolveEnabled && message?.leveledUp) requestPokes(0); }
 
     const evolveStonesTxt = (stones) => (Array.isArray(stones) ? stones : []).map(s => `${s.need}x ${s.name}${s.have != null ? ` (tem ${s.have})` : ''}`).join(', ');
+    const evolveSleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const evolveFetchOn = (d) => { d = d || cfg; return Boolean(d.evolveFromDepot) || Boolean(d.evolveFromFamily); };
+
+    // Pedras que faltam para uma lista `stones` da janela de evolução: [{ itemId, name, need, have, falta }].
+    function evolveMissing(stones) {
+        return (Array.isArray(stones) ? stones : [])
+            .map(s => ({ itemId: Number(s?.itemId), name: s?.name || `Item ${s?.itemId}`, need: Number(s?.need) || 0, have: Number(s?.have) || 0 }))
+            .map(s => Object.assign(s, { falta: Math.max(0, s.need - s.have) }))
+            .filter(s => s.falta > 0 && Number.isFinite(s.itemId));
+    }
+    // Quanto há de cada item fora da mochila: Depot comum (`depot[]` do GET) e família (último frame `family`).
+    async function evolveStoneSources() {
+        const src = { depot: new Map(), familia: new Map(), depotErro: null, familiaErro: null };
+        if (cfg.evolveFromDepot) {
+            try {
+                const r = await gameApi(EVOLVE_DEPOT_URL);
+                for (const it of (Array.isArray(r?.depot) ? r.depot : [])) {
+                    const id = Number(it?.id ?? it?.itemId); const q = Number(it?.quantity) || 0;
+                    if (Number.isFinite(id) && q > 0) src.depot.set(id, q);
+                }
+            } catch (err) { src.depotErro = String(err?.message || err); }
+        }
+        if (cfg.evolveFromFamily) {
+            if (typeof familyDepotItems !== 'function' || typeof familyItemWithdraw !== 'function') src.familiaErro = 'módulo da família indisponível';
+            else {
+                if (Date.now() - familyDepotAt() > EVOLVE_FAMILY_FRESH_MS) {
+                    const t0 = familyDepotAt();
+                    if (sendGame({ type: 'family-get' })) {
+                        const ini = Date.now();
+                        while (familyDepotAt() === t0 && Date.now() - ini < EVOLVE_FAMILY_WAIT_MS) await evolveSleep(250);
+                        if (familyDepotAt() === t0) src.familiaErro = 'a família não respondeu';
+                    } else src.familiaErro = 'socket do jogo não rastreado';
+                }
+                for (const it of familyDepotItems()) {
+                    const id = Number(it?.itemId ?? it?.id); const q = Number(it?.quantity) || 0;
+                    if (Number.isFinite(id) && q > 0) src.familia.set(id, q);
+                }
+            }
+        }
+        return src;
+    }
+    // Depot + família completam todas as pedras de `missing`?
+    const evolveCovered = (missing, src) => missing.every(s => (src.depot.get(s.itemId) || 0) + (src.familia.get(s.itemId) || 0) >= s.falta);
+    const evolveMissingTxt = (missing, src) => missing.map(s => `${s.need}x ${s.name} (tem ${s.have}${src ? `, depot ${src.depot.get(s.itemId) || 0}, família ${src.familia.get(s.itemId) || 0}` : ''})`).join(', ');
+
+    // Traz para a mochila o que falta de cada pedra: Depot primeiro (pilha inteira), depois família (quantidade exata).
+    // Devolve null quando tudo foi buscado; senão o motivo da falha.
+    async function evolveFetchStones(p, missing, src) {
+        for (const s of missing) {
+            let resta = s.falta;
+            const log = { id: p.id, name: p.name, item: s.name, itemId: s.itemId, falta: s.falta, depot: src.depot.get(s.itemId) || 0, familia: src.familia.get(s.itemId) || 0, doDepot: 0, daFamilia: 0, ok: false, motivo: null };
+            try {
+                const noDepot = src.depot.get(s.itemId) || 0;
+                if (noDepot > 0) {
+                    await gameApi(EVOLVE_DEPOT_MOVE_URL, { method: 'POST', body: JSON.stringify({ itemId: s.itemId, dir: 'withdraw' }) });
+                    log.doDepot = noDepot; resta -= noDepot; src.depot.delete(s.itemId);
+                    await evolveSleep(EVOLVE_AFTER_MOVE_MS);
+                }
+                if (resta > 0) {
+                    const naFamilia = src.familia.get(s.itemId) || 0;
+                    const tirar = Math.min(resta, naFamilia);
+                    if (tirar > 0) {
+                        const r = await familyItemWithdraw(s.itemId, tirar, s.name);
+                        if (!r.ok) throw new Error(`família: ${r.motivo}`);
+                        log.daFamilia = tirar; resta -= tirar; src.familia.set(s.itemId, naFamilia - tirar);
+                        await evolveSleep(EVOLVE_AFTER_MOVE_MS);
+                    }
+                }
+                if (resta > 0) throw new Error(`faltam ${resta} fora da mochila`);
+                log.ok = true;
+            } catch (err) { log.motivo = String(err?.message || err); }
+            logEvent('evolucao-pedras', log);
+            if (!log.ok) return `${s.name}: ${log.motivo}`;
+        }
+        return null;
+    }
 
     // Tarefa da viagem (na cidade): lê a janela de evolução de cada candidato e evolui com pedra quando o jogo deixa.
     async function evolveCityWork() {
@@ -2528,19 +2618,51 @@
             await new Promise(r => setTimeout(r, EVOLVE_CITY_WAIT_MS));
         }
         const feitos = [], falhas = [];
+        let fontes = null;   // Depot + família, lidos uma vez por viagem e só quando alguma pedra falta
         for (const p of cand) {
-            let info = null, motivo = null, destId = null, pedras = null, para = null;
+            let info = null, motivo = null, destId = null, pedras = null, para = null, buscou = null;
             try {
                 info = await gameApi(`${EVOLVE_URL}?capturedId=${encodeURIComponent(p.id)}`);
-                const ramos = Array.isArray(info?.branches) ? info.branches : [];
-                if (ramos.length) {
-                    const prontos = ramos.filter(b => b && b.canEvolve && b.hasStones);
-                    if (prontos.length === 1) { destId = prontos[0].destId; pedras = prontos[0].stones; para = prontos[0].destName; }
-                    else if (!prontos.length) motivo = `faltam pedras (${ramos.map(b => `${b.destName}: ${evolveStonesTxt(b.stones) || '?'}`).join(' · ')})`;
-                    else motivo = `linha ramificada com pedra para ${prontos.map(b => b.destName).join(' e ')}: escolha no jogo`;
-                } else if (!info || info.canEvolve !== true) motivo = `o jogo diz que ainda não pode (nível ${info?.level ?? '?'}, precisa ${info?.needLevel ?? '?'})`;
-                else if (!info.hasStones) motivo = `faltam pedras (${evolveStonesTxt(info.stones) || 'sem lista'})`;
-                else { pedras = info.stones; para = info.destName; }
+                // v3.39.0: pedra que falta é buscada no Depot/família (uma rodada por Pokémon) e a janela é relida.
+                const decide = (inf) => {
+                    const ramos = Array.isArray(inf?.branches) ? inf.branches : [];
+                    const r = { motivo: null, destId: null, pedras: null, para: null, buscar: null };
+                    if (ramos.length) {
+                        const prontos = ramos.filter(b => b && b.canEvolve && b.hasStones);
+                        if (prontos.length === 1) { r.destId = prontos[0].destId; r.pedras = prontos[0].stones; r.para = prontos[0].destName; }
+                        else if (!prontos.length) {
+                            r.motivo = `faltam pedras (${ramos.map(b => `${b.destName}: ${evolveStonesTxt(b.stones) || '?'}`).join(' · ')})`;
+                            r.buscar = ramos.filter(b => b && b.canEvolve && evolveMissing(b.stones).length).map(b => ({ dest: b.destName, missing: evolveMissing(b.stones) }));
+                        } else r.motivo = `linha ramificada com pedra para ${prontos.map(b => b.destName).join(' e ')}: escolha no jogo`;
+                    } else if (!inf || inf.canEvolve !== true) r.motivo = `o jogo diz que ainda não pode (nível ${inf?.level ?? '?'}, precisa ${inf?.needLevel ?? '?'})`;
+                    else if (!inf.hasStones) {
+                        r.motivo = `faltam pedras (${evolveStonesTxt(inf.stones) || 'sem lista'})`;
+                        const missing = evolveMissing(inf.stones);
+                        if (missing.length) r.buscar = [{ dest: inf.destName, missing }];
+                    } else { r.pedras = inf.stones; r.para = inf.destName; }
+                    if (r.buscar && !r.buscar.length) r.buscar = null;
+                    return r;
+                };
+                let dec = decide(info);
+                if (dec.buscar && evolveFetchOn()) {
+                    if (!fontes) fontes = await evolveStoneSources();
+                    const completa = dec.buscar.filter(b => evolveCovered(b.missing, fontes));
+                    if (completa.length === 1) {
+                        buscou = completa[0].dest;
+                        const erro = await evolveFetchStones(p, completa[0].missing, fontes);
+                        if (erro) dec.motivo = `busca das pedras falhou (${erro})`;
+                        else {
+                            info = await gameApi(`${EVOLVE_URL}?capturedId=${encodeURIComponent(p.id)}`);
+                            dec = decide(info);
+                            if (dec.motivo && dec.buscar) dec.motivo = `pedras buscadas, mas o jogo ainda diz que faltam (${dec.buscar.map(b => evolveMissingTxt(b.missing)).join(' · ')})`;
+                        }
+                    } else if (completa.length > 1) dec.motivo = `linha ramificada com pedra (Depot/família) para ${completa.map(b => b.dest).join(' e ')}: escolha no jogo`;
+                    else {
+                        const extra = [fontes.depotErro ? `Depot: ${fontes.depotErro}` : null, fontes.familiaErro ? `família: ${fontes.familiaErro}` : null].filter(Boolean);
+                        dec.motivo = `faltam pedras (${dec.buscar.map(b => `${dec.buscar.length > 1 ? `${b.dest}: ` : ''}${evolveMissingTxt(b.missing, fontes)}`).join(' · ')})${extra.length ? ` · ${extra.join('; ')}` : ''}`;
+                    }
+                }
+                motivo = dec.motivo; destId = dec.destId; pedras = dec.pedras; para = dec.para;
                 if (!motivo) {
                     const body = Object.assign({ capturedId: p.id, useStone: true }, destId != null ? { destId } : {});
                     const r = await gameApi(EVOLVE_URL, { method: 'POST', body: JSON.stringify(body) });
@@ -2549,7 +2671,7 @@
                 }
             } catch (err) { motivo = `erro: ${err?.message || err}`; }
             if (motivo) falhas.push({ id: p.id, name: p.name, dest: info?.destName || p.dest, motivo });
-            logEvent('evolucao', { id: p.id, name: p.name, level: p.level, ok: !motivo, para: motivo ? null : para, destId, motivo, campos: info && typeof info === 'object' ? Object.keys(info) : null });
+            logEvent('evolucao', { id: p.id, name: p.name, level: p.level, ok: !motivo, para: motivo ? null : para, destId, motivo, buscouPedras: buscou || undefined, campos: info && typeof info === 'object' ? Object.keys(info) : null });
         }
         evolveLast = { at: Date.now(), feitos, falhas };
         setTimeout(() => sendGame({ type: 'pokes-get' }), 1000);   // o time novo (nome, hasEvolution) rearma/limpa os candidatos
@@ -5594,6 +5716,9 @@
     let lastFamily = null;          // { movesUsed, movesCap, frozen } do último frame `family` (null = sem família)
     let lastFamilyAt = 0;
     let lastFamilyDepot = { pokes: [], items: [] };   // v3.29.0: depot inteiro do último frame `family` (comida e stones do breeding)
+    // v3.39.0: leitura por função (a evolução roda isolada no harness e não enxerga as variáveis acima).
+    function familyDepotItems() { return Array.isArray(lastFamilyDepot.items) ? lastFamilyDepot.items : []; }
+    function familyDepotAt() { return lastFamilyAt; }
     // Uma ação da família pelo socket; `check(depot)` diz se o frame `family` da resposta confirma o que foi pedido.
     function familyAction(payload, evento, dados, check) {
         return new Promise((resolve) => {
@@ -6614,8 +6739,10 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                     </div>
                     <div class="dn-section">
                         <h3>Evolução</h3>
-                        <label class="dn-toggle"><input id="pg-dn-evolve" type="checkbox"><span class="sw"></span>Evoluir sozinho quem do time chegar ao nível <span class="dn-hint">(só com as pedras na mochila; mantém o nível)</span></label>
-                        <p class="dn-help">Quando um Pokémon do time chega ao nível de evolução, o script pede uma viagem à cidade (o jogo só deixa evoluir em Cerulean), evolui gastando as pedras do elemento e volta para a hunt. Sem as pedras não evolui (a evolução grátis volta ao Lv.1) e avisa uma vez; tenta de novo nas próximas viagens. Linha ramificada (Eevee) só evolui se houver pedra para um destino só. Aviso no canal de Alertas.</p>
+                        <label class="dn-toggle"><input id="pg-dn-evolve" type="checkbox"><span class="sw"></span>Evoluir sozinho quem do time chegar ao nível <span class="dn-hint">(só com pedra; mantém o nível)</span></label>
+                        <label class="dn-toggle"><input id="pg-dn-evolve-depot" type="checkbox"><span class="sw"></span>Buscar as pedras que faltam no Depot comum <span class="dn-hint">(traz a pilha inteira para a mochila)</span></label>
+                        <label class="dn-toggle"><input id="pg-dn-evolve-family" type="checkbox"><span class="sw"></span>Buscar as pedras que faltam no depósito da família <span class="dn-hint">(só a quantidade que falta; gasta movimentos do dia)</span></label>
+                        <p class="dn-help">Quando um Pokémon do time chega ao nível de evolução, o script pede uma viagem à cidade (o jogo só deixa evoluir em Cerulean), evolui gastando as pedras do elemento e volta para a hunt. Pedra que falta na mochila é buscada primeiro no Depot comum e depois na família (se marcados), só quando as duas fontes juntas completam a conta. Sem as pedras não evolui (a evolução grátis volta ao Lv.1) e avisa uma vez; tenta de novo nas próximas viagens. Linha ramificada (Eevee) só evolui se houver pedra para um destino só. Aviso no canal de Alertas.</p>
                         <div class="dn-status"><span>🧬</span><span id="pg-dn-evolve-status"></span></div>
                     </div>
                     <div class="dn-section">
@@ -6889,6 +7016,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 dailyAreas: [...panel.querySelectorAll('.pg-dn-daily-area:checked')].map(c => c.value),
                 giftEnabled: $('#pg-dn-gift').checked,
                 evolveEnabled: $('#pg-dn-evolve').checked,
+                evolveFromDepot: $('#pg-dn-evolve-depot').checked,
+                evolveFromFamily: $('#pg-dn-evolve-family').checked,
                 slotEnabled: $('#pg-dn-slot').checked,
                 slotWanted: $('#pg-dn-slot-wanted').value.trim(),
                 breedEnabled: $('#pg-dn-breed').checked,
@@ -7785,6 +7914,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             for (const c of panel.querySelectorAll('.pg-dn-daily-area')) c.checked = dailyAreas().includes(c.value);
             $('#pg-dn-gift').checked = Boolean(cfg.giftEnabled);
             $('#pg-dn-evolve').checked = Boolean(cfg.evolveEnabled);
+            $('#pg-dn-evolve-depot').checked = cfg.evolveFromDepot !== false;
+            $('#pg-dn-evolve-family').checked = cfg.evolveFromFamily !== false;
             $('#pg-dn-slot').checked = Boolean(cfg.slotEnabled);
             $('#pg-dn-slot-wanted').value = cfg.slotWanted || '';
             $('#pg-dn-breed').checked = Boolean(cfg.breedEnabled);

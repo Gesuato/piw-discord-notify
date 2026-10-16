@@ -643,7 +643,14 @@ viagem foi para outra cidade): GET por candidato; linha ramificada só com pedra
 `POST useStone:true`; depois `pokes-get`. Aviso no canal de Alertas (evoluiu / falha nova); falha repetida com o mesmo motivo
 não avisa de novo, mas tenta a cada viagem (carona). Logs `evolucao { campos }`, `evolucao-cidade`. Status no painel.
 
-**Pendente:** confirmar no log `evolucao` os campos reais da resposta (`campos`) e se o servidor exige Cerulean também no POST.
+**v3.39.0 — pedras do Depot e da família (pedido do usuário em 16/10/2026):** pedra que falta na mochila é buscada na cidade,
+primeiro no Depot comum (`GET /api/game/depot` → `depot[]`, `POST /api/game/depot/move { itemId, dir:'withdraw' }`, pilha inteira;
+`cfg.evolveFromDepot`) e depois no depósito da família (`family-get`, `family-action item withdraw` com a quantidade exata;
+`cfg.evolveFromFamily`), só quando o jogo diz `canEvolve` e as duas fontes juntas completam a conta; linha ramificada só se
+completam um destino. Depois relê a janela e evolui com `hasStones`. Log `evolucao-pedras`. Painel: duas opções na seção Evolução.
+
+**Pendente:** confirmar no log `evolucao` os campos reais da resposta (`campos`), se o servidor exige Cerulean também no POST e o
+formato de `depot[]` do `GET /api/game/depot` (o script aceita `id` ou `itemId`).
 Teste: `node test/evolve.test.js`.
 
 ---

@@ -120,7 +120,9 @@ e `error { message }` (resposta de ação recusada; o script os trata em `handle
   icon }], branches[{ destId, destName, needLevel, canEvolve, hasStones, stones }] }`; `POST /api/game/evolve { capturedId,
   useStone, destId? }` → `{ name }` (useStone:true gasta pedras e mantém o nível; false = grátis, volta ao Lv.1). Só em
   Cerulean (prop `inCerulean`/`canEvolveHere` do HUD). O cliente manda `pokes-get` depois. O frame `pokes` traz
-  `hasEvolution`, `evolveNeedLevel`, `evolvesToName` por Pokémon.
+  `hasEvolution`, `evolveNeedLevel`, `evolvesToName` por Pokémon. v3.39.0: pedra que falta é buscada no Depot comum
+  (`GET /api/game/depot` → `depot[]`, `POST /api/game/depot/move { itemId, dir:'withdraw' }`) e na família (`family-action item
+  withdraw`); formato de `depot[]` ainda não visto no log (o script aceita `id` ou `itemId` + `quantity`).
 
 - Poke Slot Machine (v3.26.0, levantado em 02/10/2026; NPC `pokeslot` da cidade `shopping`, sistema "golden stars" por dentro):
   `GET /api/game/golden-stars` → `{ cards, cardIcon, cardItemId, isVip, slots[{ slot, unlocked, unlockedPerm, unlockedUntil, vipLocked,

@@ -32,7 +32,7 @@ const rica = {
   // v3.24.0 (Daily Gift)
   giftEnabled: true, giftCenterMode: 'all',
   // v3.25.0 (evolução)
-  evolveEnabled: true,
+  evolveEnabled: true, evolveFromDepot: false, evolveFromFamily: true,
   // v3.26.0 (Poke Slot Machine)
   slotEnabled: true, slotWanted: 'Dratini, Larvitar',
   // v3.29.0 (Breeding)
