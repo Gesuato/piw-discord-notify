@@ -20,8 +20,8 @@ function frame(o) {
         me: { rank: 2, isPresident: false, canInvite: false, gold: o.gold ?? 20000000, donatedToday: o.doado ?? 0, donateCap: 500000, buff: null },
         members: [],
         hunts: [
-            { id: 'h1', kind: 'kill', tier: 1, species: [{ dex: 253, name: 'Grovyle' }], progress: o.kill ?? 0, goal: 20000, done: (o.kill ?? 0) >= 20000 },
-            { id: 'h2', kind: 'fish', tier: 1, species: [], progress: o.fish ?? 0, goal: 750, done: (o.fish ?? 0) >= 750 },
+            Object.assign({ id: 'h1', kind: 'kill', tier: 1, species: [{ dex: 253, name: 'Grovyle' }], progress: o.kill ?? 0, goal: 20000, done: (o.kill ?? 0) >= 20000 }, o.killCap ? { mine: o.killMine ?? 0, cap: o.killCap } : {}),
+            Object.assign({ id: 'h2', kind: 'fish', tier: 1, species: [], progress: o.fish ?? 0, goal: 750, done: (o.fish ?? 0) >= 750 }, o.fishCap ? { mine: o.fishMine ?? 0, cap: o.fishCap } : {}),
             { id: 'h3', kind: 'catch', tier: 1, species: [], progress: 45, goal: 45, done: true },
         ],
         huntsEndAt: Date.now() + 3600000,
@@ -137,5 +137,41 @@ const base = (extra) => Object.assign({ guildDonateGold: 0, guildDonateKeep: 0, 
         assert(av.length === 1 && /Pescar peixes/.test(av[0].desc) && /Tributo do Dia concluído/.test(av[0].desc), 'avisou caçada e tributo: ' + JSON.stringify(av));
     }
 
-    console.log('OK guild.test — doação, tributo, rota (tributo → Derrotar → pesca), reentrada, cooldown da pesca, volta e avisos');
+    // 6) v3.39.1: teto por membro (`mine`/`cap`): parte cheia = a caçada sai do plano mesmo com done:false; abates na hunt alvo
+    //    pedem guild-get na estimativa do teto; frame confirma → próximo objetivo (pesca) → tudo cheio → volta para a origem
+    {
+        const s = {};
+        const { api, state } = loadGuildModule(base({ guildHuntEnabled: true, guildFishEnabled: true, guildAlerts: true }), { api: fishApi(s), creatures: CREATURES, huntCatalog: CATALOGO, team: TIME, huntSlug: 'ancient_pinsir' });
+        api.handleGuild(frame({ kill: 9000, killMine: 9000, killCap: 9600, fish: 0, fishCap: 300 }));
+        await flush(); await flush();
+        assert(api.guildTarget && api.guildTarget.kind === 'kill' && api.guildTarget.slug === 'grovyle' && /sua parte 9\.000\/9\.600/.test(api.guildTarget.motivo), 'parte 9000/9600: Derrotar segue alvo: ' + JSON.stringify(api.guildTarget));
+        api.setHunt('grovyle');
+        // 599 abates: ainda abaixo do teto estimado → sem releitura
+        for (let i = 0; i < 599; i++) api.guildOnKill({ type: 'field-kill', speciesName: 'Grovyle', loot: [] });
+        assert(!state.sent.some(m => m.type === 'guild-get'), 'abaixo do teto estimado não relê');
+        api.guildOnKill({ type: 'field-kill', speciesName: 'Grovyle', loot: [] });
+        const gets = state.sent.filter(m => m.type === 'guild-get');
+        assert(gets.length === 1 && state.logs.some(([k, d]) => k === 'guild-get' && d.motivo === 'parte da caçada no teto'), 'no teto estimado pede guild-get: ' + JSON.stringify(state.logs.filter(([k]) => k === 'guild-get')));
+        for (let i = 0; i < 50; i++) api.guildOnKill({ type: 'field-kill', speciesName: 'Grovyle', loot: [] });
+        assert(state.sent.filter(m => m.type === 'guild-get').length === 1, 'não insiste antes de 2 min');
+        // frame confirma a parte cheia (meta ainda aberta): Derrotar sai do plano → pesca; aviso da parte cheia
+        api.handleGuild(frame({ kill: 19200, killMine: 9600, killCap: 9600, fish: 0, fishCap: 300 }));
+        await flush(); await flush(); await flush();
+        assert(api.guildTarget && api.guildTarget.kind === 'fish' && state.switches.some(x => x.slug === 'pesca'), 'parte cheia → foi pescar: ' + JSON.stringify({ alvo: api.guildTarget, switches: state.switches }));
+        assert(state.hooks.some(h => h.meta?.evento === 'guild-aviso' && /Sua parte da caçada \*\*Derrotar Grovyle\*\* fechou \(9\.600\/9\.600\)/.test(h.desc)), 'avisou a parte cheia: ' + JSON.stringify(state.hooks));
+        assert(api.guildStatus().some(l => /◐ Derrotar Grovyle 19\.200\/20\.000 · sua parte 9\.600\/9\.600 — sua parte fechou/.test(l.text)), 'status mostra a parte: ' + JSON.stringify(api.guildStatus().map(l => l.text)));
+        api.setHunt('pesca');
+        // pesca também no teto → nada sobra → volta para a origem com o motivo
+        api.handleGuild(frame({ kill: 19200, killMine: 9600, killCap: 9600, fish: 500, fishMine: 300, fishCap: 300 }));
+        await flush(); await flush();
+        assert(!api.guildTarget && state.switches[state.switches.length - 1].slug === 'ancient_pinsir', 'tudo no teto → voltou para a origem: ' + JSON.stringify(state.switches));
+        assert(/sua parte da caçada "Derrotar Grovyle" fechou \(9\.600\/9\.600\)/.test(api.guildWait) && /"Pescar peixes" fechou/.test(api.guildWait), 'motivo da parada: ' + api.guildWait);
+        // frame sem cap (servidor antigo) segue como antes
+        const { api: b } = loadGuildModule(base({ guildHuntEnabled: true }), { creatures: CREATURES, huntCatalog: CATALOGO, team: TIME, huntSlug: 'pidgey' });
+        b.handleGuild(frame({ kill: 19200 }));
+        await flush(); await flush();
+        assert(b.guildTarget && b.guildTarget.slug === 'grovyle', 'sem cap no frame: Derrotar continua alvo');
+    }
+
+    console.log('OK guild.test — doação, tributo, rota (tributo → Derrotar → pesca), reentrada, cooldown da pesca, volta, avisos e teto por membro');
 })().catch(e => { console.error(e); process.exit(1); });

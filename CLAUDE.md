@@ -346,6 +346,12 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   /api/game/fishing-tier` na faixa natural + `switchHunt('pesca', 1, 'guild')`, reentra após `fishing-cooldown`); 4ª rota excludente do
   Salvar (treino/captura/clã); espera viagem/cura/troca/Daily; `guildFrom` = volta; `guildOnHuntChange` reentra 8 s depois; falha de
   entrada = `guildFailed` na sessão. Teste: `node test/guild.test.js` (`loadGuildModule`: `// ---- Guild` até `// ---- Clã`, inclui a Pesca).
+  v3.39.1 (pedido em 16/10/2026: "cada personagem só pode matar 9600 e fica nessa quest"): cada caçada traz `mine` (parte do personagem)
+  e `cap` (teto por membro, 40% da meta; bundle "Sua parte: n/cap — o resto precisa vir de outros membros"). `guildHuntCapped(h)` =
+  `mine >= cap` com `done: false` → a caçada sai do plano desta conta (motivo `sua parte da caçada "…" fechou`), a rota segue para o
+  próximo objetivo ou volta para `guildFrom`. `guildCountKill` soma os `field-kill` na hunt alvo e, na estimativa do teto, pede
+  `guild-get` (motivo `parte da caçada no teto`, 1x/2 min) — quem decide é o frame. Aviso `◐ Sua parte … fechou` com `guildAlerts`;
+  log `guild` traz `minha`/`teto`. Frame sem `cap` segue como antes. Caso 6 do `test/guild.test.js`.
 - Pesca (v3.31.1, farejador; bundle em 10/10/2026, `docs/mensagens-do-jogo.md` → "Pesca"): NPC Pescador → `GET /api/game/fishing-tier`
   `{ skill, inLevel, forNext, selected, cooldownMs, tiers[{ id, unlocked, natural, minSkill, mobLevel, names, fish }] }`;
   `POST /api/game/fishing-tier { tierId }` e depois a tela faz `enter-hunt { slug:'pesca' }` (a pesca É uma hunt de slug fixo

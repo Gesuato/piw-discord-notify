@@ -741,6 +741,11 @@ Salvar; espera viagem/cura/troca/Daily; volta para `guildFrom` quando fecha, o d
 alvo 8 s depois de a tela trocar. Logs `guild-alvo`, `guild-espera`, `guild-volta`, `guild-reentrada`, `guild-hunt-falhou`, `pesca-faixa`,
 `pesca-reentra`. Teste: `node test/guild.test.js` (`loadGuildModule`). Dailies por região ficam para depois (o usuário não pediu).
 
+**v3.39.1 (16/10/2026) — teto por membro nas caçadas:** o jogo passou a mandar `hunts[].mine` (a parte do personagem) e `hunts[].cap`
+(40% da meta; "Sua parte: n/cap — o resto precisa vir de outros membros"). Caso real: Derrotar Sunflora 19.200/24.000 parado por horas com
+2 contas em 9.600/9.600 e a rota insistindo na hunt. Agora parte cheia = caçada fora do plano (próximo objetivo ou volta para a origem);
+abates na hunt alvo pedem `guild-get` ao chegar na estimativa do teto; aviso "Sua parte … fechou" com `guildAlerts`. Caso 6 do teste.
+
 **Pesca confirmada no log (10/10/2026 01:55Z, conta1):** `fishing-tier` → skill 0, 2/12 peixes, 10 faixas (0 Magikarp lv5–10 … 9 Gyarados/
 Lapras/Mantine/Kingdra/Tentacruel, skill 90); hunt `pesca` entrou às 01:57:01; 1º Magikarp 12 s depois como `field-kill` normal (`xpGained`
 3, `loot: []`, campos iguais aos de qualquer abate); `fishing-levelup { level: 1 }` às 01:58.

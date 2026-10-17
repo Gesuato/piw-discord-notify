@@ -217,7 +217,11 @@ sai só entra em outra depois de um cooldown em horas. Ranks fixos 0 Presidente 
   - `me{ rank, isPresident, canInvite, gold, donatedToday, donateCap, buff{ kind: 'xp'|'loot'|'catch', pct } | null }`.
   - `members[{ characterId, name, level, rank, online, lastSeenMs, isMe, clan, clanRank, weekKills, weekGold, team[{ slot, dex,
     level, shiny }] }]`.
-  - **Caçadas** `hunts[{ id, kind, tier, species[{ dex, name }], progress, goal, done }]` — 3 por dia (`huntsEndAt` = reinício);
+  - **Caçadas** `hunts[{ id, kind, tier, species[{ dex, name }], progress, goal, done, mine, cap }]` — 3 por dia (`huntsEndAt` = reinício);
+    `mine` = a parte deste personagem e `cap` = teto por membro (bundle em 16/10/2026: "Sua parte: {{n}}/{{cap}} — o resto precisa vir de
+    outros membros" / "Cada membro conta no máximo {{pct}}% da meta — ninguém fecha um objetivo sozinho"; `pct = cap/goal`, 40%: Sunflora
+    24.000 → 9.600; a tela só mostra com `cap` truthy e `!done`). Visto no log das 4 contas em 16–17/10/2026: Derrotar Sunflora parado em
+    19.200/24.000 por horas = 2 membros no teto;
     `kind` em kill (texto "Derrotar A & B", com `species`), catch, fish, berry, evolve, egg, boss, orre, nightmare, photo (fotos de
     shiny). `tier` = até que tier da guild a caçada vale ("caça até o tier X"). Concluir = `history` kind `hunt` (+pontos).
   - **Dailies** `dailies[{ id, region: 'kanto'|'outland'|'orre'|'nightmare', verb: 'kill'|'catch', progress, goal, points, done }]` —

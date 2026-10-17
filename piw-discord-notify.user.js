@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.39.0
+// @version      3.39.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.39.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.39.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -4051,6 +4051,7 @@
         const prev = lastGuild;
         lastGuild = message;
         lastGuildAt = Date.now();
+        guildKillsSince = 0;
         const g = message.guild && typeof message.guild === 'object' ? message.guild : null;
         const me = message.me && typeof message.me === 'object' ? message.me : null;
         const first = (arr) => (Array.isArray(arr) && arr.length ? arr[0] : null);
@@ -4069,7 +4070,7 @@
             guild: g ? { nome: g.name ?? null, tag: g.tag ?? null, tier: g.tier ?? null, pontos: g.points ?? null, membros: g.members ?? null, vagas: g.slots ?? null, online: g.online ?? null, bonusPct: g.bonusPct ?? null, goldDoado: g.goldDonated ?? null, proximaVaga: g.nextSlot ?? null } : null,
             eu: me ? { rank: me.rank ?? null, presidente: Boolean(me.isPresident), gold: me.gold ?? null, doadoHoje: me.donatedToday ?? null, tetoDoacao: me.donateCap ?? null, buff: me.buff ?? null } : null,
             tributo: t ? { item: t.itemName ?? null, itemId: t.itemId ?? null, progresso: t.progress ?? null, meta: t.goal ?? null, tenho: t.mine ?? null, pontos: t.points ?? null, feito: Boolean(t.done) } : null,
-            cacadas: Array.isArray(message.hunts) ? message.hunts.map(h => ({ tipo: h?.kind ?? null, especies: Array.isArray(h?.species) ? h.species.map(x => x?.name).filter(Boolean) : [], progresso: h?.progress ?? null, meta: h?.goal ?? null, feito: Boolean(h?.done), tier: h?.tier ?? null })) : null,
+            cacadas: Array.isArray(message.hunts) ? message.hunts.map(h => ({ tipo: h?.kind ?? null, especies: Array.isArray(h?.species) ? h.species.map(x => x?.name).filter(Boolean) : [], progresso: h?.progress ?? null, meta: h?.goal ?? null, feito: Boolean(h?.done), tier: h?.tier ?? null, minha: h?.mine ?? null, teto: h?.cap ?? null })) : null,
             dailies: Array.isArray(message.dailies) ? message.dailies.map(d => ({ regiao: d?.region ?? null, verbo: d?.verb ?? null, progresso: d?.progress ?? null, meta: d?.goal ?? null, pontos: d?.points ?? null, feito: Boolean(d?.done) })) : null,
             regioes: Array.isArray(message.dailyRegions) ? message.dailyRegions : null,
             fimCacadas: message.huntsEndAt ?? null, fimTributo: message.tributeEndAt ?? null,
@@ -4174,6 +4175,7 @@
 
     // Drop do item do tributo na hunt: relê a guild (no máximo 1x a cada 5 min) para depositar sem esperar os 30 min.
     function guildOnKill(message) {
+        guildCountKill();
         if (!(cfg.guildTributeEnabled || cfg.guildFarmTribute) || !Array.isArray(message?.loot)) return;
         const t = lastGuild?.tribute;
         if (!t || t.done || !message.loot.some(l => Number(l?.itemId) === Number(t.itemId))) return;
@@ -4200,6 +4202,8 @@
             const hd = doneAntes(prev.hunts);
             const hunts = Array.isArray(m.hunts) ? m.hunts : [];
             for (const h of hunts) if (h?.done && !hd.has(String(h.id))) linhas.push(`🎯 Caçada concluída: **${guildHuntLabel(h)}** (${guildN(h.progress)} / ${guildN(h.goal)})`);
+            const capAntes = new Set((Array.isArray(prev.hunts) ? prev.hunts : []).filter(h => guildHuntCapped(h)).map(h => String(h.id)));
+            for (const h of hunts) if (guildHuntCapped(h) && !capAntes.has(String(h.id))) linhas.push(`◐ Sua parte da caçada **${guildHuntLabel(h)}** fechou (${guildN(h.cap)}/${guildN(h.cap)}) — o resto vem dos outros membros`);
             if (hunts.length >= 3 && hunts.every(h => h?.done) && !(Array.isArray(prev.hunts) && prev.hunts.length && prev.hunts.every(h => h?.done))) linhas.push('🏆 Dia perfeito: as 3 caçadas do dia fechadas (+1 ponto)');
             const dd = doneAntes(prev.dailies);
             for (const d of (Array.isArray(m.dailies) ? m.dailies : [])) if (d?.done && !dd.has(String(d.id))) linhas.push(`🌍 Daily concluída: **${guildDailyLabel(d)}** (+${d.points ?? 0} XP de guild)`);
@@ -4242,7 +4246,7 @@
         if (guildLast.tribute) out.push({ text: `Último depósito ${guildHora(guildLast.tribute.at)}: ${guildLast.tribute.ok ? `${guildN(guildLast.tribute.amount)}× ${guildLast.tribute.item || 'item'} ✔` : `⚠ ${guildLast.tribute.erro}`}`, ok: guildLast.tribute.ok, dim: !guildLast.tribute.ok });
         const hunts = Array.isArray(m.hunts) ? m.hunts : [];
         out.push({ text: `Caçadas de hoje (${hunts.filter(h => h?.done).length}/${hunts.length} · reiniciam ${m.huntsEndAt ? guildHora(m.huntsEndAt) : '?'}):`, dim: true });
-        for (const h of hunts) out.push({ text: `  ${h?.done ? '✔' : '•'} ${guildHuntLabel(h)} ${guildN(h?.progress ?? 0)}/${guildN(h?.goal ?? 0)}`, ok: Boolean(h?.done) });
+        for (const h of hunts) out.push({ text: `  ${h?.done ? '✔' : guildHuntCapped(h) ? '◐' : '•'} ${guildHuntLabel(h)} ${guildN(h?.progress ?? 0)}/${guildN(h?.goal ?? 0)}${guildHuntShare(h)}${guildHuntCapped(h) ? ' — sua parte fechou' : ''}`, ok: Boolean(h?.done) });
         const dailies = Array.isArray(m.dailies) ? m.dailies : [];
         if (dailies.length) {
             out.push({ text: `Dailies por região (${dailies.filter(x => x?.done).length}/${dailies.length}):`, dim: true });
@@ -4263,7 +4267,14 @@
     // `switchHunt('pesca')`. Objetivo fechou / dia reiniciou / desligou = volta para a hunt de antes (`guildFrom`). Espera viagem,
     // cura, troca de hunt/líder e Daily Kill, como a rota do clã. O jogo reafirma a hunt escolhida na tela: `guildOnHuntChange`
     // volta ao alvo 8 s depois. `fishing-cooldown { ms }`: reentra em `pesca` depois do prazo se a tela não reentrar sozinha.
+    // v3.39.1 (pedido do usuário em 16/10/2026: "cada personagem só pode matar 9600 e o personagem fica nessa quest para sempre"):
+    // cada caçada traz `mine` (a parte deste personagem) e `cap` (teto por membro, 40% da meta — bundle: "Sua parte: n/cap — o resto
+    // precisa vir de outros membros"; Sunflora 24.000 → 9.600). Parte cheia = a caçada sai do plano desta conta mesmo com `done: false`
+    // (`guildHuntCapped`), e a rota segue para o próximo objetivo ou volta para a hunt de origem. Como o frame `guild` só chega a cada
+    // 30 min (ou em `guild-dirty`), os abates na hunt alvo são contados (`guildCountKill`) e, na estimativa do teto, o script relê a
+    // guild (`guild-get`, motivo `parte da caçada no teto`, no máximo 1 a cada 2 min); quem decide é sempre o frame.
     const GUILD_ROUTE_REENTER_MS = 8000;
+    const GUILD_CAP_GAP_MS = 2 * 60 * 1000;   // releitura "minha parte no teto": no máximo 1 a cada 2 min
     const GUILD_FISH_TIER_MS = 10 * 60 * 1000;     // relê a janela de pesca no máximo a cada 10 min
     let guildTarget = null;        // { kind: 'tributo'|'kill'|'fish', slug, name, level, motivo }
     let guildFrom = null;          // hunt de antes da rota da guild (para onde voltar)
@@ -4273,6 +4284,24 @@
     let guildRouteBusy = false;
     let fishTierAt = 0, fishTierInfo = null;   // última leitura da janela de pesca
     let fishReenterTimer = null;
+    let guildKillsSince = 0;       // abates na hunt alvo desde o último frame `guild` (estimativa da parte do membro)
+    let guildCapAskedAt = 0;
+
+    // Parte do membro na caçada (v3.39.1): `cap` ausente/0 = sem teto conhecido (frame antigo).
+    function guildHuntCapped(h) { return Boolean(h) && !h.done && Number(h.cap) > 0 && Number(h.mine ?? 0) >= Number(h.cap); }
+    function guildHuntShare(h) { return h && Number(h.cap) > 0 ? ` · sua parte ${guildN(Math.min(Number(h.mine ?? 0), Number(h.cap)))}/${guildN(h.cap)}` : ''; }
+    function guildCappedMsg(h) { return `sua parte da caçada "${guildHuntLabel(h)}" fechou (${guildN(h.cap)}/${guildN(h.cap)}) — o resto vem dos outros membros`; }
+    // Abate na hunt alvo (Derrotar ou pesca): soma à parte estimada; no teto, relê a guild para o frame confirmar.
+    function guildCountKill() {
+        if (!guildTarget || (guildTarget.kind !== 'kill' && guildTarget.kind !== 'fish') || normalize(huntSlug || '') !== guildTarget.slug) return;
+        const h = (Array.isArray(lastGuild?.hunts) ? lastGuild.hunts : []).find(x => x?.kind === guildTarget.kind && !x.done);
+        if (!h || !(Number(h.cap) > 0)) return;
+        guildKillsSince++;
+        if (Number(h.mine ?? 0) + guildKillsSince < Number(h.cap)) return;
+        if (Date.now() - Math.max(guildAskedAt, guildCapAskedAt) < GUILD_CAP_GAP_MS) return;
+        guildCapAskedAt = Date.now();
+        guildRequest('parte da caçada no teto');
+    }
 
     function guildLevelCap() {
         if (typeof clanLevelCap === 'function') return clanLevelCap();
@@ -4308,23 +4337,27 @@
         }
         const hunts = Array.isArray(m.hunts) ? m.hunts : [];
         if (cfg.guildHuntEnabled) {
-            const kill = hunts.find(h => h?.kind === 'kill' && !h.done);
-            if (!kill) motivos.push(hunts.some(h => h?.kind === 'kill') ? 'caçada "Derrotar" concluída' : 'sem caçada "Derrotar" hoje');
+            const kill = hunts.find(h => h?.kind === 'kill' && !h.done && !guildHuntCapped(h));
+            const killCheio = kill ? null : hunts.find(h => h?.kind === 'kill' && guildHuntCapped(h));
+            if (killCheio) motivos.push(guildCappedMsg(killCheio));
+            else if (!kill) motivos.push(hunts.some(h => h?.kind === 'kill') ? 'caçada "Derrotar" concluída' : 'sem caçada "Derrotar" hoje');
             else if (!Array.isArray(huntCatalog)) motivos.push('mapa de hunts ainda não carregado');
             else {
                 const sp = (Array.isArray(kill.species) ? kill.species : []).map(x => x?.name).filter(Boolean);
                 const achados = sp.map(n => ({ n, h: guildHuntFor(n, cap) }));
                 const ok = achados.find(x => x.h && !x.h.foraDoNivel);
-                if (ok) out.push({ kind: 'kill', slug: ok.h.slug, name: ok.h.name, level: ok.h.level, motivo: `derrotar ${ok.n} ${guildN(kill.progress)}/${guildN(kill.goal)}` });
+                if (ok) out.push({ kind: 'kill', slug: ok.h.slug, name: ok.h.name, level: ok.h.level, motivo: `derrotar ${ok.n} ${guildN(kill.progress)}/${guildN(kill.goal)}${guildHuntShare(kill)}` });
                 else if (achados.some(x => x.h)) motivos.push(`hunt de ${achados.filter(x => x.h).map(x => `${x.n} (lv ${x.h.level})`).join(', ')} acima do seu time (lv ${cap})`);
                 else motivos.push(`não achei a hunt de ${sp.join(', ') || '?'}`);
             }
         }
         if (cfg.guildFishEnabled) {
-            const fish = hunts.find(h => h?.kind === 'fish' && !h.done);
-            if (!fish) motivos.push(hunts.some(h => h?.kind === 'fish') ? 'caçada "Pescar" concluída' : 'sem caçada "Pescar" hoje');
+            const fish = hunts.find(h => h?.kind === 'fish' && !h.done && !guildHuntCapped(h));
+            const fishCheio = fish ? null : hunts.find(h => h?.kind === 'fish' && guildHuntCapped(h));
+            if (fishCheio) motivos.push(guildCappedMsg(fishCheio));
+            else if (!fish) motivos.push(hunts.some(h => h?.kind === 'fish') ? 'caçada "Pescar" concluída' : 'sem caçada "Pescar" hoje');
             else if (guildFailed.has(FISH_SLUG)) motivos.push('a entrada na pesca não confirmou nesta sessão');
-            else out.push({ kind: 'fish', slug: FISH_SLUG, name: 'Pesca', level: 0, motivo: `pescar ${guildN(fish.progress)}/${guildN(fish.goal)}` });
+            else out.push({ kind: 'fish', slug: FISH_SLUG, name: 'Pesca', level: 0, motivo: `pescar ${guildN(fish.progress)}/${guildN(fish.goal)}${guildHuntShare(fish)}` });
         }
         return { plano: out, motivos };
     }
@@ -6834,7 +6867,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <label class="dn-toggle"><input id="pg-dn-guild-fish" type="checkbox"><span class="sw"></span>Pescar para a caçada "Pescar peixes" <span class="dn-hint">(faixa natural da sua skill, na hunt de pesca)</span></label>
                         <label class="dn-toggle"><input id="pg-dn-guild-farm" type="checkbox"><span class="sw"></span>Farmar o item do Tributo do Dia <span class="dn-hint">(vai para a hunt que mais dropa o item e deposita, mesmo com o depósito acima desligado)</span></label>
                         <div class="dn-status"><span>🧭</span><span id="pg-dn-guild-route"></span></div>
-                        <p class="dn-help">Ordem: tributo, depois "Derrotar", depois pesca. É a 4ª rota que manda na hunt: ligar aqui desliga a rota de treino, a de captura e a do clã (e vice-versa). A Daily Kill tem prioridade. Quando os objetivos fecham, o dia reinicia ou você desliga, a conta volta para a hunt em que estava. Hunt acima do nível do time é pulada.</p>
+                        <p class="dn-help">Ordem: tributo, depois "Derrotar", depois pesca. É a 4ª rota que manda na hunt: ligar aqui desliga a rota de treino, a de captura e a do clã (e vice-versa). A Daily Kill tem prioridade. Quando os objetivos fecham, o dia reinicia ou você desliga, a conta volta para a hunt em que estava. Hunt acima do nível do time é pulada. Cada membro conta só até um teto por caçada ("Sua parte" na janela da guild, 40% da meta): quando a sua parte fecha, a conta passa para o próximo objetivo ou volta para a hunt de origem em vez de ficar na hunt sem contar.</p>
                     </div>
                     <div class="dn-section">
                         <h3>🔔 Avisos da guild</h3>
