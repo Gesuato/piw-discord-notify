@@ -368,7 +368,7 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   widget em `#pw-turnstile-host.on`. O script NÃO resolve o desafio (pedido de "auto resolve" em 18/10/2026 foi recusado: é burlar a
   prova de humano): `trackSocket` ouve o `close` (`humanOnSocketClose`, log `socket-fechado`), `gameApi` chama `humanOnRestForbidden`
   no 403 (e dispara `pw:human-check` para a tela abrir a janela), `humanWatchTick` (2 s) vigia janela/widget (widget `on` por 15 s =
-  pendente). Pendente (`humanPending()`, segura `idleBusyReason`) → aviso no canal de alertas em 20 s (`HUMAN_ALERT_DELAY_MS`), repete
+  pendente). Pendente (`humanPending()`, segura `idleBusyReason`) → aviso no canal Captcha (`postWebhook('human')`, vazio = Alertas) em 20 s (`HUMAN_ALERT_DELAY_MS`), repete
   a cada 15 min, avisa ao resolver; resolve por socket religado (4011), `until` renovado no GET (`humanPoll` 20 s; 1º GET sem prazo
   anterior só guarda), janela/widget fechados ou `mode:'off'`. Status na linha do socket da aba Sistema. Logs `humano-campos`,
   `humano-pendente`, `humano-aviso`, `humano-ok`, `humano-desafio`, `humano-erro`. Teste: `node test/human.test.js` (`loadHumanModule`).
@@ -453,8 +453,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `readForm()` e, se for liga/desliga de módulo, em `moduleState`/`stateSummary`. A versão vem da const
   `VERSION` (manter igual ao `@version`). Reserva de gold (`autoBuyGoldReserve`) foi removida na v3.5.0.
 - Webhooks por tipo de evento: `webhookUrl` (capturas, principal), `webhookShiny`, `webhookAlerts`,
-  `webhookLevel`. Todo envio passa por `postWebhook(kind, payload, meta)` com `kind` em
-  `capture|shiny|alert|level`. **Sem fallback desde a v3.5.1** (pedido do usuário: só enviar se o canal
+  `webhookLevel` e `webhookHuman` (v3.41.0, canal "Captcha": verificação humana pendente/resolvida; vazio = cai em Alertas, pedido
+  do usuário em 18/10/2026). Todo envio passa por `postWebhook(kind, payload, meta)` com `kind` em
+  `capture|shiny|alert|level|human`. **Sem fallback desde a v3.5.1** (pedido do usuário: só enviar se o canal
   estiver preenchido): `alert` e `level` com canal vazio NÃO são enviados (ficam só no log como
   `webhook-sem-canal`); a única exceção é `shiny`, que cai em `webhookUrl` por ser uma captura. Os badges
   do painel ficam ⚠ quando um módulo está ligado sem o canal dele, e o Salvar avisa. Eventos novos (ROADMAP)

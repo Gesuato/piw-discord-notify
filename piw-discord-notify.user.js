@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.40.0
+// @version      3.41.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.40.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.41.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -23,7 +23,8 @@
         webhookUrl: '',         // canal principal (capturas); os outros caem nele se vazios
         webhookShiny: '',       // canal só para capturas shiny (opcional)
         webhookAlerts: '',      // canal para alertas: shiny na fila, estoque, quedas... (opcional)
-        webhookLevel: '',       // canal para alertas de nível (vazio: alertas; vazio: principal)
+        webhookLevel: '',       // canal para alertas de nível (vazio: NÃO envia)
+        webhookHuman: '',       // v3.41.0: canal para a verificação humana / captcha (vazio: cai em Alertas)
         watchList: [],          // nomes em minúsculas, ex.: ['dratini', 'larvitar']
         notifyEveryCapture: false,
         notifyShiny: true,
@@ -5638,6 +5639,7 @@
     //   shiny   -> webhookShiny  (vazio: webhookUrl)
     //   alert   -> webhookAlerts (vazio: NÃO envia)
     //   level   -> webhookLevel  (vazio: NÃO envia)
+    //   human   -> webhookHuman  (vazio: webhookAlerts; vazio: NÃO envia) — v3.41.0, pedido do usuário (canal só do captcha)
     // Desde a v3.5.1 (a pedido do usuário) alertas e nível NÃO caem no principal: com o canal vazio o
     // evento é só registrado no log. Shiny é uma captura, por isso continua caindo em Capturas.
     const WEBHOOK_KINDS = {
@@ -5645,6 +5647,7 @@
         shiny: { key: 'webhookShiny', label: 'shinys', fallback: 'webhookUrl' },
         alert: { key: 'webhookAlerts', label: 'alertas' },
         level: { key: 'webhookLevel', label: 'nível' },
+        human: { key: 'webhookHuman', label: 'captcha', fallback: 'webhookAlerts' },
     };
     function webhookFor(kind) {
         const k = WEBHOOK_KINDS[kind] || WEBHOOK_KINDS.capture;
@@ -5858,7 +5861,7 @@
     //     a Cloudflare só mostra a caixa quando precisa do clique).
     // O script NÃO resolve o desafio (a prova é justamente a pessoa clicar). Ele percebe a exigência pelas mesmas fontes (4011,
     // `pw:human-check`, 403 nos SEUS REST, janela/widget abertos), registra no log (`humano-campos`, `humano-pendente`, `humano-ok`,
-    // `humano-desafio`, `humano-aviso`, `socket-fechado`), avisa no canal de alertas se não resolveu em 20 s (`HUMAN_ALERT_DELAY_MS`;
+    // `humano-desafio`, `humano-aviso`, `socket-fechado`), avisa no canal Captcha (v3.41.0; vazio = Alertas) se não resolveu em 20 s (`HUMAN_ALERT_DELAY_MS`;
     // repete a cada 15 min e avisa quando resolve), segura a volta da cidade (`humanPending()` em `idleBusyReason`) e, num 403 do
     // próprio script, dispara `pw:human-check` para a tela abrir a janela. Sem config: sempre ligado (o aviso depende do canal de alertas).
     const HUMAN_API = '/api/auth/human';
@@ -5919,7 +5922,7 @@
         logEvent('humano-ok', { origem, aposSeg: seg, avisos: req.alerts, detectadaPor: req.origem });
         if (req.alerts) {
             const who = playerName();
-            postWebhook('alert', { content: `✅ ${who ? `**${who}**` : 'Sua conta'}: verificação humana concluída (${origem}) depois de ${humanFmt(seg)} — o jogo voltou.`, username: 'Poke Idle World' }, { evento: 'humano-ok', aposSeg: seg });
+            postWebhook('human', { content: `✅ ${who ? `**${who}**` : 'Sua conta'}: verificação humana concluída (${origem}) depois de ${humanFmt(seg)} — o jogo voltou.`, username: 'Poke Idle World' }, { evento: 'humano-ok', aposSeg: seg });
         }
         humanNotify();
     }
@@ -5929,7 +5932,7 @@
         const who = playerName();
         const seg = Math.round((Date.now() - humanReq.since) / 1000);
         logEvent('humano-aviso', { origem: humanReq.origem, aposSeg: seg, aviso: humanReq.alerts });
-        postWebhook('alert', {
+        postWebhook('human', {
             content: `🧑 ${who ? `**${who}**` : 'Sua conta'}: o jogo pede a **verificação humana** (Cloudflare) há ${humanFmt(seg)} — clique no desafio no painel do PokeGrid. Até lá o personagem fica parado.`,
             username: 'Poke Idle World',
             embeds: [{
@@ -6748,7 +6751,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         const panel = document.createElement('div');
         panel.id = 'pg-dn-panel';
         panel.hidden = true;
-        const hookInput = (id, help) => `<label class="dn-field"><span>${id === 'hook' ? 'Capturas' : id === 'hook-shiny' ? 'Shinys' : id === 'hook-alerts' ? 'Alertas' : 'Nível'}</span>
+        const hookInput = (id, help) => `<label class="dn-field"><span>${id === 'hook' ? 'Capturas' : id === 'hook-shiny' ? 'Shinys' : id === 'hook-alerts' ? 'Alertas' : id === 'hook-human' ? 'Captcha' : 'Nível'}</span>
                 <input id="pg-dn-${id}" class="dn-input" type="password" placeholder="https://discord.com/api/webhooks/…" autocomplete="off"><span class="dn-help">${help}</span></label>`;
         panel.innerHTML = `
             <div class="dn-head">
@@ -6767,6 +6770,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
                             ${hookInput('hook-shiny', 'Vazio = shinys vão para Capturas.')}
                             ${hookInput('hook-alerts', 'Estoque, compra, venda e troca de hunt. Vazio = esses avisos NÃO são enviados.')}
                             ${hookInput('hook-level', 'Nível atingido e troca de líder. Vazio = esses avisos NÃO são enviados.')}
+                            ${hookInput('hook-human', 'Verificação humana (captcha da Cloudflare) pendente e resolvida. Vazio = vai para Alertas.')}
                         </div>
                     </div>
                     <div class="dn-section">
@@ -7200,6 +7204,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 webhookShiny: $('#pg-dn-hook-shiny').value.trim(),
                 webhookAlerts: $('#pg-dn-hook-alerts').value.trim(),
                 webhookLevel: $('#pg-dn-hook-level').value.trim(),
+                webhookHuman: $('#pg-dn-hook-human').value.trim(),
                 // com a rota ligada o campo mostra o nível da etapa (desabilitado); o valor do usuário fica em dataset.own
                 levelAlertAt: Math.max(0, parseInt(lv.disabled ? lv.dataset.own : lv.value, 10) || 0),
                 levelSwap: $('#pg-dn-level-swap').checked,
@@ -7318,7 +7323,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const has = (id) => Boolean($('#pg-dn-' + id).value.trim());
             const el = $('#pg-dn-chan-summary');
             if (!has('hook')) { el.innerHTML = '<span class="dn-err-t">⚠ Cole o webhook do canal de Capturas para começar.</span>'; return; }
-            el.innerHTML = [['hook', 'Capturas'], ['hook-shiny', 'Shinys'], ['hook-alerts', 'Alertas'], ['hook-level', 'Nível']]
+            el.innerHTML = [['hook', 'Capturas'], ['hook-shiny', 'Shinys'], ['hook-alerts', 'Alertas'], ['hook-level', 'Nível'], ['hook-human', 'Captcha']]
                 .map(([id, n]) => `<span><b>${n}</b> ${has(id) ? '✔' : '—'}</span>`).join('');
         }
         function renderQuality() {
@@ -8061,6 +8066,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-hook-shiny').value = cfg.webhookShiny || '';
             $('#pg-dn-hook-alerts').value = cfg.webhookAlerts || '';
             $('#pg-dn-hook-level').value = cfg.webhookLevel || '';
+            $('#pg-dn-hook-human').value = cfg.webhookHuman || '';
             setChanOpen(!cfg.webhookUrl);
             $('#pg-dn-list').value = cfg.watchList.join(', ');
             $('#pg-dn-shiny').checked = cfg.notifyShiny;
@@ -8326,6 +8332,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             cfg.webhookShiny = $('#pg-dn-hook-shiny').value.trim();
             cfg.webhookAlerts = $('#pg-dn-hook-alerts').value.trim();
             cfg.webhookLevel = $('#pg-dn-hook-level').value.trim();
+            cfg.webhookHuman = $('#pg-dn-hook-human').value.trim();
             saveCfg(cfg);
             if (!cfg.webhookUrl) {
                 flash('⚠ Preencha o canal de Capturas primeiro.', 'warn');
@@ -8351,6 +8358,13 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 postWebhook('level', {
                     username: 'Poke Idle World',
                     embeds: [{ title: 'Teste: canal de nível', description: 'Aqui chegarão os avisos de nível atingido e troca de líder.', color: 0x5865f2 }],
+                }, { test: true });
+            }
+            if (cfg.webhookHuman) {
+                canais.push('captcha');
+                postWebhook('human', {
+                    username: 'Poke Idle World',
+                    embeds: [{ title: 'Teste: canal do captcha', description: 'Aqui chegará o aviso quando o jogo pedir a verificação humana (Cloudflare) e quando ela for resolvida. O script não clica no desafio: só avisa.', color: 0xf0b232 }],
                 }, { test: true });
             }
             renderChannels(); renderState();
@@ -8458,7 +8472,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const desconhecidas = Object.keys(data).filter(k => !k.startsWith('_') && !(k in DEFAULTS) && !['sellProfiles', 'routes', 'routeName'].includes(k));
             for (const k of Object.keys(data)) if (k.startsWith('_')) delete data[k];
             const keepHooks = $('#pg-dn-import-keephooks').checked;
-            const mine = { webhookUrl: cfg.webhookUrl, webhookShiny: cfg.webhookShiny, webhookAlerts: cfg.webhookAlerts, webhookLevel: cfg.webhookLevel };
+            const mine = { webhookUrl: cfg.webhookUrl, webhookShiny: cfg.webhookShiny, webhookAlerts: cfg.webhookAlerts, webhookLevel: cfg.webhookLevel, webhookHuman: cfg.webhookHuman };
             const perfisDaqui = Object.assign({}, cfg.sellProfiles || {});
             cfg = migrateCfg(Object.assign({}, DEFAULTS, data));
             if (keepHooks) Object.assign(cfg, mine);
@@ -8480,7 +8494,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             loadHuntProfile();
             dirty = false;
             fill();
-            const canais = ['webhookUrl', 'webhookShiny', 'webhookAlerts', 'webhookLevel'].filter(k => (cfg[k] || '').trim()).length;
+            const canais = ['webhookUrl', 'webhookShiny', 'webhookAlerts', 'webhookLevel', 'webhookHuman'].filter(k => (cfg[k] || '').trim()).length;
             const resumo = [
                 `${canais} ${canais === 1 ? 'canal' : 'canais'}${keepHooks ? ' (mantidos deste painel)' : ''}`,
                 cfg.notifyEveryCapture ? 'avisa toda captura' : `lista com ${(cfg.watchList || []).length}`,

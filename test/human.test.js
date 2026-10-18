@@ -26,7 +26,7 @@ const { loadHumanModule, assert } = require('./harness');
         assert(state.logs.filter(l => l[0] === 'humano-pendente').length === 1, 'segundo 4011 não duplica a pendência');
         assert(state.hooks.length === 0, 'ainda sem aviso');
         await state.fire(api.HUMAN_ALERT_DELAY_MS);
-        assert(state.hooks.length === 1 && state.hooks[0].kind === 'alert' && /verificação humana/.test(state.hooks[0].content) && /20 s/.test(state.hooks[0].content), 'aviso após 20 s: ' + JSON.stringify(state.hooks));
+        assert(state.hooks.length === 1 && state.hooks[0].kind === 'human' && /verificação humana/.test(state.hooks[0].content) && /20 s/.test(state.hooks[0].content), 'aviso após 20 s: ' + JSON.stringify(state.hooks));
         assert(state.hooks[0].title === 'Verificação humana pendente' && state.hooks[0].meta.evento === 'humano-aviso', 'embed do aviso');
         await state.fire(api.HUMAN_ALERT_GAP_MS);
         assert(state.hooks.length === 2 && state.hooks[1].meta.aviso === 2, 'repete a cada 15 min: ' + state.hooks.length);
@@ -34,7 +34,7 @@ const { loadHumanModule, assert } = require('./harness');
         assert(!api.pending(), 'socket novo resolve o 4011');
         const ok = state.logs.find(l => l[0] === 'humano-ok');
         assert(ok && ok[1].origem === 'socket religado' && ok[1].avisos === 2, 'log humano-ok: ' + JSON.stringify(ok));
-        assert(state.hooks.length === 3 && /concluída/.test(state.hooks[2].content), 'avisa que resolveu');
+        assert(state.hooks.length === 3 && state.hooks[2].kind === 'human' && /concluída/.test(state.hooks[2].content), 'avisa que resolveu no canal do captcha');
         assert(state.timers.length === 0, 'timers limpos: ' + JSON.stringify(state.timers.map(t => t.ms)));
     }
 
