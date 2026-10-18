@@ -276,6 +276,31 @@ skill reduzido (50%)"; "{{inLevel}}/{{forNext}} peixes para o próximo nível".
   membro; o script marca a faixa natural liberada (senão a mais alta liberada), entra em `pesca`, reentra depois de `fishing-cooldown
   { ms }` e volta quando a caçada fecha.
 
+### Verificação humana (Cloudflare Turnstile; bundle em 18/10/2026 — formatos ainda NÃO vistos no log; farejador na v3.40.0)
+
+O jogo passou a exigir, de vez em quando, a prova "sou humano" da Cloudflare (Turnstile, sitekey no chunk 535482, `appearance:
+"interaction-only"`: na maioria das vezes passa sozinho; quando não passa, aparece a caixa de UM clique no canto da tela). i18n
+`hud.world.humanCheck.*`: "🧑 Confirme que você é humano" / "Verificação rápida da Cloudflare — na maioria das vezes ela passa sozinha,
+sem clique." / "Se aparecer um desafio no canto da tela, complete-o. Depois o jogo volta sozinho." / botão "✅ Verificar agora" /
+toast "Verificação humana necessária — confirme no aviso para continuar."
+
+- `GET /api/auth/human` (Bearer) → `{ mode, until, renewBeforeMs }`; `mode:'off'` = verificação desligada. A tela consulta 3 s depois
+  de montar o provider do socket e a cada 20 min (`tV()`): faltando menos de `renewBeforeMs` para `until`, renderiza o Turnstile em
+  `div#pw-turnstile-host.turnstile-host` (classe `on` enquanto renderiza; 90 s de timeout), pega o token e faz
+  `POST /api/auth/human { token }` → `{ until }`.
+- O servidor **exige** de duas formas: (1) fecha o WebSocket com o código **4011** — a tela marca `humanRequired`, abre a janela
+  "Confirme que você é humano" (`.win-overlay > .win-window`, zIndex 400), roda `verifyHuman()` sozinha e, se falhar, mostra "Não deu
+  certo…" com o botão; NÃO reconecta até verificar (depois religa o socket via `p.current()`); (2) responde **403 `{ code:'human-check' }`**
+  a um REST — a camada REST da tela (`apiGet`/`apiPostAuth`) dispara `window.dispatchEvent(new CustomEvent('pw:human-check'))` e o
+  provider marca `humanRequired` do mesmo jeito.
+- Outros códigos de fechamento vistos no mesmo trecho: 4001 token expirado (refresh), 4002 reconectar (reload 1x/min), 4003 manutenção
+  (`/?maintenance=1`), 4005 conta aberta em outro lugar (`sessionReplaced`), 4006 limite de contas na rede (4 por IP), 4007 limite de
+  contas na máquina (`cmid`), 4008 `/namelock`, 4009 `/trocar-senha`.
+- O script (v3.40.0, módulo `// ---- Verificação humana` antes da Cura na Joy) **não resolve** o desafio: registra `socket-fechado
+  { code, motivo }`, `humano-campos` (GET na carga), `humano-pendente { origem }`, `humano-desafio { aberto, seg }`, `humano-aviso`,
+  `humano-ok { origem, aposSeg }`; avisa no canal de alertas 20 s depois (repete a cada 15 min, avisa ao resolver), segura a volta da
+  cidade e, num 403 dos próprios REST, dispara `pw:human-check` para a tela abrir a janela. Teste: `node test/human.test.js`.
+
 ## Ideias que esses nomes destravam
 
 - `field-none` / `hunt-cooldown` / `hunt-resume`: detectar hunt parada e religar (auto-reconnect).

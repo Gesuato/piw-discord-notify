@@ -35,7 +35,8 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   socket.io, não há prefixo numérico.
 - `pending` → `{ type:'pending', list:[{ id, pokeId, name, level, shiny, at }] }`. Fila de Pokémon
   capturáveis, chega a cada abate e SUBSTITUI a anterior. `pokeId` é a espécie; `id` é o pendingId.
-- `catch-result` → `{ type:'catch-result', success, speciesName, shiny, ballName, pendingId?, auto? }`.
+- `catch-result` → `{ type:'catch-result', success, speciesName, shiny, ballName, pendingId?, auto? }` (desde 18/10/2026 vem também
+  `row`, `col` — posição no grid; o script não usa).
   Não traz nível — o script cruza com a última fila `pending`. `auto: true` = autocatch VIP
   (também conta como captura). Falha vem com `success: false`; cooldown vem como `catch-cooldown`.
 - No sucesso também chega `poke-delta` (CONFIRMADO no log em 23/09/2026) com o indivíduo completo:
@@ -359,6 +360,18 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   do Clã só registra (`pesca-campos` 12 s após a carga, `pesca-cooldown`, `pesca-nivel`, `pesca-abate` = 1º `field-kill` em `pesca`).
   Caçada da guild kind `fish` conta peixes. CONFIRMADO no log em 10/10/2026 01:55Z (conta1): 10 faixas, hunt `pesca`, peixe = `field-kill`
   comum (xp 3, sem loot), `fishing-levelup { level }`. `fishing-cooldown` ainda não visto.
+- Verificação humana (v3.40.0, Cloudflare Turnstile; bundle em 18/10/2026, `docs/mensagens-do-jogo.md` → "Verificação humana";
+  campos ainda NÃO vistos no log; módulo `// ---- Verificação humana` antes da Cura na Joy, sem config): o jogo pede de vez em quando a
+  prova "sou humano" (um clique). `GET /api/auth/human` → `{ mode, until, renewBeforeMs }`; a tela renova sozinha a cada 20 min
+  (`POST /api/auth/human { token }`). O servidor exige fechando o socket com o código 4011 (a tela não reconecta até verificar) ou com
+  403 `{ code:'human-check' }` no REST (evento `pw:human-check` na janela); janela "🧑 Confirme que você é humano" (`.win-window`),
+  widget em `#pw-turnstile-host.on`. O script NÃO resolve o desafio (pedido de "auto resolve" em 18/10/2026 foi recusado: é burlar a
+  prova de humano): `trackSocket` ouve o `close` (`humanOnSocketClose`, log `socket-fechado`), `gameApi` chama `humanOnRestForbidden`
+  no 403 (e dispara `pw:human-check` para a tela abrir a janela), `humanWatchTick` (2 s) vigia janela/widget (widget `on` por 15 s =
+  pendente). Pendente (`humanPending()`, segura `idleBusyReason`) → aviso no canal de alertas em 20 s (`HUMAN_ALERT_DELAY_MS`), repete
+  a cada 15 min, avisa ao resolver; resolve por socket religado (4011), `until` renovado no GET (`humanPoll` 20 s; 1º GET sem prazo
+  anterior só guarda), janela/widget fechados ou `mode:'off'`. Status na linha do socket da aba Sistema. Logs `humano-campos`,
+  `humano-pendente`, `humano-aviso`, `humano-ok`, `humano-desafio`, `humano-erro`. Teste: `node test/human.test.js` (`loadHumanModule`).
 - Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
   `guardar` no fim de toda viagem; drops → Depot (`POST /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou
   família (`family-action item`); Pokémon não vendidos → só família (o box JÁ é o Depot comum de Pokémon). Lista escolhida
@@ -515,6 +528,8 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
   mutável em `state.pokes`, `init.freshPokes(n)` resposta ao n-ésimo `pokes-get`, `init.family` depot, `init.familyAction(payload)`).
   `node test/farm.test.js` (`loadFarmModule`: `// ---- Farm por lista` até `// ---- Guild (v3.30.0)`; `init.huntCatalog`, `init.creatures`,
   `init.items`, `init.team`, `init.env` mutável em `state.env` para viagem/cura/troca/líder/daily).
+  `node test/human.test.js` (`loadHumanModule`: `// ---- Verificação humana` até `// ---- Cura na Joy`; `state.api` responde ao GET
+  /api/auth/human, `state.dom` simula janela/widget, `state.fire(ms)` dispara os timers do prazo, `state.events` guarda os `dispatchEvent`).
   `test/harness.js` recorta módulos do userscript pelos marcadores (`loadLevelModule`: `// ---- Alerta de nível do
   líder` até `// ---- Alerta de estoque de bolas`; `loadPokeSellModule`: `// ---- Venda automática de Pokémon` até
   `// ---- Rota de captura`; `loadCatchModule`: `// ---- Rota de captura` até `// ---- Daily Kill`, com `init.fetchJson(url)` para os

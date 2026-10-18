@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.39.1
+// @version      3.40.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.39.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.40.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -886,7 +886,13 @@
             if (token) res = await send(token);
         }
         const body = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(body?.message || `HTTP ${res.status}`);
+        if (!res.ok) {
+            // v3.40.0: 403 { code:'human-check' } = o servidor quer a verificação humana (Cloudflare) antes de atender.
+            if (res.status === 403 && typeof humanOnRestForbidden === 'function' && humanOnRestForbidden(body, url)) {
+                throw new Error('verificação humana pendente: clique no desafio da Cloudflare no painel do jogo');
+            }
+            throw new Error(body?.message || `HTTP ${res.status}`);
+        }
         return body;
     }
 
@@ -5611,7 +5617,7 @@
     // o que importa para diagnóstico (import, viagem, clã...). Agora cada tipo barulhento tem cota própria e o resto dura horas.
     const LOG_KEY = 'pgDiscordNotifyLog';
     const LOG_MAX = 200;
-    const LOG_NOISY = { 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10, 'poke-delta': 15, 'pokes-frame': 10, 'pokes-get': 10, guild: 10, 'guild-get': 10 };
+    const LOG_NOISY = { 'socket-fechado': 10, 'humano-desafio': 10, 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10, 'poke-delta': 15, 'pokes-frame': 10, 'pokes-get': 10, guild: 10, 'guild-get': 10 };
 
     function logEvent(kind, data) {
         if (cfg.debug) console.log(TAG, kind, data);
@@ -5838,6 +5844,161 @@
             info.familyMotivo = r.motivo || null;
         }
     }
+
+    // ---- Verificação humana (v3.40.0): o jogo pede o clique "sou humano" (Cloudflare Turnstile) e a conta fica parada ----
+    // Levantado no bundle em 18/10/2026 (chunk do jogo: `tz="pw:human-check"` e `/api/auth/human`; chunk 535482: sitekey e
+    // `loadTurnstileScript`; i18n `hud.world.humanCheck.*`). Detalhes em docs/mensagens-do-jogo.md → "Verificação humana".
+    //   - `GET /api/auth/human` → `{ mode, until, renewBeforeMs }` (`mode:'off'` = desligado). A tela consulta 3 s após montar e a
+    //     cada 20 min; faltando menos de `renewBeforeMs` para `until`, renova sozinha: Turnstile (`appearance:'interaction-only'`,
+    //     passa sem clique na maioria das vezes) → token → `POST /api/auth/human { token }` → `{ until }`.
+    //   - O servidor EXIGE de duas formas: fecha o socket com o código 4011 (a tela NÃO reconecta sozinha) ou responde 403
+    //     `{ code:'human-check' }` a um REST (a camada REST da tela dispara o evento `pw:human-check` na janela). A tela abre
+    //     "🧑 Confirme que você é humano" (`.win-overlay > .win-window`, botão "✅ Verificar agora"), tenta verificar sozinha e,
+    //     verificada, religa o socket. O widget mora em `div#pw-turnstile-host.turnstile-host` (classe `on` enquanto renderiza;
+    //     a Cloudflare só mostra a caixa quando precisa do clique).
+    // O script NÃO resolve o desafio (a prova é justamente a pessoa clicar). Ele percebe a exigência pelas mesmas fontes (4011,
+    // `pw:human-check`, 403 nos SEUS REST, janela/widget abertos), registra no log (`humano-campos`, `humano-pendente`, `humano-ok`,
+    // `humano-desafio`, `humano-aviso`, `socket-fechado`), avisa no canal de alertas se não resolveu em 20 s (`HUMAN_ALERT_DELAY_MS`;
+    // repete a cada 15 min e avisa quando resolve), segura a volta da cidade (`humanPending()` em `idleBusyReason`) e, num 403 do
+    // próprio script, dispara `pw:human-check` para a tela abrir a janela. Sem config: sempre ligado (o aviso depende do canal de alertas).
+    const HUMAN_API = '/api/auth/human';
+    const HUMAN_WS_CLOSE_CODE = 4011;
+    const HUMAN_ALERT_DELAY_MS = 20 * 1000;
+    const HUMAN_ALERT_GAP_MS = 15 * 60 * 1000;
+    const HUMAN_POLL_MS = 20 * 1000;
+    const HUMAN_WATCH_MS = 2 * 1000;
+    const HUMAN_WIDGET_MS = 15 * 1000;   // widget renderizado há mais de 15 s = o desafio está esperando o clique
+    const WS_CLOSE_REASONS = { 1000: 'normal', 1001: 'página saindo', 1006: 'caiu sem fechar', 4001: 'token expirado', 4002: 'reconectar', 4003: 'manutenção', 4005: 'conta aberta em outro lugar', 4006: 'limite de contas na rede', 4007: 'limite de contas na máquina', 4008: 'namelock', 4009: 'trocar senha', 4011: 'verificação humana' };
+    let humanReq = null;        // { since, origem, until, alertedAt, alerts, timer, poll }
+    let humanInfo = null;       // última resposta do GET: { mode, until, renewBeforeMs, at }
+    let humanWidgetOn = 0;      // desde quando `#pw-turnstile-host` tem a classe `on` (0 = fechado)
+    let humanWidgetLogged = false;
+    let humanOverlayOn = false;
+    let onHumanChange = null;   // painel (aba Sistema)
+
+    function humanPending() { return Boolean(humanReq); }
+    function humanNotify() { if (onHumanChange) { try { onHumanChange(); } catch { /* painel fechado */ } } }
+    function humanFmt(seg) { return seg >= 120 ? `${Math.round(seg / 60)} min` : `${seg} s`; }
+    function humanStatus() {
+        if (humanReq) return `🧑 verificação humana pendente há ${humanFmt(Math.round((Date.now() - humanReq.since) / 1000))} (${humanReq.origem}) — clique no desafio da Cloudflare`;
+        if (humanInfo?.mode === 'off') return 'verificação humana desligada no servidor';
+        if (humanInfo?.until) {
+            const falta = Date.parse(humanInfo.until) - Date.now();
+            return falta > 0 ? `verificação humana ok até ${new Date(humanInfo.until).toLocaleString('pt-BR')}` : 'verificação humana vencida (a tela renova sozinha)';
+        }
+        return humanInfo ? 'verificação humana: sem prazo informado' : 'verificação humana: ainda não consultada';
+    }
+    async function humanFetch(motivo) {
+        try {
+            const r = await gameApi(HUMAN_API);
+            humanInfo = { mode: r?.mode ?? null, until: r?.until ?? null, renewBeforeMs: r?.renewBeforeMs ?? null, at: Date.now() };
+            return r || {};
+        } catch (err) { logEvent('humano-erro', { motivo, erro: String(err?.message || err) }); return null; }
+    }
+    // Uma leitura na carga, para confirmar o formato no log.
+    async function humanSniff() {
+        const r = await humanFetch('carga');
+        if (!r) return;
+        const u = r.until ? Date.parse(r.until) : NaN;
+        logEvent('humano-campos', { chaves: Object.keys(r), mode: r.mode ?? null, until: r.until ?? null, renewBeforeMs: r.renewBeforeMs ?? null, faltaMin: Number.isFinite(u) ? Math.round((u - Date.now()) / 60000) : null });
+        humanNotify();
+    }
+    function humanRequired(origem, extra) {
+        if (humanReq) return;
+        humanReq = { since: Date.now(), origem, until: humanInfo?.until ?? null, alertedAt: 0, alerts: 0, timer: null, poll: null };
+        logEvent('humano-pendente', Object.assign({ origem, untilAntes: humanReq.until, hunt: typeof huntSlug !== 'undefined' ? huntSlug : null }, extra || {}));
+        humanReq.timer = setTimeout(humanAlert, HUMAN_ALERT_DELAY_MS);
+        humanReq.poll = setInterval(humanPoll, HUMAN_POLL_MS);
+        humanNotify();
+    }
+    function humanResolved(origem) {
+        if (!humanReq) return;
+        const req = humanReq; humanReq = null;
+        clearTimeout(req.timer); clearInterval(req.poll);
+        const seg = Math.round((Date.now() - req.since) / 1000);
+        logEvent('humano-ok', { origem, aposSeg: seg, avisos: req.alerts, detectadaPor: req.origem });
+        if (req.alerts) {
+            const who = playerName();
+            postWebhook('alert', { content: `✅ ${who ? `**${who}**` : 'Sua conta'}: verificação humana concluída (${origem}) depois de ${humanFmt(seg)} — o jogo voltou.`, username: 'Poke Idle World' }, { evento: 'humano-ok', aposSeg: seg });
+        }
+        humanNotify();
+    }
+    function humanAlert() {
+        if (!humanReq) return;
+        humanReq.alertedAt = Date.now(); humanReq.alerts += 1;
+        const who = playerName();
+        const seg = Math.round((Date.now() - humanReq.since) / 1000);
+        logEvent('humano-aviso', { origem: humanReq.origem, aposSeg: seg, aviso: humanReq.alerts });
+        postWebhook('alert', {
+            content: `🧑 ${who ? `**${who}**` : 'Sua conta'}: o jogo pede a **verificação humana** (Cloudflare) há ${humanFmt(seg)} — clique no desafio no painel do PokeGrid. Até lá o personagem fica parado.`,
+            username: 'Poke Idle World',
+            embeds: [{
+                title: 'Verificação humana pendente',
+                color: 0xf0b232,
+                fields: [
+                    { name: 'Conta', value: who || '—', inline: true },
+                    { name: 'Detectada por', value: humanReq.origem, inline: true },
+                    { name: 'Desde', value: new Date(humanReq.since).toLocaleTimeString('pt-BR'), inline: true },
+                ],
+                footer: { text: `O script não resolve o captcha, só avisa · aviso ${humanReq.alerts}` },
+            }],
+        }, { evento: 'humano-aviso', origem: humanReq.origem, aposSeg: seg, aviso: humanReq.alerts });
+        humanReq.timer = setTimeout(humanAlert, HUMAN_ALERT_GAP_MS);
+    }
+    // Enquanto pendente: relê o prazo; `until` novo no futuro (ou verificação desligada) = resolvido.
+    async function humanPoll() {
+        if (!humanReq) return;
+        const antes = humanReq.until;
+        const r = await humanFetch('pendente');
+        if (!r || !humanReq) return;
+        if (r.mode === 'off') { humanResolved('verificação desligada no servidor'); return; }
+        if (antes == null) { humanReq.until = r.until ?? null; return; }   // sem prazo anterior conhecido: guarda e compara no próximo
+        const u = r.until ? Date.parse(r.until) : NaN;
+        if (Number.isFinite(u) && u > Date.now() && r.until !== antes) humanResolved('prazo renovado');
+    }
+    // Fontes da exigência.
+    function humanOnSocketClose(ev) {
+        const code = Number(ev?.code) || 0;
+        logEvent('socket-fechado', { code, motivo: WS_CLOSE_REASONS[code] || null, razao: ev?.reason || null, limpo: Boolean(ev?.wasClean) });
+        if (code === HUMAN_WS_CLOSE_CODE) humanRequired('socket fechado com 4011');
+    }
+    function humanOnSocketTracked() {   // depois do 4011 a tela só religa o socket quando a verificação passou
+        if (humanReq && humanReq.origem.includes('4011')) humanResolved('socket religado');
+    }
+    function humanOnRestForbidden(body, url) {
+        if (!body || body.code !== 'human-check') return false;
+        humanRequired('403 human-check num REST do script', { url: String(url || '').split('?')[0] });
+        try { window.dispatchEvent(new CustomEvent('pw:human-check')); } catch { /* sem janela (teste) */ }
+        return true;
+    }
+    function humanOnScreenEvent() { humanRequired('evento pw:human-check da tela'); }
+    // Vigia (2 s): janela "Confirme que você é humano" e widget do Turnstile aberto há tempo demais.
+    function humanWatchTick() {
+        if (typeof document === 'undefined' || !document.body) return;
+        const now = Date.now();
+        let overlay = false;
+        for (const h of document.querySelectorAll('.win-overlay .win-window h3')) {
+            if (/humano|human/i.test(h.textContent || '')) { overlay = true; break; }
+        }
+        if (overlay !== humanOverlayOn) {
+            humanOverlayOn = overlay;
+            if (overlay) humanRequired('janela "Confirme que você é humano" aberta');
+            else if (humanReq && !humanReq.origem.includes('4011')) humanResolved('janela fechada');   // com 4011 quem resolve é o socket religado
+        }
+        const host = document.getElementById('pw-turnstile-host');
+        const on = Boolean(host && host.classList && host.classList.contains('on'));
+        if (on && !humanWidgetOn) { humanWidgetOn = now; humanWidgetLogged = false; }
+        if (on && now - humanWidgetOn >= HUMAN_WIDGET_MS) {
+            if (!humanWidgetLogged) { humanWidgetLogged = true; logEvent('humano-desafio', { aberto: true, seg: Math.round((now - humanWidgetOn) / 1000) }); }
+            humanRequired('desafio do Turnstile aberto há 15 s');
+        }
+        if (!on && humanWidgetOn) {
+            if (humanWidgetLogged) logEvent('humano-desafio', { aberto: false, seg: Math.round((now - humanWidgetOn) / 1000) });
+            humanWidgetOn = 0; humanWidgetLogged = false;
+            if (humanReq && humanReq.origem.startsWith('desafio') && !humanOverlayOn) humanResolved('desafio fechado');
+        }
+    }
+    try { window.addEventListener('pw:human-check', humanOnScreenEvent); } catch { /* sem janela (teste) */ }
 
     // ---- Cura na Joy: o time caiu, a conta foi para a cidade -> curar e voltar para a hunt (v3.22.0) ----
     // Levantado no bundle do cliente em 29/09/2026:
@@ -6077,6 +6238,7 @@
     // Onde a conta parou, para o status e o aviso: hunt que o script ainda considera ativa ou fora de hunt.
     function idleWhere() { return idleIsHunt(huntSlug) ? `em ${huntSlug} sem abates` : 'fora de hunt'; }
     function idleBusyReason() {
+        if (typeof humanPending === 'function' && humanPending()) return 'verificação humana pendente (clique no desafio da Cloudflare)';
         if (tripRunning) return 'viagem à cidade em andamento';
         if (healBusy()) return 'cura na Nurse Joy em andamento';
         if (huntSwitch) return `troca para ${huntSwitch.slug} em andamento`;
@@ -6281,8 +6443,13 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
                 console.warn(TAG, 'Erro ao processar mensagem:', err);
             }
         });
+        // v3.40.0: o código do fechamento diz POR QUE o jogo caiu (4011 = verificação humana, 4005 = conta aberta em outro lugar...).
+        ws.addEventListener('close', (event) => {
+            try { humanOnSocketClose(event); } catch (err) { console.warn(TAG, 'Erro ao ler fechamento do socket:', err); }
+        });
         lastSocket = ws;
         logEvent('socket', { url: String(ws.url || '').split('?')[0] });
+        humanOnSocketTracked();
         requestBalls(BALLS_AFTER_SOCKET_MS);
         setTimeout(requestSupplies, SUPPLY_AFTER_SOCKET_MS);
         requestPokes(POKES_AFTER_SOCKET_MS);
@@ -7873,11 +8040,13 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
         // ---- Sistema ----
         function renderReload() {
             $('#pg-dn-reload-status').textContent = cfg.reloadEnabled ? `Recarga ${reloadStatus()}` : 'Recarga desligada';
-            $('#pg-dn-socket').innerHTML = lastSocket && lastSocket.readyState === 1
+            $('#pg-dn-socket').innerHTML = (lastSocket && lastSocket.readyState === 1
                 ? 'socket do jogo <span class="dn-ok-t">● rastreado</span>'
-                : 'socket do jogo <span class="dn-err-t">○ não rastreado</span>';
+                : 'socket do jogo <span class="dn-err-t">○ não rastreado</span>')
+                + (humanPending() ? ' · <span class="dn-err-t">🧑 verificação humana pendente — clique no desafio da Cloudflare</span>' : '');
         }
         onReloadChange = () => { if (!panel.hidden) renderReload(); };
+        onHumanChange = onReloadChange;   // v3.40.0: a verificação humana aparece na mesma linha do socket
         $('#pg-dn-reload-now').onclick = () => {
             flash(`⟳ Recarregando${huntSlug ? ` (volto para ${huntSlug})` : ''}…`, 'info', 10000);
             setTimeout(() => doReload('manual'), 300);
@@ -8358,6 +8527,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
     setInterval(farmTick, FARM_TICK_MS);
     if (cfg.farmEnabled) setTimeout(farmTick, 9000);   // v3.33.0: farm por lista logo após a carga (depois do socket/retomada da recarga)
     setTimeout(fishSniff, 12000);   // v3.31.1: lê a janela de pesca uma vez (REST) para confirmar o formato no log
+    setTimeout(humanSniff, 15000);  // v3.40.0: lê o prazo da verificação humana uma vez (REST) para confirmar o formato no log
+    setInterval(humanWatchTick, HUMAN_WATCH_MS);   // v3.40.0: janela "Confirme que você é humano" / widget do Turnstile aberto
     if (cfg.breedEnabled) setTimeout(() => breedTick(true), 9000);   // 1ª leitura da incubadora logo após a carga
     if (cfg.slotEnabled) setTimeout(() => slotTick(true), 8000);   // 1ª leitura da slot machine logo após a carga
     setInterval(catchTick, CATCH_TICK_MS);

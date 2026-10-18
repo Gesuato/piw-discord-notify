@@ -1044,4 +1044,67 @@ function loadFarmModule(cfg, init) {
     return { api, state, cfg, clock };
 }
 
-module.exports = { loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+
+// Verificação humana (v3.40.0): `// ---- Verificação humana` até `// ---- Cura na Joy`. `init.api(url)` responde ao GET
+// /api/auth/human (pode ser trocado em `state.api`); `state.dom` simula a janela e o widget (`overlay`, `widgetOn`); timers ficam em
+// `state.timers` e `state.fire(ms)` dispara os desse prazo (intervalos continuam); `state.events` guarda os `dispatchEvent`.
+const HM_START = '    // ---- Verificação humana';
+const HM_END = '    // ---- Cura na Joy';
+
+function loadHumanModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(HM_START), b = src.indexOf(HM_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo da verificação humana não encontrados no script');
+    const mod = src.slice(a, b);
+    const clock = { now: 1_700_000_000_000 };
+    const state = { logs: [], hooks: [], timers: [], events: [], listeners: {}, dom: { overlay: false, widgetOn: false }, apiCalls: [], clock };
+    state.api = init.api || (async () => ({ mode: 'on', until: new Date(clock.now + 3600000).toISOString(), renewBeforeMs: 300000 }));
+    let nextId = 1;
+    state.fire = async (ms) => {
+        const due = state.timers.filter(t => t.ms === ms);
+        state.timers = state.timers.filter(t => t.ms !== ms || t.interval);
+        clock.now += ms;
+        for (const t of due) await t.fn();
+        await new Promise(r => setImmediate(r));
+    };
+    const FakeDate = class extends Date {
+        constructor(...args) { super(...(args.length ? args : [clock.now])); }
+        static now() { return clock.now; }
+    };
+    const ctx = {
+        cfg: cfg || {},
+        TAG: '[teste]',
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', title: p.embeds?.[0]?.title || '', meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        gameApi: async (url, opts) => { state.apiCalls.push(url); return state.api(url, opts); },
+        huntSlug: init.huntSlug || null,
+        setTimeout: (fn, ms) => { const id = nextId++; state.timers.push({ fn, ms, id }); return id; },
+        clearTimeout: (id) => { state.timers = state.timers.filter(t => t.id !== id); },
+        setInterval: (fn, ms) => { const id = nextId++; state.timers.push({ fn, ms, id, interval: true }); return id; },
+        clearInterval: (id) => { state.timers = state.timers.filter(t => t.id !== id); },
+        window: {
+            addEventListener: (name, fn) => { (state.listeners[name] = state.listeners[name] || []).push(fn); },
+            dispatchEvent: (ev) => { state.events.push(ev.type); for (const fn of state.listeners[ev.type] || []) fn(ev); return true; },
+        },
+        CustomEvent: class { constructor(type) { this.type = type; } },
+        document: {
+            body: {},
+            querySelectorAll: () => state.dom.overlay ? [{ textContent: '🧑 Confirme que você é humano' }] : [],
+            getElementById: (id) => id === 'pw-turnstile-host' && state.dom.widgetOn ? { classList: { contains: (c) => c === 'on' } } : null,
+        },
+        Date: FakeDate,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            pending: humanPending, status: humanStatus, sniff: humanSniff, watch: humanWatchTick,
+            onClose: humanOnSocketClose, onTracked: humanOnSocketTracked, onForbidden: humanOnRestForbidden,
+            HUMAN_ALERT_DELAY_MS, HUMAN_ALERT_GAP_MS, HUMAN_POLL_MS, HUMAN_WATCH_MS, HUMAN_WIDGET_MS,
+            flush: () => new Promise(r => setImmediate(r)),
+        };`);
+    const api = factory(...Object.values(ctx));
+    return { api, state, clock };
+}
+
+module.exports = { loadHumanModule, loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
