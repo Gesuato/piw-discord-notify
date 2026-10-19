@@ -971,7 +971,7 @@ function loadGuildModule(cfg, init) {
     state.fire = (ms) => { const due = state.timers.filter(t => t.ms <= ms); state.timers = state.timers.filter(t => t.ms > ms); clock.now += ms; for (const t of due) t.fn(); };
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
-            handleGuild, guildRouteTick, guildPlan, guildStatus, guildRouteLine, guildKeepsItem, guildOnHuntChange, guildOnFishingCooldown, guildActionDone, guildOnError, fishOnMessage, guildOnKill,
+            handleGuild, guildRouteTick, guildPlan, guildStatus, guildRouteLine, guildKeepsItem, guildOnHuntChange, guildOnFishingCooldown, guildActionDone, guildOnError, fishOnMessage, guildOnKill, guildRouteOrder, guildOrderText,
             setHunt(slug) { huntSlug = slug; },
             get guildTarget() { return guildTarget; }, get guildFrom() { return guildFrom; }, get guildWait() { return guildWait; }, get guildPending() { return guildPending; }, get guildLast() { return guildLast; },
         };`);

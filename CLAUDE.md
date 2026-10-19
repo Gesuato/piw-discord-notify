@@ -347,6 +347,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   /api/game/fishing-tier` na faixa natural + `switchHunt('pesca', 1, 'guild')`, reentra após `fishing-cooldown`); 4ª rota excludente do
   Salvar (treino/captura/clã); espera viagem/cura/troca/Daily; `guildFrom` = volta; `guildOnHuntChange` reentra 8 s depois; falha de
   entrada = `guildFailed` na sessão. Teste: `node test/guild.test.js` (`loadGuildModule`: `// ---- Guild` até `// ---- Clã`, inclui a Pesca).
+  v3.42.0: a ordem tributo → Derrotar → pesca NÃO é mais fixa: `cfg.guildRouteOrder` (select "Prioridade" da aba Guild, lista de
+  `tributo`/`fish`/`kill`; `guildRouteOrder(d)` normaliza texto/lista e completa com o padrão `GUILD_ORDER_DEFAULT` = tributo → pesca →
+  "Derrotar", pedido do usuário em 19/10/2026). `guildPlan` monta as partes e ordena por ela; objetivo `done` ou com a parte no teto sai
+  do plano e o próximo entra. Caso 7 do `test/guild.test.js`.
   v3.39.1 (pedido em 16/10/2026: "cada personagem só pode matar 9600 e fica nessa quest"): cada caçada traz `mine` (parte do personagem)
   e `cap` (teto por membro, 40% da meta; bundle "Sua parte: n/cap — o resto precisa vir de outros membros"). `guildHuntCapped(h)` =
   `mine >= cap` com `done: false` → a caçada sai do plano desta conta (motivo `sua parte da caçada "…" fechou`), a rota segue para o

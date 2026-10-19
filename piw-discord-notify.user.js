@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.41.0
+// @version      3.42.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.41.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.42.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -99,6 +99,7 @@
         guildHuntEnabled: false, // v3.32.0 rota da guild (4ª rota excludente): caçar a espécie da caçada "Derrotar" até a meta fechar
         guildFishEnabled: false, // ...pescar (hunt `pesca`, faixa natural da skill) para a caçada "Pescar peixes"
         guildFarmTribute: false, // ...farmar o item do Tributo do Dia na hunt que mais o dropa (e depositar)
+        guildRouteOrder: ['tributo', 'fish', 'kill'], // v3.42.0 prioridade dos objetivos da rota da guild (1º que der entra); pedido: pesca antes do "Derrotar"
         farmEnabled: false,     // v3.33.0 Farm por lista (aba 🎒): dropar N de cada item na hunt do monstro indicado, um item de cada vez
         farmList: [],           // ...[{ item, qty, hunt, got }] em ordem; hunt '' = a que mais dropa o item até o nível do time; got = drops contados
         clanEnabled: false,     // v3.17.0 Clã (aba Profissão): acompanhar a tarefa de rank, guardar os itens base, converter na viagem
@@ -4322,7 +4323,17 @@
         const cands = huntCatalog.filter(h => h.slug === slug || normalize(h.speciesName || '') === k || normalize(h.name) === k).sort((a, b) => (a.slug === slug ? -1 : 1) - (b.slug === slug ? -1 : 1) || a.level - b.level);
         return cands.find(h => !guildFailed.has(h.slug) && h.level <= cap) || (cands[0] ? Object.assign({}, cands[0], { foraDoNivel: true }) : null);
     }
-    // Plano ordenado: [{ kind, slug, name, level, motivo }] ; `motivos` = por que cada parte ligada não entrou.
+    // Prioridade dos objetivos (v3.42.0): `cfg.guildRouteOrder` = ['tributo'|'fish'|'kill' …]; config velha/inválida = padrão.
+    const GUILD_ORDER_DEFAULT = ['tributo', 'fish', 'kill'];
+    const GUILD_ORDER_LABEL = { tributo: 'tributo', fish: 'pesca', kill: '"Derrotar"' };
+    function guildRouteOrder(d) {
+        d = d || cfg;
+        const raw = Array.isArray(d.guildRouteOrder) ? d.guildRouteOrder : String(d.guildRouteOrder || '').split(',');
+        const vistos = raw.map(k => String(k || '').trim().toLowerCase()).filter((k, i, a) => GUILD_ORDER_DEFAULT.includes(k) && a.indexOf(k) === i);
+        return vistos.concat(GUILD_ORDER_DEFAULT.filter(k => !vistos.includes(k)));
+    }
+    function guildOrderText(d) { return guildRouteOrder(d).map(k => GUILD_ORDER_LABEL[k]).join(' → '); }
+    // Plano ordenado pela prioridade do painel: [{ kind, slug, name, level, motivo }] ; `motivos` = por que cada parte ligada não entrou.
     function guildPlan() {
         const m = lastGuild;
         const out = [], motivos = [];
@@ -4366,6 +4377,8 @@
             else if (guildFailed.has(FISH_SLUG)) motivos.push('a entrada na pesca não confirmou nesta sessão');
             else out.push({ kind: 'fish', slug: FISH_SLUG, name: 'Pesca', level: 0, motivo: `pescar ${guildN(fish.progress)}/${guildN(fish.goal)}${guildHuntShare(fish)}` });
         }
+        const ordem = guildRouteOrder();
+        out.sort((a, b) => ordem.indexOf(a.kind) - ordem.indexOf(b.kind));
         return { plano: out, motivos };
     }
     function guildSetWait(motivo) {
@@ -6725,7 +6738,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? `daily sozinha (${dailyAreas(d).join('+')})` : 'daily') : '', d.giftEnabled ? 'gift' : '', d.evolveEnabled ? 'evolução' : '', d.slotEnabled ? 'slot machine' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Breeding: ${d.breedEnabled ? `${breedActiveLines(d).length} ${breedActiveLines(d).length === 1 ? 'linhagem' : 'linhagens'}${d.breedDouble ? ' + dobrar' : ''}` : 'desligado'}`,
-            `Guild: ${[guildDonateWanted(d) > 0 ? `doa ${guildN(guildDonateWanted(d))}/dia` : '', d.guildTributeEnabled ? 'tributo' : '', d.guildFarmTribute ? 'farma tributo' : '', d.guildHuntEnabled ? 'caça' : '', d.guildFishEnabled ? 'pesca' : '', d.guildAlerts ? 'avisos' : ''].filter(Boolean).join(' + ') || 'desligada'}`,
+            `Guild: ${[guildDonateWanted(d) > 0 ? `doa ${guildN(guildDonateWanted(d))}/dia` : '', d.guildTributeEnabled ? 'tributo' : '', d.guildFarmTribute ? 'farma tributo' : '', d.guildHuntEnabled ? 'caça' : '', d.guildFishEnabled ? 'pesca' : '', guildRouteOn(d) ? `ordem ${guildOrderText(d)}` : '', d.guildAlerts ? 'avisos' : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Farm: ${d.farmEnabled && farmList(d).length ? `${farmList(d).filter(farmEntryDone).length}/${farmList(d).length} itens` : 'desligado'}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
         ].join(' · ');
@@ -7037,8 +7050,16 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <label class="dn-toggle"><input id="pg-dn-guild-hunt" type="checkbox"><span class="sw"></span>Caçar a espécie da caçada "Derrotar" <span class="dn-hint">(vai para a hunt da espécie até a meta fechar)</span></label>
                         <label class="dn-toggle"><input id="pg-dn-guild-fish" type="checkbox"><span class="sw"></span>Pescar para a caçada "Pescar peixes" <span class="dn-hint">(faixa natural da sua skill, na hunt de pesca)</span></label>
                         <label class="dn-toggle"><input id="pg-dn-guild-farm" type="checkbox"><span class="sw"></span>Farmar o item do Tributo do Dia <span class="dn-hint">(vai para a hunt que mais dropa o item e deposita, mesmo com o depósito acima desligado)</span></label>
+                        <div class="dn-inline">Prioridade <select id="pg-dn-guild-order" class="dn-input">
+                            <option value="tributo,fish,kill">tributo → pesca → "Derrotar"</option>
+                            <option value="tributo,kill,fish">tributo → "Derrotar" → pesca</option>
+                            <option value="fish,tributo,kill">pesca → tributo → "Derrotar"</option>
+                            <option value="fish,kill,tributo">pesca → "Derrotar" → tributo</option>
+                            <option value="kill,tributo,fish">"Derrotar" → tributo → pesca</option>
+                            <option value="kill,fish,tributo">"Derrotar" → pesca → tributo</option>
+                        </select> <span class="dn-hint">(o 1º objetivo ligado e ainda aberto vence; os outros entram quando ele fecha)</span></div>
                         <div class="dn-status"><span>🧭</span><span id="pg-dn-guild-route"></span></div>
-                        <p class="dn-help">Ordem: tributo, depois "Derrotar", depois pesca. É a 4ª rota que manda na hunt: ligar aqui desliga a rota de treino, a de captura e a do clã (e vice-versa). A Daily Kill tem prioridade. Quando os objetivos fecham, o dia reinicia ou você desliga, a conta volta para a hunt em que estava. Hunt acima do nível do time é pulada. Cada membro conta só até um teto por caçada ("Sua parte" na janela da guild, 40% da meta): quando a sua parte fecha, a conta passa para o próximo objetivo ou volta para a hunt de origem em vez de ficar na hunt sem contar.</p>
+                        <p class="dn-help">A prioridade acima decide para onde a conta vai quando mais de um objetivo está ligado e aberto. É a 4ª rota que manda na hunt: ligar aqui desliga a rota de treino, a de captura e a do clã (e vice-versa). A Daily Kill tem prioridade. Quando os objetivos fecham, o dia reinicia ou você desliga, a conta volta para a hunt em que estava. Hunt acima do nível do time é pulada. Cada membro conta só até um teto por caçada ("Sua parte" na janela da guild, 40% da meta): quando a sua parte fecha, a conta passa para o próximo objetivo ou volta para a hunt de origem em vez de ficar na hunt sem contar.</p>
                     </div>
                     <div class="dn-section">
                         <h3>🔔 Avisos da guild</h3>
@@ -7238,6 +7259,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 guildHuntEnabled: $('#pg-dn-guild-hunt').checked,
                 guildFishEnabled: $('#pg-dn-guild-fish').checked,
                 guildFarmTribute: $('#pg-dn-guild-farm').checked,
+                guildRouteOrder: guildRouteOrder({ guildRouteOrder: $('#pg-dn-guild-order').value }),
                 giftCenterMode: ['daily', 'all', ''].includes($('#pg-dn-gift-center').value) ? $('#pg-dn-gift-center').value : 'daily',
                 clanEnabled: $('#pg-dn-clan').checked,
                 depositItems: $('#pg-dn-dep-items').value || '',
@@ -8138,6 +8160,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-guild-hunt').checked = Boolean(cfg.guildHuntEnabled);
             $('#pg-dn-guild-fish').checked = Boolean(cfg.guildFishEnabled);
             $('#pg-dn-guild-farm').checked = Boolean(cfg.guildFarmTribute);
+            $('#pg-dn-guild-order').value = guildRouteOrder(cfg).join(',');
             $('#pg-dn-farm').checked = Boolean(cfg.farmEnabled);
             $('#pg-dn-farm-list').value = farmList(cfg).map(farmLineText).join('\n');
             for (const n of [1, 2]) delete $(`#pg-dn-breed-l${n}`).dataset.ready;   // menus refeitos a partir do cfg salvo
@@ -8235,7 +8258,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const giftAntes = JSON.stringify([cfg.giftEnabled, cfg.giftCenterMode]);
             const slotAntes = JSON.stringify([cfg.slotEnabled, cfg.slotWanted]);
             const breedAntes = JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble]);
-            const guildAntes = JSON.stringify([cfg.guildDonateGold, cfg.guildDonateKeep, cfg.guildTributeEnabled, cfg.guildTributeKeep, cfg.guildAlerts, cfg.guildHuntEnabled, cfg.guildFishEnabled, cfg.guildFarmTribute]);
+            const guildAntes = JSON.stringify([cfg.guildDonateGold, cfg.guildDonateKeep, cfg.guildTributeEnabled, cfg.guildTributeKeep, cfg.guildAlerts, cfg.guildHuntEnabled, cfg.guildFishEnabled, cfg.guildFarmTribute, cfg.guildRouteOrder]);
             const capturaAntes = JSON.stringify([cfg.catchRouteEnabled, cfg.catchRouteAreas, cfg.catchRouteMaxLevel]);
             const viagemAntes = JSON.stringify([cfg.tripEveryMin, cfg.tripEveryMaxMin]);
             const ligouCaptura = draft.catchRouteEnabled && !cfg.catchRouteEnabled;
@@ -8288,7 +8311,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 breedReset();
                 if (cfg.breedEnabled) setTimeout(() => breedTick(true), 500);
             }
-            if (JSON.stringify([cfg.guildDonateGold, cfg.guildDonateKeep, cfg.guildTributeEnabled, cfg.guildTributeKeep, cfg.guildAlerts, cfg.guildHuntEnabled, cfg.guildFishEnabled, cfg.guildFarmTribute]) !== guildAntes) { // guild mudou: rearma e relê já
+            if (JSON.stringify([cfg.guildDonateGold, cfg.guildDonateKeep, cfg.guildTributeEnabled, cfg.guildTributeKeep, cfg.guildAlerts, cfg.guildHuntEnabled, cfg.guildFishEnabled, cfg.guildFarmTribute, cfg.guildRouteOrder]) !== guildAntes) { // guild mudou: rearma e relê já
                 guildTriedAt = {};
                 guildFailed.clear();
                 if (!guildRouteOn() && guildTarget) guildReturn('rota da guild desligada');
@@ -8568,7 +8591,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
         '| captura:', cfg.catchRouteEnabled ? `${catchAreas().join('+')}${cfg.catchRouteMaxLevel ? ` até lv ${cfg.catchRouteMaxLevel}` : ''}${cfg.catchRouteAuto ? ' + bola' : ''}` : 'não',
         '| daily:', cfg.dailyEnabled ? `${cfg.dailyAuto ? `sozinha (${dailyAreas().join('+')}), ` : ''}volta para ${dailyReturnTarget() || 'a hunt anterior'}${cfg.dailyClaim ? ' + resgate' : ''}` : 'não',
         '| gift:', cfg.giftEnabled ? `sim (Gift Center: ${giftCenterMode() || 'não mexe'})` : 'não',
-        '| guild:', guildOn() ? [guildDonateWanted() > 0 ? `doa ${guildDonateWanted()}/dia` : '', cfg.guildTributeEnabled ? 'tributo' : '', cfg.guildFarmTribute ? 'farma tributo' : '', cfg.guildHuntEnabled ? 'caça' : '', cfg.guildFishEnabled ? 'pesca' : '', cfg.guildAlerts ? 'avisos' : ''].filter(Boolean).join(' + ') : 'não',
+        '| guild:', guildOn() ? [guildDonateWanted() > 0 ? `doa ${guildDonateWanted()}/dia` : '', cfg.guildTributeEnabled ? 'tributo' : '', cfg.guildFarmTribute ? 'farma tributo' : '', cfg.guildHuntEnabled ? 'caça' : '', cfg.guildFishEnabled ? 'pesca' : '', guildRouteOn() ? `ordem ${guildOrderText()}` : '', cfg.guildAlerts ? 'avisos' : ''].filter(Boolean).join(' + ') : 'não',
         '| venda pokes:', cfg.pokeSellEnabled ? TIERS_ASC.filter(t => pokeSellLimit(cfg, t.key) > 0).map(t => `${t.name}<${pokeSellLimit(cfg, t.key)}`).join(' ') || 'sem limites' : 'não',
         '| venda drops:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens` : 'não',
         '| viagem à cidade:', `${cfg.tripCity} a cada ${cfg.tripEveryMin}${cfg.tripEveryMaxMin > cfg.tripEveryMin ? `–${cfg.tripEveryMaxMin}` : ''} min`,

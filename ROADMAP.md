@@ -740,6 +740,10 @@ na faixa natural + `switchHunt('pesca')`, reentra após `fishing-cooldown`). Ord
 Salvar; espera viagem/cura/troca/Daily; volta para `guildFrom` quando fecha, o dia reinicia ou desliga; `guildOnHuntChange` volta ao
 alvo 8 s depois de a tela trocar. Logs `guild-alvo`, `guild-espera`, `guild-volta`, `guild-reentrada`, `guild-hunt-falhou`, `pesca-faixa`,
 `pesca-reentra`. Teste: `node test/guild.test.js` (`loadGuildModule`). Dailies por região ficam para depois (o usuário não pediu).
+v3.42.0 (pedido do usuário em 19/10/2026: "pescaria com prioridade maior que Derrotar nos Objetivos"): a ordem virou o select
+"Prioridade" da aba Guild (`cfg.guildRouteOrder`, lista de `tributo`/`fish`/`kill`; padrão tributo → pesca → "Derrotar"; config antiga
+sem a chave cai no padrão). O 1º objetivo ligado e ainda aberto vence; objetivo fechado (`done`) ou com a parte do membro no teto sai
+do plano e o próximo entra. Caso 7 do `test/guild.test.js`.
 
 **v3.39.1 (16/10/2026) — teto por membro nas caçadas:** o jogo passou a mandar `hunts[].mine` (a parte do personagem) e `hunts[].cap`
 (40% da meta; "Sua parte: n/cap — o resto precisa vir de outros membros"). Caso real: Derrotar Sunflora 19.200/24.000 parado por horas com

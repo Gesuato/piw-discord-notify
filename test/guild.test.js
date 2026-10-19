@@ -1,4 +1,4 @@
-// Guild (v3.32.0): doação, tributo e rota da guild (tributo → Derrotar → pesca). Rodar: node test/guild.test.js
+// Guild (v3.32.0): doação, tributo e rota da guild (ordem do painel; v3.42.0 padrão tributo → pesca → Derrotar). Rodar: node test/guild.test.js
 const { loadGuildModule, assert } = require('./harness');
 
 const CREATURES = [
@@ -35,7 +35,7 @@ const fishApi = (s) => (url, opts) => {
     return { skill: 12, inLevel: 2, forNext: 20, selected: s.selected ?? 0, cooldownMs: s.cooldown || 0, tiers: [{ id: 0, unlocked: true, natural: false, minSkill: 0, mobLevel: [5, 10], names: ['Magikarp'] }, { id: 1, unlocked: true, natural: true, minSkill: 10, mobLevel: [10, 18], names: ['Poliwag', 'Goldeen'] }, { id: 2, unlocked: false, natural: false, minSkill: 20, mobLevel: [26, 36], names: ['Staryu'] }] };
 };
 const flush = () => new Promise(r => setImmediate(r));
-const base = (extra) => Object.assign({ guildDonateGold: 0, guildDonateKeep: 0, guildTributeEnabled: false, guildTributeKeep: 0, guildAlerts: false, guildHuntEnabled: false, guildFishEnabled: false, guildFarmTribute: false }, extra || {});
+const base = (extra) => Object.assign({ guildDonateGold: 0, guildDonateKeep: 0, guildTributeEnabled: false, guildTributeKeep: 0, guildAlerts: false, guildHuntEnabled: false, guildFishEnabled: false, guildFarmTribute: false, guildRouteOrder: ['tributo', 'kill', 'fish'] }, extra || {}); // casos 3–6 usam a ordem antiga (tributo → Derrotar → pesca)
 
 (async () => {
     // 1) doação: doa o que falta até o valor (teto − doado, gold − reserva); frame de resposta confirma; teto batido = segura até o reinício do dia
@@ -173,5 +173,32 @@ const base = (extra) => Object.assign({ guildDonateGold: 0, guildDonateKeep: 0, 
         assert(b.guildTarget && b.guildTarget.slug === 'grovyle', 'sem cap no frame: Derrotar continua alvo');
     }
 
-    console.log('OK guild.test — doação, tributo, rota (tributo → Derrotar → pesca), reentrada, cooldown da pesca, volta, avisos e teto por membro');
+    // 7) v3.42.0: prioridade dos objetivos pelo painel (`guildRouteOrder`). Sem a chave (config antiga) vale o padrão tributo → pesca →
+    //    Derrotar; aceita a lista como texto do select; chave inválida/faltando completa com o padrão; a ordem decide o 1º alvo.
+    {
+        const semChave = base({ guildHuntEnabled: true, guildFishEnabled: true, guildFarmTribute: true });
+        delete semChave.guildRouteOrder;
+        const s = {};
+        const { api, state } = loadGuildModule(semChave, { api: fishApi(s), creatures: CREATURES, huntCatalog: CATALOGO, team: TIME, huntSlug: 'ancient_pinsir' });
+        assert(JSON.stringify(api.guildRouteOrder()) === JSON.stringify(['tributo', 'fish', 'kill']), 'sem chave = padrão tributo → pesca → Derrotar: ' + JSON.stringify(api.guildRouteOrder()));
+        assert(JSON.stringify(api.guildRouteOrder({ guildRouteOrder: 'kill, fish' })) === JSON.stringify(['kill', 'fish', 'tributo']), 'texto do select + completa o que falta');
+        assert(JSON.stringify(api.guildRouteOrder({ guildRouteOrder: ['x', 'fish', 'fish'] })) === JSON.stringify(['fish', 'tributo', 'kill']), 'ignora chave inválida e repetida');
+        assert(api.guildOrderText({ guildRouteOrder: ['fish', 'kill', 'tributo'] }) === 'pesca → "Derrotar" → tributo', 'texto da ordem: ' + api.guildOrderText({ guildRouteOrder: ['fish', 'kill', 'tributo'] }));
+        // tributo já fechado, Derrotar e pesca abertos: pelo padrão vai PESCAR, não caçar
+        api.handleGuild(frame({ tprog: 3770 }));
+        await flush(); await flush(); await flush();
+        assert(api.guildTarget && api.guildTarget.kind === 'fish' && state.switches[0] && state.switches[0].slug === 'pesca', 'padrão novo: pesca antes do Derrotar: ' + JSON.stringify({ alvo: api.guildTarget, switches: state.switches }));
+        api.setHunt('pesca');
+        // pesca fechou → Derrotar
+        api.handleGuild(frame({ tprog: 3770, fish: 5000 }));
+        await flush(); await flush();
+        assert(api.guildTarget && api.guildTarget.kind === 'kill' && api.guildTarget.slug === 'grovyle', 'pesca fechada → Derrotar: ' + JSON.stringify(api.guildTarget));
+        // ordem "Derrotar" primeiro: mesmo frame com tudo aberto = caça
+        const { api: b, state: sb } = loadGuildModule(base({ guildHuntEnabled: true, guildFishEnabled: true, guildFarmTribute: true, guildRouteOrder: 'kill,fish,tributo' }), { api: fishApi({}), creatures: CREATURES, huntCatalog: CATALOGO, team: TIME, huntSlug: 'ancient_pinsir' });
+        b.handleGuild(frame({ mine: 0 }));
+        await flush(); await flush();
+        assert(b.guildTarget && b.guildTarget.kind === 'kill' && sb.switches[0].slug === 'grovyle', 'ordem Derrotar primeiro: caça mesmo com tributo aberto: ' + JSON.stringify(b.guildTarget));
+    }
+
+    console.log('OK guild.test — doação, tributo, rota (ordem do painel), reentrada, cooldown da pesca, volta, avisos, teto por membro e prioridade dos objetivos');
 })().catch(e => { console.error(e); process.exit(1); });
