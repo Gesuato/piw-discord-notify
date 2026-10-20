@@ -302,7 +302,7 @@ toast "Verificação humana necessária — confirme no aviso para continuar."
   `humano-ok { origem, aposSeg }`; avisa no canal de alertas 20 s depois (repete a cada 15 min, avisa ao resolver), segura a volta da
   cidade e, num 403 dos próprios REST, dispara `pw:human-check` para a tela abrir a janela. Teste: `node test/human.test.js`.
 
-### Auto Boss (bundle em 19/10/2026 — formatos ainda NÃO vistos no log; módulo `// ---- Auto Boss` na v3.43.0)
+### Auto Boss (bundle em 19/10/2026; frame `auto-boss` CONFIRMADO no log em 20/10/2026 01:36Z, conta1; módulo `// ---- Auto Boss` na v3.43.0)
 
 O jogo tem, na janela Bosses (`button[data-guide="dock-bosses"]`), o botão "⟳ Auto Boss" (`.boss-autobtn`, só para boss com
 `arena` no catálogo): "lutas automáticas em sequência". Texto do jogo (i18n `window.bosses.auto.*`): "A luta se renova sozinha até
@@ -321,14 +321,24 @@ estando numa cidade". Tudo pelo **socket**:
   `stopped` (o jogador parou), `error` ("A próxima luta não pôde começar (time, líder desmaiado ou arena)"), `left` ("Auto Boss
   encerrado — você saiu da arena": qualquer `leave-hunt`/`enter-hunt` encerra) e `hunting` (start recusado: conta em hunt). Frame
   inativo SEM `reason` = "nada rodando" (resposta ao get). A tela mostra a janela-resumo (`.abs-window`) quando `started > 0`.
-- Ao aceitar o start, a tela viaja para o mapa da arena (`og[bossKey].arena.map`); o script vê a hunt `cruel_boss`/`aero_boss`
-  (`field`/`field-kill` chegam como numa hunt). Visto na conta1 em 20/10/2026 01:00Z; a sessão sumiu após uma queda do socket (1006).
+- Ao aceitar o start, a TELA viaja para o mapa da arena (`nT` → `nS(t.arena)` → `nb(arena.map)` no bundle; antes confere líder com hp > 0
+  e time sem espécie repetida) e o componente da hunt manda `enter-hunt { slug:'cruel_boss' }` ao montar (e a cada 2,5 s sem `field` por
+  10 s); o script vê a hunt `cruel_boss`/`aero_boss` (`field`/`field-kill` chegam como numa hunt). **O servidor só começa a luta com o
+  personagem na arena**: start aceito sem ninguém viajar = 30 s em `phase:'starting'` e `auto-boss { active:false, reason:'error' }`
+  (conta1, 20/10/2026 02:02–02:10Z, 10 vezes seguidas com o start do script). Com a luta anterior ainda fechando, o start responde
+  `error { message:"Sua luta de boss anterior ainda está terminando — aguarde alguns segundos." }` + frame `error`; start com sessão
+  ativa: `error { message:"O Auto Boss já está ativo." }`. Visto na conta1 em 20/10/2026 01:00Z; a sessão sumiu após uma queda do socket
+  (1006): o `auto-boss-get` da reconexão respondeu `active:false` sem `reason` e sem `bossKey`.
+- Frame real (20/10/2026 01:36Z): chaves `active, bossKey, bossName, phase, total, started, wins, losses, loot, fee, spent, elapsedMs,
+  last`; `fee { itemId, name, qty }`; `loot`/`last` nulos no começo.
 - Histórico e lutas manuais são REST: `GET /api/game/boss` → `{ bosses[keys liberados], penalties{ key:{ strength, mult } },
   arenas{ key: arena }, state }`; `POST /api/game/boss/action { action:'start'|'round'|'abandon', bossKey?, count? }`. Não usados.
 - O script (v3.43.0): guarda a intenção do `auto-boss-start` da tela (`localStorage.pgDiscordNotifyBoss`), registra `auto-boss-campos`
   (1º frame), `auto-boss` (mudanças), `auto-boss-envio`, `auto-boss-get`, `auto-boss-parado`, `auto-boss-retomada { fase }`,
   `auto-boss-fim`, `auto-boss-desisti`, `auto-boss-recusado`, `auto-boss-lembrado`; retoma com `leave-hunt` + `set-city` (se em hunt),
-  `joy-heal`, `inv-get` (tokens) e `auto-boss-start` com `total − wins − losses` lutas (teto: tokens). Teste: `node test/boss.test.js`.
+  `joy-heal`, `inv-get` (tokens) e `auto-boss-start` com `total − wins − losses` lutas (teto: tokens). v3.43.1: aceito o start, injeta o
+  `hunt-resume { slug:'cruel_boss' }` sintético para a tela viajar (como `switchHunt`) e, sem a hunt da arena em 4 s, manda o
+  `enter-hunt` ele mesmo (log `auto-boss-arena { slug, tela, chegou, direto }`). Teste: `node test/boss.test.js`.
 
 ## Ideias que esses nomes destravam
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.43.0
+// @version      3.43.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.43.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.43.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -1269,6 +1269,7 @@
                 if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) continue;   // item base/de clã que a tarefa ainda pede
                 if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) continue;  // v3.31.0: item do Tributo do Dia da guild
                 if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) continue;    // v3.33.0: item da lista de farm
+                if (typeof bossKeepsItem === 'function' && bossKeepsItem(id)) continue;    // v3.43.1: token do Auto Boss pendente
                 const keep = Math.max(0, Number(cfg.sellItems[id]?.keep) || 0);
                 const qty = Math.floor(Number(inv.quantity) || 0) - keep;
                 if (qty <= 0) continue;
@@ -5059,6 +5060,7 @@
         if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) return 'tarefa do clã';
         if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) return 'tributo da guild';
         if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) return 'lista de farm';
+        if (typeof bossKeepsItem === 'function' && bossKeepsItem(id)) return 'token do Auto Boss';
         return null;
     }
     // Motivo para um Pokémon NÃO ir para a família, ou null se vai.
@@ -5139,6 +5141,7 @@
                     if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) continue;
                     if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) continue;
                     if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) continue;
+                    if (typeof bossKeepsItem === 'function' && bossKeepsItem(id)) continue;   // v3.43.1: token do Auto Boss pendente
                     const qty = Math.floor(Number(inv.quantity) || 0) - e.keep;
                     if (qty <= 0) continue;
                     if (!familiaNaConta()) break;
@@ -5847,6 +5850,7 @@
     function handleGameError(message) {
         logEvent('erro-jogo', { message: message.message || null });
         if (typeof guildOnError === 'function') guildOnError(message);
+        if (typeof bossOnError === 'function') bossOnError(message);          // v3.43.1: texto do erro no log da retomada do Auto Boss
         if (familyPending) familyPending.resolve({ ok: false, motivo: message.message || 'erro do jogo' });
         if (huntSwitch?.origem === 'captura' && huntSwitch.at && catchTarget && huntSwitch.slug === catchTarget.slug) {
             const slug = huntSwitch.slug;
@@ -5896,21 +5900,32 @@
     // passa a bola para ela). Recusa logo depois do start feito na mão (sessão nunca ativa) não é retomada: o jogo já avisou o jogador.
     // Enquanto o Auto Boss roda ou a retomada está pendente (`bossBusy()`), viagem à cidade, parada na cidade, recarga, rotas
     // (captura/guild/farm/clã/daily sozinha), troca de líder e cura esperam — qualquer `leave-hunt` do script mataria a sessão
-    // ("Auto Boss encerrado — você saiu da arena"). Até 3 tentativas por parada (15/30/60 s) e 10 retomadas por sessão; depois desiste
-    // e avisa. Avisos (retomada, desistência, fim) no canal de Alertas com `bossAlerts`. Nunca gasta Poke Slot Cards/diamantes: só
+    // ("Auto Boss encerrado — você saiu da arena"). Até 4 tentativas por parada (10/20/40/60 s) e 10 retomadas por sessão; depois desiste
+    // e avisa. v3.43.1 (visto na conta1 em 20/10/2026 02:02–02:10Z): o servidor ACEITA o start mas só começa a luta com o personagem
+    // dentro da arena — no start feito na mão é a TELA que viaja para o mapa da arena (`nS` → `nb(arena.map)` no bundle) e o
+    // componente da hunt manda `enter-hunt { slug:'cruel_boss' }`; o start do script não fazia a tela viajar, a conta ficava na cidade,
+    // 30 s em `starting` e `error`, 10 retomadas seguidas. Agora, aceito o start, o script faz a tela viajar (`hunt-resume` sintético,
+    // o mesmo de `switchHunt`) e, sem a hunt da arena em 4 s, manda o `enter-hunt` ele mesmo (`bossEnterArena`, log `auto-boss-arena`);
+    // 3 retomadas seguidas sem a luta começar (`fought`/`noFight`) desistem cedo; o item do token fica fora do guardar na cidade e da
+    // venda enquanto há boss pendente (`bossKeepsItem`: a viagem das 02:11Z depositou os 97 tokens na família). Avisos (retomada, desistência, fim) no canal de Alertas com `bossAlerts`. Nunca gasta Poke Slot Cards/diamantes: só
     // repete o que o jogador pediu. Teste: `node test/boss.test.js` (`loadBossModule`).
     const BOSS_KEY = 'pgDiscordNotifyBoss';
     const BOSS_INTENT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
     const BOSS_AFTER_SOCKET_MS = 6000;
     const BOSS_RESUME_DELAY_MS = 8000;        // depois do frame que parou: a tela ainda está voltando do mapa da arena
-    const BOSS_RETRY_MS = [15000, 30000, 60000];
+    const BOSS_RETRY_MS = [10000, 20000, 40000, 60000];
+    const BOSS_ARENA_WAIT_MS = 4000;          // start aceito: a tela viaja para a arena; sem a hunt da arena até lá, o script manda o enter-hunt
+    const BOSS_MAX_NO_FIGHT = 3;              // retomadas seguidas em que a luta nem começou (time/líder/arena): desiste antes das 10
+    const BOSS_ARENAS = { cruel: 'cruel_boss', aerodactyl2: 'aero_boss' };   // tabela `og` do bundle (arena.map); a hunt vista na sessão ganha
+    const BOSS_FEE_ITEMS = [70000];           // Bronze Boss Token: entrada das duas arenas
+    const BOSS_KEEP_AFTER_MS = 2 * 60 * 60 * 1000;   // depois de desistir, o token ainda fica fora do guardar por 2 h (o jogador reinicia na mão)
     const BOSS_LEAVE_WAIT_MS = 1500;
     const BOSS_HEAL_WAIT_MS = 2500;
     const BOSS_INV_WAIT_MS = 4000;
     const BOSS_START_WAIT_MS = 8000;          // a tela também espera 8 s pela resposta do start
     const BOSS_STALE_MS = 10 * 60 * 1000;     // sessão ativa sem frame há 10 min: pergunta ao servidor
     const BOSS_TICK_MS = 60 * 1000;
-    const BOSS_MAX_TRIES = 3;
+    const BOSS_MAX_TRIES = 4;
     const BOSS_MAX_RESUMES = 10;
     const BOSS_END_REASONS = ['done', 'no-token', 'stopped'];
     const BOSS_REASON_LABEL = { done: 'concluído', lost: 'derrota', 'no-token': 'sem tokens', stopped: 'parado por você', error: 'erro do jogo (time, líder desmaiado ou arena)', left: 'saiu da arena', hunting: 'recusado: a conta está em hunt' };
@@ -5959,6 +5974,7 @@
             bossKey: String(rec.bossKey), bossName: rec.bossName ? String(rec.bossName) : null, total: Math.max(0, Number(rec.total) || 0),
             at: Number(rec.at) || Date.now(), origem: 'lembrado', resumes: Math.max(0, Number(rec.resumes) || 0), sawActive: Boolean(rec.sawActive),
             stopping: Boolean(rec.stopping), prog: rec.prog && typeof rec.prog === 'object' ? { total: Number(rec.prog.total) || 0, wins: Number(rec.prog.wins) || 0, losses: Number(rec.prog.losses) || 0 } : null,
+            arena: rec.arena ? String(rec.arena) : null, fought: false, noFight: Math.max(0, Number(rec.noFight) || 0),
         };
         logEvent('auto-boss-lembrado', { bossKey: bossWanted.bossKey, boss: bossWanted.bossName, lutas: bossWanted.total, progresso: bossWanted.prog, idadeMin: Math.round(idade / 60000), retomadas: bossWanted.resumes });
         bossNotify();
@@ -6001,7 +6017,7 @@
         if (m.type === 'auto-boss-start') {
             if (bossRun) return;                                   // é o nosso start (retomada): a intenção já está certa
             const count = Math.max(0, Number(m.count) || 0);
-            bossWanted = { bossKey: String(m.bossKey || ''), bossName: bossWanted?.bossKey === String(m.bossKey || '') ? bossWanted.bossName : null, total: count, at: Date.now(), origem: 'tela', resumes: 0, sawActive: false, stopping: false, prog: null };
+            bossWanted = { bossKey: String(m.bossKey || ''), bossName: bossWanted?.bossKey === String(m.bossKey || '') ? bossWanted.bossName : null, total: count, at: Date.now(), origem: 'tela', resumes: 0, sawActive: false, stopping: false, prog: null, arena: bossWanted?.bossKey === String(m.bossKey || '') ? bossWanted.arena : null, fought: false, noFight: 0 };
             bossSave();
             clearTimeout(bossRetryTimer); bossRetryTimer = null;   // o jogador reiniciou na mão
             logEvent('auto-boss-envio', { acao: 'start', bossKey: bossWanted.bossKey, lutas: count, hunt: huntSlug || null });
@@ -6038,12 +6054,14 @@
         if (mudou) logEvent('auto-boss', { ativo: s.active, motivo: s.reason, fase: s.phase, boss: s.bossName || s.bossKey, luta: `${s.started}/${s.total}`, vitorias: s.wins, derrotas: s.losses, tokens: s.spent, fee: s.fee ? `${s.fee.qty}x ${s.fee.name}` : null, ultima: s.last?.outcome ?? null, hunt: huntSlug || null });
         if (s.active) {
             if (!bossWanted || (s.bossKey && bossWanted.bossKey !== s.bossKey)) {   // sessão que o script não viu começar (carga no meio dela)
-                bossWanted = { bossKey: s.bossKey || bossWanted?.bossKey || '', bossName: s.bossName, total: s.total, at: Date.now(), origem: 'frame', resumes: 0, sawActive: true, stopping: false, prog: null };
+                bossWanted = { bossKey: s.bossKey || bossWanted?.bossKey || '', bossName: s.bossName, total: s.total, at: Date.now(), origem: 'frame', resumes: 0, sawActive: true, stopping: false, prog: null, arena: null, fought: false, noFight: 0 };
                 logEvent('auto-boss-intencao', { origem: 'frame', bossKey: bossWanted.bossKey, lutas: s.total });
             }
             bossWanted.sawActive = true;
             if (s.bossName) bossWanted.bossName = s.bossName;
             if (s.stopping) bossWanted.stopping = true;
+            if (bossIsArena(huntSlug)) bossWanted.arena = normalize(huntSlug);                          // mapa da arena desta sessão
+            if (s.phase === 'fighting' || s.phase === 'cooldown') { bossWanted.fought = true; bossWanted.noFight = 0; }   // a luta começou de verdade
             bossWanted.prog = { total: s.total, wins: s.wins, losses: s.losses };
             bossSave();
             if (bossRun?.waitStart) { const r = bossRun.waitStart; bossRun.waitStart = null; r(s); }
@@ -6066,6 +6084,10 @@
         if (reason === 'lost' && !cfg.bossResumeOnLoss) { bossFinish('lost', s, ref); return; }
         if (!bossOn()) { logEvent('auto-boss-parado', { motivo: reason || 'sem motivo', restantes, retomada: 'desligada no painel' }); bossWanted = null; bossSave(); bossNotify(); return; }
         if (restantes <= 0) { bossFinish(reason || 'done', s, ref); return; }
+        if (bossWanted.resumes > 0 && !bossWanted.fought) {                                                              // retomada aceita, mas a luta nem começou
+            bossWanted.noFight = (bossWanted.noFight || 0) + 1; bossSave();
+            if (bossWanted.noFight >= BOSS_MAX_NO_FIGHT) { bossGiveUp(`${BOSS_MAX_NO_FIGHT} retomadas seguidas sem a luta começar (time abaixo do nível do boss, líder desmaiado ou arena)`, reason || 'sem motivo'); return; }
+        }
         bossScheduleResume(reason || 'parou sem motivo (reconexão?)', restantes, reason === 'lost');
     }
 
@@ -6124,6 +6146,32 @@
         }
         bossNotify();
     }
+    // Frame `error { message }` do jogo durante a retomada (ex.: "Sua luta de boss anterior ainda está terminando — aguarde alguns
+    // segundos."): guarda o texto para o log da tentativa (o `auto-boss` com reason `error` chega junto e é ele que decide).
+    function bossOnError(message) {
+        if (bossRun) bossRun.lastError = String(message?.message || '').trim() || null;
+    }
+    function bossArenaSlug(w) { return (w && (w.arena || BOSS_ARENAS[w.bossKey])) || null; }
+    // Start aceito: o servidor só começa a luta com o personagem na arena. No start feito na mão é a TELA que viaja para o mapa da
+    // arena e o componente da hunt manda `enter-hunt { slug }`; o nosso start não faz a tela viajar, então injetamos o `hunt-resume`
+    // sintético (o mesmo de `switchHunt`: a tela viaja e manda o enter-hunt) e, sem a hunt da arena em 4 s, mandamos o enter-hunt.
+    async function bossEnterArena(slug, tentativa) {
+        if (bossRun) bossRun.fase = 'entrando na arena';
+        bossNotify();
+        const tela = typeof nudgeClientToHunt === 'function' ? Boolean(nudgeClientToHunt(slug)) : false;
+        await bossWait(BOSS_ARENA_WAIT_MS);
+        const chegou = normalize(huntSlug || '') === slug;
+        const direto = chegou ? false : sendGame({ type: 'enter-hunt', slug });
+        logEvent('auto-boss-arena', { slug, tela, chegou, direto, tentativa, hunt: huntSlug || null });
+    }
+    // Token do boss fora da venda e do guardar na cidade enquanto há Auto Boss pedido/rodando (e por 2 h depois de desistir).
+    function bossKeepsItem(id) {
+        const n = Number(id);
+        if (!(n > 0)) return false;
+        const pendente = Boolean(bossWanted) || bossBusy() || (bossLast?.reason === 'desisti' && Date.now() - bossLast.at < BOSS_KEEP_AFTER_MS);
+        if (!pendente) return false;
+        return n === bossFee()?.itemId || BOSS_FEE_ITEMS.includes(n);
+    }
     function bossSendStart(bossKey, count) {
         return new Promise(resolve => {
             let feito = false;
@@ -6178,7 +6226,7 @@
             bossNotify();
             const r = await bossSendStart(w.bossKey, lutas);
             if (r?.active) {
-                w.resumes += 1; w.total = r.total || lutas; w.sawActive = true; w.prog = { total: r.total || lutas, wins: r.wins, losses: r.losses }; bossSave();
+                w.resumes += 1; w.total = r.total || lutas; w.sawActive = true; w.fought = false; w.prog = { total: r.total || lutas, wins: r.wins, losses: r.losses }; bossSave();
                 logEvent('auto-boss-retomada', { fase: 'ok', tentativa, lutas, boss: r.bossName || w.bossKey, retomadas: w.resumes });
                 if (cfg.bossAlerts !== false) {
                     const who = playerName();
@@ -6188,11 +6236,15 @@
                         embeds: [{ title: `Auto Boss retomado: ${r.bossName || w.bossName || w.bossKey}`, color: 0x5865f2, description: (who ? `Conta: ${who}\n` : '') + `Lutas pedidas: ${lutas}${fee ? ` (${fee.qty}× ${fee.name} cada)` : ''} · retomada ${w.resumes} nesta sessão · tentativa ${tentativa}\nEm ${new Date().toLocaleString('pt-BR')}` }],
                     }, { evento: 'auto-boss-retomada', boss: w.bossKey, lutas, retomadas: w.resumes });
                 }
+                const arena = bossArenaSlug(w);
+                if (arena) await bossEnterArena(arena, tentativa);
+                else logEvent('auto-boss-arena', { slug: null, tela: false, chegou: false, direto: false, tentativa, hunt: huntSlug || null, porque: 'arena desconhecida para este boss' });
                 return;
             }
             if (r?.reason === 'no-token') { bossGiveUp(`o jogo diz que não há ${fee?.name || 'tokens'} suficientes`, motivo); return; }
+            const erro = bossRun?.lastError || null;
             bossRun = null;
-            bossRetry(motivo, restantes, curar, tentativa, !r ? 'sem resposta em 8 s' : `recusado: ${BOSS_REASON_LABEL[r.reason] || r.reason || 'sem motivo'}`);
+            bossRetry(motivo, restantes, curar, tentativa, !r ? 'sem resposta em 8 s' : `recusado: ${erro || BOSS_REASON_LABEL[r.reason] || r.reason || 'sem motivo'}`);
         } catch (err) {
             bossRun = null;
             bossRetry(motivo, restantes, curar, tentativa, String(err?.message || err));

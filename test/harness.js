@@ -1111,7 +1111,8 @@ const BO_START = '    // ---- Auto Boss (v3.43.0)';
 const BO_END = '    // ---- Verificação humana';
 // Auto Boss (v3.43.0): `init.huntSlug` (mutável por api.setHunt), `init.store` (localStorage), `init.socket: false` = sendGame falha;
 // `state.sent` = o que foi mandado ao jogo; `state.onSend(obj)` = gancho (ex.: reinjetar em api.onOutgoing, como handleOutgoing faz);
-// `state.heals` = chamadas a healStart; timers em `state.timers`, `state.fire(ms)` dispara os desse prazo e avança o relógio.
+// `state.heals` = chamadas a healStart; `state.nudges` = hunts que a tela foi mandada seguir (`init.nudge: false` = tela não responde);
+// timers em `state.timers`, `state.fire(ms)` dispara os desse prazo e avança o relógio.
 function loadBossModule(cfg, init) {
     init = init || {};
     const src = fs.readFileSync(SCRIPT, 'utf8');
@@ -1120,7 +1121,7 @@ function loadBossModule(cfg, init) {
     const mod = src.slice(a, b);
     const clock = { now: 1_700_000_000_000 };
     const store = Object.assign({}, init.store || {});
-    const state = { logs: [], hooks: [], timers: [], sent: [], heals: [], store, clock, onSend: null };
+    const state = { logs: [], hooks: [], timers: [], sent: [], heals: [], nudges: [], store, clock, onSend: null };
     let nextId = 1;
     state.fire = async (ms) => {
         const due = state.timers.filter(t => t.ms === ms);
@@ -1136,6 +1137,7 @@ function loadBossModule(cfg, init) {
     };
     const ctx = {
         cfg: Object.assign({ bossResumeEnabled: true, bossResumeOnLoss: false, bossAlerts: true }, cfg || {}),
+        nudgeClientToHunt: (slug) => { state.nudges.push(slug); return init.nudge !== false; },   // v3.43.1: a tela viaja para a arena
         TAG: '[teste]',
         logEvent: (k, d) => state.logs.push([k, d]),
         postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', title: p.embeds?.[0]?.title || '', embeds: JSON.stringify(p.embeds || []), meta: m }); return Promise.resolve(true); },
@@ -1155,9 +1157,10 @@ function loadBossModule(cfg, init) {
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
             onFrame: bossOnFrame, onOutgoing: bossOnOutgoing, onInventory: bossOnInventory, onSocket: bossOnSocket, tick: bossTick, load: bossLoad,
-            busy: bossBusy, busyReason: bossBusyReason, status: bossStatus, isArena: bossIsArena,
+            busy: bossBusy, busyReason: bossBusyReason, status: bossStatus, isArena: bossIsArena, onError: bossOnError, keepsItem: bossKeepsItem,
             wanted: () => bossWanted, state: () => bossState, setHunt: (s) => { huntSlug = s; },
             BOSS_RESUME_DELAY_MS, BOSS_LEAVE_WAIT_MS, BOSS_HEAL_WAIT_MS, BOSS_INV_WAIT_MS, BOSS_START_WAIT_MS, BOSS_RETRY_MS, BOSS_TICK_MS, BOSS_STALE_MS,
+            BOSS_ARENA_WAIT_MS, BOSS_MAX_TRIES, BOSS_MAX_NO_FIGHT, BOSS_KEEP_AFTER_MS,
             flush: async () => { await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)); },
         };`);
     const api = factory(...Object.values(ctx));

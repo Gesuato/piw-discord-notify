@@ -377,20 +377,28 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   anterior só guarda), janela/widget fechados ou `mode:'off'`. Status na linha do socket da aba Sistema. Logs `humano-campos`,
   `humano-pendente`, `humano-aviso`, `humano-ok`, `humano-desafio`, `humano-erro`. Teste: `node test/human.test.js` (`loadHumanModule`).
 - Auto Boss (v3.43.0, aba Treino → Auto Boss, `cfg.bossResumeEnabled` LIGADO por padrão, `bossResumeOnLoss`, `bossAlerts`; módulo
-  `// ---- Auto Boss` antes da Verificação humana; bundle em 19/10/2026, `docs/mensagens-do-jogo.md` → "Auto Boss"; formatos ainda NÃO
-  vistos no log): o JOGO tem o Auto Boss (Bosses → ⟳, só numa cidade; 1 token por luta, ex. Bronze Boss Token 70000 para Giant Cruel
+  `// ---- Auto Boss` antes da Verificação humana; bundle em 19/10/2026, `docs/mensagens-do-jogo.md` → "Auto Boss"; frame `auto-boss`
+  CONFIRMADO no log em 20/10/2026): o JOGO tem o Auto Boss (Bosses → ⟳, só numa cidade; 1 token por luta, ex. Bronze Boss Token 70000 para Giant Cruel
   `cruel`/Ancient Aero `aerodactyl2`). Socket: tela manda `auto-boss-get`/`auto-boss-start { bossKey, count }`/`auto-boss-stop`;
   servidor manda `auto-boss { active, phase, started, total, wins, losses, loot, fee, spent, reason }` com `reason` só inativo: `done`,
   `lost` (token perdido, PARA), `no-token`, `stopped`, `error`, `left` (qualquer `leave-hunt`/`enter-hunt` encerra) e `hunting`. Pedido do
   usuário em 19/10/2026 ("às vezes para e não continua; retomar o boss caso ele pare"): o script guarda a INTENÇÃO do start da tela
   (`localStorage.pgDiscordNotifyBoss`, 12 h) e, parado sem terminar (`error`/`left`/`hunting`/sem motivo depois de sessão ativa, ex.
   reconexão), sai da hunt, `joy-heal`, confere tokens (`inv-get`) e manda `auto-boss-start` com `total − wins − losses` (teto: tokens);
-  3 tentativas por parada (15/30/60 s), 10 retomadas por sessão, depois desiste e avisa. `done`/`no-token`/`stopped` encerram; `lost` só
+  4 tentativas por parada (10/20/40/60 s), 10 retomadas por sessão, depois desiste e avisa. `done`/`no-token`/`stopped` encerram; `lost` só
   retoma com `bossResumeOnLoss` (senão encerra e chama `healStart`). Recusa logo após o start na mão (sessão nunca ativa) não é retomada.
   `bossBusy()` (sessão ativa ou retomada pendente) segura viagem, parada na cidade, recarga, rotas (captura/guild/farm/clã/daily sozinha),
   troca de líder e cura — sair da arena mata a sessão. `bossIsArena(slug)` (= termina em `_boss`) tira a arena de `noteHuntChange`
   (`lastRealHunt`) e de `resumeSlugNow`. Logs `auto-boss-campos`, `auto-boss`, `auto-boss-envio`, `auto-boss-get`, `auto-boss-parado`,
   `auto-boss-retomada`, `auto-boss-fim`, `auto-boss-desisti`, `auto-boss-recusado`, `auto-boss-lembrado`. Teste: `node test/boss.test.js`.
+  v3.43.1 (conta1, 20/10/2026 02:02–02:10Z: 10 retomadas aceitas, nenhuma luta): o servidor SÓ começa a luta com o personagem dentro da
+  arena — no start manual é a TELA que viaja (`nS` → `nb(arena.map)`) e o componente da hunt manda `enter-hunt { slug:'cruel_boss' }`;
+  o start do script não fazia a tela viajar (hunt nula, 30 s em `starting`, `error`). Aceito o start, `bossEnterArena` injeta o
+  `hunt-resume` sintético (`nudgeClientToHunt`, como `switchHunt`) e, sem a hunt da arena em 4 s (`BOSS_ARENA_WAIT_MS`), manda o
+  `enter-hunt` (arena = hunt `*_boss` vista na sessão ou `BOSS_ARENAS[bossKey]`; log `auto-boss-arena`). 3 retomadas seguidas sem a luta
+  começar (`fought`/`noFight`, `BOSS_MAX_NO_FIGHT`) desistem antes das 10. `bossOnError` guarda o texto do `error` do jogo para o log
+  ("Sua luta de boss anterior ainda está terminando"). `bossKeepsItem` tira o token (fee, 70000) da venda e do guardar na cidade com boss
+  pendente/rodando e por 2 h depois de desistir — às 02:11Z a viagem depositou os 97 tokens na família. Casos 9–10 do teste.
 - Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
   `guardar` no fim de toda viagem; drops → Depot (`POST /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou
   família (`family-action item`); Pokémon não vendidos → só família (o box JÁ é o Depot comum de Pokémon). Lista escolhida

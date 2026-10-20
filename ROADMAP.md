@@ -832,6 +832,10 @@ arena, queda da conexão), sai da hunt, cura na Joy, confere os tokens na mochil
 e 10 retomadas por sessão; `bossBusy()` segura viagem, parada na cidade, recarga, rotas, troca de líder e cura (sair da arena encerra a
 sessão); a arena (`*_boss`) não vira "última hunt". Intenção em `localStorage.pgDiscordNotifyBoss` (12 h) para sobreviver à recarga.
 
+**v3.43.1 (20/10/2026):** o servidor só começa a luta com o personagem na arena; o start do script não fazia a tela viajar (10 retomadas
+aceitas sem luta na conta1). Agora o script manda a tela para a arena (`hunt-resume` sintético) e, se ela não for, manda o `enter-hunt`;
+3 retomadas seguidas sem luta desistem cedo; o token fica fora do guardar na cidade com boss pendente.
+
 **Teste:** `node test/boss.test.js` (`loadBossModule`); chaves no fixture do `test/config.roundtrip.js`.
 
 ---

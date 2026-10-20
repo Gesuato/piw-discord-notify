@@ -1,4 +1,4 @@
-// Auto Boss (v3.43.0): retomar o Auto Boss do jogo quando ele para sem terminar. Rodar: node test/boss.test.js
+// Auto Boss (v3.43.0, v3.43.1 entra na arena): retomar o Auto Boss do jogo quando ele para sem terminar. Rodar: node test/boss.test.js
 const { loadBossModule, assert } = require('./harness');
 
 const FEE = { itemId: 70000, name: 'Bronze Boss Token', qty: 1 };
@@ -31,7 +31,8 @@ const frame = (o) => Object.assign({ type: 'auto-boss', bossKey: 'cruel', bossNa
 
         await state.fire(api.BOSS_RESUME_DELAY_MS);
         assert(state.sent.some(s => s.type === 'leave-hunt') && state.sent.some(s => s.type === 'set-city' && s.slug === 'cerulean'), 'saiu da arena: ' + JSON.stringify(state.sent));
-        assert(/retomando Giant Cruel \(saindo da hunt, tentativa 1\/3\)/.test(api.status()), 'status retomando: ' + api.status());
+        assert(/retomando Giant Cruel \(saindo da hunt, tentativa 1\/4\)/.test(api.status()), 'status retomando: ' + api.status());
+        assert(api.wanted().arena === 'cruel_boss', 'arena vista na sessão: ' + JSON.stringify(api.wanted()));
         api.setHunt(null);
         await state.fire(api.BOSS_LEAVE_WAIT_MS);
         assert(state.sent.some(s => s.type === 'joy-heal'), 'curou na Joy');
@@ -50,7 +51,17 @@ const frame = (o) => Object.assign({ type: 'auto-boss', bossKey: 'cruel', bossNa
         assert(ok && ok[1].lutas === 5 && ok[1].retomadas === 1, 'retomada ok: ' + JSON.stringify(ok));
         assert(api.wanted().resumes === 1 && api.wanted().total === 5 && JSON.parse(state.store.pgDiscordNotifyBoss).resumes === 1, 'contador de retomadas persistido');
         assert(state.hooks.length === 1 && state.hooks[0].kind === 'alert' && /retomado em \*\*Giant Cruel\*\* com 5 lutas/.test(state.hooks[0].content) && /erro do jogo/.test(state.hooks[0].content), 'aviso de retomada: ' + JSON.stringify(state.hooks));
+        // v3.43.1: o servidor só começa a luta com o personagem na arena — a tela é mandada viajar (hunt-resume sintético)
+        assert(state.nudges.length === 1 && state.nudges[0] === 'cruel_boss', 'tela mandada para a arena: ' + JSON.stringify(state.nudges));
+        assert(api.busy() && /entrando na arena/.test(api.status()), 'status entrando na arena: ' + api.status());
+        api.setHunt('cruel_boss');                                                 // a tela viajou e mandou o enter-hunt
+        await state.fire(api.BOSS_ARENA_WAIT_MS);
+        const arena = state.logs.find(l => l[0] === 'auto-boss-arena');
+        assert(arena && arena[1].slug === 'cruel_boss' && arena[1].tela && arena[1].chegou && arena[1].direto === false, 'auto-boss-arena: ' + JSON.stringify(arena));
+        assert(!state.sent.some(s => s.type === 'enter-hunt'), 'a tela entrou: o script não manda enter-hunt');
         assert(api.busy() && /1 retomada/.test(api.status()), 'status com a retomada: ' + api.status());
+        api.onFrame(frame({ active: true, phase: 'fighting', started: 1, total: 5, wins: 0, losses: 0, spent: 1 }));
+        assert(api.wanted().fought && api.wanted().noFight === 0, 'luta começou: ' + JSON.stringify(api.wanted()));
 
         // acabou a fila: encerra, avisa, esquece a intenção
         api.onFrame(frame({ active: false, reason: 'done', started: 5, total: 5, wins: 5, losses: 0, spent: 5, loot: [{ itemId: 142, name: 'Water Stone', qty: 7 }] }));
@@ -112,7 +123,7 @@ const frame = (o) => Object.assign({ type: 'auto-boss', bossKey: 'cruel', bossNa
         assert(state.timers.filter(t => !t.interval).length === 0 && state.hooks.length === 0, 'nada agendado, nada avisado');
     }
 
-    // 5) o jogo não responde ao start: 3 tentativas (15/30/60 s) e desiste avisando; `no-token` na resposta desiste na hora
+    // 5) o jogo não responde ao start: 4 tentativas (10/20/40/60 s) e desiste avisando; `no-token` na resposta desiste na hora
     {
         const { api, state } = loadBossModule({}, { huntSlug: null });
         api.onOutgoing({ type: 'auto-boss-start', bossKey: 'cruel', count: 10 });
@@ -127,14 +138,16 @@ const frame = (o) => Object.assign({ type: 'auto-boss', bossKey: 'cruel', bossNa
         };
         await state.fire(api.BOSS_RESUME_DELAY_MS);
         await tenta(1);
-        assert(api.wanted() && api.busy() && state.timers.some(t => t.ms === api.BOSS_RETRY_MS[0]), 'retry 1 agendado em 15 s');
+        assert(api.wanted() && api.busy() && state.timers.some(t => t.ms === api.BOSS_RETRY_MS[0]), 'retry 1 agendado em 10 s');
         await state.fire(api.BOSS_RETRY_MS[0]);
         await tenta(2);
         await state.fire(api.BOSS_RETRY_MS[1]);
         await tenta(3);
+        await state.fire(api.BOSS_RETRY_MS[2]);
+        await tenta(4);
         assert(!api.wanted() && !api.busy(), 'desistiu');
         const d = state.logs.find(l => l[0] === 'auto-boss-desisti');
-        assert(d && /3 tentativas/.test(d[1].porque) && d[1].parou === 'left', 'auto-boss-desisti: ' + JSON.stringify(d));
+        assert(d && /4 tentativas/.test(d[1].porque) && d[1].parou === 'left', 'auto-boss-desisti: ' + JSON.stringify(d));
         assert(state.hooks.length === 1 && /não consegui retomar o Auto Boss em \*\*Giant Cruel\*\*/.test(state.hooks[0].content), 'aviso de desistência: ' + JSON.stringify(state.hooks));
         assert(/desisti de retomar/.test(api.status()), 'status: ' + api.status());
     }
@@ -201,6 +214,70 @@ const frame = (o) => Object.assign({ type: 'auto-boss', bossKey: 'cruel', bossNa
         assert(!api.wanted() && !api.busy() && state.logs.some(l => l[0] === 'auto-boss-parado' && /desligada/.test(l[1].retomada)), 'desligada: não retoma');
         assert(/retomada desligada/.test(api.status()), 'status desligada: ' + api.status());
         assert(api.isArena('cruel_boss') && api.isArena('Aero_Boss') && !api.isArena('pidgey') && !api.isArena('') && !api.isArena('boss_mewtwo'), 'arena = slug terminado em _boss');
+    }
+
+    // 9) v3.43.1 — a tela não viaja: o script manda o enter-hunt da arena; 3 retomadas seguidas sem a luta começar = desiste cedo
+    {
+        const { api, state } = loadBossModule({}, { huntSlug: null, nudge: false });
+        api.onOutgoing({ type: 'auto-boss-start', bossKey: 'cruel', count: 100 });
+        api.onFrame(frame({ active: true, phase: 'fighting', started: 14, total: 100, wins: 13, losses: 0 }));
+        api.onFrame(frame({ active: false, started: 14, total: 100, wins: 14, losses: 0 }));   // reconexão: "nada rodando"
+        const parou = state.logs.find(l => l[0] === 'auto-boss-parado');
+        assert(parou && /sem motivo/.test(parou[1].motivo) && parou[1].restantes === 86, 'parou: ' + JSON.stringify(parou));
+        const retoma = async (n) => {
+            await state.fire(api.BOSS_RESUME_DELAY_MS);
+            await state.fire(api.BOSS_HEAL_WAIT_MS);
+            api.onInventory([{ itemId: 70000, quantity: 97 }]);
+            await api.flush();
+            const starts = state.sent.filter(s => s.type === 'auto-boss-start');
+            assert(starts.length === n && starts[n - 1].count === 86, `start ${n}: ` + JSON.stringify(starts));
+            api.onFrame(frame({ active: true, phase: 'starting', started: 0, total: 86, wins: 0, losses: 0, spent: 0 }));
+            await api.flush();
+            assert(api.wanted().resumes === n && !api.wanted().fought, `retomada ${n} ok`);
+            await state.fire(api.BOSS_ARENA_WAIT_MS);                                  // a tela não respondeu ao hunt-resume
+            const arenas = state.logs.filter(l => l[0] === 'auto-boss-arena');
+            assert(arenas.length === n && arenas[n - 1][1].tela === false && !arenas[n - 1][1].chegou && arenas[n - 1][1].direto === true, `auto-boss-arena ${n}: ` + JSON.stringify(arenas));
+            assert(state.sent.filter(s => s.type === 'enter-hunt' && s.slug === 'cruel_boss').length === n, `enter-hunt ${n} mandado pelo script`);
+            api.onFrame(frame({ active: false, reason: 'error', started: 0, total: 86, wins: 0, losses: 0, spent: 0 }));   // 30 s depois: a luta não começou
+        };
+        await retoma(1);
+        assert(api.wanted() && api.wanted().noFight === 1 && api.busy(), '1ª vez sem luta: tenta de novo');
+        await retoma(2);
+        assert(api.wanted() && api.wanted().noFight === 2 && api.busy(), '2ª vez sem luta: tenta de novo');
+        await retoma(3);
+        assert(!api.wanted() && !api.busy(), 'desistiu na 3ª');
+        const d = state.logs.find(l => l[0] === 'auto-boss-desisti');
+        assert(d && /3 retomadas seguidas sem a luta começar/.test(d[1].porque) && d[1].retomadas === 3, 'auto-boss-desisti: ' + JSON.stringify(d));
+        assert(state.hooks.filter(h => /retomado/.test(h.content)).length === 3 && state.hooks.filter(h => /não consegui retomar/.test(h.content)).length === 1, 'avisos: ' + state.hooks.map(h => h.content).join(' | '));
+        // o token fica fora do guardar por 2 h depois de desistir
+        assert(api.keepsItem(70000) && !api.keepsItem(201), 'token guardado depois de desistir');
+        state.clock.now += api.BOSS_KEEP_AFTER_MS + 1000;
+        assert(!api.keepsItem(70000), 'depois de 2 h o token volta a poder ser guardado');
+    }
+
+    // 10) v3.43.1 — erro do jogo durante a retomada entra no motivo; token fora do guardar enquanto o boss está pendente
+    {
+        const { api, state } = loadBossModule({}, { huntSlug: 'cruel_boss' });
+        assert(!api.keepsItem(70000), 'sem boss pendente o token pode ser guardado');
+        api.onOutgoing({ type: 'auto-boss-start', bossKey: 'cruel', count: 10 });
+        assert(api.keepsItem(70000) && !api.keepsItem(201), 'boss pedido: token fora do guardar');
+        api.onFrame(frame({ active: true, phase: 'fighting', started: 1, total: 10, wins: 0, losses: 0 }));
+        api.onFrame(frame({ active: false, started: 1, total: 10, wins: 0, losses: 0 }));
+        await state.fire(api.BOSS_RESUME_DELAY_MS);
+        api.setHunt(null);
+        await state.fire(api.BOSS_LEAVE_WAIT_MS);
+        await state.fire(api.BOSS_HEAL_WAIT_MS);
+        api.onInventory([{ itemId: 70000, quantity: 9 }]);
+        await api.flush();
+        assert(state.sent.some(s => s.type === 'auto-boss-start' && s.count === 9), 'start pedido');
+        api.onError({ type: 'error', message: 'Sua luta de boss anterior ainda está terminando — aguarde alguns segundos.' });
+        api.onFrame(frame({ active: false, reason: 'error', started: 1, total: 10, wins: 0, losses: 0 }));
+        await api.flush();
+        const f = state.logs.find(l => l[0] === 'auto-boss-retomada' && l[1].fase === 'falhou');
+        assert(f && /ainda está terminando/.test(f[1].porque), 'motivo do jogo no log: ' + JSON.stringify(f));
+        assert(api.wanted() && api.busy() && api.keepsItem(70000), 'retry agendado, token segue guardado');
+        api.onFrame(frame({ active: false, reason: 'done', started: 10, total: 10, wins: 10, losses: 0 }));   // (frame fora da retomada só registra: a retomada está agendada)
+        assert(api.wanted(), 'frame com retomada agendada não encerra');
     }
 
     console.log('boss.test.js: ok');
