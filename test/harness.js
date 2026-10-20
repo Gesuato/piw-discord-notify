@@ -1107,4 +1107,61 @@ function loadHumanModule(cfg, init) {
     return { api, state, clock };
 }
 
-module.exports = { loadHumanModule, loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+const BO_START = '    // ---- Auto Boss (v3.43.0)';
+const BO_END = '    // ---- Verificação humana';
+// Auto Boss (v3.43.0): `init.huntSlug` (mutável por api.setHunt), `init.store` (localStorage), `init.socket: false` = sendGame falha;
+// `state.sent` = o que foi mandado ao jogo; `state.onSend(obj)` = gancho (ex.: reinjetar em api.onOutgoing, como handleOutgoing faz);
+// `state.heals` = chamadas a healStart; timers em `state.timers`, `state.fire(ms)` dispara os desse prazo e avança o relógio.
+function loadBossModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(BO_START), b = src.indexOf(BO_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo do Auto Boss não encontrados no script');
+    const mod = src.slice(a, b);
+    const clock = { now: 1_700_000_000_000 };
+    const store = Object.assign({}, init.store || {});
+    const state = { logs: [], hooks: [], timers: [], sent: [], heals: [], store, clock, onSend: null };
+    let nextId = 1;
+    state.fire = async (ms) => {
+        const due = state.timers.filter(t => t.ms === ms);
+        state.timers = state.timers.filter(t => t.ms !== ms || t.interval);
+        clock.now += ms;
+        for (const t of due) await t.fn();
+        await new Promise(r => setImmediate(r));
+        await new Promise(r => setImmediate(r));
+    };
+    const FakeDate = class extends Date {
+        constructor(...args) { super(...(args.length ? args : [clock.now])); }
+        static now() { return clock.now; }
+    };
+    const ctx = {
+        cfg: Object.assign({ bossResumeEnabled: true, bossResumeOnLoss: false, bossAlerts: true }, cfg || {}),
+        TAG: '[teste]',
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', title: p.embeds?.[0]?.title || '', embeds: JSON.stringify(p.embeds || []), meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        sendGame: (obj) => { state.sent.push(obj); if (state.onSend) state.onSend(obj); return init.socket !== false; },
+        huntSlug: init.huntSlug || null,
+        CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'],
+        normalize: (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim(),
+        localStorage: { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); }, removeItem: (k) => { delete store[k]; } },
+        healStart: (motivo, slug, caiu, naCidade) => { state.heals.push({ motivo, slug, caiu, naCidade }); return true; },
+        setTimeout: (fn, ms) => { const id = nextId++; state.timers.push({ fn, ms, id }); return id; },
+        clearTimeout: (id) => { state.timers = state.timers.filter(t => t.id !== id); },
+        setInterval: (fn, ms) => { const id = nextId++; state.timers.push({ fn, ms, id, interval: true }); return id; },
+        clearInterval: (id) => { state.timers = state.timers.filter(t => t.id !== id); },
+        Date: FakeDate,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            onFrame: bossOnFrame, onOutgoing: bossOnOutgoing, onInventory: bossOnInventory, onSocket: bossOnSocket, tick: bossTick, load: bossLoad,
+            busy: bossBusy, busyReason: bossBusyReason, status: bossStatus, isArena: bossIsArena,
+            wanted: () => bossWanted, state: () => bossState, setHunt: (s) => { huntSlug = s; },
+            BOSS_RESUME_DELAY_MS, BOSS_LEAVE_WAIT_MS, BOSS_HEAL_WAIT_MS, BOSS_INV_WAIT_MS, BOSS_START_WAIT_MS, BOSS_RETRY_MS, BOSS_TICK_MS, BOSS_STALE_MS,
+            flush: async () => { await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)); },
+        };`);
+    const api = factory(...Object.values(ctx));
+    return { api, state, clock };
+}
+
+module.exports = { loadBossModule, loadHumanModule, loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

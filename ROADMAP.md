@@ -814,6 +814,28 @@ hunts alternativas.
 
 ---
 
+## ✅ 34. Auto Boss: retomar a sessão do jogo quando ela para sem terminar (v3.43.0)
+
+**O que faz (pedido do usuário em 19/10/2026):** "estou fazendo os boss tokens; tem uma opção auto boss, porém às vezes para e não
+continua; retomar o boss caso ele pare". O Auto Boss é do próprio jogo (Bosses → ⟳ Auto Boss, numa cidade; 1 token por luta). O script
+guarda o boss e a quantidade que o jogador pediu e, quando o jogo encerra a sessão sem acabar a fila (erro na próxima luta, saiu da
+arena, queda da conexão), sai da hunt, cura na Joy, confere os tokens na mochila e pede de novo só as lutas que faltam.
+
+**Mensagens (bundle em 19/10/2026; `docs/mensagens-do-jogo.md` → "Auto Boss"):** `auto-boss-get`/`auto-boss-start { bossKey, count }`/
+`auto-boss-stop` (tela) e `auto-boss { active, phase, started, total, wins, losses, loot, fee, spent, reason }` (servidor); `inv-get` →
+`inventory` para os tokens; `leave-hunt`/`set-city`/`joy-heal` já conhecidos. Formatos ainda não vistos no log (`auto-boss-campos`).
+
+**Config/UI:** aba Treino → "Auto Boss": `bossResumeEnabled` (ligado por padrão), `bossResumeOnLoss` (desligado: derrota perde token),
+`bossAlerts`. Linha de estado com boss, luta n/total, fase, placar, tokens e retomadas.
+
+**Regras:** `done`/`no-token`/"Parar" encerram; recusa logo depois do start na mão não é retomada; 3 tentativas por parada (15/30/60 s)
+e 10 retomadas por sessão; `bossBusy()` segura viagem, parada na cidade, recarga, rotas, troca de líder e cura (sair da arena encerra a
+sessão); a arena (`*_boss`) não vira "última hunt". Intenção em `localStorage.pgDiscordNotifyBoss` (12 h) para sobreviver à recarga.
+
+**Teste:** `node test/boss.test.js` (`loadBossModule`); chaves no fixture do `test/config.roundtrip.js`.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

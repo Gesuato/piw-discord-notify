@@ -48,12 +48,13 @@ Confirmados no bundle. Os marcados com ✔ já são usados ou interceptados pelo
 | `trade-*` (`invite`, `respond`, `slot`, `money`, `confirm`, `cancel`, `get`) | vários | troca entre jogadores |
 | `pvp-*` (`queue`, `challenge`, `accept`, `decline`, `action`, `leave`, `watch`, `unwatch`, `state`) e `switch { teamIndex }`, `move { moveIndex }`, `forfeit` | vários | PvP (o `switch` é troca de Pokémon **na batalha**, não do líder) |
 | `guild-get`, `guild-action`, `guild-history-get` ✔ (só leitura/log) | `guild-get { withList }`; `guild-action { action, ... }` | Guild (patch 1.9, 09/10/2026): ver a seção "Guild" abaixo; o script lê o estado e registra o que a tela envia (v3.30.0) |
+| `auto-boss-get`, `auto-boss-start`, `auto-boss-stop` ✔ | `auto-boss-start { bossKey, count }` | Auto Boss do jogo (bundle em 19/10/2026): ver a seção "Auto Boss" abaixo; o script lê o estado e retoma a sessão (v3.43.0) |
 | `golden-stars-refresh` | — | Poke Slot Machine: o HUD relê os bônus depois de roll/pick (o estado em si é REST, ver abaixo) |
 | `family-get`, `family-action` ✔ | `family-action { action:'poke', dir:'deposit'\|'withdraw', capturedId }`; `{ action:'item', dir, itemId, quantity }`; `create`/`invite`/`respond` | clã/família: depósito compartilhado (limite diário de movimentos `movesUsed/movesCap`; responde `family` ou `error`). As 4 combinações CONFIRMADAS no log em 09/10/2026 13:15Z (conta1, janela Família do jogo, log `familia-envio`): `withdraw` usa exatamente os mesmos campos do `deposit` (`itemId`+`quantity` para item, `capturedId` para Pokémon); o frame `family` chega ~0,3 s depois e cada movimento soma 1 em `movesUsed` |
 
 ## Servidor → cliente (handlers registrados no bundle)
 
-`addon-used`, `analyzer`, `autohelper`, `balls` ✔, `berry-used`, `borage-used`, `candy-used`,
+`addon-used`, `analyzer`, `auto-boss` ✔ (ver "Auto Boss"), `autohelper`, `balls` ✔, `berry-used`, `borage-used`, `candy-used`,
 `catch-cooldown`, `catch-result` ✔, `chat`, `chat-blocked`, `chat-deleted`, `field` ✔ (só para marcar
 "hunt viva"), `field-init` ✔, `field-kill` ✔, `field-none`, `field-teleport-city`, `fishing-cooldown`, `fishing-levelup` (ver "Pesca"),
 `guild` ✔, `guild-dirty` ✔, `guild-history`, `gym-global`, `heal-used`, `held-replace-confirm`, `held-used`, `history`, `hunt-cooldown`, `hunt-resume`,
@@ -300,6 +301,34 @@ toast "Verificação humana necessária — confirme no aviso para continuar."
   { code, motivo }`, `humano-campos` (GET na carga), `humano-pendente { origem }`, `humano-desafio { aberto, seg }`, `humano-aviso`,
   `humano-ok { origem, aposSeg }`; avisa no canal de alertas 20 s depois (repete a cada 15 min, avisa ao resolver), segura a volta da
   cidade e, num 403 dos próprios REST, dispara `pw:human-check` para a tela abrir a janela. Teste: `node test/human.test.js`.
+
+### Auto Boss (bundle em 19/10/2026 — formatos ainda NÃO vistos no log; módulo `// ---- Auto Boss` na v3.43.0)
+
+O jogo tem, na janela Bosses (`button[data-guide="dock-bosses"]`), o botão "⟳ Auto Boss" (`.boss-autobtn`, só para boss com
+`arena` no catálogo): "lutas automáticas em sequência". Texto do jogo (i18n `window.bosses.auto.*`): "A luta se renova sozinha até
+acabar a fila ou os tokens", "Se o time cair, o token daquela luta é perdido e o Auto Boss para", "Só funciona fora de hunt — ative
+estando numa cidade". Tudo pelo **socket**:
+
+- Tela → servidor: `auto-boss-get` (o HUD manda ao ficar online), `auto-boss-start { bossKey, count }` (a tela espera até 8 s por um
+  frame `auto-boss` com `active` ou `reason`; sem resposta mostra "O servidor não respondeu") e `auto-boss-stop` ("Encerrando após
+  esta luta…"). `bossKey` é a chave do `GET /game/bossCatalog.json` (87 bosses: `{ key, name, img, icon?, category, level }`); só os
+  com arena na tabela `og` do bundle aceitam Auto Boss: `cruel` (Giant Cruel, mapa `cruel_boss`) e `aerodactyl2` (Ancient Aero, mapa
+  `aero_boss`), ambos com `entryFee { itemId: 70000, name: 'Bronze Boss Token', qty: 1 }` e `teamLevel` 300. `count` = lutas (=
+  tokens); o painel do jogo limita a `min(100, floor(tokens / qty))`.
+- Servidor → tela: `auto-boss { active, phase: 'starting'|'fighting'|'cooldown', bossKey, bossName, started, total, wins, losses,
+  loot[{ itemId, name, qty }], last{ outcome: 'won'|'lost', durationMs, loot }, fee{ itemId, name, qty }, spent, elapsedMs, fightMs,
+  inMs, stopping, reason }`. `reason` só com `active:false`: `done` (fila completa), `lost` (time caiu; token perdido), `no-token`,
+  `stopped` (o jogador parou), `error` ("A próxima luta não pôde começar (time, líder desmaiado ou arena)"), `left` ("Auto Boss
+  encerrado — você saiu da arena": qualquer `leave-hunt`/`enter-hunt` encerra) e `hunting` (start recusado: conta em hunt). Frame
+  inativo SEM `reason` = "nada rodando" (resposta ao get). A tela mostra a janela-resumo (`.abs-window`) quando `started > 0`.
+- Ao aceitar o start, a tela viaja para o mapa da arena (`og[bossKey].arena.map`); o script vê a hunt `cruel_boss`/`aero_boss`
+  (`field`/`field-kill` chegam como numa hunt). Visto na conta1 em 20/10/2026 01:00Z; a sessão sumiu após uma queda do socket (1006).
+- Histórico e lutas manuais são REST: `GET /api/game/boss` → `{ bosses[keys liberados], penalties{ key:{ strength, mult } },
+  arenas{ key: arena }, state }`; `POST /api/game/boss/action { action:'start'|'round'|'abandon', bossKey?, count? }`. Não usados.
+- O script (v3.43.0): guarda a intenção do `auto-boss-start` da tela (`localStorage.pgDiscordNotifyBoss`), registra `auto-boss-campos`
+  (1º frame), `auto-boss` (mudanças), `auto-boss-envio`, `auto-boss-get`, `auto-boss-parado`, `auto-boss-retomada { fase }`,
+  `auto-boss-fim`, `auto-boss-desisti`, `auto-boss-recusado`, `auto-boss-lembrado`; retoma com `leave-hunt` + `set-city` (se em hunt),
+  `joy-heal`, `inv-get` (tokens) e `auto-boss-start` com `total − wins − losses` lutas (teto: tokens). Teste: `node test/boss.test.js`.
 
 ## Ideias que esses nomes destravam
 

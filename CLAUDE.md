@@ -376,6 +376,21 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   a cada 15 min, avisa ao resolver; resolve por socket religado (4011), `until` renovado no GET (`humanPoll` 20 s; 1º GET sem prazo
   anterior só guarda), janela/widget fechados ou `mode:'off'`. Status na linha do socket da aba Sistema. Logs `humano-campos`,
   `humano-pendente`, `humano-aviso`, `humano-ok`, `humano-desafio`, `humano-erro`. Teste: `node test/human.test.js` (`loadHumanModule`).
+- Auto Boss (v3.43.0, aba Treino → Auto Boss, `cfg.bossResumeEnabled` LIGADO por padrão, `bossResumeOnLoss`, `bossAlerts`; módulo
+  `// ---- Auto Boss` antes da Verificação humana; bundle em 19/10/2026, `docs/mensagens-do-jogo.md` → "Auto Boss"; formatos ainda NÃO
+  vistos no log): o JOGO tem o Auto Boss (Bosses → ⟳, só numa cidade; 1 token por luta, ex. Bronze Boss Token 70000 para Giant Cruel
+  `cruel`/Ancient Aero `aerodactyl2`). Socket: tela manda `auto-boss-get`/`auto-boss-start { bossKey, count }`/`auto-boss-stop`;
+  servidor manda `auto-boss { active, phase, started, total, wins, losses, loot, fee, spent, reason }` com `reason` só inativo: `done`,
+  `lost` (token perdido, PARA), `no-token`, `stopped`, `error`, `left` (qualquer `leave-hunt`/`enter-hunt` encerra) e `hunting`. Pedido do
+  usuário em 19/10/2026 ("às vezes para e não continua; retomar o boss caso ele pare"): o script guarda a INTENÇÃO do start da tela
+  (`localStorage.pgDiscordNotifyBoss`, 12 h) e, parado sem terminar (`error`/`left`/`hunting`/sem motivo depois de sessão ativa, ex.
+  reconexão), sai da hunt, `joy-heal`, confere tokens (`inv-get`) e manda `auto-boss-start` com `total − wins − losses` (teto: tokens);
+  3 tentativas por parada (15/30/60 s), 10 retomadas por sessão, depois desiste e avisa. `done`/`no-token`/`stopped` encerram; `lost` só
+  retoma com `bossResumeOnLoss` (senão encerra e chama `healStart`). Recusa logo após o start na mão (sessão nunca ativa) não é retomada.
+  `bossBusy()` (sessão ativa ou retomada pendente) segura viagem, parada na cidade, recarga, rotas (captura/guild/farm/clã/daily sozinha),
+  troca de líder e cura — sair da arena mata a sessão. `bossIsArena(slug)` (= termina em `_boss`) tira a arena de `noteHuntChange`
+  (`lastRealHunt`) e de `resumeSlugNow`. Logs `auto-boss-campos`, `auto-boss`, `auto-boss-envio`, `auto-boss-get`, `auto-boss-parado`,
+  `auto-boss-retomada`, `auto-boss-fim`, `auto-boss-desisti`, `auto-boss-recusado`, `auto-boss-lembrado`. Teste: `node test/boss.test.js`.
 - Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
   `guardar` no fim de toda viagem; drops → Depot (`POST /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou
   família (`family-action item`); Pokémon não vendidos → só família (o box JÁ é o Depot comum de Pokémon). Lista escolhida
@@ -533,6 +548,8 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
   mutável em `state.pokes`, `init.freshPokes(n)` resposta ao n-ésimo `pokes-get`, `init.family` depot, `init.familyAction(payload)`).
   `node test/farm.test.js` (`loadFarmModule`: `// ---- Farm por lista` até `// ---- Guild (v3.30.0)`; `init.huntCatalog`, `init.creatures`,
   `init.items`, `init.team`, `init.env` mutável em `state.env` para viagem/cura/troca/líder/daily).
+  `node test/boss.test.js` (`loadBossModule`: `// ---- Auto Boss` até `// ---- Verificação humana`; `state.sent` = enviados ao jogo,
+  `state.onSend` reinjeta em `api.onOutgoing` como o `handleOutgoing`, `state.heals` = chamadas a `healStart`, `state.fire(ms)` timers).
   `node test/human.test.js` (`loadHumanModule`: `// ---- Verificação humana` até `// ---- Cura na Joy`; `state.api` responde ao GET
   /api/auth/human, `state.dom` simula janela/widget, `state.fire(ms)` dispara os timers do prazo, `state.events` guarda os `dispatchEvent`).
   `test/harness.js` recorta módulos do userscript pelos marcadores (`loadLevelModule`: `// ---- Alerta de nível do

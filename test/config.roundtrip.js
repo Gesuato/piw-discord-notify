@@ -35,6 +35,8 @@ const rica = {
   evolveEnabled: true, evolveFromDepot: false, evolveFromFamily: true,
   // v3.26.0 (Poke Slot Machine)
   slotEnabled: true, slotWanted: 'Dratini, Larvitar',
+  // v3.43.0 (Auto Boss)
+  bossResumeEnabled: false, bossResumeOnLoss: true, bossAlerts: false,
   // v3.29.0 (Breeding)
   // v3.31.0 (Guild)
   guildDonateGold: 500000, guildDonateKeep: 2000000, guildTributeEnabled: true, guildTributeKeep: 5, guildAlerts: true, guildHuntEnabled: false, guildFishEnabled: false, guildFarmTribute: false, guildRouteOrder: ['fish', 'tributo', 'kill'], // rota da guild é excludente com a rota de treino do fixture
