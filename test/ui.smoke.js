@@ -244,6 +244,19 @@ setTimeout(() => {
         log('cidade: ' + $('#pg-dn-cityidle-status').textContent);
         if (!/Volta:/.test($('#pg-dn-cityidle-status').textContent)) throw new Error('status da parada na cidade vazio');
         panel.querySelector('.dn-tab[data-tab=sistema]').click(); log('socket=' + $('#pg-dn-socket').textContent);
+        // v3.44.0: Esperar na cidade (botão imediato, fora do Salvar): liga, sai da hunt e grava; desliga e volta
+        if (!/desligada/.test($('#pg-dn-hold-status').textContent)) throw new Error('espera na cidade deveria começar desligada: ' + $('#pg-dn-hold-status').textContent);
+        const antesHold = ws.sent.length;
+        $('#pg-dn-hold').click();
+        log('espera: ' + $('#pg-dn-hold-status').textContent + ' | ' + $('#pg-dn-msg').textContent);
+        if (!/ligada há/.test($('#pg-dn-hold-status').textContent)) throw new Error('espera na cidade não ligou');
+        if (!window.localStorage.getItem('pgDiscordNotifyHold')) throw new Error('espera na cidade não gravou no localStorage');
+        { const lg = JSON.parse(window.localStorage.getItem('pgDiscordNotifyLog') || '[]').filter(e => e.kind === 'espera-cidade'); if (!lg.some(e => e.data?.fase === 'inicio')) throw new Error('espera na cidade sem log de início'); log('espera log=' + JSON.stringify(lg.map(e => e.data)) + ' leave=' + ws.sent.slice(antesHold).some(x => JSON.parse(x).type === 'leave-hunt')); }
+        if (panel.querySelector('.dn-tab[data-tab=sistema] .b').dataset.state !== 'warn') throw new Error('badge da aba Sistema deveria ser warn com a espera ligada');
+        $('#pg-dn-hold').click();
+        log('espera: ' + $('#pg-dn-hold-status').textContent + ' | ' + $('#pg-dn-msg').textContent);
+        if (!/desligada/.test($('#pg-dn-hold-status').textContent)) throw new Error('espera na cidade não desligou');
+        if (window.localStorage.getItem('pgDiscordNotifyHold')) throw new Error('espera na cidade não apagou o localStorage');
         log('enviados=' + ws.sent.map(x => JSON.parse(x).type).join(','));
         // ---- importar rota do PIW Tools (texto colado da aba Rota otimizada) ----
         panel.querySelector('.dn-tab[data-tab=treino]').click();

@@ -365,7 +365,7 @@ function loadTripModule(cfg, init) {
         // v3.36.3: como no script, `leave-hunt` enviado zera a hunt (setHunt(null) em handleOutgoing) e switchHunt a preenche
         sendGame: (o) => { state.sent.push(o); if (o?.type === 'leave-hunt' && state.api) state.api.setHunt(null); return true; },
         logEvent: (k, d) => state.logs.push([k, d]),
-        switchHunt: (slug, tentativa, origem) => { state.switches.push({ slug, tentativa, origem }); if (state.api) state.api.setHunt(slug); },
+        switchHunt: (slug, tentativa, origem) => { state.switches.push({ slug, tentativa, origem }); if (state.api) state.api.setHunt(slug); return true; },   // v3.44.0: como no script (false = espera na cidade recusou)
         normalize: (v) => String(v || '').toLowerCase().trim(),
         CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'],
         huntSlug: init.huntSlug != null ? init.huntSlug : null,
@@ -634,7 +634,7 @@ function loadIdleModule(cfg, init) {
     const env = Object.assign({
         huntSlug: null, lastRealHunt: null, tripRunning: false, heal: false, huntSwitch: null, swapPending: null,
         sellRunning: false, resumeHunt: null, dailyAutoBusy: false, clanRoute: false, clanTarget: null, route: null,
-        catchRoute: false, healDeaths: [],
+        catchRoute: false, healDeaths: [], hold: false,
     }, init.env || {});
     const ctx = {
         cfg, env,
@@ -657,6 +657,7 @@ function loadIdleModule(cfg, init) {
         clanRouteOn: () => env.clanRoute,
         routeStep: () => env.route,
         catchRouteActive: () => env.catchRoute,
+        holdReason: () => (env.hold ? 'esperando na cidade (botão do painel)' : null),   // v3.44.0
         HEAL_DEATH_WINDOW_MS: 30 * 60 * 1000,
         Date: FakeDate,
     };
@@ -1167,4 +1168,62 @@ function loadBossModule(cfg, init) {
     return { api, state, clock };
 }
 
-module.exports = { loadBossModule, loadHumanModule, loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+const HO_START = '    // ---- Esperar na cidade (v3.44.0)';
+const HO_END = '    // ---- Interceptação do WebSocket';
+// Esperar na cidade (v3.44.0): `init.huntSlug` (mutável em `env.huntSlug`; `leave-hunt` enviado zera e `switchHunt` preenche, como no
+// script), `init.store` (localStorage), `init.env` { tripRunning, huntSwitch, lastRealHunt, boss, idleTarget }; `state.sent` = enviados ao
+// jogo, `state.switches` = chamadas a switchHunt, `state.nudges` = teleportes sintéticos (`init.nudge: false` = tela não responde);
+// timers em `state.timers`, `state.fire(ms)` dispara os desse prazo e avança o relógio.
+function loadHoldModule(init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(HO_START), b = src.indexOf(HO_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo da espera na cidade não encontrados no script');
+    const mod = src.slice(a, b);
+    const clock = { now: 1_700_000_000_000 };
+    const store = Object.assign({}, init.store || {});
+    const state = { logs: [], timers: [], sent: [], switches: [], nudges: [], store, clock };
+    let nextId = 1;
+    state.fire = async (ms) => {
+        const due = state.timers.filter(t => t.ms === ms);
+        state.timers = state.timers.filter(t => t.ms !== ms);
+        clock.now += ms;
+        for (const t of due) await t.fn();
+    };
+    const FakeDate = class extends Date {
+        constructor(...args) { super(...(args.length ? args : [clock.now])); }
+        static now() { return clock.now; }
+    };
+    const env = Object.assign({ huntSlug: init.huntSlug || null, tripRunning: false, huntSwitch: null, lastRealHunt: null, boss: false, idleTarget: { motivo: 'não sei de que hunt veio' } }, init.env || {});
+    const ctx = {
+        logEvent: (k, d) => state.logs.push([k, d]),
+        sendGame: (obj) => { state.sent.push(obj); if (obj.type === 'leave-hunt') env.huntSlug = null; return true; },
+        switchHunt: (slug, tentativa, origem) => { state.switches.push({ slug, tentativa, origem }); env.huntSlug = slug; return true; },
+        nudgeClientToCity: () => { state.nudges.push('cidade'); return init.nudge !== false; },
+        tripCity: () => 'cerulean',
+        bossIsArena: (s) => /_boss$/.test(String(s || '')),
+        bossBusy: () => env.boss,
+        idleTarget: () => env.idleTarget,
+        CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'],
+        normalize: (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim(),
+        localStorage: { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); }, removeItem: (k) => { delete store[k]; } },
+        setTimeout: (fn, ms) => { const id = nextId++; state.timers.push({ fn, ms, id }); return id; },
+        clearTimeout: (id) => { state.timers = state.timers.filter(t => t.id !== id); },
+        Date: FakeDate,
+    };
+    const scope = new Proxy({}, {
+        has: (t, k) => ['huntSlug', 'tripRunning', 'huntSwitch', 'lastRealHunt'].includes(k),
+        get: (t, k) => env[k],
+        set: (t, k, v) => { env[k] = v; return true; },
+    });
+    const factory = new Function('scope', ...Object.keys(ctx), `with (scope) { ${mod}
+        return {
+            active: holdActive, reason: holdReason, start: holdStart, stop: holdStop, load: holdLoad, status: holdStatus,
+            onHuntChange: holdOnHuntChange, onSetCity: holdOnSetCity, blocked: holdBlocked,
+            HOLD_KEY, HOLD_CITY_WAIT_MS, HOLD_KICK_DELAY_MS, HOLD_KICK_GAP_MS, HOLD_BLOCK_LOG_MS, HOLD_BACK_DELAY_MS,
+        }; }`);
+    const api = factory(scope, ...Object.values(ctx));
+    return { api, state, clock, env, store };
+}
+
+module.exports = { loadHoldModule, loadBossModule, loadHumanModule, loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.43.2
+// @version      3.44.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.43.2';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.44.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -710,6 +710,7 @@
     // a falha no webhook de alertas; a rota, no de nível.
     function switchHunt(slug, tentativa, origem) {
         origem = origem || 'rota';
+        if (typeof holdActive === 'function' && holdActive()) { holdBlocked(slug, origem); return false; }   // v3.44.0: espera na cidade pelo botão do painel: nada entra em hunt
         if (huntSwitch?.timer) clearTimeout(huntSwitch.timer);
         if (origem !== 'recarga' && origem !== 'viagem' && origem !== 'cura' && origem !== 'cidade') sendGame({ type: 'leave-hunt' }); // recarga/viagem/cura/cidade: a conta já está na cidade
         huntSwitch = { slug, at: 0, tries: tentativa, timer: null, origem };
@@ -721,6 +722,7 @@
             logEvent('hunt-troca', { slug, tentativa, origem, enviado: ok, tela });
             huntSwitch.timer = setTimeout(() => confirmHuntSwitch(slug), HUNT_CONFIRM_MS);
         }, HUNT_ENTER_DELAY_MS);
+        return true;
     }
 
     function confirmHuntSwitch(slug) {
@@ -1323,6 +1325,7 @@
         guildOnHuntChange(novo);
         farmOnHuntChange(novo);
         idleOnHuntChange(novo);
+        holdOnHuntChange(novo);   // v3.44.0: espera na cidade ligada e a tela religou a hunt: sai de novo
         loadHuntProfile();
         logEvent('hunt', { slug: huntSlug });
         if (onHuntLootChange) onHuntLootChange();
@@ -1334,7 +1337,7 @@
         try { m = JSON.parse(data); } catch { return; }
         if (m?.type === 'enter-hunt') setHunt(m.slug);
         else if (m?.type === 'leave-hunt') { healOnLeave(); setHunt(null); }
-        else if (m?.type === 'set-city') { tripOnSetCity(); healOnSetCity(); pokesOnSetCity(); armResume(RESUME_AFTER_CITY_MS); } // SPA na cidade: viagem chegou / hora de voltar pra hunt
+        else if (m?.type === 'set-city') { tripOnSetCity(); healOnSetCity(); pokesOnSetCity(); holdOnSetCity(); armResume(RESUME_AFTER_CITY_MS); } // SPA na cidade: viagem chegou / hora de voltar pra hunt
         else if (m?.type === 'auto-boss-start' || m?.type === 'auto-boss-stop') bossOnOutgoing(m);   // v3.43.0: intenção do Auto Boss (pela tela ou pela retomada)
         else if (typeof m?.type === 'string' && m.type.startsWith('pvp-')) gymOnOutgoing(m);   // v3.43.2: farejador do ginásio (pvp-state/pvp-leave do HUD da arena)
         // v3.29.2: todo `family-action` enviado (pela tela OU pelo script) entra no log com os campos, para confirmar o formato da
@@ -2097,7 +2100,7 @@
     // CATCH_REENTER_MS (chamado por setHunt). Para caçar na mão, desligue a rota. Exceção: a hunt da Daily Kill.
     function catchOnHuntChange(slug) {
         clearTimeout(catchReenterTimer); catchReenterTimer = null;
-        if (!catchRouteActive() || !catchTarget || !huntCatalog || tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy())) return;
+        if (!catchRouteActive() || !catchTarget || !huntCatalog || tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy()) || (typeof holdActive === 'function' && holdActive())) return;
         const h = normalize(slug || '');
         if (!h || CITY_SLUGS.includes(h) || h === catchTarget.slug) return;
         if (dailyEnabled() && dailyOnHunt()) return;
@@ -2114,7 +2117,7 @@
     function catchTick() {
         if (!catchRouteActive()) return;
         if (!huntCatalog) { startCatchRoute('tique'); return; }
-        if (!catchTarget || huntSwitch || catchBusy || catchReenterTimer || tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy())) return;
+        if (!catchTarget || huntSwitch || catchBusy || catchReenterTimer || tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy()) || (typeof holdActive === 'function' && holdActive())) return;
         const h = normalize(huntSlug || '');
         if (h === catchTarget.slug) return;
         if (dailyEnabled() && dailyOnHunt()) return;
@@ -2395,7 +2398,7 @@
     async function dailyAutoStep() {
         if (!dailyAutoOn() || dailyAutoBusy || !daily || daily.locked || daily.claimed || daily.done) return;
         if (daily.picked && dailyOnHunt()) { noteDailyAuto(''); return; }
-        if (huntSwitch || tripRunning || swapPending || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy())) return;       // outra troca/viagem/cura/Auto Boss em andamento: próximo tique
+        if (huntSwitch || tripRunning || swapPending || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy()) || (typeof holdActive === 'function' && holdActive())) return;       // outra troca/viagem/cura/Auto Boss/espera na cidade em andamento: próximo tique
         dailyAutoBusy = true;
         try {
             try { await loadHuntCatalog(); }
@@ -4042,6 +4045,7 @@
             if (tripRunning) { farmSetWait('esperando a viagem à cidade acabar'); return; }
             if (typeof healBusy === 'function' && healBusy()) { farmSetWait('esperando a cura na Nurse Joy acabar'); return; }
             if (typeof bossBusy === 'function' && bossBusy()) { farmSetWait('esperando o Auto Boss do jogo acabar'); return; }
+            if (typeof holdActive === 'function' && holdActive()) { farmSetWait('esperando na cidade (botão do painel)'); return; }
             if (huntSwitch) { farmSetWait(`esperando a troca para ${huntSwitch.slug} confirmar`); return; }
             if (swapPending) { farmSetWait('esperando a troca de líder confirmar'); return; }
             if (typeof dailyWantsHunt === 'function' && dailyWantsHunt()) { farmSetWait('a Daily Kill está usando a hunt (o farm segue quando ela acabar)'); return; }
@@ -4062,7 +4066,7 @@
     // O jogo entrou em outra hunt (tela reafirmando a escolhida na mão, reconexão): volta ao alvo 8 s depois.
     function farmOnHuntChange(slug) {
         clearTimeout(farmReenterTimer); farmReenterTimer = null;
-        if (!farmOn() || !farmTarget || tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy())) return;
+        if (!farmOn() || !farmTarget || tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy()) || (typeof holdActive === 'function' && holdActive())) return;
         const h = normalize(slug || '');
         if (!h || CITY_SLUGS.includes(h) || h === farmTarget.slug) return;
         if (typeof dailyWantsHunt === 'function' && dailyWantsHunt()) return;
@@ -4561,6 +4565,7 @@
             if (tripRunning) { guildSetWait('esperando a viagem à cidade acabar'); return; }
             if (typeof healBusy === 'function' && healBusy()) { guildSetWait('esperando a cura na Nurse Joy acabar'); return; }
             if (typeof bossBusy === 'function' && bossBusy()) { guildSetWait('esperando o Auto Boss do jogo acabar'); return; }
+            if (typeof holdActive === 'function' && holdActive()) { guildSetWait('esperando na cidade (botão do painel)'); return; }
             if (huntSwitch) { guildSetWait(`esperando a troca para ${huntSwitch.slug} confirmar`); return; }
             if (swapPending) { guildSetWait('esperando a troca de líder confirmar'); return; }
             if (typeof dailyWantsHunt === 'function' && dailyWantsHunt()) { guildSetWait('a Daily Kill está usando a hunt (a guild segue quando ela acabar)'); return; }
@@ -4584,7 +4589,7 @@
     // O jogo entrou em outra hunt (tela reafirmando a escolhida na mão, reconexão): volta ao alvo 8 s depois.
     function guildOnHuntChange(slug) {
         clearTimeout(guildReenterTimer); guildReenterTimer = null;
-        if (!guildRouteOn() || !guildTarget || tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy())) return;
+        if (!guildRouteOn() || !guildTarget || tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy()) || (typeof holdActive === 'function' && holdActive())) return;
         const h = normalize(slug || '');
         if (!h || CITY_SLUGS.includes(h) || h === guildTarget.slug) return;
         if (typeof dailyWantsHunt === 'function' && dailyWantsHunt()) return;
@@ -5044,6 +5049,7 @@
         if (tripRunning) { clanSetWait('esperando a viagem à cidade acabar'); return; }
         if ((typeof healBusy === 'function' && healBusy())) { clanSetWait('esperando a cura na Nurse Joy acabar'); return; }
         if (typeof bossBusy === 'function' && bossBusy()) { clanSetWait('esperando o Auto Boss do jogo acabar'); return; }
+        if (typeof holdActive === 'function' && holdActive()) { clanSetWait('esperando na cidade (botão do painel)'); return; }
         if (huntSwitch) { clanSetWait(`esperando a troca para ${huntSwitch.slug} confirmar`); return; }
         if (swapPending) { clanSetWait('esperando a troca de líder confirmar'); return; }
         if (dailyWantsHunt()) { clanSetWait('a Daily Kill está usando a hunt (o clã segue quando ela acabar)'); return; }   // a Daily vem primeiro
@@ -5512,7 +5518,7 @@
         if (!tarefas.length) return { ok: false, motivo: 'nada a fazer' };
         tripRunning = true;
         const t0 = Date.now();
-        const volta = tripReturnSlug();
+        let volta = tripReturnSlug();
         const emHunt = tripInHunt();
         const res = [];
         tripNotify();
@@ -5544,7 +5550,7 @@
             tripPhase = 'voltando';
             tripNotify();
             await tripWait(tripRnd(TRIP_BEFORE_BACK_MS));
-            if (volta) switchHunt(volta, 1, 'viagem');
+            if (volta && !switchHunt(volta, 1, 'viagem')) volta = null;   // v3.44.0: espera na cidade ligada: fica
         } finally {
             tripRunning = false;
             tripPhase = '';
@@ -5748,6 +5754,7 @@
             if (!slug) return;
             resumeHunt = null;
             if (lastFieldAt > 0) { logEvent('recarga-hunt', { slug, jaNaHunt: true }); return; }
+            if (typeof holdActive === 'function' && holdActive()) { logEvent('recarga-hunt', { slug, esperaCidade: true }); return; }   // v3.44.0: espera na cidade pelo botão: fica
             if ((typeof healBusy === 'function' && healBusy())) { logEvent('recarga-hunt', { slug, cura: true }); return; }   // a cura volta para a hunt
             if (huntSwitch) { logEvent('recarga-hunt', { slug, trocando: huntSwitch.slug }); return; }   // outra troca já em andamento (rota/clã/farm)
             logEvent('recarga-hunt', { slug, enviando: true });
@@ -6643,6 +6650,7 @@
     // naCidade: a conta já está fora de hunt, não espera set-city.
     function healStart(motivo, slugHint, caiu, naCidade) {
         if (typeof bossBusy === 'function' && bossBusy()) { faintSeen = null; logEvent('cura', { fase: 'pulada', motivo, autoBoss: true }); return false; }   // v3.43.0: durante o Auto Boss (ou a retomada) quem cura é o módulo do boss
+        if (typeof holdActive === 'function' && holdActive()) { faintSeen = null; logEvent('cura', { fase: 'pulada', motivo, esperaCidade: true }); return false; }   // v3.44.0: esperando na cidade de propósito: não volta para hunt nenhuma
         const noRevive = Boolean(faintSeen?.noRevive);
         faintSeen = null;
         if (!cfg.healJoyEnabled || healRun) return false;
@@ -6783,6 +6791,7 @@
     // Onde a conta parou, para o status e o aviso: hunt que o script ainda considera ativa ou fora de hunt.
     function idleWhere() { return idleIsHunt(huntSlug) ? `em ${huntSlug} sem abates` : 'fora de hunt'; }
     function idleBusyReason() {
+        if (typeof holdReason === 'function' && holdReason()) return holdReason();   // v3.44.0: espera na cidade pelo botão do painel
         if (typeof humanPending === 'function' && humanPending()) return 'verificação humana pendente (clique no desafio da Cloudflare)';
         if (typeof bossBusyReason === 'function' && bossBusyReason()) return bossBusyReason();   // v3.43.0: Auto Boss do jogo em andamento / retomada
         if (tripRunning) return 'viagem à cidade em andamento';
@@ -6970,6 +6979,139 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             logEvent('decisao', { name: full.name, shiny: full.shiny, level: full.level, quality: full.quality ?? null, ivTotal: full.ivTotal ?? null, notificar: q.ok, motivo: q.motivo });
             if (q.ok) keepNotified(full).then(() => sendDiscordNotification(full, false));
         });
+    }
+
+    // ---- Esperar na cidade (v3.44.0): botão do painel que segura a conta na cidade até o usuário mandar voltar ----
+    // Pedido do usuário em 21/10/2026: "peguei emprestado o Pokémon em outra conta e gostaria que ele ficasse esperando na
+    // cidade; dentro do settings, um botão para ficar idle". Sem isto tudo no script empurra a conta de volta para a hunt
+    // (parada na cidade, volta da viagem/cura/recarga, rotas, e a própria tela reafirma a hunt na reconexão).
+    // Estado em `holdRun` ({ at, hunt }), persistido em localStorage[HOLD_KEY] para sobreviver à recarga do painel; fica
+    // FORA do cfg porque é da conta (não entra no Exportar/Importar). Ligado: cancela troca em andamento, sai da hunt
+    // (`leave-hunt` + teleporte sintético para a tela viajar; `set-city` nós mesmos se ela não mandar em HOLD_CITY_WAIT_MS),
+    // `switchHunt` recusa toda entrada (log `espera-cidade { fase:'bloqueou' }`, 1x por origem a cada 5 min), as rotas e a
+    // parada na cidade esperam (`holdActive()`/`holdReason()`), a cura na Joy é pulada, a recarga não arma a volta e, se a
+    // tela religar a hunt (reconexão reafirma a última hunt escolhida na mão), o script sai de novo HOLD_KICK_DELAY_MS depois
+    // (`holdOnHuntChange`, no máximo 1x por HOLD_KICK_GAP_MS, fase 'saiu'). A arena do Auto Boss (`*_boss`) não conta:
+    // boss começado na mão segue. Viagens à cidade continuam (a conta já está lá; só a volta é recusada).
+    // Desligar (`holdStop`): `joy-heal` (de graça; líder em hp 0 = a tela recusa hunt) e volta para o destino da parada na
+    // cidade (`idleTarget`: clã > rota > última hunt > hunt padrão); sem destino, o painel pede para entrar na mão.
+    // Logs `espera-cidade { fase: inicio | lembrada | saiu | bloqueou | troca-cancelada | fim }`.
+
+    const HOLD_KEY = 'pgDiscordNotifyHold';
+    const HOLD_CITY_WAIT_MS = 10 * 1000;       // a tela não viajou depois do teleporte sintético: mandamos set-city nós mesmos
+    const HOLD_KICK_DELAY_MS = 2000;           // hunt vista com a espera ligada: sai dela depois disto
+    const HOLD_KICK_GAP_MS = 30 * 1000;        // no máximo uma saída forçada por período
+    const HOLD_BLOCK_LOG_MS = 5 * 60 * 1000;   // log `bloqueou` 1x por origem por período
+    const HOLD_BACK_DELAY_MS = 2500;           // joy-heal -> volta para a hunt
+
+    let holdRun = null;           // { at, hunt } enquanto a espera está ligada
+    let holdKickTimer = null;
+    let holdKickAt = 0;
+    let holdCityTimer = null;
+    let holdCityArrived = false;
+    let holdBlockLog = {};        // origem -> última vez que o bloqueio foi logado
+    let holdLast = null;          // { at, slug, motivo } última volta pedida pelo desligar
+    let onHoldChange = null;      // callback do painel
+
+    function holdNotify() { if (onHoldChange) { try { onHoldChange(); } catch { /* painel fechado */ } } }
+    function holdActive() { return Boolean(holdRun); }
+    function holdReason() { return holdRun ? 'esperando na cidade (botão do painel)' : null; }
+    function holdIsHunt(slug) { const h = normalize(slug || ''); return Boolean(h) && !CITY_SLUGS.includes(h) && !(typeof bossIsArena === 'function' && bossIsArena(h)); }
+    const holdHora = (at) => new Date(at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    function holdSave() {
+        try { if (holdRun) localStorage.setItem(HOLD_KEY, JSON.stringify(holdRun)); else localStorage.removeItem(HOLD_KEY); }
+        catch { /* sem espaço: a espera vale só nesta carga */ }
+    }
+    // Carga nova: a espera ligada na carga anterior continua (a recarga do painel não desliga).
+    function holdLoad() {
+        let rec = null;
+        try { rec = JSON.parse(localStorage.getItem(HOLD_KEY) || 'null'); } catch { rec = null; }
+        if (!rec || typeof rec !== 'object' || !(Number(rec.at) > 0)) return false;
+        holdRun = { at: Number(rec.at), hunt: rec.hunt ? String(rec.hunt) : null };
+        logEvent('espera-cidade', { fase: 'lembrada', desdeMin: Math.round((Date.now() - holdRun.at) / 60000), hunt: holdRun.hunt });
+        return true;
+    }
+    function holdStatus() {
+        if (!holdRun) {
+            if (!holdLast) return 'desligada: a conta segue as rotas e a parada na cidade';
+            return `desligada · última volta ${holdHora(holdLast.at)}${holdLast.slug ? ` para ${holdLast.slug}` : ` (não voltei: ${holdLast.motivo})`}`;
+        }
+        const min = Math.round((Date.now() - holdRun.at) / 60000);
+        return `ligada há ${min} min (desde ${holdHora(holdRun.at)})${holdRun.hunt ? ` · veio de ${holdRun.hunt}` : ''} · nada manda a conta para a hunt até você clicar em Voltar`;
+    }
+    // Sai da hunt e põe a tela na cidade (como a ida da viagem). Devolve se havia hunt para sair.
+    function holdLeave(fase, extra) {
+        if (!holdIsHunt(huntSlug)) return false;
+        const hunt = normalize(huntSlug);
+        sendGame({ type: 'leave-hunt' });
+        holdCityArrived = false;
+        const tela = typeof nudgeClientToCity === 'function' ? nudgeClientToCity() : false;
+        clearTimeout(holdCityTimer);
+        holdCityTimer = setTimeout(() => {
+            holdCityTimer = null;
+            if (!holdCityArrived && holdRun) sendGame({ type: 'set-city', slug: typeof tripCity === 'function' ? tripCity() : 'cerulean' });   // a tela não viajou: avisa o servidor nós mesmos
+        }, HOLD_CITY_WAIT_MS);
+        logEvent('espera-cidade', Object.assign({ fase, hunt, tela }, extra || {}));
+        return true;
+    }
+    function holdOnSetCity() { holdCityArrived = true; }
+    function holdStart(origem) {
+        if (holdRun) return false;
+        const hunt = holdIsHunt(huntSlug) ? normalize(huntSlug) : (typeof lastRealHunt === 'string' && holdIsHunt(lastRealHunt) ? normalize(lastRealHunt) : null);
+        holdRun = { at: Date.now(), hunt };
+        holdSave();
+        if (huntSwitch) {   // troca de hunt no meio do caminho: o enter-hunt dela não pode sair
+            if (huntSwitch.timer) clearTimeout(huntSwitch.timer);
+            logEvent('espera-cidade', { fase: 'troca-cancelada', slug: huntSwitch.slug, origem: huntSwitch.origem || null });
+            huntSwitch = null;
+        }
+        if (!holdLeave('inicio', { origem })) logEvent('espera-cidade', { fase: 'inicio', hunt: null, origem, jaNaCidade: true, veioDe: hunt });
+        holdNotify();
+        return true;
+    }
+    // Chamado por setHunt(): a tela (reconexão, clique) ou o servidor religou uma hunt com a espera ligada.
+    function holdOnHuntChange(slug) {
+        if (!holdRun || !holdIsHunt(slug) || holdKickTimer) return;
+        const espera = Math.max(HOLD_KICK_DELAY_MS, holdKickAt + HOLD_KICK_GAP_MS - Date.now());
+        holdKickTimer = setTimeout(() => {
+            holdKickTimer = null;
+            if (!holdRun || !holdIsHunt(huntSlug)) return;
+            holdKickAt = Date.now();
+            holdLeave('saiu');
+            holdNotify();
+        }, espera);
+    }
+    // switchHunt recusou uma entrada por causa da espera: fica no log, 1x por origem por período.
+    function holdBlocked(slug, origem) {
+        const k = origem || 'rota';
+        if (Date.now() - (holdBlockLog[k] || 0) < HOLD_BLOCK_LOG_MS) return;
+        holdBlockLog[k] = Date.now();
+        logEvent('espera-cidade', { fase: 'bloqueou', slug, origem: k });
+    }
+    function holdStop(origem) {
+        if (!holdRun) return { ok: false, motivo: 'a espera não está ligada' };
+        const min = Math.round((Date.now() - holdRun.at) / 60000);
+        holdRun = null;
+        holdSave();
+        clearTimeout(holdKickTimer); holdKickTimer = null;
+        clearTimeout(holdCityTimer); holdCityTimer = null;
+        holdBlockLog = {};
+        let slug = null, motivo = null;
+        if (holdIsHunt(huntSlug)) motivo = `a conta já está em ${normalize(huntSlug)}`;
+        else if (typeof bossBusy === 'function' && bossBusy()) motivo = 'Auto Boss do jogo em andamento';
+        else if (tripRunning) motivo = 'viagem à cidade em andamento (ela volta para a hunt no fim)';
+        else {
+            const alvo = typeof idleTarget === 'function' ? idleTarget() : { motivo: 'não sei de que hunt veio' };
+            if (alvo.slug) slug = alvo.slug; else motivo = alvo.motivo;
+        }
+        holdLast = { at: Date.now(), slug, motivo };
+        logEvent('espera-cidade', { fase: 'fim', origem, min, volta: slug, motivo });
+        if (slug) {
+            sendGame({ type: 'joy-heal' });   // de graça; com o líder em hp 0 a tela recusa a hunt
+            setTimeout(() => { if (!holdRun && !holdIsHunt(huntSlug)) switchHunt(slug, 1, 'cidade'); }, HOLD_BACK_DELAY_MS);
+        }
+        holdNotify();
+        return { ok: true, slug, motivo, min };
     }
 
     // ---- Interceptação do WebSocket (mesmo estilo do PIW-QOL) -------
@@ -7258,7 +7400,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
                 if (!farmList(d).length || !temAlertas) return 'warn';
                 return 'on';
             }
-            case 'sistema': return d.reloadEnabled ? 'on' : 'off';
+            case 'sistema': return holdActive() ? 'warn' : d.reloadEnabled ? 'on' : 'off';   // v3.44.0: esperando na cidade de propósito = ⚠ para não esquecer
         }
         return 'off';
     }
@@ -7275,7 +7417,8 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             `Guild: ${[guildDonateWanted(d) > 0 ? `doa ${guildN(guildDonateWanted(d))}/dia` : '', d.guildTributeEnabled ? 'tributo' : '', d.guildFarmTribute ? 'farma tributo' : '', d.guildHuntEnabled ? 'caça' : '', d.guildFishEnabled ? 'pesca' : '', guildRouteOn(d) ? `ordem ${guildOrderText(d)}` : '', d.guildAlerts ? 'avisos' : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Farm: ${d.farmEnabled && farmList(d).length ? `${farmList(d).filter(farmEntryDone).length}/${farmList(d).length} itens` : 'desligado'}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
-        ].join(' · ');
+            holdActive() ? '⏸ esperando na cidade (botão do painel)' : '',
+        ].filter(Boolean).join(' · ');
     }
 
     const TIER_LABEL = (t) => `${t.name} (${t.min === -Infinity ? '< 1.0' : t.min.toFixed(1) + '+'})`;
@@ -7624,6 +7767,12 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                     </div>
                 </section>
                 <section class="dn-pane" data-pane="sistema" hidden>
+                    <div class="dn-section">
+                        <h3>⏸ Esperar na cidade</h3>
+                        <p class="dn-help">Para a conta ficar parada na cidade de propósito (ex.: Pokémon emprestado de outra conta). Sai da hunt agora e segura tudo o que mandaria a conta de volta: parada na cidade, volta da viagem, cura, recarga e rotas. Se a tela religar a hunt, o script sai de novo. Fica ligado até você clicar em Voltar (sobrevive à recarga do painel; não entra no Exportar). Viagens à cidade para vender/comprar seguem normais.</p>
+                        <div class="dn-status"><span>⏸</span><span id="pg-dn-hold-status"></span></div>
+                        <div class="dn-actions"><button type="button" class="dn-btn dn-btn--primary" id="pg-dn-hold">⏸ Ficar parado na cidade</button></div>
+                    </div>
                     <div class="dn-section">
                         <h3>Recarga do painel</h3>
                         <label class="dn-toggle"><input id="pg-dn-reload" type="checkbox"><span class="sw"></span>Recarregar automaticamente</label>
@@ -8629,9 +8778,33 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             setTimeout(() => doReload('manual'), 300);
         };
 
+        // ---- Esperar na cidade (v3.44.0) ----
+        function renderHold() {
+            const on = holdActive();
+            $('#pg-dn-hold-status').textContent = holdStatus();
+            const b = $('#pg-dn-hold');
+            b.textContent = on ? '▶ Voltar para a hunt' : '⏸ Ficar parado na cidade';
+            b.classList.toggle('dn-btn--danger', on);
+            b.classList.toggle('dn-btn--primary', !on);
+            b.title = on ? 'Desliga a espera: cura na Joy e volta para a hunt (clã > rota > última hunt > hunt padrão).' : 'Sai da hunt agora e segura a conta na cidade até você clicar de novo. Sobrevive à recarga do painel.';
+        }
+        $('#pg-dn-hold').onclick = () => {
+            if (holdActive()) {
+                const r = holdStop('painel');
+                if (r.slug) flash(`▶ Espera desligada: curando na Joy e voltando para ${r.slug}.`, 'ok', 6000);
+                else flash(`▶ Espera desligada; não voltei sozinho: ${r.motivo}. Entre na hunt na mão.`, 'warn');
+            } else {
+                const tinha = holdIsHunt(huntSlug);
+                holdStart('painel');
+                flash(`⏸ Esperando na cidade${tinha ? ' (saí da hunt)' : ''}: nada manda a conta para a hunt até você clicar em Voltar.`, 'ok', 6000);
+            }
+            renderHold(); renderIdle(); renderState();
+        };
+        onHoldChange = () => { if (!panel.hidden) { renderHold(); renderIdle(); renderState(); } };
+
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderEvolve(); renderSlot(); renderBoss(); renderBreed(); renderGuild(); renderFarm(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderHold(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderEvolve(); renderSlot(); renderBoss(); renderBreed(); renderGuild(); renderFarm(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -9102,6 +9275,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
     }
 
     logEvent('script-carregado', { versao: VERSION, familia: familyList().length, guardar: [cfg.depositItems || '', cfg.depositPokes || ''] }); // /log mostra a versão de cada painel
+    holdLoad();   // v3.44.0: espera na cidade ligada na carga anterior continua (antes de loadResume: a volta da recarga respeita)
     loadResume(); // antes do painel e dos timers: restaura o que a carga anterior guardou
     bossLoad();   // v3.43.0: Auto Boss pedido na carga anterior (o frame do auto-boss-get decide se ainda roda)
     if (cfg.reloadEnabled) scheduleReload();
@@ -9142,6 +9316,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
         '| refil:', supplyOn() ? supplySlots().map(s => `${s.name} < ${s.min} (+${s.qty})`).join(', ') : 'não',
         '| Joy:', cfg.healJoyEnabled ? 'cura e volta' : 'não',
         '| parada na cidade:', cfg.cityIdleEnabled ? `volta após ${cfg.cityIdleMin} min${cfg.cityIdleHunt ? `, padrão ${cfg.cityIdleHunt}` : ''}` : 'não',
+        '| espera na cidade:', holdActive() ? 'LIGADA (botão do painel)' : 'não',
         '| nível:', levelEnabled() ? `${levelTarget()}${swapEnabled() ? ' + troca' : ''}` : 'não',
         '| rota:', routeActive() ? routeStatus() : 'não',
         '| captura:', cfg.catchRouteEnabled ? `${catchAreas().join('+')}${cfg.catchRouteMaxLevel ? ` até lv ${cfg.catchRouteMaxLevel}` : ''}${cfg.catchRouteAuto ? ' + bola' : ''}` : 'não',

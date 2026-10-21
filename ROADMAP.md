@@ -868,6 +868,26 @@ avisos em Alertas (insígnia conquistada, derrota com o time do NPC, outfit). Vi
 
 ---
 
+## ✅ 36. Esperar na cidade: botão para a conta ficar parada de propósito (v3.44.0)
+
+**Pedido (21/10/2026):** "forçar o personagem ficar esperando na cidade. Ex.: peguei emprestado o Pokémon em outra conta e
+gostaria que ele ficasse esperando na cidade. Dentro do settings, um botão para ficar idle". Sem isso tudo no script empurra a
+conta de volta para a hunt (parada na cidade, volta da viagem/cura/recarga, rotas) e a própria tela reafirma a hunt na reconexão.
+
+**O que faz:** aba Sistema → "⏸ Esperar na cidade" → botão **Ficar parado na cidade** (imediato, fora do Salvar). Ligado: sai
+da hunt (`leave-hunt` + teleporte sintético para a tela viajar; `set-city` nós mesmos se ela não mandar em 10 s), cancela
+troca de hunt em andamento, `switchHunt` recusa toda entrada (log `espera-cidade { fase:'bloqueou' }`), as rotas
+(captura/clã/guild/farm/daily sozinha) e a parada na cidade esperam com o motivo no painel, a cura na Joy é pulada, a recarga
+não arma a volta e, se a tela religar a hunt, o script sai de novo 2 s depois (no máximo 1x/30 s). A arena do Auto Boss não
+conta. Viagens à cidade (venda/compra) seguem; só a volta é recusada. Sobrevive à recarga do painel
+(`localStorage.pgDiscordNotifyHold`, fora do cfg: não entra no Exportar/Importar). Badge ⚠ na aba Sistema enquanto ligado.
+Botão **Voltar para a hunt**: `joy-heal` e volta para o destino da parada na cidade (clã > rota > última hunt > hunt padrão);
+sem destino, pede para entrar na mão.
+
+**Teste:** `node test/hold.test.js` (`loadHoldModule`), caso 9 do `test/idle.test.js`, `test/ui.smoke.js`.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

@@ -124,6 +124,16 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   > última hunt. Pedido do usuário em 11/10/2026: "o personagem nunca deve ficar parado; NÃO PODEMOS PERDER TEMPO PARADO".
   Sintoma sem ela (visto na 3.35.0 no outro PC, 11/10/2026): conta recém-atualizada parada na cidade, sem hunt lembrada,
   status "não sei de que hunt veio" para sempre.
+- Esperar na cidade (v3.44.0, aba Sistema → "⏸ Esperar na cidade", botão imediato fora do Salvar; módulo `// ---- Esperar na
+  cidade` entre a Lógica principal e a Interceptação do WebSocket, fora de todo recorte dos harness): pedido do usuário em
+  21/10/2026 ("peguei emprestado o Pokémon em outra conta e gostaria que ele ficasse esperando na cidade"). Estado `holdRun`
+  em `localStorage.pgDiscordNotifyHold` (FORA do cfg: é da conta, não entra no Exportar/Importar; sobrevive à recarga —
+  `holdLoad()` roda antes de `loadResume()`). `holdActive()`/`holdReason()` (sempre com `typeof`, por causa dos harness):
+  `switchHunt` recusa toda entrada e devolve `false` (log `espera-cidade { fase:'bloqueou' }`, 1x por origem a cada 5 min),
+  `idleBusyReason` devolve o motivo, as rotas (captura/daily sozinha/farm/guild/clã) esperam, `healStart` é pulada, `armResume`
+  não volta, a viagem zera `volta` quando recusada. `holdOnHuntChange` (em `setHunt`): a tela religou a hunt → `leave-hunt`
+  de novo 2 s depois (1x/30 s; arena `*_boss` não conta). Desligar = `joy-heal` + `switchHunt(idleTarget().slug, 1, 'cidade')`.
+  Badge ⚠ na aba Sistema enquanto ligado. Teste: `node test/hold.test.js` (`loadHoldModule`), caso 9 do `idle.test.js`.
 - REST do jogo (usado pela compra automática; confirmado no auto-refill de referência e no piwdex):
   tokens em `sessionStorage['pokeweb:tokens']` (`{accessToken, refreshToken}`), header
   `Authorization: Bearer`, renovação em `POST /api/auth/refresh {refreshToken}` quando vier 401.

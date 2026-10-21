@@ -119,5 +119,17 @@ const cfgOn = () => ({ cityIdleEnabled: true, cityIdleMin: 10 });
         assert(api.since() === 0, 'voltou a farmar');
     }
 
-    console.log('OK idle.test — parada 10 min, Joy + volta, frames = farmando, hunt sem frame, falha da Joy, destinos, esperas, desligada, proteção de 3 voltas e frames que param no meio da hunt');
+    // 9) v3.44.0: espera na cidade ligada pelo botão do painel: a parada na cidade nunca volta enquanto durar
+    {
+        const { api, state, clock, env } = loadIdleModule(cfgOn(), { env: { lastRealHunt: 'pidgey', hold: true }, pokesHp: [100] });
+        api.onHuntChange(null);
+        clock.now += 30 * MIN; await api.tick();
+        assert(state.switches.length === 0 && state.sent.length === 0, 'espera ligada: não cura nem volta');
+        assert(/esperando: esperando na cidade \(botão do painel\)/.test(api.status()), 'status diz o motivo: ' + api.status());
+        assert(state.logs.some(l => l[0] === 'cidade-parada-espera' && /botão do painel/.test(l[1].motivo)), 'log da espera');
+        env.hold = false; clock.now += 1 * MIN; await api.tick();
+        assert(state.switches[0]?.slug === 'pidgey', 'desligou: volta normal: ' + JSON.stringify(state.switches));
+    }
+
+    console.log('OK idle.test — parada 10 min, Joy + volta, frames = farmando, hunt sem frame, falha da Joy, destinos, esperas, desligada, proteção de 3 voltas, frames que param no meio da hunt e espera pelo botão');
 })().catch(err => { console.error(err); process.exit(1); });
