@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.45.0
+// @version      3.45.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.45.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.45.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -5355,7 +5355,7 @@
         const pend = [...tripNeeds.keys()];
         const ms = tripDueAt() - Date.now();
         const hora = new Date(tripDueAt()).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-        const title = pend.length ? 'Viagem à cidade sai no próximo minuto' : `Próxima viagem à cidade em ${Math.max(1, Math.ceil(ms / 60000))} min (${hora})`;
+        const title = pend.length ? (tripWaitReason ? `Viagem à cidade pedida (${pend.join('+')}), esperando: ${tripWaitReason}` : 'Viagem à cidade sai no próximo minuto') : `Próxima viagem à cidade em ${Math.max(1, Math.ceil(ms / 60000))} min (${hora})`;
         const sub = tripLoadText(load) + (lastTripInfo ? ` · ${tripLastText()}` : '');
         return { busy: false, pct: 0, title, sub, load };
     }
@@ -5474,15 +5474,35 @@
     // Tique (30 s), relógio único (v3.15.0): venceu o horário sorteado -> uma viagem com tudo que houver para fazer
     // (nada a fazer = só sorteia o próximo horário, sem sair da hunt). Pedido urgente (ex.: bola zerada) não espera o
     // relógio, só o intervalo mínimo entre viagens. Nunca com troca de hunt/líder ou captura em andamento.
+    // v3.45.1: por que a viagem não sai agora (null = pode sair). A mesma lista de bloqueios de sempre, com nome, para o log e a faixa.
+    function tripBlockedReason() {
+        if (tripRunning) return 'viagem em andamento';
+        if (typeof healBusy === 'function' && healBusy()) return 'cura na Nurse Joy em andamento';
+        if (typeof bossBusyReason === 'function' && bossBusyReason()) return bossBusyReason();
+        if (typeof bossBusy === 'function' && bossBusy()) return 'Auto Boss em andamento';
+        if (typeof idleRunning !== 'undefined' && idleRunning) return 'volta da cidade parada em andamento';
+        if (huntSwitch) return 'troca de hunt em andamento';
+        if (swapPending) return 'troca de líder em andamento';
+        if (awaitingDetails.length) return 'captura aguardando detalhes (até 20 s)';
+        return null;
+    }
+    let tripWaitLoggedAt = 0;
+    let tripWaitReason = null;   // motivo atual da espera de um pedido urgente (faixa de viagem)
+    function tripNoteWait(motivo) {
+        tripWaitReason = motivo;
+        if (!motivo) return;
+        if (Date.now() - tripWaitLoggedAt < 5 * 60 * 1000) return;   // 1x a cada 5 min
+        tripWaitLoggedAt = Date.now();
+        logEvent('viagem-espera', { tarefas: [...tripNeeds.keys()], motivo, pedidoHa: Math.round((Date.now() - Math.min(...[...tripNeeds.values()].map(n => n.at || Date.now()))) / 1000) + ' s' });
+    }
     function tripTick() {
-        if (tripRunning || (typeof healBusy === 'function' && healBusy())) return;              // cura na Joy em andamento: a viagem espera
-        if (typeof bossBusy === 'function' && bossBusy()) return;                              // v3.43.0: Auto Boss do jogo: sair da arena encerra a sessão
-        if (typeof idleRunning !== 'undefined' && idleRunning) return;                            // volta da cidade parada em andamento
-        if (huntSwitch || swapPending || awaitingDetails.length) return;
         const urgente = tripNeeds.size > 0;
+        const bloqueio = tripBlockedReason();
+        if (bloqueio) { if (urgente) tripNoteWait(bloqueio); return; }
         const venceu = Date.now() >= tripDueAt();
         if (!urgente && !venceu) return;
-        if (urgente && !venceu && Date.now() - lastTripAt < tripMinGapMs()) return;
+        if (urgente && !venceu && Date.now() - lastTripAt < tripMinGapMs()) { tripNoteWait(`intervalo mínimo entre viagens (${Math.max(1, Math.ceil((tripMinGapMs() - (Date.now() - lastTripAt)) / 60000))} min)`); return; }
+        tripNoteWait(null);
         const needs = tripAugment([...tripNeeds.entries()]);
         tripNeeds.clear();
         if (!needs.length) { logEvent('viagem-vazia', { motivo: 'nada para levar' }); restartTripCycle(); return; }

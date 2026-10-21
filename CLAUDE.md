@@ -161,7 +161,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `tripTick` leva tudo que `tripAugment` achar, ou só sorteia o próximo horário. Não existem mais intervalos próprios de
   venda de itens/Pokémon. A faixa `#pg-dn-trip` é um elemento só, movido para a aba ativa (Compras/Venda) em `showTab`;
   `tripStatus(d)` devolve `{ busy, pct, title, sub }` para ela. Venda = blocos `.dn-blk` (um aberto por vez).
-  Chamadas por aba: `docs/chamadas-por-aba.md`.
+  Chamadas por aba: `docs/chamadas-por-aba.md`. v3.45.1: pedido urgente que não sai (cura, Auto Boss, troca de hunt/líder, captura esperando
+  detalhes, intervalo mínimo) vira log `viagem-espera { tarefas, motivo, pedidoHa }` 1x/5 min (`tripBlockedReason`) e aparece no título da
+  faixa de viagem — "pedi a viagem e nada acontece" se lê direto no log.
 - Regra de venda (ver `protectedReason` e `sellWarning`): desde a v3.1.0, a pedido do usuário, só preço 0
   (NPC não compra) e cadeado do jogo bloqueiam; categoria fora de `loot`, `rare` e nome com Pheromone/Stone
   viram aviso ⚠️ na lista, mas podem ser marcados. Lista branca por item em `cfg.sellItems`. Não voltar a
