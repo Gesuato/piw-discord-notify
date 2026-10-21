@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.45.2
+// @version      3.45.3
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.45.2';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.45.3';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -6095,12 +6095,21 @@
         return gymState;
     }
 
-    // Tarefa da viagem (na cidade): relê a janela, desafia cada ginásio do plano (modo Insígnia, time atual), relê para ver os
-    // bônus que as vitórias liberaram, resgata os `claimable` e avisa.
+    async function gymClaimBonus(g) {
+        const r = await gameApi(`${GYM_URL}/bonus`, { method: 'POST', body: JSON.stringify({ gymId: g.id }) });
+        const b = { id: g.id, city: g.city, name: String(r?.name || g.bonus?.name || '?'), qty: Number(r?.qty) || g.bonus?.qty || 0 };
+        logEvent('ginasio-bonus', { id: g.id, item: `${b.qty}x ${b.name}`, proximoEm: r?.nextAvailableAt ? new Date(Number(r.nextAvailableAt)).toISOString() : null, campos: r && typeof r === 'object' ? Object.keys(r) : null });
+        return b;
+    }
+    // Tarefa da viagem (na cidade): relê a janela, desafia cada ginásio do plano (modo Insígnia, time atual) resgatando o bônus
+    // LOGO DEPOIS de cada vitória (v3.45.3: no outro PC a página foi recarregada no meio da viagem, depois de 12 vitórias, e a
+    // passada final de resgates nunca rodou — os 12 bônus ficaram para a viagem seguinte), relê e resgata os `claimable` que
+    // sobraram (vitórias anteriores, resgate que falhou na hora) e avisa.
     async function gymCityWork() {
         if (!gymEnabled()) return { ok: true, motivo: 'desligado' };
         gymWorking = true;
         const desafios = [], bonus = [], falhas = [];
+        const resgatados = new Set();
         try {
             await gymRead();
             if (!gymState) return { ok: false, motivo: 'não consegui ler os ginásios' };
@@ -6118,6 +6127,11 @@
                     if (won) delete gymLoss[g.id];
                     else gymLoss[g.id] = { at: Date.now(), n: (gymLoss[g.id]?.n || 0) + 1 };
                     logEvent('ginasio-desafio', { id: g.id, venceu: won, insignia: feito.badgeEarned, outfit: feito.outfit, lider: feito.defender, fim: r?.snapshot?.endReason ?? null, lances: Array.isArray(r?.log) ? r.log.length : null, insignias: r?.badges ?? null, meuTime: gymTeamText(meuTime), timeDoLider: gymTeamText(feito.npc), derrotasSeguidas: gymLoss[g.id]?.n || 0, campos: r && typeof r === 'object' ? Object.keys(r) : null });
+                    if (won && cfg.gymBonus !== false) {   // v3.45.3: bônus na hora (a vitória o deixa `claimable`); falhou = fica para a passada final
+                        await gymWait(gymRnd(GYM_BETWEEN_MS));
+                        try { bonus.push(await gymClaimBonus(g)); resgatados.add(g.id); }
+                        catch (err) { logEvent('ginasio-bonus-espera', { id: g.id, erro: String(err?.message || err) }); }
+                    }
                 } catch (err) {
                     falhas.push({ id: g.id, city: g.city, motivo: `desafio: ${err?.message || err}` });
                     logEvent('ginasio-erro', { etapa: 'desafio', id: g.id, erro: String(err?.message || err) });
@@ -6126,18 +6140,15 @@
             }
             if (plan.desafiar.length) {   // as vitórias liberam o bônus (`bonus.state` 'locked'/'needWin' -> 'claimable')
                 await gymRead();
-                const vencidos = desafios.filter(x => x.won).map(x => x.id);
+                const vencidos = desafios.filter(x => x.won && !resgatados.has(x.id)).map(x => x.id);   // bônus já resgatado na hora não conta
                 const semBonus = () => vencidos.filter(id => { const g = gymState?.gyms.find(x => x.id === id); return !(g?.bonus && g.bonus.state === 'claimable'); });
                 if (semBonus().length) { await gymWait(GYM_BONUS_RETRY_MS); await gymRead(); }   // v3.45.2: o servidor pode demorar a virar o estado
                 for (const id of vencidos) { const g = gymState?.gyms.find(x => x.id === id); logEvent('ginasio-bonus-estado', { id, estado: g?.bonus?.state ?? null, item: g?.bonus ? `${g.bonus.qty}x ${g.bonus.name}` : null, resgate: cfg.gymBonus !== false }); }
                 plan = gymPlan();
             }
-            for (const g of plan.resgatar) {
+            for (const g of plan.resgatar.filter(x => !resgatados.has(x.id))) {
                 try {
-                    const r = await gameApi(`${GYM_URL}/bonus`, { method: 'POST', body: JSON.stringify({ gymId: g.id }) });
-                    const b = { id: g.id, city: g.city, name: String(r?.name || g.bonus?.name || '?'), qty: Number(r?.qty) || g.bonus?.qty || 0 };
-                    bonus.push(b);
-                    logEvent('ginasio-bonus', { id: g.id, item: `${b.qty}x ${b.name}`, proximoEm: r?.nextAvailableAt ? new Date(Number(r.nextAvailableAt)).toISOString() : null, campos: r && typeof r === 'object' ? Object.keys(r) : null });
+                    bonus.push(await gymClaimBonus(g));
                 } catch (err) {
                     falhas.push({ id: g.id, city: g.city, motivo: `bônus: ${err?.message || err}` });
                     logEvent('ginasio-erro', { etapa: 'bonus', id: g.id, erro: String(err?.message || err) });

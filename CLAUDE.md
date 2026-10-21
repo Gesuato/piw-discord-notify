@@ -420,7 +420,8 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   insígnias que faltam e resgatar a recompensa depois de ganhar. É tarefa da VIAGEM (`ginasio` em `tripTasksFor`/`tripAugment`, pedida
   por `gymAsk` quando `gymPlan()` tem algo): o POST só foi visto com a conta na cidade. Derrota = `gymLoss[id]` com espera 2 h dobrando
   (máx. 24 h); nunca usa `mode:'leader'` nem `/abandon`. O farejador da v3.43.2 (`ginasio-rest` etc.) saiu. Logs `ginasio-campos`,
-  `ginasio`, `ginasio-desafio`, `ginasio-bonus-estado` (v3.45.2: estado do bônus de cada vitória, com releitura extra de 3 s),
+  `ginasio`, `ginasio-desafio`, `ginasio-bonus-estado` (v3.45.2: estado do bônus de cada vitória, com releitura extra de 3 s; v3.45.3: o bônus é
+  resgatado LOGO depois de cada vitória — a recarga da página no meio da viagem matava a passada final de resgates),
   `ginasio-bonus`, `ginasio-erro`, `ginasio-global`. Teste: `node test/gym.test.js` (`loadGymModule`:
   `// ---- Ginásio (v3.45.0)` até `// ---- Auto Boss (v3.43.0)`; `init.api` responde GET/POST; `clock.now`).
 - Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
