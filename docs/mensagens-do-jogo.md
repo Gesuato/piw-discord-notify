@@ -373,7 +373,7 @@ luta é resolvida na hora pelo servidor e o HUD da arena (o mesmo do PvP) só an
   ms logo após a vitória). Feito com a conta na cidade (`hunt: null`); de dentro da hunt não foi testado. Erro = `{ message }`.
 - `POST /api/game/gyms/bonus { gymId }` → `{ ok, itemId, name, qty, nextAvailableAt }` ("Recompensa bônus": 20x Rock/Water/Thunder/Leaf/
   Venom/Enigma/Fire/Earth/Feather/Cocoon/Heart/Darkness/Punch/Ice Stone ou 2x Metal/Ancient/Crystal Stone; "Disponível novamente a cada 48
-  horas" = `bonus.cooldownMs` ≈ 172 800 000; depois `needWin` = "Vença o ginásio de novo").
+  horas" = `bonus.cooldownMs` ≈ 172 800 000; depois `needWin` = "Vença o ginásio de novo"; antes da 1ª vitória `state:'locked'`, visto no log).
 - `POST /api/game/gyms/abandon { gymId }` → deixa a liderança (perde o tempo de reinado; o script nunca usa).
 - Servidor → cliente: `gym-global` (anúncio global "assumiu/derrotou o ginásio de …", `hud.gymAnnounce.*`; o HUD segura 15 s depois
   de `pw:gym-challenge-pending`; log `ginasio-global`, ainda não visto). Histórico de diamantes tem a origem `GYM_PAYOUT`.

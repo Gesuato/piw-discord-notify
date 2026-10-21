@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.45.1
+// @version      3.45.2
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.45.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.45.2';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -5948,6 +5948,7 @@
     const GYM_LOSS_WAIT_MS = 2 * 60 * 60 * 1000; // espera depois de uma derrota (dobra a cada derrota seguida do mesmo ginásio)
     const GYM_LOSS_WAIT_MAX_MS = 24 * 60 * 60 * 1000;
     const GYM_BETWEEN_MS = [1200, 2500];         // entre desafios/resgates ("humano")
+    const GYM_BONUS_RETRY_MS = 3000;             // v3.45.2: vitória sem bônus `claimable` na releitura: espera e relê mais uma vez
 
     let gymState = null;        // última leitura (parseGymState)
     let gymFetchedAt = 0;
@@ -6123,7 +6124,14 @@
                 }
                 await gymWait(gymRnd(GYM_BETWEEN_MS));
             }
-            if (plan.desafiar.length) { await gymRead(); plan = gymPlan(); }   // as vitórias liberam o bônus
+            if (plan.desafiar.length) {   // as vitórias liberam o bônus (`bonus.state` 'locked'/'needWin' -> 'claimable')
+                await gymRead();
+                const vencidos = desafios.filter(x => x.won).map(x => x.id);
+                const semBonus = () => vencidos.filter(id => { const g = gymState?.gyms.find(x => x.id === id); return !(g?.bonus && g.bonus.state === 'claimable'); });
+                if (semBonus().length) { await gymWait(GYM_BONUS_RETRY_MS); await gymRead(); }   // v3.45.2: o servidor pode demorar a virar o estado
+                for (const id of vencidos) { const g = gymState?.gyms.find(x => x.id === id); logEvent('ginasio-bonus-estado', { id, estado: g?.bonus?.state ?? null, item: g?.bonus ? `${g.bonus.qty}x ${g.bonus.name}` : null, resgate: cfg.gymBonus !== false }); }
+                plan = gymPlan();
+            }
             for (const g of plan.resgatar) {
                 try {
                     const r = await gameApi(`${GYM_URL}/bonus`, { method: 'POST', body: JSON.stringify({ gymId: g.id }) });

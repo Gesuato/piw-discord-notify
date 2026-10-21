@@ -416,11 +416,12 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   Johto), tudo por REST — `GET /api/game/gyms` (`details[].owned/cooldownMs/bonus.state/npcTeam`, `badges/total`, `badgePerk` = +1% XP
   e +1% drop por insígnia), `POST /api/game/gyms/challenge { gymId, mode:'badge' }` com a luta JÁ RESOLVIDA pelo servidor com o time
   atual (`won`, `badgeEarned`, `log`, `snapshot`; cooldown de 10 min depois), `POST /api/game/gyms/bonus { gymId }` → `{ ok, itemId,
-  name, qty, nextAvailableAt }` (pedras de evolução, a cada 48 h; depois `needWin`). Pedido do usuário em 21/10/2026: coletar as
+  name, qty, nextAvailableAt }` (pedras de evolução, a cada 48 h; `bonus.state` locked → claimable → cooldown → needWin). Pedido do usuário em 21/10/2026: coletar as
   insígnias que faltam e resgatar a recompensa depois de ganhar. É tarefa da VIAGEM (`ginasio` em `tripTasksFor`/`tripAugment`, pedida
   por `gymAsk` quando `gymPlan()` tem algo): o POST só foi visto com a conta na cidade. Derrota = `gymLoss[id]` com espera 2 h dobrando
   (máx. 24 h); nunca usa `mode:'leader'` nem `/abandon`. O farejador da v3.43.2 (`ginasio-rest` etc.) saiu. Logs `ginasio-campos`,
-  `ginasio`, `ginasio-desafio`, `ginasio-bonus`, `ginasio-erro`, `ginasio-global`. Teste: `node test/gym.test.js` (`loadGymModule`:
+  `ginasio`, `ginasio-desafio`, `ginasio-bonus-estado` (v3.45.2: estado do bônus de cada vitória, com releitura extra de 3 s),
+  `ginasio-bonus`, `ginasio-erro`, `ginasio-global`. Teste: `node test/gym.test.js` (`loadGymModule`:
   `// ---- Ginásio (v3.45.0)` até `// ---- Auto Boss (v3.43.0)`; `init.api` responde GET/POST; `clock.now`).
 - Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
   `guardar` no fim de toda viagem; drops → Depot (`POST /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou
