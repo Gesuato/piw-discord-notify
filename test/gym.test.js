@@ -199,5 +199,23 @@ const gets = (state) => state.calls.filter(c => c.method === 'GET').length;
         assert(state.logs.length === 1 && state.logs[0][0] === 'ginasio-global' && state.logs[0][1].campos.includes('city'), 'ginasio-global');
     }
 
-    console.log('OK gym.test — leitura por prazo, plano (insígnia/bônus/cooldown), pedido de viagem, desafio + resgate na cidade, derrota com espera dobrada, redo/bonus, erros com 15 min, fechado, outfit, avisos');
+    // 9) conta já na cidade (parada / "Esperar na cidade"): o tique desafia na hora, sem pedir viagem; na hunt o botão pede a viagem
+    {
+        const srv = mkServer([{ id: 'pewter' }, { id: 'cerulean', owned: true, bonus: { state: 'claimable', qty: 20, name: 'Water Stone' } }]);
+        const { api, state } = loadGymModule({ gymEnabled: true }, { api: srv.api, inHunt: false });
+        await api.gymTick(true);
+        assert(state.trips.length === 0, 'na cidade não pede viagem');
+        assert(srv.posts.map(p => `${p.url}:${p.body.gymId}`).join() === '/challenge:pewter,/bonus:pewter,/bonus:cerulean', 'desafiou e resgatou na hora: ' + JSON.stringify(srv.posts));
+        assert(state.logs.some(l => l[0] === 'ginasio-cidade' && /desafiar Pewter/.test(l[1].plano)), 'log ginasio-cidade');
+        assert(state.hooks.length === 1 && /1 vitória, 2 bônus/.test(state.hooks[0].content), 'avisou: ' + state.hooks[0]?.content);
+        const r = await api.gymNow();
+        assert(!r.ok && /Nenhum ginásio pronto/.test(r.msg), 'botão sem nada pronto: ' + r.msg);
+        const h = loadGymModule({ gymEnabled: true }, { api: mkServer([{ id: 'pewter' }]).api, inHunt: true });
+        await h.api.gymTick(true);
+        assert(h.state.trips.length === 1 && /agora|viagem/.test(h.api.gymStatus()) && /→ viagem/.test(h.api.gymStatus()), 'na hunt pede viagem: ' + h.api.gymStatus());
+        const rn = await h.api.gymNow();
+        assert(rn.ok && /Viagem à cidade pedida: desafiar Pewter/.test(rn.msg), 'botão na hunt: ' + rn.msg);
+    }
+
+    console.log('OK gym.test — leitura por prazo, plano (insígnia/bônus/cooldown), pedido de viagem, desafio + resgate na cidade, derrota com espera dobrada, redo/bonus, erros com 15 min, fechado, outfit, avisos, já na cidade = na hora + botão');
 })().catch(e => { console.error(e); process.exit(1); });

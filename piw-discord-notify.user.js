@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.45.3
+// @version      3.45.4
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.45.3';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.45.4';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -6048,19 +6048,42 @@
         const ev = gymNextEventAt();
         return ev > 0 && ev <= now && gymFetchedAt < ev;
     }
-    // Com algo no plano, pede a viagem (idempotente: `tripRequest` guarda por chave).
+    // v3.45.4: a conta já está na cidade (parada, "Esperar na cidade" pelo botão, viagem que acabou de chegar)? Então o desafio
+    // não precisa de viagem nenhuma: faz na hora. Relato do usuário em 21/10/2026: "não está mais iniciando o ginásio, travado em
+    // '→ viagem'; o personagem já está parado na cidade" — a viagem esperava algum bloqueio (troca de hunt, intervalo mínimo…)
+    // enquanto a conta já estava onde precisava.
+    function gymInCity() { return !(typeof tripInHunt === 'function' && tripInHunt()) && !(typeof tripRunning !== 'undefined' && tripRunning); }
+    function gymPlanText(p) { return p.desafiar.map(g => `desafiar ${gymCityName(g)}${g.owned ? ' (bônus de novo)' : ' (insígnia)'}`).concat(p.resgatar.map(g => `bônus de ${gymCityName(g)}`)).join(', '); }
+    // Com algo no plano: na cidade faz agora; na hunt pede a viagem (idempotente: `tripRequest` guarda por chave).
     function gymAsk() {
         if (!gymEnabled() || gymWorking) return;
         if (gymFailedAt && Date.now() - gymFailedAt < GYM_RETRY_MS) return;
         const p = gymPlan();
-        const partes = p.desafiar.map(g => `desafiar ${gymCityName(g)}${g.owned ? ' (bônus de novo)' : ' (insígnia)'}`).concat(p.resgatar.map(g => `bônus de ${gymCityName(g)}`));
-        if (partes.length) tripRequest('ginasio', null, partes.join(', '));
+        if (!p.desafiar.length && !p.resgatar.length) return;
+        if (gymInCity()) {
+            if (typeof tripNeeds !== 'undefined' && tripNeeds.delete) tripNeeds.delete('ginasio');   // a viagem não precisa mais levar
+            logEvent('ginasio-cidade', { motivo: 'já na cidade', plano: gymPlanText(p) });
+            return gymCityWork();
+        }
+        tripRequest('ginasio', null, gymPlanText(p));
     }
     function gymTick(force) {
         if (!gymEnabled() || gymBusy || gymWorking) return;
         if (!force && gymFailedAt && Date.now() - gymFailedAt < GYM_RETRY_MS) return;
-        if (!force && !gymDue()) { gymAsk(); return; }
+        if (!force && !gymDue()) return gymAsk();
         return gymRead().then(() => gymAsk());
+    }
+    // Botão "Desafiar agora" do painel: na cidade roda já; na hunt pede a viagem. Devolve um texto para o rodapé.
+    async function gymNow() {
+        if (!gymEnabled()) return { ok: false, msg: 'Ligue os ginásios e salve antes.' };
+        if (gymWorking) return { ok: false, msg: 'Já está desafiando; espere terminar.' };
+        gymFailedAt = 0;
+        await gymRead();
+        const p = gymPlan();
+        if (!p.desafiar.length && !p.resgatar.length) return { ok: false, msg: `Nenhum ginásio pronto agora: ${gymStatus()}` };
+        if (!gymInCity()) { tripRequest('ginasio', null, gymPlanText(p)); return { ok: true, msg: `Viagem à cidade pedida: ${gymPlanText(p)}` }; }
+        const r = await gymCityWork();
+        return { ok: r.ok, msg: r.ok ? `Ginásios: ${r.vitorias ?? 0} vitórias, ${r.derrotas ?? 0} derrotas, ${r.bonus ?? 0} bônus` : `Ginásios: ${r.motivo || 'falhou'}` };
     }
     async function gymRead() {
         gymBusy = true;
@@ -6205,8 +6228,9 @@
         if (fechados) partes.push(`${fechados} ainda não ${fechados === 1 ? 'abriu' : 'abriram'}`);
         if (gymWorking) partes.push('na cidade, desafiando…');
         else {
-            if (p.desafiar.length) partes.push(`prontos para desafiar: ${p.desafiar.map(gymCityName).join(', ')} → viagem`);
-            if (p.resgatar.length) partes.push(`bônus para resgatar: ${p.resgatar.map(g => `${gymCityName(g)} (${g.bonus.qty}x ${g.bonus.name})`).join(', ')} → viagem`);
+            const onde = gymInCity() ? 'agora (já na cidade)' : 'viagem';
+            if (p.desafiar.length) partes.push(`prontos para desafiar: ${p.desafiar.map(gymCityName).join(', ')} → ${onde}`);
+            if (p.resgatar.length) partes.push(`bônus para resgatar: ${p.resgatar.map(g => `${gymCityName(g)} (${g.bonus.qty}x ${g.bonus.name})`).join(', ')} → ${onde}`);
             else if (d.gymBonus === false) { const c = st.gyms.filter(g => g.enabled && g.bonus && g.bonus.state === 'claimable').length; if (c) partes.push(`${c} bônus liberados (resgate desligado)`); }
             const esp = p.esperando.slice().sort((a, b) => a.ms - b.ms);
             if (esp.length) partes.push(`esperando: ${esp.slice(0, 3).map(e => `${gymCityName(e.g)} ${e.motivo === 'derrota' ? 'após derrota' : 'cooldown'} ${gymFmtLeft(e.ms)}`).join(', ')}${esp.length > 3 ? ` (+${esp.length - 3})` : ''}`);
@@ -8001,6 +8025,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <label class="dn-toggle"><input id="pg-dn-gym-redo" type="checkbox"><span class="sw"></span>Refazer o ginásio quando a Recompensa bônus liberar de novo <span class="dn-hint">(a cada 48 h: "Vença o ginásio de novo")</span></label>
                         <label class="dn-toggle"><input id="pg-dn-gym-alerts" type="checkbox"><span class="sw"></span>Avisar no canal de Alertas <span class="dn-hint">(insígnia, derrota, bônus, outfit das 18)</span></label>
                         <p class="dn-help">Cada insígnia dá +1% de XP e +1% de drop (as 18 dão +18% e a Gym Champion Outfit). A luta é resolvida na hora pelo servidor com o seu time atual contra os 6 Pokémon lv 400 do líder; não há golpe a escolher. Quando um ginásio aberto sem insígnia estiver fora do cooldown (10 min após cada desafio), o script pede uma viagem à cidade, desafia um a um, resgata a Recompensa bônus que a vitória libera e volta para a hunt. Depois de uma derrota espera 2 h (dobrando a cada derrota seguida, até 24 h): o time precisa ficar mais forte. Liderança de ginásio fica de fora.</p>
+                        <div class="dn-actions"><button type="button" class="dn-btn dn-btn--sm" id="pg-dn-gym-now" title="Na cidade: desafia os ginásios prontos agora. Na hunt: pede a viagem à cidade.">⚔ Desafiar agora</button></div>
                         <div class="dn-status"><span>🏟️</span><span id="pg-dn-gym-status"></span></div>
                     </div>
                 </section>
@@ -8608,6 +8633,10 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-farm-status').textContent = `${farmLine(d)}${!salvo ? ' · (lista alterada: salve)' : ''}${ruins.length ? ` · ${ruins.length} linha(s) inválida(s)` : ''}`;
         }
         onFarmChange = () => { if (!panel.hidden) renderFarm(); };
+        $('#pg-dn-gym-now').onclick = () => {
+            flash('🏟 Lendo os ginásios…', 'info', 60000);
+            gymNow().then(r => flash(`${r.ok ? '✔' : '⚠'} ${r.msg}`, r.ok ? 'ok' : 'warn', 15000)).catch(e => flash(`⚠ Ginásios: ${e?.message || e}`, 'error'));
+        };
         $('#pg-dn-farm-skip').onclick = () => {
             const cur = farmCurrent();
             if (!cur) { flash('⚠ Nenhum item em andamento na lista salva.', 'warn'); return; }

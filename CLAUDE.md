@@ -418,7 +418,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   atual (`won`, `badgeEarned`, `log`, `snapshot`; cooldown de 10 min depois), `POST /api/game/gyms/bonus { gymId }` → `{ ok, itemId,
   name, qty, nextAvailableAt }` (pedras de evolução, a cada 48 h; `bonus.state` locked → claimable → cooldown → needWin). Pedido do usuário em 21/10/2026: coletar as
   insígnias que faltam e resgatar a recompensa depois de ganhar. É tarefa da VIAGEM (`ginasio` em `tripTasksFor`/`tripAugment`, pedida
-  por `gymAsk` quando `gymPlan()` tem algo): o POST só foi visto com a conta na cidade. Derrota = `gymLoss[id]` com espera 2 h dobrando
+  por `gymAsk` quando `gymPlan()` tem algo): o POST só foi visto com a conta na cidade. v3.45.4: conta JÁ na cidade (parada, "Esperar
+  na cidade" pelo botão) = `gymAsk` roda `gymCityWork` na hora (`gymInCity`, log `ginasio-cidade`) em vez de esperar a viagem — relato do
+  usuário: "travado em → viagem, o personagem já está parado na cidade"; botão "⚔ Desafiar agora" (`gymNow`) na aba. Derrota = `gymLoss[id]` com espera 2 h dobrando
   (máx. 24 h); nunca usa `mode:'leader'` nem `/abandon`. O farejador da v3.43.2 (`ginasio-rest` etc.) saiu. Logs `ginasio-campos`,
   `ginasio`, `ginasio-desafio`, `ginasio-bonus-estado` (v3.45.2: estado do bônus de cada vitória, com releitura extra de 3 s; v3.45.3: o bônus é
   resgatado LOGO depois de cada vitória — a recarga da página no meio da viagem matava a passada final de resgates),

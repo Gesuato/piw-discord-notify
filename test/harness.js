@@ -1249,12 +1249,15 @@ function loadGymModule(cfg, init) {
         postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', color: p.embeds?.[0]?.color, meta: m }); return Promise.resolve(true); },
         playerName: () => 'Teste',
         setTimeout: (fn) => { fn(); return 1; },
+        tripInHunt: () => init.inHunt !== false,   // padrão: na hunt (desafio só na viagem); false = já na cidade (desafia na hora)
+        tripRunning: false,
+        tripNeeds: new Map(),
         Date: FakeDate,
         Math: FakeMath,
     };
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
-            gymTick, gymRead, gymCityWork, gymStatus, gymWanted, gymPlan, gymLossWait, gymNextEventAt, gymDue, parseGymState, gymOnGlobal,
+            gymTick, gymRead, gymCityWork, gymStatus, gymWanted, gymPlan, gymLossWait, gymNextEventAt, gymDue, parseGymState, gymOnGlobal, gymNow, gymInCity,
             GYM_POLL_MS, GYM_RETRY_MS, GYM_LOSS_WAIT_MS, GYM_LOSS_WAIT_MAX_MS,
             get gymState() { return gymState; },
             get gymLast() { return gymLast; },
