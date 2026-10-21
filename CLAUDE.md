@@ -399,6 +399,14 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   começar (`fought`/`noFight`, `BOSS_MAX_NO_FIGHT`) desistem antes das 10. `bossOnError` guarda o texto do `error` do jogo para o log
   ("Sua luta de boss anterior ainda está terminando"). `bossKeepsItem` tira o token (fee, 70000) da venda e do guardar na cidade com boss
   pendente/rodando e por 2 h depois de desistir — às 02:11Z a viagem depositou os 97 tokens na família. Casos 9–10 do teste.
+- Ginásio (v3.43.2, FAREJADOR, ROADMAP #35; bundle em 21/10/2026, `docs/mensagens-do-jogo.md` → "Ginásio"; módulo `// ---- Ginásio`
+  depois de `withoutPokeGridSellGuard`, sem config): o jogo tem 18 ginásios (8 Kanto + 10 Johto), tudo por REST (`GET /api/game/gyms`,
+  `POST /api/game/gyms/challenge { gymId, mode:'badge'|'leader' }` com a luta já resolvida, `POST /bonus` a cada 48 h, `POST /abandon`);
+  pelo socket só `gym-global` e o `pvp-state`/`pvp-leave` do HUD da arena. Pedido do usuário em 21/10/2026 ("funcionalidade para
+  completar o ginásio"; ele faz na mão na conta3 enquanto o script observa): o módulo embrulha o `fetch` da página (como o
+  `rest-breeding` da v3.28.1) e grava `ginasio-rest` (método, corpo, status, `hunt`, resumo, resposta cortada em 5000; nunca o
+  Authorization), `ginasio-campos` (GET 14 s após a carga), `ginasio-tela` (`pw:gym-*`), `ginasio-global`, `ginasio-pvp`, `ginasio-envio`.
+  Formatos só valem depois de vistos no log; implementar a feature = ler `python tools/read-panel-logs.py --panel 3 --kinds ginasio-*`.
 - Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
   `guardar` no fim de toda viagem; drops → Depot (`POST /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou
   família (`family-action item`); Pokémon não vendidos → só família (o box JÁ é o Depot comum de Pokémon). Lista escolhida

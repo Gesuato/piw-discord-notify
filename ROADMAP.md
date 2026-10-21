@@ -840,6 +840,34 @@ aceitas sem luta na conta1). Agora o script manda a tela para a arena (`hunt-res
 
 ---
 
+## 🔧 35. Ginásio: coletar as insígnias que faltam (bônus das 16 insígnias) — farejador na v3.43.2
+
+**O que faz (pedido do usuário em 21/10/2026):** "funcionalidade para completar o ginásio? Estou fazendo o ginásio manualmente na
+conta amandorosa (conta3). Pode monitorar para ver os protocolos e depois podemos implementar." e, em seguida: "eu gostaria de uma
+feature para coletar as insígnias, para receber o bônus de 16 insígnias; então fazer todos que ainda não recuperamos as insígnias".
+Escopo: modo **Insígnia** apenas — desafiar cada ginásio `enabled` com `owned: false` (18 no total: 8 Kanto + 10 Johto; `badgePerk`
+dá o bônus de XP/drop por insígnia, `max` = provável 16; as 18 dão a Gym Champion Outfit), respeitando o `cooldownMs` do ginásio
+depois de uma derrota, até não faltar nenhuma, e, depois de cada vitória, resgatar a "Recompensa bônus" do ginásio (`POST
+/api/game/gyms/bonus`, pedido do usuário no mesmo dia: "podemos recuperar a recompensa depois de ganhar o desafio"; `bonus.state ===
+'claimable'`, volta a cada 48 h vencendo de novo). Liderança (`mode:'leader'`) fica fora até o usuário pedir.
+
+**Mensagens (bundle em 21/10/2026; `docs/mensagens-do-jogo.md` → "Ginásio"):** `GET /api/game/gyms` (lista, detalhes com o time do
+NPC, `owned`/`cooldownMs`/`bonus.state`, `regions`, `badgePerk`), `POST /api/game/gyms/challenge { gymId, mode }` → luta pronta
+(`won`, `badgeEarned`, `log`, `snapshot`), `POST /api/game/gyms/bonus { gymId }`. Eventos `pw:gym-challenge-pending`/
+`pw:gym-battle-start` na janela; `gym-global` e `pvp-state`/`pvp-leave` no socket. Formatos ainda não vistos no log.
+
+**v3.43.2 (farejador):** o script registra tudo que a tela faz no ginásio (`ginasio-campos`, `ginasio-rest`, `ginasio-tela`,
+`ginasio-global`, `ginasio-pvp`, `ginasio-envio`). Próximo passo: ler o log da conta3 depois de uma sessão manual e confirmar
+(1) se o POST exige estar numa cidade/na cidade do ginásio ou fora da hunt (campo `hunt` do log, `set-city` perto), (2) o que
+vem em `cooldownMs` depois de perder, (3) se o `snapshot.sides.a.team` é o time atual do jogador (a força do time decide a
+vitória — o script não escolhe golpes), (4) o `gym-global`.
+
+**Config/UI prevista:** aba Treino → "🏟️ Ginásio": ligar/desligar, modo (só insígnias que faltam / refazer para o bônus de 48 h),
+avisos em Alertas (insígnia conquistada, derrota com o time do NPC, outfit). Viagem à cidade se o POST exigir cidade (tarefa
+`ginasio` em `tripAugment`), senão tick próprio a cada N min. Chaves no fixture do `test/config.roundtrip.js`; `node test/gym.test.js`.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel
