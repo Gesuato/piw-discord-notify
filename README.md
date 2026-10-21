@@ -24,6 +24,7 @@ Tampermonkey/Violentmonkey no navegador.
 - ✅ **Troca automática de líder**: ao atingir o nível, passa a vez para o próximo do time que ainda está abaixo
 - ✅ **Rota de treino**: etapas "hunt + nível"; quando todos do time chegam ao nível, troca de hunt sozinho
 - ✅ **Evolução automática**: quem do time chega ao nível de evolução vai à cidade, evolui com as pedras da mochila (mantém o nível) e volta para a hunt
+- ✅ **Ginásios**: conquista as insígnias que faltam (modo Insígnia, com o time atual) na viagem à cidade, resgata a Recompensa bônus (pedras de evolução) que cada vitória libera e refaz o ginásio quando o bônus volta a cada 48 h; avisa no canal de Alertas
 - ✅ **Auto Boss retomado**: se o Auto Boss do jogo parar antes de acabar a fila de tokens (erro, saiu da arena, queda da conexão), o script sai da hunt, cura na Joy e pede de novo só as lutas que faltam
 - ✅ **Esperar na cidade**: botão na aba Sistema para a conta ficar parada na cidade de propósito (ex.: Pokémon emprestado de outra conta): sai da hunt e segura parada na cidade, volta da viagem/cura/recarga e rotas até você clicar em Voltar
 - ✅ **Recarga automática**: recarrega o painel sozinho a cada X–Y minutos (sorteado), como o "⟳ Atualizar tudo" do PokeGrid, e volta para a hunt em que estava — também depois do ⟳/F5 feito na mão (a última hunt fica guardada por 24 h para a parada na cidade)

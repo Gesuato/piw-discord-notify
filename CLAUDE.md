@@ -409,14 +409,17 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   começar (`fought`/`noFight`, `BOSS_MAX_NO_FIGHT`) desistem antes das 10. `bossOnError` guarda o texto do `error` do jogo para o log
   ("Sua luta de boss anterior ainda está terminando"). `bossKeepsItem` tira o token (fee, 70000) da venda e do guardar na cidade com boss
   pendente/rodando e por 2 h depois de desistir — às 02:11Z a viagem depositou os 97 tokens na família. Casos 9–10 do teste.
-- Ginásio (v3.43.2, FAREJADOR, ROADMAP #35; bundle em 21/10/2026, `docs/mensagens-do-jogo.md` → "Ginásio"; módulo `// ---- Ginásio`
-  depois de `withoutPokeGridSellGuard`, sem config): o jogo tem 18 ginásios (8 Kanto + 10 Johto), tudo por REST (`GET /api/game/gyms`,
-  `POST /api/game/gyms/challenge { gymId, mode:'badge'|'leader' }` com a luta já resolvida, `POST /bonus` a cada 48 h, `POST /abandon`);
-  pelo socket só `gym-global` e o `pvp-state`/`pvp-leave` do HUD da arena. Pedido do usuário em 21/10/2026 ("funcionalidade para
-  completar o ginásio"; ele faz na mão na conta3 enquanto o script observa): o módulo embrulha o `fetch` da página (como o
-  `rest-breeding` da v3.28.1) e grava `ginasio-rest` (método, corpo, status, `hunt`, resumo, resposta cortada em 5000; nunca o
-  Authorization), `ginasio-campos` (GET 14 s após a carga), `ginasio-tela` (`pw:gym-*`), `ginasio-global`, `ginasio-pvp`, `ginasio-envio`.
-  Formatos só valem depois de vistos no log; implementar a feature = ler `python tools/read-panel-logs.py --panel 3 --kinds ginasio-*`.
+- Ginásios (v3.45.0, aba própria 🏟 Ginásio (`TABS` id `ginasio`), `cfg.gymEnabled`/`gymBonus`/`gymRedo`/`gymAlerts`; módulo `// ---- Ginásio` antes do
+  Auto Boss; protocolo CONFIRMADO no log em 21/10/2026 na conta3, `docs/mensagens-do-jogo.md` → "Ginásio"): 18 ginásios (8 Kanto + 10
+  Johto), tudo por REST — `GET /api/game/gyms` (`details[].owned/cooldownMs/bonus.state/npcTeam`, `badges/total`, `badgePerk` = +1% XP
+  e +1% drop por insígnia), `POST /api/game/gyms/challenge { gymId, mode:'badge' }` com a luta JÁ RESOLVIDA pelo servidor com o time
+  atual (`won`, `badgeEarned`, `log`, `snapshot`; cooldown de 10 min depois), `POST /api/game/gyms/bonus { gymId }` → `{ ok, itemId,
+  name, qty, nextAvailableAt }` (pedras de evolução, a cada 48 h; depois `needWin`). Pedido do usuário em 21/10/2026: coletar as
+  insígnias que faltam e resgatar a recompensa depois de ganhar. É tarefa da VIAGEM (`ginasio` em `tripTasksFor`/`tripAugment`, pedida
+  por `gymAsk` quando `gymPlan()` tem algo): o POST só foi visto com a conta na cidade. Derrota = `gymLoss[id]` com espera 2 h dobrando
+  (máx. 24 h); nunca usa `mode:'leader'` nem `/abandon`. O farejador da v3.43.2 (`ginasio-rest` etc.) saiu. Logs `ginasio-campos`,
+  `ginasio`, `ginasio-desafio`, `ginasio-bonus`, `ginasio-erro`, `ginasio-global`. Teste: `node test/gym.test.js` (`loadGymModule`:
+  `// ---- Ginásio (v3.45.0)` até `// ---- Auto Boss (v3.43.0)`; `init.api` responde GET/POST; `clock.now`).
 - Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
   `guardar` no fim de toda viagem; drops → Depot (`POST /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou
   família (`family-action item`); Pokémon não vendidos → só família (o box JÁ é o Depot comum de Pokémon). Lista escolhida
@@ -574,6 +577,8 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
   mutável em `state.pokes`, `init.freshPokes(n)` resposta ao n-ésimo `pokes-get`, `init.family` depot, `init.familyAction(payload)`).
   `node test/farm.test.js` (`loadFarmModule`: `// ---- Farm por lista` até `// ---- Guild (v3.30.0)`; `init.huntCatalog`, `init.creatures`,
   `init.items`, `init.team`, `init.env` mutável em `state.env` para viagem/cura/troca/líder/daily).
+  `node test/gym.test.js` (`loadGymModule`: `// ---- Ginásio (v3.45.0)` até `// ---- Auto Boss (v3.43.0)`; `init.api` responde GET
+  /api/game/gyms e POST challenge/bonus; `state.calls`/`state.trips`/`state.hooks`; `clock.now`).
   `node test/boss.test.js` (`loadBossModule`: `// ---- Auto Boss` até `// ---- Verificação humana`; `state.sent` = enviados ao jogo,
   `state.onSend` reinjeta em `api.onOutgoing` como o `handleOutgoing`, `state.heals` = chamadas a `healStart`, `state.fire(ms)` timers).
   `node test/human.test.js` (`loadHumanModule`: `// ---- Verificação humana` até `// ---- Cura na Joy`; `state.api` responde ao GET

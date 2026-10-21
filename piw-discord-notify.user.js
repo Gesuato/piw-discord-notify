@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.44.0
+// @version      3.45.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.44.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.45.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -86,6 +86,10 @@
         evolveFromFamily: true, // v3.39.0 ...e no depósito da família (family-action item withdraw), nessa ordem
         slotEnabled: false,     // v3.26.0 Poke Slot Machine: na viagem à cidade (shopping) gira o roll grátis e ativa o bônus
         slotWanted: '',         // ...Pokémon pedidos, em ordem de preferência (vírgula); nenhum sorteado = escolhe um qualquer
+        gymEnabled: false,      // v3.45.0 Ginásios: na viagem à cidade desafia os ginásios sem insígnia (modo Insígnia, time atual)
+        gymBonus: true,         // ...e resgata a Recompensa bônus (pedras de evolução) que a vitória libera
+        gymRedo: true,          // ...refaz o ginásio quando o bônus volta a pedir vitória (a cada 48 h)
+        gymAlerts: true,        // ...avisa no canal de Alertas (insígnia, derrota, bônus, outfit das 18)
         bossResumeEnabled: true, // v3.43.0 Auto Boss do jogo: retomar quando parar sem terminar (erro, saiu da arena, reconexão)
         bossResumeOnLoss: false, // ...também depois de derrota (cura na Joy antes; cada derrota perde 1 token)
         bossAlerts: true,       // ...avisar no canal de Alertas (retomada, desistência, fim)
@@ -918,124 +922,6 @@
         finally { if (window.__pgSellGuardOn === false) window.__pgSellGuardOn = antes; }
     }
 
-    // ---- Ginásio (v3.43.2, farejador): como o ginásio funciona, levantado no bundle em 21/10/2026 ----------------------
-    // Janela "Ginásios" (ícone `topmenu/icon_gym.png`, abas "Ginásios" e "Recompensas"; modos "Insígnia" e "Liderança"). Tudo por
-    // REST; pelo socket só o aviso global `gym-global` do servidor e o `pvp-state`/`pvp-leave` que o HUD da arena manda ao abrir e
-    // fechar a luta (o HUD é o mesmo do PvP, a luta chega pronta no evento `pw:gym-battle-start` com `local: true`):
-    // - `GET /api/game/gyms` → `{ gyms[{ id, city, order, region:'kanto'|'johto', type, badge, leader, holder{ name }|null, enabled,
-    //   owned, canLead }], details[{ id, city, type, badge, owned, mine, enabled, cooldownMs, leaderBlock{ reason:'self'|'type'|
-    //   'duplicate' }|null, leaderBlockMsg, leaderCooldownMs, defender{ isNpc, name, look, sinceAt, defenses }, bonus{ icon, qty, name,
-    //   state:'claimable'|'cooldown'|'needWin'|…, cooldownMs }|null, arenaMap, npcTeam[{ speciesId, looktype, shiny, name, level,
-    //   types[], maxHp, stats{ atk, def, spAtk, spDef, speed }, moves[{ type, name, category, power }] }], team[…] }], myGymIds[],
-    //   regions{ kanto{ badges, total:8 }, johto{ badges, total:10 } }, payout{ perGymGold, perGymDiamonds, basisDay },
-    //   badgePerk{ xpPct, dropPct, active, max } }`. A tela relê depois de todo POST.
-    // - `POST /api/game/gyms/challenge { gymId, mode:'badge'|'leader' }` → `{ battleId, log[{ kind:'switch'|'move'|'faint'|'end',
-    //   side, monName, move, dmg, eff, moveType, targetHp, teamIndex, winner }], snapshot{ you, sides{ a{ name, look, team[] }, b },
-    //   winner, endReason }, arena, won, badgeEarned, becameLeader, championOutfit, championLook, leaderDeniedMsg }` — a luta é
-    //   resolvida NA HORA pelo servidor (o HUD só anima o `log`). "Desafiar líder" = insígnia (time livre; 18 ginásios, 8 Kanto +
-    //   10 Johto; as 18 dão a Gym Champion Outfit); "Duelar pelo posto" = liderança (só com todas as insígnias da região e time
-    //   inteiro do tipo do ginásio). `cooldownMs` > 0 = "Aguarde N min". Erro vem como `{ message }`.
-    // - `POST /api/game/gyms/bonus { gymId }` → `{ qty, name }`: "Recompensa bônus", a cada 48 h, liberada vencendo o ginásio de novo.
-    // - `POST /api/game/gyms/abandon { gymId }`: deixa a liderança (o script nunca vai usar).
-    // NADA visto no log ainda (pedido do usuário em 21/10/2026: "funcionalidade para completar o ginásio"; ele faz na mão na
-    // conta3 enquanto o script observa). Este módulo embrulha o `fetch` da página e registra o que a TELA chama em
-    // /api/game/gyms (`ginasio-rest`: método, URL, corpo, status, hunt e resposta resumida/cortada — NUNCA o cabeçalho
-    // Authorization), lê a janela uma vez na carga (`ginasio-campos`, resumo completo com os times), registra os eventos
-    // `pw:gym-*` da tela (`ginasio-tela`), os frames `gym-global` e `pvp-*` (`ginasio-global`, `ginasio-pvp`) e todo `pvp-*`
-    // enviado (`ginasio-envio`). Sai quando a feature ficar pronta (ROADMAP #35).
-    const GYM_REST = /\/api\/game\/gyms(\/|\?|$)/;
-    const GYM_REST_CUT = 5000;
-    let gymOwnCall = false;   // GET feito pelo próprio script (não duplica no `ginasio-rest`)
-    function gymCut(v) { const j = JSON.stringify(v) || ''; return j.length > GYM_REST_CUT ? j.slice(0, GYM_REST_CUT) + '…' : v; }
-    function gymTeamSummary(team) {
-        if (!Array.isArray(team)) return null;
-        return team.map(p => `${p?.name ?? '?'}${p?.shiny ? '✨' : ''} lv${p?.level ?? '?'} hp${p?.maxHp ?? '?'} [${(Array.isArray(p?.types) ? p.types : []).join('/')}]`);
-    }
-    // Resumo do GET /api/game/gyms: a lista inteira (18 ginásios com time de 6) não cabe no log; `completo` leva os times.
-    function gymSummary(r, completo) {
-        if (!r || typeof r !== 'object') return { raiz: null, bruto: gymCut(r) };
-        const gyms = Array.isArray(r.gyms) ? r.gyms : [];
-        const det = Array.isArray(r.details) ? r.details : [];
-        const d0 = det[0] || null;
-        const mon = d0 && Array.isArray(d0.npcTeam) ? d0.npcTeam[0] : null;
-        return {
-            raiz: Object.keys(r),
-            ginasio: gyms[0] ? Object.keys(gyms[0]) : null,
-            detalhe: d0 ? Object.keys(d0) : null,
-            defensor: d0?.defender ? Object.keys(d0.defender) : null,
-            bonus: d0?.bonus ? Object.keys(d0.bonus) : null,
-            monstro: mon ? Object.keys(mon) : null,
-            golpe: mon && Array.isArray(mon.moves) && mon.moves[0] ? Object.keys(mon.moves[0]) : null,
-            ginasios: gyms.map(g => ({ id: g?.id, cidade: g?.city, regiao: g?.region ?? null, tipo: g?.type, insignia: g?.badge, lider: g?.leader, dono: g?.holder?.name ?? null, aberto: g?.enabled, tenho: g?.owned, possoLiderar: g?.canLead })),
-            detalhes: det.map(d => ({ id: d?.id, tenho: d?.owned, meu: d?.mine, aberto: d?.enabled, cooldownMs: d?.cooldownMs ?? null, liderancaEmMs: d?.leaderCooldownMs ?? null, bloqueio: d?.leaderBlock?.reason ?? null,
-                defensor: d?.defender ? { npc: d.defender.isNpc, nome: d.defender.name, desde: d.defender.sinceAt ?? null, defesas: d.defender.defenses ?? null } : null,
-                bonus: d?.bonus ? { estado: d.bonus.state, item: `${d.bonus.qty}x ${d.bonus.name}`, cooldownMs: d.bonus.cooldownMs ?? null } : null, arena: d?.arenaMap ?? null,
-                npc: completo ? gymTeamSummary(d?.npcTeam) : (Array.isArray(d?.npcTeam) ? d.npcTeam.length : null), time: completo ? gymTeamSummary(d?.team) : (Array.isArray(d?.team) ? d.team.length : null) })),
-            meus: r.myGymIds ?? null, regioes: r.regions ?? null, rateio: r.payout ?? null, perk: r.badgePerk ?? null,
-        };
-    }
-    // Resumo da resposta do POST /challenge (o `log` da luta pode ter centenas de lances).
-    function gymBattleSummary(r) {
-        if (!r || typeof r !== 'object') return null;
-        const sn = r.snapshot || null;
-        const log = Array.isArray(r.log) ? r.log : [];
-        const side = (x) => x ? { nome: x.name ?? null, chaves: Object.keys(x), time: gymTeamSummary(x.team) } : null;
-        return {
-            raiz: Object.keys(r), venceu: r.won ?? null, insignia: r.badgeEarned ?? null, virouLider: r.becameLeader ?? null, outfit: r.championOutfit ?? null,
-            negado: r.leaderDeniedMsg ?? null, battleId: r.battleId ?? null, arena: r.arena ?? null,
-            snapshot: sn ? { chaves: Object.keys(sn), eu: sn.you ?? null, vencedor: sn.winner ?? null, fim: sn.endReason ?? null, a: side(sn.sides?.a), b: side(sn.sides?.b) } : null,
-            lances: log.length, primeiros: log.slice(0, 3), ultimo: log.length ? log[log.length - 1] : null,
-        };
-    }
-    (function installGymSniffer() {
-        const orig = window.fetch;
-        if (typeof orig !== 'function' || orig.__pgDnGymSniff) return;
-        const wrapped = async function (input, init) {
-            const url = typeof input === 'string' ? input : String((input && input.url) || '');
-            const path = url.replace(/^https?:\/\/[^/]+/, '');
-            if (gymOwnCall || !GYM_REST.test(path)) return orig.apply(this, arguments);
-            const metodo = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
-            let corpo = init && init.body;
-            if (typeof corpo === 'string') { try { corpo = JSON.parse(corpo); } catch { /* texto puro */ } }
-            const t0 = Date.now();
-            let res;
-            try { res = await orig.apply(this, arguments); }
-            catch (e) { logEvent('ginasio-rest', { metodo, url: path, corpo: corpo ?? null, status: null, erro: String((e && e.message) || e), hunt: huntSlug || null }); throw e; }
-            try {
-                const texto = await res.clone().text().catch(() => '');
-                let resposta = texto;
-                try { resposta = JSON.parse(texto); } catch { /* texto puro */ }
-                const get = metodo === 'GET';
-                const desafio = /\/challenge/.test(path);
-                logEvent('ginasio-rest', { metodo, url: path, corpo: corpo ?? null, status: res.status, ms: Date.now() - t0, hunt: huntSlug || null,
-                    resumo: get ? gymSummary(resposta, false) : (desafio ? gymBattleSummary(resposta) : null),
-                    resposta: get && res.ok ? undefined : gymCut(resposta) });
-            } catch (e) { logEvent('ginasio-rest-erro', { url: path, erro: String((e && e.message) || e) }); }
-            return res;
-        };
-        wrapped.__pgDnGymSniff = true;
-        window.fetch = wrapped;
-    })();
-    async function gymSniff() {
-        gymOwnCall = true;
-        try {
-            const r = await gameApi('/api/game/gyms');
-            logEvent('ginasio-campos', gymSummary(r, true));
-        } catch (err) { logEvent('ginasio-erro', { erro: String(err?.message || err) }); }
-        finally { gymOwnCall = false; }
-    }
-    // Eventos que a tela dispara na janela ao desafiar (o HUD da arena ouve `pw:gym-battle-start`).
-    try {
-        window.addEventListener('pw:gym-challenge-pending', () => logEvent('ginasio-tela', { evento: 'pw:gym-challenge-pending', hunt: huntSlug || null }));
-        window.addEventListener('pw:gym-battle-start', (ev) => {
-            const d = (ev && ev.detail) || {};
-            logEvent('ginasio-tela', { evento: 'pw:gym-battle-start', chaves: Object.keys(d), battleId: d.battleId ?? null, arena: d.arena ?? null, recompensas: d.rewards ?? null, lances: Array.isArray(d.log) ? d.log.length : null, hunt: huntSlug || null });
-        });
-    } catch { /* sem janela (harness) */ }
-    function gymOnGlobal(message) { logEvent('ginasio-global', { campos: Object.keys(message), dados: gymCut(message) }); }
-    function gymOnPvp(message) { logEvent('ginasio-pvp', { tipo: message.type, campos: Object.keys(message), dados: gymCut(message) }); }
-    function gymOnOutgoing(m) { logEvent('ginasio-envio', { tipo: m.type, dados: Object.fromEntries(Object.entries(m).filter(([k]) => k !== 'type')), hunt: huntSlug || null }); }
-
     // Compra `qty` da bola `id`. Devolve { ok, bought, spent, gold, motivo }.
     function buyBalls(id, qty) { return buyFromShop('ball', id, qty); }
 
@@ -1339,7 +1225,6 @@
         else if (m?.type === 'leave-hunt') { healOnLeave(); setHunt(null); }
         else if (m?.type === 'set-city') { tripOnSetCity(); healOnSetCity(); pokesOnSetCity(); holdOnSetCity(); armResume(RESUME_AFTER_CITY_MS); } // SPA na cidade: viagem chegou / hora de voltar pra hunt
         else if (m?.type === 'auto-boss-start' || m?.type === 'auto-boss-stop') bossOnOutgoing(m);   // v3.43.0: intenção do Auto Boss (pela tela ou pela retomada)
-        else if (typeof m?.type === 'string' && m.type.startsWith('pvp-')) gymOnOutgoing(m);   // v3.43.2: farejador do ginásio (pvp-state/pvp-leave do HUD da arena)
         // v3.29.2: todo `family-action` enviado (pela tela OU pelo script) entra no log com os campos, para confirmar o formato da
         // retirada (`dir:'withdraw'`) que o breeding usa — a janela "Família" do jogo passa por aqui também.
         // v3.30.0: todo `guild-action` enviado (pela tela do jogo; o script ainda não envia nenhum) entra no log com os campos,
@@ -5419,7 +5304,8 @@
         const slot = typeof slotWanted === 'function' && slotWanted(d);
         const time = (typeof pokeSellListUnread === 'function' && pokeSellListUnread()) || (typeof pokesListWanted === 'function' && pokesListWanted());
         const breeding = typeof breedWanted === 'function' && breedWanted();
-        return { drops, pokes, bolas, cla, suprimentos, slot, time, breeding, nada: !drops && !pokes && !bolas && !cla && !suprimentos && !slot && !time && !breeding };
+        const ginasio = typeof gymWanted === 'function' && gymWanted(d);
+        return { drops, pokes, bolas, cla, suprimentos, slot, time, breeding, ginasio, nada: !drops && !pokes && !bolas && !cla && !suprimentos && !slot && !time && !breeding && !ginasio };
     }
     function tripLoadText(l) {
         const p = [];
@@ -5429,6 +5315,7 @@
         if (l.suprimentos) p.push(l.suprimentos.map(s => `comprar ${s.qty} ${s.name}`).join(', '));
         if (l.cla) p.push('clã (converter/subir de rank)');
         if (l.slot) p.push('slot machine (roll grátis)');
+        if (l.ginasio) p.push('ginásios (desafiar/bônus)');
         if (l.time) p.push('ler o time (a lista nunca veio; o jogo só responde na cidade)');
         if (l.breeding) p.push('breeding (cruzar)');
         if (p.length && typeof depositWanted === 'function' && depositWanted()) p.push('guardar o resto');
@@ -5454,7 +5341,7 @@
     const TRIP_PHASE_PCT = { 'indo para a cidade': 15, 'na cidade': 50, 'voltando': 90 };
     function tripLastText() {
         if (!lastTripInfo) return '';
-        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time', breeding: 'breeding' };
+        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time', breeding: 'breeding', ginasio: 'ginásios' };
         return `Última ${new Date(lastTripInfo.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}: ${lastTripInfo.tarefas.map(t => `${nome[t.key] || t.key} ${t.ok ? '✔' : '✖'}`).join(' · ')}`;
     }
     // Estado para a faixa do painel: { busy, pct, title, sub }.
@@ -5495,6 +5382,7 @@
             else if (key === 'cla') tarefas.push({ key, run: () => clanCityWork() });
             else if (key === 'evoluir') tarefas.push({ key, run: () => evolveCityWork() });
             else if (key === 'slot') tarefas.push({ key, run: () => slotCityWork() });
+            else if (key === 'ginasio') tarefas.push({ key, run: () => gymCityWork() });
             else if (key === 'breeding') tarefas.push({ key, run: () => breedCityWork() });
         }
         // Guardar na cidade (v3.18.0): última tarefa de toda viagem que tenha outra coisa a fazer.
@@ -5578,6 +5466,7 @@
         if (!has('cla') && typeof clanWantsCity === 'function' && clanWantsCity()) needs.push(['cla', { dados: null, motivo: 'carona' }]);
         if (!has('evoluir') && typeof evolveWanted === 'function' && evolveWanted()) needs.push(['evoluir', { dados: null, motivo: 'carona' }]);
         if (!has('slot') && typeof slotWanted === 'function' && slotWanted()) needs.push(['slot', { dados: null, motivo: 'carona' }]);
+        if (!has('ginasio') && typeof gymWanted === 'function' && gymWanted()) needs.push(['ginasio', { dados: null, motivo: 'carona' }]);
         if (!has('breeding') && typeof breedWanted === 'function' && breedWanted()) needs.push(['breeding', { dados: null, motivo: 'carona' }]);
         return needs;
     }
@@ -5770,7 +5659,7 @@
     // o que importa para diagnóstico (import, viagem, clã...). Agora cada tipo barulhento tem cota própria e o resto dura horas.
     const LOG_KEY = 'pgDiscordNotifyLog';
     const LOG_MAX = 200;
-    const LOG_NOISY = { 'socket-fechado': 10, 'humano-desafio': 10, 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10, 'poke-delta': 15, 'pokes-frame': 10, 'pokes-get': 10, guild: 10, 'guild-get': 10, 'auto-boss': 15, 'ginasio-rest': 15, 'ginasio-pvp': 10, 'ginasio-envio': 10, 'ginasio-tela': 10 };
+    const LOG_NOISY = { 'socket-fechado': 10, 'humano-desafio': 10, 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10, 'poke-delta': 15, 'pokes-frame': 10, 'pokes-get': 10, guild: 10, 'guild-get': 10, 'auto-boss': 15, ginasio: 10, 'ginasio-global': 10 };
 
     function logEvent(kind, data) {
         if (cfg.debug) console.log(TAG, kind, data);
@@ -6000,6 +5889,299 @@
             info.familyMotivo = r.motivo || null;
         }
     }
+
+    // ---- Ginásio (v3.45.0): conquistar as insígnias que faltam e resgatar a Recompensa bônus, na viagem à cidade ------------
+    //   Janela "Ginásios" do jogo (abas "Ginásios"/"Recompensas"; modos Insígnia/Liderança). 18 ginásios (8 Kanto + 10 Johto), tudo
+    //   por REST — CONFIRMADO no log em 21/10/2026 (conta3: 5 desafios vencidos e 6 resgates feitos na mão, farejador da v3.43.2):
+    //   GET  /api/game/gyms -> { gyms[{ id, region, enabled, city, leader, type, badge, order, teamSize, holder{ name }|null, owned,
+    //        cooldownMs, canLead }], details[{ id, region, enabled, city, type, badge, order, defender{ name, isNpc, charId, sinceAt,
+    //        defenses, look }, team[], npcTeam[{ speciesId, looktype, name, level, shiny, types[], maxHp, stats, moves[{ name, type,
+    //        power, category }] }], owned, bonus{ itemId, name, icon, qty, state:'claimable'|'cooldown'|'needWin', cooldownMs }|null,
+    //        cooldownMs, leaderCooldownMs, arenaMap, leaderBlock{ reason }|null, leaderBlockMsg, mine }], badges, total,
+    //        regions{ kanto{ badges, total:8 }, johto{ badges, total:10 } }, badgePerk{ active, max, xpPct, dropPct }, vault,
+    //        payout{ nextAt, basisDay, gold, diamonds, perGymGold, perGymDiamonds }, myGymIds[] }
+    //   POST /api/game/gyms/challenge { gymId, mode:'badge' } -> { won, gymId, battleId, defenderName, vsNpc, log[{ kind:'start'|
+    //        'move'|'faint'|'switch'|'end', side, monName, move, moveType, dmg, eff, stab, targetHp, targetMaxHp, teamIndex, winner,
+    //        reason, seq }], snapshot{ id, seq, phase, winner, endReason:'ko'|…, you:'a', sides{ a{ charId, name, look, active,
+    //        teamSize, team[{ name, level, maxHp, … }] }, b{…} } }, badgeEarned, becameLeader, badges, arena{ map, floor, … } }.
+    //        A luta é resolvida NA HORA pelo servidor com o TIME ATUAL (modo Insígnia = time livre; o NPC tem 6 Pokémon lv 400); o
+    //        HUD do jogo só anima o `log` (o usuário até recarrega a página para pular a animação — o script nem a dispara, porque
+    //        o POST é dele). Erro = { message }. Depois de um desafio o ginásio fica `cooldownMs` ≈ 10 min (599 675 ms logo após a
+    //        vitória na conta3). Feito com a conta na cidade (hunt nula); de dentro da hunt não foi testado — por isso é tarefa da viagem.
+    //   POST /api/game/gyms/bonus { gymId } -> { ok, itemId, name, qty, nextAvailableAt }: "Recompensa bônus" (pedras de evolução:
+    //        20x Rock Stone, 2x Metal Stone, 2x Ancient Stone…); `bonus.state` 'claimable' depois de vencer, 'cooldown' por 48 h
+    //        (172 800 000 ms) após o resgate e 'needWin' quando o prazo vence ("Vença o ginásio de novo").
+    //   Não usados: POST /api/game/gyms/abandon e mode 'leader' (liderança). Pelo socket só o anúncio `gym-global` (log `ginasio-global`).
+    //   Pedido do usuário em 21/10/2026: "coletar as insígnias que faltam, para o bônus das 16 insígnias; e recuperar a recompensa
+    //   depois de ganhar o desafio". `badgePerk` = +1% XP e +1% drop por insígnia (18/18 = +18%); as 18 dão a Gym Champion Outfit.
+    //   Fluxo: tique de 1 min; lê a janela a cada 30 min ou quando um prazo vence (cooldown do desafio, prazo do bônus, espera de
+    //   derrota). Plano = ginásios abertos SEM insígnia (ou, com `gymRedo`, com bônus em `needWin`) e sem cooldown -> desafiar; bônus
+    //   `claimable` (com `gymBonus`) -> resgatar. Com algo no plano pede viagem à cidade (`tripRequest('ginasio')`, e vai de carona em
+    //   toda viagem); na cidade `gymCityWork` desafia um a um (modo Insígnia, time atual), relê, resgata os bônus liberados e avisa em
+    //   Alertas (insígnia, derrota com o time do líder, bônus, outfit). Derrota = espera 2 h, dobrando a cada derrota seguida do mesmo
+    //   ginásio (máx. 24 h): o time precisa ficar mais forte, insistir não adianta. Erro = 15 min antes de tentar de novo.
+
+    const GYM_URL = '/api/game/gyms';
+    const GYM_TICK_MS = 60 * 1000;
+    const GYM_POLL_MS = 30 * 60 * 1000;          // relê a janela de meia em meia hora (antes disso só quando um prazo vence)
+    const GYM_RETRY_MS = 15 * 60 * 1000;         // espera depois de um erro (leitura, desafio ou resgate)
+    const GYM_LOSS_WAIT_MS = 2 * 60 * 60 * 1000; // espera depois de uma derrota (dobra a cada derrota seguida do mesmo ginásio)
+    const GYM_LOSS_WAIT_MAX_MS = 24 * 60 * 60 * 1000;
+    const GYM_BETWEEN_MS = [1200, 2500];         // entre desafios/resgates ("humano")
+
+    let gymState = null;        // última leitura (parseGymState)
+    let gymFetchedAt = 0;
+    let gymBusy = false;        // lendo
+    let gymWorking = false;     // na cidade, desafiando
+    let gymFailedAt = 0;        // último erro
+    let gymLast = null;         // { at, desafios:[{ id, city, badge, won, badgeEarned, outfit, defender, npc }], bonus:[{ id, city, name, qty }], falhas:[{ id, city, motivo }] }
+    let gymSig = '';
+    let gymFieldsLogged = false;
+    const gymLoss = {};         // id -> { at, n }: derrotas seguidas (zera na vitória)
+    let onGymChange = null;     // callback do painel
+
+    function gymEnabled(d) { return Boolean((d || cfg).gymEnabled); }
+    function gymNotify() { if (onGymChange) { try { onGymChange(); } catch { /* painel fechado */ } } }
+    const gymRnd = (par) => par[0] + Math.floor(Math.random() * (par[1] - par[0] + 1));
+    const gymWait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    const gymHora = (ts) => (ts ? new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '?');
+    function gymFmtLeft(ms) {
+        ms = Math.max(0, Number(ms) || 0);
+        const h = Math.floor(ms / 36e5), m = Math.round((ms % 36e5) / 6e4);
+        return h > 0 ? `${h}h${m ? String(m).padStart(2, '0') : ''}` : `${Math.max(1, m)}min`;
+    }
+    const gymCityName = (g) => (g ? (g.city ? g.city.charAt(0).toUpperCase() + g.city.slice(1) : String(g.id || '?')) : '?');
+    const gymTeamText = (team) => (Array.isArray(team) ? team : []).map(p => `${p?.name ?? '?'}${p?.shiny ? '✨' : ''} lv${p?.level ?? '?'}`).join(', ');
+
+    function parseGymState(raw) {
+        const now = Date.now();
+        const lista = Array.isArray(raw?.gyms) ? raw.gyms : [];
+        const det = Array.isArray(raw?.details) ? raw.details : [];
+        const gyms = det.map(d => {
+            const g = lista.find(x => x && x.id === d?.id) || {};
+            const b = d?.bonus && typeof d.bonus === 'object' ? d.bonus : null;
+            const cd = Math.max(0, Number(d?.cooldownMs) || 0);
+            return {
+                id: String(d?.id || ''), city: String(d?.city || g.city || d?.id || ''), region: String(d?.region || g.region || 'kanto'),
+                type: String(d?.type || g.type || ''), badge: String(d?.badge || g.badge || ''), leader: String(g.leader || d?.defender?.name || ''),
+                enabled: d?.enabled !== false, owned: Boolean(d?.owned), cooldownUntil: cd > 0 ? now + cd : 0,
+                bonus: b ? { state: String(b.state || ''), name: String(b.name || ''), qty: Number(b.qty) || 0, until: (Number(b.cooldownMs) || 0) > 0 ? now + Number(b.cooldownMs) : 0 } : null,
+                npcTeam: Array.isArray(d?.npcTeam) ? d.npcTeam.map(p => ({ name: String(p?.name || '?'), level: Number(p?.level) || 0, shiny: Boolean(p?.shiny), types: Array.isArray(p?.types) ? p.types : [] })) : [],
+            };
+        }).filter(g => g.id);
+        const badges = Number.isFinite(Number(raw?.badges)) ? Number(raw.badges) : gyms.filter(g => g.owned).length;
+        const total = Number(raw?.total) > 0 ? Number(raw.total) : gyms.length;
+        const bp = raw?.badgePerk && typeof raw.badgePerk === 'object' ? raw.badgePerk : null;
+        const perk = bp ? { active: Number(bp.active) || 0, max: Number(bp.max) || 0, xpPct: Number(bp.xpPct) || 0, dropPct: Number(bp.dropPct) || 0 } : null;
+        return { gyms, badges, total, regions: raw?.regions && typeof raw.regions === 'object' ? raw.regions : {}, perk };
+    }
+    // Quanto falta da espera por derrota do ginásio (0 = pode desafiar).
+    function gymLossWait(id) {
+        const l = gymLoss[id];
+        if (!l) return 0;
+        const w = Math.min(GYM_LOSS_WAIT_MAX_MS, GYM_LOSS_WAIT_MS * Math.pow(2, Math.max(0, l.n - 1)));
+        return Math.max(0, l.at + w - Date.now());
+    }
+    // Plano para a cidade: { desafiar:[g], resgatar:[g], esperando:[{ g, ms, motivo:'cooldown'|'derrota' }] }.
+    function gymPlan(d, st) {
+        d = d || cfg; st = st || gymState;
+        const out = { desafiar: [], resgatar: [], esperando: [] };
+        if (!st) return out;
+        const now = Date.now();
+        for (const g of st.gyms) {
+            if (!g.enabled) continue;
+            if (d.gymBonus !== false && g.bonus && g.bonus.state === 'claimable') out.resgatar.push(g);
+            const quer = !g.owned || (d.gymRedo !== false && g.bonus && g.bonus.state === 'needWin');
+            if (!quer) continue;
+            const cd = Math.max(0, g.cooldownUntil - now);
+            const loss = gymLossWait(g.id);
+            if (cd > 0) out.esperando.push({ g, ms: cd, motivo: 'cooldown' });
+            else if (loss > 0) out.esperando.push({ g, ms: loss, motivo: 'derrota' });
+            else out.desafiar.push(g);
+        }
+        return out;
+    }
+    function gymWanted(d) {   // carona na viagem
+        if (!gymEnabled(d) || gymWorking) return false;
+        const p = gymPlan(d);
+        return p.desafiar.length > 0 || p.resgatar.length > 0;
+    }
+    // Próximo prazo que muda o plano sem ler de novo: cooldown de desafio, prazo do bônus ou espera por derrota.
+    function gymNextEventAt(st) {
+        st = st || gymState;
+        const after = gymFetchedAt;   // prazo já vencido mas posterior à última leitura ainda pede releitura
+        const ts = [];
+        for (const g of st?.gyms || []) {
+            if (!g.enabled) continue;
+            if (g.cooldownUntil > after) ts.push(g.cooldownUntil);
+            if (g.bonus && g.bonus.until > after) ts.push(g.bonus.until);
+            const l = gymLoss[g.id];
+            if (l) { const fim = l.at + Math.min(GYM_LOSS_WAIT_MAX_MS, GYM_LOSS_WAIT_MS * Math.pow(2, Math.max(0, l.n - 1))); if (fim > after) ts.push(fim); }
+        }
+        return ts.length ? Math.min(...ts) : 0;
+    }
+    function gymDue() {
+        if (!gymState) return true;
+        const now = Date.now();
+        if (now - gymFetchedAt >= GYM_POLL_MS) return true;
+        const ev = gymNextEventAt();
+        return ev > 0 && ev <= now && gymFetchedAt < ev;
+    }
+    // Com algo no plano, pede a viagem (idempotente: `tripRequest` guarda por chave).
+    function gymAsk() {
+        if (!gymEnabled() || gymWorking) return;
+        if (gymFailedAt && Date.now() - gymFailedAt < GYM_RETRY_MS) return;
+        const p = gymPlan();
+        const partes = p.desafiar.map(g => `desafiar ${gymCityName(g)}${g.owned ? ' (bônus de novo)' : ' (insígnia)'}`).concat(p.resgatar.map(g => `bônus de ${gymCityName(g)}`));
+        if (partes.length) tripRequest('ginasio', null, partes.join(', '));
+    }
+    function gymTick(force) {
+        if (!gymEnabled() || gymBusy || gymWorking) return;
+        if (!force && gymFailedAt && Date.now() - gymFailedAt < GYM_RETRY_MS) return;
+        if (!force && !gymDue()) { gymAsk(); return; }
+        return gymRead().then(() => gymAsk());
+    }
+    async function gymRead() {
+        gymBusy = true;
+        try {
+            const raw = await gameApi(GYM_URL);
+            if (!gymFieldsLogged && raw && typeof raw === 'object') {
+                gymFieldsLogged = true;
+                const d0 = Array.isArray(raw.details) ? raw.details.find(x => x && typeof x === 'object') : null;
+                logEvent('ginasio-campos', { raiz: Object.keys(raw), detalhe: d0 ? Object.keys(d0) : null, bonus: d0?.bonus && typeof d0.bonus === 'object' ? Object.keys(d0.bonus) : null, perk: raw.badgePerk ?? null, regioes: raw.regions ?? null });
+            }
+            gymState = parseGymState(raw);
+            gymFailedAt = 0;
+            const now = Date.now();
+            const sig = JSON.stringify(gymState.gyms.map(g => [g.enabled, g.owned, g.cooldownUntil > now, g.bonus?.state]).concat([gymState.badges]));
+            if (sig !== gymSig) {
+                gymSig = sig;
+                logEvent('ginasio', {
+                    insignias: `${gymState.badges}/${gymState.total}`, perk: gymState.perk,
+                    faltam: gymState.gyms.filter(g => g.enabled && !g.owned).map(g => g.id), fechados: gymState.gyms.filter(g => !g.enabled).map(g => g.id),
+                    cooldown: gymState.gyms.filter(g => g.cooldownUntil > now).map(g => `${g.id} ${gymFmtLeft(g.cooldownUntil - now)}`),
+                    bonus: Object.fromEntries(gymState.gyms.filter(g => g.bonus).map(g => [g.id, `${g.bonus.state} ${g.bonus.qty}x ${g.bonus.name}${g.bonus.until > now ? ` em ${gymFmtLeft(g.bonus.until - now)}` : ''}`])),
+                });
+            }
+        } catch (err) {
+            gymFailedAt = Date.now();
+            logEvent('ginasio-erro', { etapa: 'leitura', erro: String(err?.message || err) });
+        } finally {
+            gymFetchedAt = Date.now();
+            gymBusy = false;
+            gymNotify();
+        }
+        return gymState;
+    }
+
+    // Tarefa da viagem (na cidade): relê a janela, desafia cada ginásio do plano (modo Insígnia, time atual), relê para ver os
+    // bônus que as vitórias liberaram, resgata os `claimable` e avisa.
+    async function gymCityWork() {
+        if (!gymEnabled()) return { ok: true, motivo: 'desligado' };
+        gymWorking = true;
+        const desafios = [], bonus = [], falhas = [];
+        try {
+            await gymRead();
+            if (!gymState) return { ok: false, motivo: 'não consegui ler os ginásios' };
+            let plan = gymPlan();
+            if (!plan.desafiar.length && !plan.resgatar.length) return { ok: true, motivo: 'nenhum ginásio pronto (cooldown, derrota recente ou nada a fazer)' };
+            for (const g of plan.desafiar) {
+                try {
+                    const r = await gameApi(`${GYM_URL}/challenge`, { method: 'POST', body: JSON.stringify({ gymId: g.id, mode: 'badge' }) });
+                    const won = r?.won === true;
+                    const eu = r?.snapshot?.you === 'b' ? 'b' : 'a';
+                    const meuTime = r?.snapshot?.sides?.[eu]?.team;
+                    const npc = r?.snapshot?.sides?.[eu === 'a' ? 'b' : 'a']?.team;
+                    const feito = { id: g.id, city: g.city, badge: g.badge, won, badgeEarned: Boolean(r?.badgeEarned), outfit: Boolean(r?.championOutfit), defender: String(r?.defenderName || g.leader || '?'), npc: Array.isArray(npc) && npc.length ? npc : g.npcTeam };
+                    desafios.push(feito);
+                    if (won) delete gymLoss[g.id];
+                    else gymLoss[g.id] = { at: Date.now(), n: (gymLoss[g.id]?.n || 0) + 1 };
+                    logEvent('ginasio-desafio', { id: g.id, venceu: won, insignia: feito.badgeEarned, outfit: feito.outfit, lider: feito.defender, fim: r?.snapshot?.endReason ?? null, lances: Array.isArray(r?.log) ? r.log.length : null, insignias: r?.badges ?? null, meuTime: gymTeamText(meuTime), timeDoLider: gymTeamText(feito.npc), derrotasSeguidas: gymLoss[g.id]?.n || 0, campos: r && typeof r === 'object' ? Object.keys(r) : null });
+                } catch (err) {
+                    falhas.push({ id: g.id, city: g.city, motivo: `desafio: ${err?.message || err}` });
+                    logEvent('ginasio-erro', { etapa: 'desafio', id: g.id, erro: String(err?.message || err) });
+                }
+                await gymWait(gymRnd(GYM_BETWEEN_MS));
+            }
+            if (plan.desafiar.length) { await gymRead(); plan = gymPlan(); }   // as vitórias liberam o bônus
+            for (const g of plan.resgatar) {
+                try {
+                    const r = await gameApi(`${GYM_URL}/bonus`, { method: 'POST', body: JSON.stringify({ gymId: g.id }) });
+                    const b = { id: g.id, city: g.city, name: String(r?.name || g.bonus?.name || '?'), qty: Number(r?.qty) || g.bonus?.qty || 0 };
+                    bonus.push(b);
+                    logEvent('ginasio-bonus', { id: g.id, item: `${b.qty}x ${b.name}`, proximoEm: r?.nextAvailableAt ? new Date(Number(r.nextAvailableAt)).toISOString() : null, campos: r && typeof r === 'object' ? Object.keys(r) : null });
+                } catch (err) {
+                    falhas.push({ id: g.id, city: g.city, motivo: `bônus: ${err?.message || err}` });
+                    logEvent('ginasio-erro', { etapa: 'bonus', id: g.id, erro: String(err?.message || err) });
+                }
+                await gymWait(gymRnd(GYM_BETWEEN_MS));
+            }
+            gymLast = { at: Date.now(), desafios, bonus, falhas };
+            await gymRead();                              // estado final (cooldowns, prazos dos bônus)
+            if (falhas.length) gymFailedAt = Date.now();  // depois da releitura (ela zera o carimbo quando lê bem)
+            if (desafios.length || bonus.length || falhas.length) gymNotifyDiscord(desafios, bonus, falhas);
+            const vit = desafios.filter(x => x.won).length, der = desafios.length - vit;
+            return { ok: falhas.length === 0, motivo: falhas.length ? falhas.map(f => `${gymCityName(f)} ${f.motivo}`).join('; ') : null, vitorias: vit, derrotas: der, bonus: bonus.length, falhas: falhas.length };
+        } finally {
+            gymWorking = false;
+            gymNotify();
+        }
+    }
+
+    function gymNotifyDiscord(desafios, bonus, falhas) {
+        if (cfg.gymAlerts === false) return;
+        const who = playerName();
+        const mention = cfg.mentionUserId ? `<@${cfg.mentionUserId}> ` : '';
+        const vit = desafios.filter(x => x.won), der = desafios.filter(x => !x.won);
+        const st = gymState;
+        const linhas = desafios.map(x => (x.won
+            ? `✔ ${gymCityName(x)} (${x.defender}): ${x.badgeEarned ? `insígnia **${x.badge}** conquistada` : 'vitória'}${x.outfit ? ' · 🏆 18 insígnias: Gym Champion Outfit!' : ''}`
+            : `✖ ${gymCityName(x)} (${x.defender}): derrota — time do líder: ${gymTeamText(x.npc) || '?'} · tenta de novo em ${gymFmtLeft(gymLossWait(x.id))}`))
+            .concat(bonus.map(b => `🎁 ${gymCityName(b)}: ${b.qty}x ${b.name}`))
+            .concat(falhas.map(f => `⚠ ${gymCityName(f)}: ${f.motivo}`));
+        const n = (k, um, varios) => (k ? `${k} ${k === 1 ? um : varios}` : '');
+        const resumo = [n(vit.length, 'vitória', 'vitórias'), n(der.length, 'derrota', 'derrotas'), n(bonus.length, 'bônus', 'bônus'), n(falhas.length, 'falha', 'falhas')].filter(Boolean).join(', ');
+        postWebhook('alert', {
+            content: `${mention}🏟️ ${who ? `**${who}**` : 'Sua conta'} nos ginásios: ${resumo || 'nada feito'}${st ? ` · ${st.badges}/${st.total} insígnias` : ''}`,
+            username: 'Poke Idle World',
+            embeds: [{
+                title: der.length || falhas.length ? 'Ginásios (parcial)' : 'Ginásios',
+                description: (who ? `Conta: ${who}\n` : '') + linhas.join('\n') + (st?.perk ? `\nBônus das insígnias: +${st.perk.xpPct}% XP, +${st.perk.dropPct}% drop (${st.perk.active}/${st.perk.max})` : '') + `\nEm ${new Date().toLocaleString('pt-BR')}`,
+                color: falhas.length && !vit.length && !bonus.length ? 0xed4245 : (der.length || falhas.length ? 0xfee75c : 0x57f287),
+            }],
+        }, { evento: 'ginasio', vitorias: vit.map(x => x.id), derrotas: der.map(x => x.id), bonus: bonus.map(b => b.id), falhas: falhas.length });
+    }
+
+    // Linha do painel.
+    function gymStatus(d) {
+        d = d || cfg;
+        if (!gymState) return gymFetchedAt ? 'não consegui ler os ginásios (veja o log)' : (d.gymEnabled ? 'ainda não lidos' : 'liga para ler os ginásios');
+        const now = Date.now();
+        const st = gymState;
+        const p = gymPlan(d);
+        const partes = [`${st.badges}/${st.total} insígnias${st.perk ? ` (+${st.perk.xpPct}% XP, +${st.perk.dropPct}% drop)` : ''}`];
+        const faltam = st.gyms.filter(g => g.enabled && !g.owned);
+        if (faltam.length) partes.push(`faltam: ${faltam.map(gymCityName).join(', ')}`);
+        const fechados = st.gyms.filter(g => !g.enabled).length;
+        if (fechados) partes.push(`${fechados} ainda não ${fechados === 1 ? 'abriu' : 'abriram'}`);
+        if (gymWorking) partes.push('na cidade, desafiando…');
+        else {
+            if (p.desafiar.length) partes.push(`prontos para desafiar: ${p.desafiar.map(gymCityName).join(', ')} → viagem`);
+            if (p.resgatar.length) partes.push(`bônus para resgatar: ${p.resgatar.map(g => `${gymCityName(g)} (${g.bonus.qty}x ${g.bonus.name})`).join(', ')} → viagem`);
+            else if (d.gymBonus === false) { const c = st.gyms.filter(g => g.enabled && g.bonus && g.bonus.state === 'claimable').length; if (c) partes.push(`${c} bônus liberados (resgate desligado)`); }
+            const esp = p.esperando.slice().sort((a, b) => a.ms - b.ms);
+            if (esp.length) partes.push(`esperando: ${esp.slice(0, 3).map(e => `${gymCityName(e.g)} ${e.motivo === 'derrota' ? 'após derrota' : 'cooldown'} ${gymFmtLeft(e.ms)}`).join(', ')}${esp.length > 3 ? ` (+${esp.length - 3})` : ''}`);
+            const prox = st.gyms.filter(g => g.enabled && g.bonus && g.bonus.state === 'cooldown' && g.bonus.until > now).map(g => g.bonus.until);
+            if (prox.length && !p.desafiar.length && !p.resgatar.length && !esp.length) partes.push(`próximo bônus em ${gymFmtLeft(Math.min(...prox) - now)}${d.gymRedo === false ? ' (refazer desligado)' : ''}`);
+        }
+        if (gymFailedAt && now - gymFailedAt < GYM_RETRY_MS) partes.push(`erro há ${gymFmtLeft(now - gymFailedAt)}, tenta em ${gymFmtLeft(GYM_RETRY_MS - (now - gymFailedAt))} (veja o log)`);
+        if (gymLast) {
+            const v = gymLast.desafios.filter(x => x.won).length, dd = gymLast.desafios.length - v;
+            partes.push(`última ida ${gymHora(gymLast.at)}: ${[v ? `${v} ${v === 1 ? 'vitória' : 'vitórias'}` : '', dd ? `${dd} ${dd === 1 ? 'derrota' : 'derrotas'}` : '', gymLast.bonus.length ? `${gymLast.bonus.length} bônus` : '', gymLast.falhas.length ? `${gymLast.falhas.length} ${gymLast.falhas.length === 1 ? 'falha' : 'falhas'}` : ''].filter(Boolean).join(', ') || 'nada'}`);
+        }
+        return partes.join(' · ');
+    }
+    function gymOnGlobal(message) { logEvent('ginasio-global', { campos: Object.keys(message), dados: message }); }
 
     // ---- Auto Boss (v3.43.0): retomar o Auto Boss do próprio jogo quando ele para sem terminar ----
     // O jogo tem (Bosses → ⟳ Auto Boss) um modo que renova a luta contra um boss sozinho, gastando 1 token por luta (ex.: Bronze Boss
@@ -6935,8 +7117,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             return;
         }
         if (message.type === 'auto-boss') { bossOnFrame(message); return; }   // v3.43.0: Auto Boss do jogo (estado/encerramento)
-        if (message.type === 'gym-global') { gymOnGlobal(message); return; }   // v3.43.2: farejador do ginásio
-        if (typeof message.type === 'string' && message.type.startsWith('pvp-')) { gymOnPvp(message); return; }   // v3.43.2: HUD da arena (ginásio usa o do PvP)
+        if (message.type === 'gym-global') { gymOnGlobal(message); return; }   // v3.45.0: anúncio global do ginásio (só log)
         if (message.type === 'field-teleport-city') { healOnTeleport(); return; }   // o sintético da viagem já saiu acima
         if (message.type === 'field-kill') { idleOnAlive(); noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteDepositDrop(message); guildOnKill(message); fishOnKill(message); farmOnKill(message); return; }
         if (message.type === 'inventory' && Array.isArray(message.items)) { clanOnInventory(message.items); supplyOnInventory(message.items); bossOnInventory(message.items); return; }
@@ -7350,6 +7531,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         { id: 'breeding', icon: '🥚', label: 'Breeding' },
         { id: 'guild', icon: '🛡', label: 'Guild' },
         { id: 'farm', icon: '🎒', label: 'Farm' },
+        { id: 'ginasio', icon: '🏟', label: 'Ginásio' },
         { id: 'sistema', icon: '⚙', label: 'Sistema' },
     ];
 
@@ -7400,6 +7582,11 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
                 if (!farmList(d).length || !temAlertas) return 'warn';
                 return 'on';
             }
+            case 'ginasio': {
+                if (!d.gymEnabled) return 'off';
+                if (d.gymAlerts !== false && !temAlertas) return 'warn';
+                return 'on';
+            }
             case 'sistema': return holdActive() ? 'warn' : d.reloadEnabled ? 'on' : 'off';   // v3.44.0: esperando na cidade de propósito = ⚠ para não esquecer
         }
         return 'off';
@@ -7416,6 +7603,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             `Breeding: ${d.breedEnabled ? `${breedActiveLines(d).length} ${breedActiveLines(d).length === 1 ? 'linhagem' : 'linhagens'}${d.breedDouble ? ' + dobrar' : ''}` : 'desligado'}`,
             `Guild: ${[guildDonateWanted(d) > 0 ? `doa ${guildN(guildDonateWanted(d))}/dia` : '', d.guildTributeEnabled ? 'tributo' : '', d.guildFarmTribute ? 'farma tributo' : '', d.guildHuntEnabled ? 'caça' : '', d.guildFishEnabled ? 'pesca' : '', guildRouteOn(d) ? `ordem ${guildOrderText(d)}` : '', d.guildAlerts ? 'avisos' : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Farm: ${d.farmEnabled && farmList(d).length ? `${farmList(d).filter(farmEntryDone).length}/${farmList(d).length} itens` : 'desligado'}`,
+            `Ginásios: ${d.gymEnabled ? ['insígnias', d.gymBonus !== false ? 'bônus' : '', d.gymRedo !== false ? 'refaz a cada 48 h' : ''].filter(Boolean).join(' + ') : 'desligados'}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
             holdActive() ? '⏸ esperando na cidade (botão do painel)' : '',
         ].filter(Boolean).join(' · ');
@@ -7766,6 +7954,17 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <p class="dn-help">É a 5ª rota que manda na hunt: ligar aqui desliga a rota de treino, a de captura, a do clã e a da guild (e vice-versa). A Daily Kill, a viagem à cidade e a cura têm prioridade. Enquanto o farm está ligado, os itens da lista ficam fora da venda automática de drops e do guardar na cidade. Linha com monstro que não existe ou hunt em que a conta não consegue entrar é pulada com aviso (canal de Alertas) e a lista segue.</p>
                     </div>
                 </section>
+                <section class="dn-pane" data-pane="ginasio" hidden>
+                    <div class="dn-section">
+                        <h3>🏟 Ginásios: insígnias e Recompensa bônus</h3>
+                        <label class="dn-toggle"><input id="pg-dn-gym" type="checkbox"><span class="sw"></span>Conquistar as insígnias que faltam sozinho <span class="dn-hint">(modo Insígnia, com o time atual; 18 ginásios)</span></label>
+                        <label class="dn-toggle"><input id="pg-dn-gym-bonus" type="checkbox"><span class="sw"></span>Resgatar a Recompensa bônus depois de vencer <span class="dn-hint">(pedras de evolução; libera a cada 48 h)</span></label>
+                        <label class="dn-toggle"><input id="pg-dn-gym-redo" type="checkbox"><span class="sw"></span>Refazer o ginásio quando a Recompensa bônus liberar de novo <span class="dn-hint">(a cada 48 h: "Vença o ginásio de novo")</span></label>
+                        <label class="dn-toggle"><input id="pg-dn-gym-alerts" type="checkbox"><span class="sw"></span>Avisar no canal de Alertas <span class="dn-hint">(insígnia, derrota, bônus, outfit das 18)</span></label>
+                        <p class="dn-help">Cada insígnia dá +1% de XP e +1% de drop (as 18 dão +18% e a Gym Champion Outfit). A luta é resolvida na hora pelo servidor com o seu time atual contra os 6 Pokémon lv 400 do líder; não há golpe a escolher. Quando um ginásio aberto sem insígnia estiver fora do cooldown (10 min após cada desafio), o script pede uma viagem à cidade, desafia um a um, resgata a Recompensa bônus que a vitória libera e volta para a hunt. Depois de uma derrota espera 2 h (dobrando a cada derrota seguida, até 24 h): o time precisa ficar mais forte. Liderança de ginásio fica de fora.</p>
+                        <div class="dn-status"><span>🏟️</span><span id="pg-dn-gym-status"></span></div>
+                    </div>
+                </section>
                 <section class="dn-pane" data-pane="sistema" hidden>
                     <div class="dn-section">
                         <h3>⏸ Esperar na cidade</h3>
@@ -7937,6 +8136,10 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 evolveFromFamily: $('#pg-dn-evolve-family').checked,
                 slotEnabled: $('#pg-dn-slot').checked,
                 slotWanted: $('#pg-dn-slot-wanted').value.trim(),
+                gymEnabled: $('#pg-dn-gym').checked,
+                gymBonus: $('#pg-dn-gym-bonus').checked,
+                gymRedo: $('#pg-dn-gym-redo').checked,
+                gymAlerts: $('#pg-dn-gym-alerts').checked,
                 bossResumeEnabled: $('#pg-dn-boss').checked,
                 bossResumeOnLoss: $('#pg-dn-boss-loss').checked,
                 bossAlerts: $('#pg-dn-boss-alerts').checked,
@@ -8294,6 +8497,11 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-slot-status').textContent = `Slot Machine${d.slotEnabled ? '' : ' (desligada)'}: ${slotStatus(d)}`;
         }
         onSlotChange = () => { if (!panel.hidden) renderSlot(); };
+        function renderGym() {
+            const d = current();
+            $('#pg-dn-gym-status').textContent = `Ginásios${d.gymEnabled ? '' : ' (desligados)'}: ${gymStatus(d)}`;
+        }
+        onGymChange = () => { if (!panel.hidden) renderGym(); };
         function renderBoss() {
             const d = current();
             $('#pg-dn-boss-status').textContent = `Auto Boss: ${bossStatus(d)}`;
@@ -8746,7 +8954,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             if (dirty) $('#pg-dn-save').click();
             const needs = tripAugment([]);
             if (!needs.length) { flash('⚠ Nada para levar: nenhum drop marcado nesta hunt, nenhum Pokémon nas regras e bolas, poções e revives acima do limite.', 'warn'); return; }
-            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time', breeding: 'breeding' };
+            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time', breeding: 'breeding', ginasio: 'ginásios' };
             flash(`🏙 Indo à cidade: ${needs.map(n => nome[n[0]]).join(', ')}…`, 'info', 90000);
             tripNeeds.clear();
             cityTrip('manual: ' + needs.map(n => n[0]).join('+'), tripTasksFor(needs)).then(r => {
@@ -8757,6 +8965,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                     if (t.key === 'suprimentos') return `poções/revives ${t.ok ? `✔ ${(x.compras || []).map(c => `${c.comprado} ${c.name}`).join(', ') || 'estoque ok'}` : `✖ ${t.motivo || ''}`}`;
                     if (t.key === 'bolas') return `bolas ${t.ok ? `✔ ${x.bought ?? ''}` : `✖ ${t.motivo || ''}`}`;
                     if (t.key === 'evoluir') return `evolução ${t.ok ? `✔ ${x.feitos ?? ''}` : `✖ ${t.motivo || ''}`}`;
+                    if (t.key === 'ginasio') return `ginásios ${t.ok ? `✔ ${x.vitorias ?? 0} vit., ${x.derrotas ?? 0} der., ${x.bonus ?? 0} bônus` : `✖ ${t.motivo || ''}`}`;
                     return `${nome[t.key] || t.key} ${t.ok ? '✔' : `✖ ${t.motivo || ''}`}`;
                 }).join(' · ');
                 flash(`${r.ok ? '✔' : '⚠'} Viagem: ${linha}${r.volta ? ` · voltando para ${r.volta}` : ''}`, r.ok ? 'ok' : 'warn', 12000);
@@ -8871,6 +9080,10 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-evolve-family').checked = cfg.evolveFromFamily !== false;
             $('#pg-dn-slot').checked = Boolean(cfg.slotEnabled);
             $('#pg-dn-slot-wanted').value = cfg.slotWanted || '';
+            $('#pg-dn-gym').checked = Boolean(cfg.gymEnabled);
+            $('#pg-dn-gym-bonus').checked = cfg.gymBonus !== false;
+            $('#pg-dn-gym-redo').checked = cfg.gymRedo !== false;
+            $('#pg-dn-gym-alerts').checked = cfg.gymAlerts !== false;
             $('#pg-dn-boss').checked = cfg.bossResumeEnabled !== false;
             $('#pg-dn-boss-loss').checked = Boolean(cfg.bossResumeOnLoss);
             $('#pg-dn-boss-alerts').checked = cfg.bossAlerts !== false;
@@ -8983,6 +9196,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const dailyAntes = JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug, cfg.dailyAuto, cfg.dailyAreas]);
             const giftAntes = JSON.stringify([cfg.giftEnabled, cfg.giftCenterMode]);
             const slotAntes = JSON.stringify([cfg.slotEnabled, cfg.slotWanted]);
+            const gymAntes = JSON.stringify([cfg.gymEnabled, cfg.gymBonus, cfg.gymRedo]);
             const breedAntes = JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble]);
             const guildAntes = JSON.stringify([cfg.guildDonateGold, cfg.guildDonateKeep, cfg.guildTributeEnabled, cfg.guildTributeKeep, cfg.guildAlerts, cfg.guildHuntEnabled, cfg.guildFishEnabled, cfg.guildFarmTribute, cfg.guildRouteOrder]);
             const capturaAntes = JSON.stringify([cfg.catchRouteEnabled, cfg.catchRouteAreas, cfg.catchRouteMaxLevel]);
@@ -9032,6 +9246,10 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 slotFailedAt = 0;
                 for (const k of Object.keys(slotTriedAt)) delete slotTriedAt[k];
                 if (cfg.slotEnabled) setTimeout(() => slotTick(true), 500);
+            }
+            if (JSON.stringify([cfg.gymEnabled, cfg.gymBonus, cfg.gymRedo]) !== gymAntes) { // ginásios mudaram: relê a janela já
+                gymFailedAt = 0;
+                if (cfg.gymEnabled) setTimeout(() => gymTick(true), 500);
             }
             if (JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble]) !== breedAntes) { // breeding mudou: replaneja já
                 breedReset();
@@ -9287,17 +9505,18 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
     setInterval(dailyTick, DAILY_CHECK_MS);
     setInterval(giftTick, GIFT_TICK_MS);
     setInterval(slotTick, SLOT_TICK_MS);
+    setInterval(gymTick, GYM_TICK_MS);   // v3.45.0: ginásios (plano por prazo; desafio/resgate só na viagem)
     setInterval(breedTick, BREED_TICK_MS);
     setInterval(guildTick, GUILD_TICK_MS);
     setInterval(farmTick, FARM_TICK_MS);
     if (cfg.farmEnabled) setTimeout(farmTick, 9000);   // v3.33.0: farm por lista logo após a carga (depois do socket/retomada da recarga)
     setTimeout(fishSniff, 12000);   // v3.31.1: lê a janela de pesca uma vez (REST) para confirmar o formato no log
-    setTimeout(gymSniff, 14000);    // v3.43.2: lê a janela de ginásios uma vez (REST) para confirmar o formato no log
     setTimeout(humanSniff, 15000);  // v3.40.0: lê o prazo da verificação humana uma vez (REST) para confirmar o formato no log
     setInterval(humanWatchTick, HUMAN_WATCH_MS);   // v3.40.0: janela "Confirme que você é humano" / widget do Turnstile aberto
     setInterval(bossTick, BOSS_TICK_MS);   // v3.43.0: sessão do Auto Boss muda sem frame há 10 min: pergunta ao servidor
     if (cfg.breedEnabled) setTimeout(() => breedTick(true), 9000);   // 1ª leitura da incubadora logo após a carga
     if (cfg.slotEnabled) setTimeout(() => slotTick(true), 8000);   // 1ª leitura da slot machine logo após a carga
+    if (cfg.gymEnabled) setTimeout(() => gymTick(true), 10000);   // v3.45.0: 1ª leitura dos ginásios logo após a carga
     setInterval(catchTick, CATCH_TICK_MS);
     setInterval(tripTick, TRIP_TICK_MS);
     setInterval(clanTick, CLAN_TICK_MS);

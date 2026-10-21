@@ -840,51 +840,63 @@ aceitas sem luta na conta1). Agora o script manda a tela para a arena (`hunt-res
 
 ---
 
-## 🔧 35. Ginásio: coletar as insígnias que faltam (bônus das 16 insígnias) — farejador na v3.43.2
+## ✅ 35. Ginásios: conquistar as insígnias que faltam e resgatar a Recompensa bônus (v3.45.0)
 
 **O que faz (pedido do usuário em 21/10/2026):** "funcionalidade para completar o ginásio? Estou fazendo o ginásio manualmente na
-conta amandorosa (conta3). Pode monitorar para ver os protocolos e depois podemos implementar." e, em seguida: "eu gostaria de uma
-feature para coletar as insígnias, para receber o bônus de 16 insígnias; então fazer todos que ainda não recuperamos as insígnias".
-Escopo: modo **Insígnia** apenas — desafiar cada ginásio `enabled` com `owned: false` (18 no total: 8 Kanto + 10 Johto; `badgePerk`
-dá o bônus de XP/drop por insígnia, `max` = provável 16; as 18 dão a Gym Champion Outfit), respeitando o `cooldownMs` do ginásio
-depois de uma derrota, até não faltar nenhuma, e, depois de cada vitória, resgatar a "Recompensa bônus" do ginásio (`POST
-/api/game/gyms/bonus`, pedido do usuário no mesmo dia: "podemos recuperar a recompensa depois de ganhar o desafio"; `bonus.state ===
-'claimable'`, volta a cada 48 h vencendo de novo). Liderança (`mode:'leader'`) fica fora até o usuário pedir.
+conta amandorosa (conta3). Pode monitorar para ver os protocolos e depois podemos implementar." → "eu gostaria de uma feature para
+coletar as insígnias, para receber o bônus de 16 insígnias; então fazer todos que ainda não recuperamos as insígnias" → "também
+podemos recuperar a recompensa depois de ganhar o desafio". Aba própria 🏟 Ginásio (pedido do usuário: "vamos precisar de uma aba nova"): `gymEnabled` (desafia, em modo Insígnia e com
+o time atual, cada ginásio aberto sem insígnia), `gymBonus` (resgata a Recompensa bônus que a vitória libera: pedras de evolução),
+`gymRedo` (refaz o ginásio quando o bônus volta a pedir vitória, a cada 48 h), `gymAlerts`. Liderança fica de fora.
 
-**Mensagens (bundle em 21/10/2026; `docs/mensagens-do-jogo.md` → "Ginásio"):** `GET /api/game/gyms` (lista, detalhes com o time do
-NPC, `owned`/`cooldownMs`/`bonus.state`, `regions`, `badgePerk`), `POST /api/game/gyms/challenge { gymId, mode }` → luta pronta
-(`won`, `badgeEarned`, `log`, `snapshot`), `POST /api/game/gyms/bonus { gymId }`. Eventos `pw:gym-challenge-pending`/
-`pw:gym-battle-start` na janela; `gym-global` e `pvp-state`/`pvp-leave` no socket. Formatos ainda não vistos no log.
+**Mensagens (CONFIRMADAS no log em 21/10/2026, conta3; `docs/mensagens-do-jogo.md` → "Ginásio"):** `GET /api/game/gyms` (lista,
+detalhes com `owned`/`cooldownMs`/`bonus.state`/`npcTeam`, `badges`/`total`, `badgePerk`), `POST /api/game/gyms/challenge { gymId,
+mode:'badge' }` → luta já resolvida (`won`, `badgeEarned`, `log`, `snapshot` com o time atual; cooldown de 10 min depois),
+`POST /api/game/gyms/bonus { gymId }` → `{ ok, itemId, name, qty, nextAvailableAt }` (48 h). Pelo socket só `gym-global`.
 
-**v3.43.2 (farejador):** o script registra tudo que a tela faz no ginásio (`ginasio-campos`, `ginasio-rest`, `ginasio-tela`,
-`ginasio-global`, `ginasio-pvp`, `ginasio-envio`). Próximo passo: ler o log da conta3 depois de uma sessão manual e confirmar
-(1) se o POST exige estar numa cidade/na cidade do ginásio ou fora da hunt (campo `hunt` do log, `set-city` perto), (2) o que
-vem em `cooldownMs` depois de perder, (3) se o `snapshot.sides.a.team` é o time atual do jogador (a força do time decide a
-vitória — o script não escolhe golpes), (4) o `gym-global`.
+**Regras:** tique de 1 min; relê a cada 30 min ou quando um prazo vence (cooldown, bônus, espera por derrota). Com ginásio pronto pede
+viagem à cidade (tarefa `ginasio`, e carona em toda viagem): desafia um a um, relê, resgata os `claimable`, avisa (insígnia, derrota com o
+time do líder, bônus, outfit das 18). Derrota = espera 2 h, dobrando a cada derrota seguida do mesmo ginásio (máx. 24 h). Erro = 15 min.
+O POST foi visto só com a conta na cidade; por isso é tarefa da viagem (não se testou de dentro da hunt).
 
-**Config/UI prevista:** aba Treino → "🏟️ Ginásio": ligar/desligar, modo (só insígnias que faltam / refazer para o bônus de 48 h),
-avisos em Alertas (insígnia conquistada, derrota com o time do NPC, outfit). Viagem à cidade se o POST exigir cidade (tarefa
-`ginasio` em `tripAugment`), senão tick próprio a cada N min. Chaves no fixture do `test/config.roundtrip.js`; `node test/gym.test.js`.
+**v3.43.2 (farejador):** `ginasio-rest`/`ginasio-tela`/`ginasio-pvp`/`ginasio-envio` confirmaram o protocolo e saíram na v3.45.0.
+
+**Teste:** `node test/gym.test.js` (`loadGymModule`); chaves no fixture do `test/config.roundtrip.js`.
 
 ---
 
-## ✅ 36. Esperar na cidade: botão para a conta ficar parada de propósito (v3.44.0)
+## ⬜ 37. Ginásio: time compartilhado pela família (retirar, equipar, duelar, devolver)
 
-**Pedido (21/10/2026):** "forçar o personagem ficar esperando na cidade. Ex.: peguei emprestado o Pokémon em outra conta e
-gostaria que ele ficasse esperando na cidade. Dentro do settings, um botão para ficar idle". Sem isso tudo no script empurra a
-conta de volta para a hunt (parada na cidade, volta da viagem/cura/recarga, rotas) e a própria tela reafirma a hunt na reconexão.
+**O que faz (pedido do usuário em 21/10/2026, logo depois da v3.45.0):** "A cada 48 horas podemos fazer o desafio e recuperar a
+recompensa novamente; fazer sempre que estiver disponível. Porém precisamos de Pokémon disponíveis para isso. Então vamos ter que ter
+uma seleção de Pokémon que vão ter que ser recuperados na família, equipar, fazer o duelo e colocar na família novamente para as
+outras contas. O desafio só deve ser iniciado se os Pokémon selecionados estiverem na família." As 4 contas dividem UM time forte
+guardado no depósito da família: cada conta, na sua viagem, pega o time, luta os ginásios prontos e devolve.
 
-**O que faz:** aba Sistema → "⏸ Esperar na cidade" → botão **Ficar parado na cidade** (imediato, fora do Salvar). Ligado: sai
-da hunt (`leave-hunt` + teleporte sintético para a tela viajar; `set-city` nós mesmos se ela não mandar em 10 s), cancela
-troca de hunt em andamento, `switchHunt` recusa toda entrada (log `espera-cidade { fase:'bloqueou' }`), as rotas
-(captura/clã/guild/farm/daily sozinha) e a parada na cidade esperam com o motivo no painel, a cura na Joy é pulada, a recarga
-não arma a volta e, se a tela religar a hunt, o script sai de novo 2 s depois (no máximo 1x/30 s). A arena do Auto Boss não
-conta. Viagens à cidade (venda/compra) seguem; só a volta é recusada. Sobrevive à recarga do painel
-(`localStorage.pgDiscordNotifyHold`, fora do cfg: não entra no Exportar/Importar). Badge ⚠ na aba Sistema enquanto ligado.
-Botão **Voltar para a hunt**: `joy-heal` e volta para o destino da parada na cidade (clã > rota > última hunt > hunt padrão);
-sem destino, pede para entrar na mão.
+**Mensagens (todas já conhecidas):** `family-get` → `family { depot:{ pokes[{ id, name, level, ivTotal, quality, shiny }] }, family{
+movesUsed, movesCap } }`; `family-action { action:'poke', dir:'withdraw'|'deposit', capturedId }` (1 movimento do dia cada; a resposta
+é o frame `family` ou `error`; `familyAction(payload, evento, dados, check)` do módulo Guardar já confere com `KEEP_TIMEOUT_MS`);
+`poke-store { pokeId }` (time → box; o inicial NÃO sai) e `poke-withdraw { pokeId }` (box → time, máx. 6; recusa anunciado em trade);
+`poke-summon { pokeId }` (líder); frame `pokes` para conferir cada passo (`team`, `slot`, `leader`). Luta = `POST /api/game/gyms/challenge`
+com o TIME ATUAL (`snapshot.sides.a.team` traz o time usado).
 
-**Teste:** `node test/hold.test.js` (`loadHoldModule`), caso 9 do `test/idle.test.js`, `test/ui.smoke.js`.
+**Config/UI (aba 🏟 Ginásio, bloco "Time da família"):** `gymTeamEnabled`; `gymTeam` = lista escolhida no painel a partir do depósito da
+família (`[{ id, name, level }]`, casada por `id` e, se o id mudar de dono, por nome + nível) — exportável para as outras contas;
+`gymTeamRestore` (devolver o time original ao fim, ligado por padrão). Status: quem está na família, quem está em outra conta, movimentos
+do dia usados.
+
+**Regras:** (1) só entra no plano quando TODOS os selecionados estão no depósito da família (ou já nesta conta); faltando algum, espera
+e diz no painel quem está fora ("com outra conta"); (2) tarefa `ginasio` da viagem: `family-get` → retira os selecionados (`withdraw`)
+→ guarda o time atual (`poke-store` de todos menos o inicial; lembra os ids e o líder) → `poke-withdraw` dos selecionados (até 6 com o
+inicial) → confere pelo frame `pokes` → desafios e bônus como hoje → `poke-store` dos selecionados → `deposit` de volta na família →
+`poke-withdraw` do time original + `poke-summon` do líder antigo; (3) qualquer falha no meio devolve o que der e avisa (nunca deixa o
+time da família preso nesta conta sem aviso); (4) respeita `movesCap` (12 movimentos por ida com 6 Pokémon); (5) os selecionados ficam
+fora da venda de Pokémon e do depósito automático (`gymKeepsPoke`, como `breedKeepsPoke`); (6) a cura: Pokémon desmaiado no time?
+Conferir no log se o `challenge` usa `maxHp` (parece que sim: a snapshot mostra `maxHp`, não `hp`).
+
+**Pendências antes de implementar:** confirmar no log (a) que `poke-withdraw` de um Pokémon recém-retirado da família funciona na
+mesma viagem, (b) o frame `pokes` depois do `poke-store` (slots), (c) se o inicial no time atrapalha (6 selecionados + inicial = 7).
+Harness: `loadGymModule` precisa de `sendGame`, `familyAction`, `init.pokes`/`init.family` como o `loadBreedModule`.
 
 ---
 

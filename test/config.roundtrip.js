@@ -35,6 +35,7 @@ const rica = {
   evolveEnabled: true, evolveFromDepot: false, evolveFromFamily: true,
   // v3.26.0 (Poke Slot Machine)
   slotEnabled: true, slotWanted: 'Dratini, Larvitar',
+  gymEnabled: true, gymBonus: false, gymRedo: false, gymAlerts: false,
   // v3.43.0 (Auto Boss)
   bossResumeEnabled: false, bossResumeOnLoss: true, bossAlerts: false,
   // v3.29.0 (Breeding)

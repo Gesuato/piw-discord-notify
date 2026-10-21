@@ -340,40 +340,47 @@ estando numa cidade". Tudo pelo **socket**:
   `hunt-resume { slug:'cruel_boss' }` sintético para a tela viajar (como `switchHunt`) e, sem a hunt da arena em 4 s, manda o
   `enter-hunt` ele mesmo (log `auto-boss-arena { slug, tela, chegou, direto }`). Teste: `node test/boss.test.js`.
 
-### Ginásio (bundle em 21/10/2026 — formatos ainda NÃO vistos no log; farejador na v3.43.2)
+### Ginásio (bundle em 21/10/2026; CONFIRMADO no log em 21/10/2026 15:04Z, conta3; feature na v3.45.0)
 
 Janela **Ginásios** (ícone `topmenu/icon_gym.png`; abas "Ginásios" e "Recompensas"; modos **Insígnia** e **Liderança**). "Derrote os
 líderes para conquistar as insígnias. Fechar as 18 rende a Gym Champion Outfit. Time livre." Liderança: "só depois de todas as
-insígnias da região do ginásio; e o time preciso ser inteiro do tipo do ginásio". 18 ginásios: 8 Kanto (pewter, cerulean, vermilion,
-celadon, fuchsia, saffron, cinnabar, viridian) + 10 Johto (violet, azalea, goldenrod, ecruteak, cianwood, spikemuth?, laverre?, olivine,
-mahogany, blackthorn — ids das cores do bundle; o `GET` abaixo diz quais estão `enabled`). Tudo por REST; a luta é resolvida na hora
-pelo servidor e o HUD da arena (o mesmo do PvP) só anima o `log`.
+insígnias da região do ginásio; e o time precisa ser inteiro do tipo do ginásio". 18 ginásios, todos abertos em 21/10/2026: Kanto
+pewter (ROCK, Brock, Rocha), cerulean (WATER, Misty, Cascata), vermilion (ELECTRIC, Lt. Surge, Trovão), celadon (GRASS, Erika,
+Arco-Íris), fuchsia (POISON, Koga, Alma), saffron (PSYCHIC, Sabrina, Lama), cinnabar (FIRE, Blaine, Vulcão), viridian (GROUND,
+Giovanni, Terra); Johto violet (FLYING, Falkner, Zephyr), azalea (BUG, Bugsy, Colmeia), goldenrod (NORMAL, Whitney, Planície),
+ecruteak (GHOST, Morty, Névoa), cianwood (FIGHTING, Chuck, Tempestade), olivine (STEEL, Jasmine, Mineral), mahogany (ICE, Pryce,
+Geleira), blackthorn (DRAGON, Clair, Nascente), spikemuth (DARK, Piers, Sombria), laverre (FAIRY, Valerie, Fada). Tudo por REST; a
+luta é resolvida na hora pelo servidor e o HUD da arena (o mesmo do PvP) só anima o `log`.
 
-- `GET /api/game/gyms` → `{ gyms[{ id, city, order, region:'kanto'|'johto', type, badge, leader (NPC), holder{ name }|null, enabled, owned,
-  canLead }], details[{ id, city, type, badge, owned, mine, enabled, cooldownMs, leaderBlock{ reason:'self'|'type'|'duplicate' }|null,
-  leaderBlockMsg, leaderCooldownMs, defender{ isNpc, name, look{ lookType, head, body, legs, feet }, sinceAt, defenses }, bonus{ icon, qty,
-  name, state:'claimable'|'cooldown'|'needWin'|…, cooldownMs }|null, arenaMap, npcTeam[{ speciesId, looktype, shiny, name, level, types[],
-  maxHp, stats{ atk, def, spAtk, spDef, speed }, moves[{ type, name, category:'SPECIAL'|'PHYSICAL', power }] }], team[…] (build do líder-
-  jogador) }], myGymIds[], regions{ kanto{ badges, total:8 }, johto{ badges, total:10 } }, payout{ perGymGold, perGymDiamonds, basisDay },
-  badgePerk{ xpPct, dropPct, active, max } }`. A tela lê ao abrir a janela e relê depois de todo POST. `badgePerk` = bônus de XP/drop por
-  insígnia ativa ("Recompensas"); `payout` = rateio diário (10h BRT) entre os líderes de ginásio atuais.
+- `GET /api/game/gyms` → `{ gyms[{ id, region:'kanto'|'johto', enabled, city, leader (NPC), type, badge, order, teamSize, holder{ name }|null,
+  owned, cooldownMs, canLead }], details[{ id, region, enabled, city, type, badge, order, defender{ name, isNpc, charId, sinceAt, defenses,
+  look }, team[] (build do líder-jogador), npcTeam[{ speciesId, looktype, name, level:400, shiny, types[], maxHp, stats{ atk, def, spAtk,
+  spDef, speed }, moves[{ name, type, power, category }] }] (6 Pokémon), owned, bonus{ itemId, name, icon, qty, state:'claimable'|'cooldown'|
+  'needWin', cooldownMs }|null, cooldownMs, leaderCooldownMs, arenaMap ('gym_<id>'; cinnabar usa 'arena_pvp'), leaderBlock{ reason:'self'|
+  'type'|'duplicate' }|null, leaderBlockMsg, mine }], badges, total, regions{ kanto{ badges, total:8 }, johto{ badges, total:10 } },
+  badgePerk{ active, max:18, xpPct, dropPct } (+1% XP e +1% drop por insígnia), vault, payout{ nextAt, basisDay, gold, diamonds,
+  perGymGold, perGymDiamonds } (rateio diário às 10h BRT entre os líderes), myGymIds[] }`. A tela lê ao abrir e relê depois de todo POST.
 - `POST /api/game/gyms/challenge { gymId, mode:'badge'|'leader' }` (botão "Desafiar líder" / "Duelar pelo posto"; desabilitado com
-  `cooldownMs > 0` = "Aguarde N min", e na liderança com `leaderBlock` ou `leaderCooldownMs > 0`) → `{ battleId, log[{ kind:'switch'|'move'|
-  'faint'|'end', side:'a'|'b', monName, move, dmg, eff, moveType, targetHp, teamIndex, winner }], snapshot{ you:'a'|'b', sides{ a{ name,
-  look, team[{ …maxHp }] }, b{…} }, winner, endReason:'ko'|'timeout'|'forfeit'|'maxturns' }, arena, won, badgeEarned, becameLeader,
-  championOutfit, championLook, leaderDeniedMsg }`. Erro = `{ message }` ("Não foi possível desafiar agora."). A tela dispara
-  `pw:gym-challenge-pending` antes e `pw:gym-battle-start { battleId, log, snapshot, arena, rewards }` depois (o HUD entra na arena com
-  `pw:pvp-arena-enter`, pede `pvp-state` pelo socket e, ao sair, manda `pvp-leave { battleId }` só quando a luta NÃO é local).
-  "A batalha está acontecendo na arena — acompanhe pelo mapa": a tela pré-carrega `arenaMap` (a confirmar se o personagem viaja).
-- `POST /api/game/gyms/bonus { gymId }` → `{ qty, name }` ("Recompensa bônus", `bonus.state === 'claimable'`; "Disponível novamente a
-  cada 48 horas"; `needWin` = "Vença o ginásio de novo").
-- `POST /api/game/gyms/abandon { gymId }` → deixa a liderança (perde o tempo de reinado; o script nunca vai usar).
+  `cooldownMs > 0` = "Aguarde N min") → `{ won, gymId, battleId, defenderName, vsNpc, log[{ kind:'start'|'move'|'faint'|'switch'|'end',
+  side:'a'|'b', monName, move, moveType, dmg, eff, stab, targetHp, targetMaxHp, teamIndex, winner, reason, seq }] (70–140 lances),
+  snapshot{ id, seq, phase, winner, endReason:'ko'|'timeout'|'forfeit'|'maxturns', you:'a', sides{ a{ charId, name, look, active, teamSize,
+  team[{ name, level, maxHp, … }] } (o SEU time atual — na conta3 4 Pokémon lv 334–629 venceram os 6 lv 400 de todo líder), b{…} } },
+  badgeEarned, becameLeader, badges, arena{ map, floor, trainerA, trainerB, monA, monB } }`. Resposta em ~300 ms, já decidida: o HUD só
+  anima (evento `pw:gym-battle-start { battleId, log, snapshot, arena, rewards{ badgeEarned, badgeName, badgeIcon, becameLeader,
+  championOutfit } }` na janela; antes dele a tela dispara `pw:gym-challenge-pending`; o HUD manda `pvp-state` pelo socket e recebe
+  `pvp-state { battle:null, incoming[], outgoing[], ranked{ queued, tickets, ticketsMax } }`). O usuário recarrega a página para pular a
+  animação; o script faz o POST direto e nada é animado. Depois do desafio o ginásio fica com `cooldownMs` ≈ 600 000 (10 min; visto 599 675
+  ms logo após a vitória). Feito com a conta na cidade (`hunt: null`); de dentro da hunt não foi testado. Erro = `{ message }`.
+- `POST /api/game/gyms/bonus { gymId }` → `{ ok, itemId, name, qty, nextAvailableAt }` ("Recompensa bônus": 20x Rock/Water/Thunder/Leaf/
+  Venom/Enigma/Fire/Earth/Feather/Cocoon/Heart/Darkness/Punch/Ice Stone ou 2x Metal/Ancient/Crystal Stone; "Disponível novamente a cada 48
+  horas" = `bonus.cooldownMs` ≈ 172 800 000; depois `needWin` = "Vença o ginásio de novo").
+- `POST /api/game/gyms/abandon { gymId }` → deixa a liderança (perde o tempo de reinado; o script nunca usa).
 - Servidor → cliente: `gym-global` (anúncio global "assumiu/derrotou o ginásio de …", `hud.gymAnnounce.*`; o HUD segura 15 s depois
-  de `pw:gym-challenge-pending`). Histórico de diamantes tem a origem `GYM_PAYOUT`.
-- Farejador (v3.43.2): `ginasio-campos` (GET na carga, resumo com times), `ginasio-rest` (toda chamada da tela a /api/game/gyms:
-  método, corpo, status, `hunt`, resumo e resposta cortada em 5000), `ginasio-tela` (eventos `pw:gym-*`), `ginasio-global`,
-  `ginasio-pvp` (frames `pvp-*`), `ginasio-envio` (`pvp-*` enviados). Ler com `python tools/read-panel-logs.py --panel 3
-  --kinds ginasio-campos,ginasio-rest,ginasio-tela,ginasio-global,ginasio-pvp,ginasio-envio,hunt,socket-fechado`.
+  de `pw:gym-challenge-pending`; log `ginasio-global`, ainda não visto). Histórico de diamantes tem a origem `GYM_PAYOUT`.
+- Script (v3.45.0, módulo `// ---- Ginásio`): lê a janela a cada 30 min ou quando um prazo vence; ginásio aberto sem insígnia (ou com
+  bônus `needWin`, com `gymRedo`) fora do cooldown → tarefa `ginasio` da viagem à cidade: `POST /challenge { mode:'badge' }` um a um, relê,
+  `POST /bonus` nos `claimable` (com `gymBonus`), avisa em Alertas. Logs `ginasio-campos`, `ginasio`, `ginasio-desafio`, `ginasio-bonus`,
+  `ginasio-erro`. Teste: `node test/gym.test.js`.
 
 ## Ideias que esses nomes destravam
 
@@ -381,5 +388,5 @@ pelo servidor e o HUD da arena (o mesmo do PvP) só anima o `log`.
 - ~~`joy-heal`: cura quando o time cai~~ feito na v3.22.0 (Cura na Joy). Desmaio: `field { fainted, reviveInMs, noRevive,
   heroHp, heroMaxHp }`; sem Revive, `field-teleport-city` no fim da contagem. `use-heal` (poção na mão) segue sem uso.
 - `poke-store` / `poke-withdraw`: rotação de time direto do box (a rota hoje só troca entre os 6 do time).
-- `shiny-global`: alerta global do servidor. ~~`gym-global`~~ ver a seção "Ginásio" (farejador na v3.43.2, ROADMAP #35).
+- `shiny-global`: alerta global do servidor. ~~`gym-global`~~ ver a seção "Ginásio" (feature na v3.45.0, ROADMAP #35).
 - `fishing-levelup`, `profession-*`: profissões.

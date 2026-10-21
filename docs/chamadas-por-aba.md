@@ -51,6 +51,7 @@ sem ter vencido o próprio intervalo. Intervalo mínimo entre viagens: 3 min (co
 | Troca de hunt da rota | `leave-hunt` + `enter-hunt` + `pending-get` (socket) + `hunt-resume` sintético só para a tela | quando o time chega ao nível da etapa |
 | Evolução | `GET /api/game/evolve?capturedId` + `POST /api/game/evolve { capturedId, useStone:true, destId? }` (REST, na viagem; `set-city cerulean` se a viagem foi para outra cidade) + `pokes-get`; pedra faltando (v3.39.0): `GET /api/game/depot` + `POST /api/game/depot/move { itemId, dir:'withdraw' }` e/ou `family-get` + `family-action { action:'item', dir:'withdraw', itemId, quantity }` | quando um Pokémon do time chega ao nível de evolução |
 | Poke Slot Machine | `GET /api/game/golden-stars` (REST); na viagem: `POST .../roll { slot }` + `POST .../pick { slot, speciesId }` (`set-city shopping` se a viagem foi para outra cidade) | leitura quando um roll grátis/estrela vence ou a cada 30 min; roll e escolha só na viagem, com slot pronto |
+| Ginásios | `GET /api/game/gyms` (REST); na viagem: `POST /api/game/gyms/challenge { gymId, mode:'badge' }` + `POST /api/game/gyms/bonus { gymId }` | leitura quando um cooldown/prazo de bônus/espera por derrota vence ou a cada 30 min; desafio e resgate só na viagem, com ginásio pronto |
 
 ## 📖 Profissão (rota de captura)
 

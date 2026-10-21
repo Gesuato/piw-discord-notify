@@ -1226,4 +1226,44 @@ function loadHoldModule(init) {
     return { api, state, clock, env, store };
 }
 
-module.exports = { loadHoldModule, loadBossModule, loadHumanModule, loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+// Ginásios (v3.45.0): `init.api(url, opts)` responde GET /api/game/gyms e POST /challenge e /bonus; `state.calls` = chamadas REST,
+// `state.trips` = pedidos de viagem, `state.hooks` = avisos; `clock.now` é o relógio (as esperas são imediatas), `clock.rnd` o Math.random.
+const GY_START = '    // ---- Ginásio (v3.45.0)';
+const GY_END = '    // ---- Auto Boss (v3.43.0)';
+
+function loadGymModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(GY_START), b = src.indexOf(GY_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo do ginásio não encontrados no script');
+    const mod = src.slice(a, b);
+    const clock = { now: Date.UTC(2026, 9, 21, 15, 0, 0), rnd: 0 };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const FakeMath = new Proxy(Math, { get(t, k) { return k === 'random' ? () => clock.rnd : t[k]; } });
+    const state = { hooks: [], logs: [], trips: [], calls: [] };
+    const ctx = {
+        cfg,
+        gameApi: (url, opts) => { state.calls.push({ url, method: opts?.method || 'GET', body: opts?.body ? JSON.parse(opts.body) : null }); return Promise.resolve().then(() => (init.api ? init.api(url, opts) : {})); },
+        tripRequest: (key, dados, motivo) => state.trips.push({ key, dados, motivo }),
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', color: p.embeds?.[0]?.color, meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        setTimeout: (fn) => { fn(); return 1; },
+        Date: FakeDate,
+        Math: FakeMath,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            gymTick, gymRead, gymCityWork, gymStatus, gymWanted, gymPlan, gymLossWait, gymNextEventAt, gymDue, parseGymState, gymOnGlobal,
+            GYM_POLL_MS, GYM_RETRY_MS, GYM_LOSS_WAIT_MS, GYM_LOSS_WAIT_MAX_MS,
+            get gymState() { return gymState; },
+            get gymLast() { return gymLast; },
+            get gymFailedAt() { return gymFailedAt; },
+            get gymLoss() { return gymLoss; },
+            get gymFetchedAt() { return gymFetchedAt; },
+        };`);
+    const api = factory(...Object.values(ctx));
+    return { api, state, cfg, clock };
+}
+
+module.exports = { loadGymModule, loadHoldModule, loadBossModule, loadHumanModule, loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
