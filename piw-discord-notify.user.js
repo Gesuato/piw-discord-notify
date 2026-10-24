@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.45.4
+// @version      3.46.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.45.4';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.46.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -4300,8 +4300,42 @@
     const GUILD_CAP_GAP_MS = 2 * 60 * 1000;   // releitura "minha parte no teto": no máximo 1 a cada 2 min
     const GUILD_FISH_TIER_MS = 10 * 60 * 1000;     // relê a janela de pesca no máximo a cada 10 min
     let guildTarget = null;        // { kind: 'tributo'|'kill'|'fish', slug, name, level, motivo }
-    let guildFrom = null;          // hunt de antes da rota da guild (para onde voltar)
+    let guildFrom = null;          // hunt de antes da rota da guild (para onde voltar); v3.46.0: também em localStorage (`guildSaveFrom`)
+    let guildFromLoaded = false;   // `guildLoadFrom` roda no 1º tique (CITY_SLUGS e o log ainda não existem na carga do módulo)
     let guildWait = '';            // por que a rota ainda não foi (painel + log `guild-espera`)
+    // v3.46.0: a hunt de origem sobrevive à recarga da página e a volta tem um destino de último recurso. Relato do usuário em
+    // 24/10/2026 (outro PC, 4 contas dedicadas às tarefas da guild): "quando acaba de matar os monstros necessários ele não volta pra
+    // hunt de caçar". `guildFrom` só era anotado na troca feita pelo script e vivia em memória: conta recarregada já dentro da hunt da
+    // guild (`recarga-retomada`) ou que começou na cidade chegava ao fim do objetivo com `guildFrom` nulo e `guildReturn` não ia a lugar
+    // nenhum (log `guild-volta { volta: null }`). Agora a origem fica em `localStorage.pgDiscordNotifyGuild` (24 h; é da conta, não entra
+    // no Exportar/Importar) e, sem origem, a volta usa a hunt padrão do painel (`cityIdleHunt`, aba Compras → Parada na cidade), como a
+    // viagem e a cura (`idleDefaultSlug`). Toda volta por objetivo fechado avisa no canal de Alertas (por conta; não depende de
+    // `guildAlerts`, que é o aviso da guild inteira e só deve ficar ligado em um painel).
+    const GUILD_FROM_KEY = 'pgDiscordNotifyGuild';
+    const GUILD_FROM_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+    function guildSaveFrom() {
+        try {
+            if (guildFrom) localStorage.setItem(GUILD_FROM_KEY, JSON.stringify({ from: guildFrom, at: Date.now() }));
+            else localStorage.removeItem(GUILD_FROM_KEY);
+        } catch { /* sem localStorage: a origem vale só nesta carga */ }
+    }
+    function guildLoadFrom() {
+        try {
+            const r = JSON.parse(localStorage.getItem(GUILD_FROM_KEY) || 'null');
+            const slug = r && r.from ? normalize(r.from) : null;
+            const idade = Date.now() - (Number(r?.at) || 0);
+            if (!slug || CITY_SLUGS.includes(slug) || slug === FISH_SLUG || idade < 0 || idade > GUILD_FROM_MAX_AGE_MS) return;
+            guildFrom = slug;
+            logEvent('guild-origem-lembrada', { volta: slug, idadeMin: Math.round(idade / 60000) });
+        } catch { /* sem registro */ }
+    }
+    // Para onde a conta vai quando a rota acaba: { slug, fonte: 'origem'|'hunt padrão' } ou { motivo } quando não há destino.
+    function guildReturnTarget(d) {
+        if (guildFrom) return { slug: guildFrom, fonte: 'origem' };
+        const padrao = typeof idleDefaultSlug === 'function' ? idleDefaultSlug(d) : null;
+        if (padrao) return { slug: padrao, fonte: 'hunt padrão' };
+        return { motivo: 'sem hunt de origem nem hunt padrão (preencha "Hunt padrão" em Compras → Parada na cidade)' };
+    }
     let guildFailed = new Set();   // hunts cuja entrada não confirmou nesta sessão
     let guildReenterTimer = null;
     let guildRouteBusy = false;
@@ -4408,12 +4442,23 @@
         logEvent('guild-hunt-falhou', { slug });
     }
     function guildReturn(motivo) {
-        const volta = guildFrom;
         const atual = normalize(huntSlug || '');
-        guildTarget = null; guildFrom = null;
-        logEvent('guild-volta', { motivo, volta });
+        const destino = guildReturnTarget();
+        const volta = destino.slug || null;
+        guildTarget = null; guildFrom = null; guildSaveFrom();
+        const trocou = Boolean(volta) && volta !== atual && switchHunt(volta, 1, 'guild') !== false;
+        logEvent('guild-volta', { motivo, volta, fonte: destino.fonte || null, de: atual || null, trocou, semDestino: destino.motivo || null });
         guildNotify();
-        if (volta && volta !== atual) switchHunt(volta, 1, 'guild');
+        if (motivo === 'rota da guild desligada' || motivo === 'sem guild') return;   // Salvar / conta fora da guild: sem aviso
+        const who = playerName();
+        const texto = trocou ? `voltou para **${volta}**${destino.fonte === 'hunt padrão' ? ' (hunt padrão)' : ''}`
+            : volta ? `já está em **${volta}**`
+            : `ficou em **${atual || 'cidade'}** — ${destino.motivo}`;
+        postWebhook('alert', {
+            content: `🧭 ${who ? `**${who}**` : 'Sua conta'}: rota da guild encerrada (${motivo}) — ${texto}`,
+            username: 'Poke Idle World',
+            embeds: [{ title: 'Rota da guild encerrada', description: `${who ? `Conta: ${who}\n` : ''}Motivo: ${motivo}\n${texto.replace(/\*\*/g, '')}\nEm ${new Date().toLocaleString('pt-BR')}`, color: volta ? 0x57f287 : 0xfee75c }],
+        }, { evento: 'guild-volta', volta, trocou });
     }
     // Pesca: lê a janela (10 min de cache), escolhe a faixa natural liberada (senão a mais alta liberada) e a marca no jogo.
     async function guildFishPrepare() {
@@ -4438,7 +4483,12 @@
     // Tique (60 s e a cada frame `guild`): escolhe o alvo, vai, volta.
     async function guildRouteTick() {
         if (guildRouteBusy) return;
-        if (!guildRouteOn()) { if (guildTarget) guildReturn('rota da guild desligada'); guildSetWait(''); return; }
+        if (!guildFromLoaded) { guildFromLoaded = true; guildLoadFrom(); }
+        if (!guildRouteOn()) {
+            if (guildTarget) guildReturn('rota da guild desligada');
+            else if (guildFrom) { guildFrom = null; guildSaveFrom(); }   // registro velho de uma rota que já não existe
+            guildSetWait(''); return;
+        }
         guildRouteBusy = true;
         try {
             if (!lastGuild) { guildSetWait('guild ainda não lida'); return; }
@@ -4459,7 +4509,7 @@
             if (!plano.length) {
                 const motivo = motivos.join(' · ') || 'nada ligado';
                 guildSetWait(motivo);
-                if (guildTarget) guildReturn(motivo);
+                if (guildTarget || guildFrom) guildReturn(motivo);   // v3.46.0: origem lembrada da carga anterior também volta
                 return;
             }
             const alvo = plano[0];
@@ -4467,7 +4517,7 @@
             guildSetWait('');
             if (!guildTarget || guildTarget.slug !== alvo.slug) { guildTarget = alvo; logEvent('guild-alvo', alvo); guildNotify(); }
             if (atual === alvo.slug) return;
-            if (!guildFrom && atual && !CITY_SLUGS.includes(atual) && atual !== FISH_SLUG) guildFrom = atual;
+            if (!guildFrom && atual && !CITY_SLUGS.includes(atual) && atual !== FISH_SLUG) { guildFrom = atual; guildSaveFrom(); }
             switchHunt(alvo.slug, 1, 'guild');
         } finally { guildRouteBusy = false; }
     }
@@ -4501,7 +4551,10 @@
     function guildRouteLine(d) {
         d = d || cfg;
         if (!guildRouteOn(d)) return 'Rota da guild desligada';
-        if (guildTarget) return `▶ ${guildTarget.slug}${guildTarget.level ? ` lv${guildTarget.level}` : ''} (${guildTarget.motivo})${guildFrom ? ` · volta para ${guildFrom}` : ''}`;
+        if (guildTarget) {
+            const v = guildReturnTarget(d);
+            return `▶ ${guildTarget.slug}${guildTarget.level ? ` lv${guildTarget.level}` : ''} (${guildTarget.motivo}) · no fim volta para ${v.slug ? `${v.slug}${v.fonte === 'hunt padrão' ? ' (hunt padrão)' : ''}` : '⚠ lugar nenhum — preencha "Hunt padrão" em Compras → Parada na cidade'}`;
+        }
         if (guildWait) return `parado: ${guildWait}`;
         return guildRouteOn() ? 'escolhendo a hunt… (confere a cada 1 min)' : 'salve para ligar';
     }
@@ -7638,6 +7691,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             case 'guild': {
                 if (!guildOn(d)) return 'off';
                 if (!temAlertas) return 'warn';
+                if (guildRouteOn(d) && !guildReturnTarget(d).slug) return 'warn';   // v3.46.0: rota sem hunt de volta
                 return 'on';
             }
             case 'farm': {
@@ -7995,12 +8049,12 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                             <option value="kill,fish,tributo">"Derrotar" → pesca → tributo</option>
                         </select> <span class="dn-hint">(o 1º objetivo ligado e ainda aberto vence; os outros entram quando ele fecha)</span></div>
                         <div class="dn-status"><span>🧭</span><span id="pg-dn-guild-route"></span></div>
-                        <p class="dn-help">A prioridade acima decide para onde a conta vai quando mais de um objetivo está ligado e aberto. É a 4ª rota que manda na hunt: ligar aqui desliga a rota de treino, a de captura e a do clã (e vice-versa). A Daily Kill tem prioridade. Quando os objetivos fecham, o dia reinicia ou você desliga, a conta volta para a hunt em que estava. Hunt acima do nível do time é pulada. Cada membro conta só até um teto por caçada ("Sua parte" na janela da guild, 40% da meta): quando a sua parte fecha, a conta passa para o próximo objetivo ou volta para a hunt de origem em vez de ficar na hunt sem contar.</p>
+                        <p class="dn-help">A prioridade acima decide para onde a conta vai quando mais de um objetivo está ligado e aberto. É a 4ª rota que manda na hunt: ligar aqui desliga a rota de treino, a de captura e a do clã (e vice-versa). A Daily Kill tem prioridade. Quando os objetivos fecham, o dia reinicia ou você desliga, a conta volta para a hunt em que estava (lembrada mesmo depois de recarregar a página; sem ela, vai para a "Hunt padrão" de Compras → Parada na cidade) e avisa no canal de Alertas. Hunt acima do nível do time é pulada. Cada membro conta só até um teto por caçada ("Sua parte" na janela da guild, 40% da meta): quando a sua parte fecha, a conta passa para o próximo objetivo ou volta para a hunt de origem em vez de ficar na hunt sem contar.</p>
                     </div>
                     <div class="dn-section">
                         <h3>🔔 Avisos da guild</h3>
                         <label class="dn-toggle"><input id="pg-dn-guild-alerts" type="checkbox"><span class="sw"></span>Avisar no canal de Alertas: caçada, daily e tributo concluídos, dia perfeito, tier, vaga nova e convites</label>
-                        <p class="dn-help">A guild é a mesma nas 4 contas: ligue isto em UM painel só, senão cada aviso chega 4 vezes. As doações e os depósitos de cada conta avisam sempre (canal de Alertas).</p>
+                        <p class="dn-help">A guild é a mesma nas 4 contas: ligue isto em UM painel só, senão cada aviso chega 4 vezes. Esses avisos saem quando o jogo manda o estado da guild (a cada 30 min ou quando algo muda), por isso podem atrasar. As doações, os depósitos e o fim da rota de cada conta (voltou para qual hunt) avisam sempre (canal de Alertas).</p>
                     </div>
                 </section>
                 <section class="dn-pane" data-pane="farm" hidden>

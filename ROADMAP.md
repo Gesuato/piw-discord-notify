@@ -744,6 +744,16 @@ v3.42.0 (pedido do usuário em 19/10/2026: "pescaria com prioridade maior que De
 "Prioridade" da aba Guild (`cfg.guildRouteOrder`, lista de `tributo`/`fish`/`kill`; padrão tributo → pesca → "Derrotar"; config antiga
 sem a chave cai no padrão). O 1º objetivo ligado e ainda aberto vence; objetivo fechado (`done`) ou com a parte do membro no teto sai
 do plano e o próximo entra. Caso 7 do `test/guild.test.js`.
+  v3.46.0 (relato do usuário em 24/10/2026, outro PC com 4 contas dedicadas às tarefas: "quando acaba de matar os monstros
+  necessários ele não volta pra hunt de caçar"): `guildFrom` só era anotado na troca feita pelo script e vivia em memória — conta
+  recarregada já dentro da hunt da guild (`recarga-retomada`) ou que começou na cidade fechava o objetivo com `guildFrom` nulo e
+  `guildReturn` não ia a lugar nenhum (`guild-volta { volta: null }`). Agora a origem fica em `localStorage.pgDiscordNotifyGuild`
+  (24 h, `guildSaveFrom`/`guildLoadFrom` no 1º `guildRouteTick`, log `guild-origem-lembrada`; é da conta, fora do Exportar/Importar) e
+  `guildReturnTarget()` = origem > hunt padrão do painel (`cityIdleHunt`, `idleDefaultSlug`, aba Compras → Parada na cidade), o MESMO
+  campo da parada na cidade/viagem/cura (sem campo novo na aba Guild). Plano vazio com origem lembrada também volta. Toda volta por
+  objetivo fechado avisa em Alertas por conta (`guild-volta`, independe de `guildAlerts`: este é o aviso da guild inteira, só sai
+  com o frame `guild` — 30 min ou `guild-dirty` — e deve ficar ligado em UM painel). Sem destino: fica, avisa o motivo, badge ⚠ e
+  linha da rota "no fim volta para …". Caso 8 do `test/guild.test.js` (harness com `localStorage`/`idleDefaultSlug`, `init.store`).
 
 **v3.39.1 (16/10/2026) — teto por membro nas caçadas:** o jogo passou a mandar `hunts[].mine` (a parte do personagem) e `hunts[].cap`
 (40% da meta; "Sua parte: n/cap — o resto precisa vir de outros membros"). Caso real: Derrotar Sunflora 19.200/24.000 parado por horas com

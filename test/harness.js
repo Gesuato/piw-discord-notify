@@ -937,8 +937,11 @@ function loadGuildModule(cfg, init) {
     const mod = src.slice(a, b);
     const clock = { now: Date.now() };
     const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
-    const state = { calls: [], sent: [], switches: [], hooks: [], logs: [], timers: [], fire: null };
+    const store = Object.assign({}, init.store || {});   // v3.46.0: localStorage (origem da rota em pgDiscordNotifyGuild)
+    const state = { calls: [], sent: [], switches: [], hooks: [], logs: [], timers: [], fire: null, store };
     const normalize = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+    const huntSlugFromName = (name) => normalize(name).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    const CITY = ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'];
     const cr = init.creatures || [];
     const creatureLoot = new Map(cr.map(c => [c.pokeId, c.loot || []]));
     let tid = 0;
@@ -951,10 +954,13 @@ function loadGuildModule(cfg, init) {
         postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
         playerName: () => 'Teste',
         normalize,
-        huntSlugFromName: (name) => normalize(name).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''),
+        huntSlugFromName,
         switchHunt: (slug, tentativa, origem) => { state.switches.push({ slug, tentativa, origem }); },
         huntSlug: init.huntSlug != null ? init.huntSlug : null,
-        CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'],
+        CITY_SLUGS: CITY,
+        // v3.46.0: hunt padrão do painel (módulo da parada na cidade) e localStorage, para a volta da rota
+        idleDefaultSlug: (d) => { const h = huntSlugFromName((d || cfg).cityIdleHunt || ''); return h && !CITY.includes(h) ? h : null; },
+        localStorage: { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); }, removeItem: (k) => { delete store[k]; } },
         team: init.team || [],
         huntCatalog: init.huntCatalog || null,
         loadHuntCatalog: () => Promise.resolve(init.huntCatalog || null),
@@ -972,7 +978,7 @@ function loadGuildModule(cfg, init) {
     state.fire = (ms) => { const due = state.timers.filter(t => t.ms <= ms); state.timers = state.timers.filter(t => t.ms > ms); clock.now += ms; for (const t of due) t.fn(); };
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
-            handleGuild, guildRouteTick, guildPlan, guildStatus, guildRouteLine, guildKeepsItem, guildOnHuntChange, guildOnFishingCooldown, guildActionDone, guildOnError, fishOnMessage, guildOnKill, guildRouteOrder, guildOrderText,
+            handleGuild, guildRouteTick, guildPlan, guildStatus, guildRouteLine, guildKeepsItem, guildOnHuntChange, guildOnFishingCooldown, guildActionDone, guildOnError, fishOnMessage, guildOnKill, guildRouteOrder, guildOrderText, guildReturnTarget,
             setHunt(slug) { huntSlug = slug; },
             get guildTarget() { return guildTarget; }, get guildFrom() { return guildFrom; }, get guildWait() { return guildWait; }, get guildPending() { return guildPending; }, get guildLast() { return guildLast; },
         };`);

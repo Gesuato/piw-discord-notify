@@ -200,5 +200,60 @@ const base = (extra) => Object.assign({ guildDonateGold: 0, guildDonateKeep: 0, 
         assert(b.guildTarget && b.guildTarget.kind === 'kill' && sb.switches[0].slug === 'grovyle', 'ordem Derrotar primeiro: caça mesmo com tributo aberto: ' + JSON.stringify(b.guildTarget));
     }
 
-    console.log('OK guild.test — doação, tributo, rota (ordem do painel), reentrada, cooldown da pesca, volta, avisos, teto por membro e prioridade dos objetivos');
+    // 8) v3.46.0: a volta tem destino mesmo sem a troca desta carga. (a) origem lembrada em localStorage (conta recarregada já dentro da
+    //    hunt da guild) → volta para ela quando o objetivo fecha, aviso por conta, registro apagado; (b) sem origem, vai para a hunt padrão
+    //    do painel (`cityIdleHunt`); (c) sem nada, fica e avisa o motivo; (d) a origem é gravada ao sair para o alvo; (e) o painel mostra.
+    {
+        const KEY = 'pgDiscordNotifyGuild';
+        // (a) recarga: origem lembrada, conta já em grovyle, Derrotar fecha → volta para ancient_pinsir
+        const { api, state } = loadGuildModule(base({ guildHuntEnabled: true }), { creatures: CREATURES, huntCatalog: CATALOGO, team: TIME, huntSlug: 'grovyle', store: { [KEY]: JSON.stringify({ from: 'ancient_pinsir', at: Date.now() - 60000 }) } });
+        api.handleGuild(frame({ kill: 100 }));
+        await flush(); await flush();
+        assert(api.guildFrom === 'ancient_pinsir' && state.logs.some(([k, d]) => k === 'guild-origem-lembrada' && d.volta === 'ancient_pinsir'), 'origem lembrada da carga anterior: ' + api.guildFrom);
+        assert(api.guildTarget && api.guildTarget.slug === 'grovyle' && !state.switches.length, 'já no alvo: não troca');
+        assert(/no fim volta para ancient_pinsir/.test(api.guildRouteLine()), 'painel mostra a volta: ' + api.guildRouteLine());
+        api.handleGuild(frame({ kill: 20000 }));
+        await flush(); await flush();
+        assert(state.switches.length === 1 && state.switches[0].slug === 'ancient_pinsir' && state.switches[0].origem === 'guild', 'voltou para a origem lembrada: ' + JSON.stringify(state.switches));
+        const volta = state.logs.find(([k]) => k === 'guild-volta')?.[1];
+        assert(volta && volta.volta === 'ancient_pinsir' && volta.fonte === 'origem' && volta.trocou === true, 'log guild-volta: ' + JSON.stringify(volta));
+        assert(!(KEY in state.store) && !api.guildFrom, 'registro da origem apagado depois da volta');
+        const av = state.hooks.filter(h => h.meta?.evento === 'guild-volta');
+        assert(av.length === 1 && av[0].kind === 'alert' && /rota da guild encerrada/.test(av[0].content) && /voltou para \*\*ancient_pinsir\*\*/.test(av[0].content) && /Derrotar.*concluída/.test(av[0].desc), 'avisou a volta (sem guildAlerts): ' + JSON.stringify(av));
+        // (b) sem origem: hunt padrão do painel
+        const { api: b, state: sb } = loadGuildModule(base({ guildHuntEnabled: true, cityIdleHunt: 'Ancient Pinsir' }), { creatures: CREATURES, huntCatalog: CATALOGO, team: TIME, huntSlug: 'grovyle' });
+        b.handleGuild(frame({ kill: 100 }));
+        await flush(); await flush();
+        assert(/no fim volta para ancient_pinsir \(hunt padrão\)/.test(b.guildRouteLine()), 'painel mostra a hunt padrão: ' + b.guildRouteLine());
+        b.handleGuild(frame({ kill: 20000 }));
+        await flush(); await flush();
+        assert(sb.switches.length === 1 && sb.switches[0].slug === 'ancient_pinsir', 'voltou para a hunt padrão: ' + JSON.stringify(sb.switches));
+        assert(sb.logs.some(([k, d]) => k === 'guild-volta' && d.fonte === 'hunt padrão') && sb.hooks.some(h => h.meta?.evento === 'guild-volta' && /\(hunt padrão\)/.test(h.content)), 'log e aviso dizem que foi a hunt padrão');
+        // (c) sem origem nem hunt padrão: fica na hunt e avisa o motivo; painel alerta
+        const { api: c, state: sc } = loadGuildModule(base({ guildHuntEnabled: true }), { creatures: CREATURES, huntCatalog: CATALOGO, team: TIME, huntSlug: 'grovyle' });
+        c.handleGuild(frame({ kill: 100 }));
+        await flush(); await flush();
+        assert(/lugar nenhum/.test(c.guildRouteLine()) && !c.guildReturnTarget().slug, 'painel avisa que não há volta: ' + c.guildRouteLine());
+        c.handleGuild(frame({ kill: 20000 }));
+        await flush(); await flush();
+        assert(!sc.switches.length && !c.guildTarget, 'sem destino não troca');
+        assert(sc.logs.some(([k, d]) => k === 'guild-volta' && d.volta === null && /hunt padrão/.test(d.semDestino)), 'log diz que não há destino: ' + JSON.stringify(sc.logs.filter(([k]) => k === 'guild-volta')));
+        assert(sc.hooks.some(h => h.meta?.evento === 'guild-volta' && /ficou em \*\*grovyle\*\*/.test(h.content) && /Hunt padrão/.test(h.content)), 'aviso pede a hunt padrão: ' + JSON.stringify(sc.hooks));
+        // (d) saída para o alvo grava a origem; desligar a rota sem alvo limpa um registro velho sem trocar de hunt
+        const { api: d, state: sd } = loadGuildModule(base({ guildHuntEnabled: true }), { creatures: CREATURES, huntCatalog: CATALOGO, team: TIME, huntSlug: 'ancient_pinsir' });
+        d.handleGuild(frame({ kill: 100 }));
+        await flush(); await flush();
+        assert(sd.switches[0]?.slug === 'grovyle' && JSON.parse(sd.store[KEY] || 'null')?.from === 'ancient_pinsir', 'gravou a origem ao sair: ' + sd.store[KEY]);
+        const { api: e, state: se } = loadGuildModule(base({}), { creatures: CREATURES, huntCatalog: CATALOGO, team: TIME, huntSlug: 'ancient_pinsir', store: { [KEY]: JSON.stringify({ from: 'pidgey', at: Date.now() }) } });
+        e.handleGuild(frame({ kill: 100 }));
+        await flush(); await flush();
+        assert(!se.switches.length && !(KEY in se.store) && !e.guildFrom, 'rota desligada: registro velho apagado sem trocar de hunt');
+        // registro com mais de 24 h é ignorado
+        const { api: f } = loadGuildModule(base({ guildHuntEnabled: true }), { creatures: CREATURES, huntCatalog: CATALOGO, team: TIME, huntSlug: 'grovyle', store: { [KEY]: JSON.stringify({ from: 'pidgey', at: Date.now() - 25 * 3600000 }) } });
+        f.handleGuild(frame({ kill: 100 }));
+        await flush(); await flush();
+        assert(!f.guildFrom, 'registro de 25 h ignorado');
+    }
+
+    console.log('OK guild.test — doação, tributo, rota (ordem do painel), reentrada, cooldown da pesca, volta (origem lembrada / hunt padrão), avisos, teto por membro e prioridade dos objetivos');
 })().catch(e => { console.error(e); process.exit(1); });

@@ -363,6 +363,16 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `tributo`/`fish`/`kill`; `guildRouteOrder(d)` normaliza texto/lista e completa com o padrão `GUILD_ORDER_DEFAULT` = tributo → pesca →
   "Derrotar", pedido do usuário em 19/10/2026). `guildPlan` monta as partes e ordena por ela; objetivo `done` ou com a parte no teto sai
   do plano e o próximo entra. Caso 7 do `test/guild.test.js`.
+  v3.46.0 (relato do usuário em 24/10/2026, outro PC com 4 contas dedicadas às tarefas: "quando acaba de matar os monstros
+  necessários ele não volta pra hunt de caçar"): `guildFrom` só era anotado na troca feita pelo script e vivia em memória — conta
+  recarregada já dentro da hunt da guild (`recarga-retomada`) ou que começou na cidade fechava o objetivo com `guildFrom` nulo e
+  `guildReturn` não ia a lugar nenhum (`guild-volta { volta: null }`). Agora a origem fica em `localStorage.pgDiscordNotifyGuild`
+  (24 h, `guildSaveFrom`/`guildLoadFrom` no 1º `guildRouteTick`, log `guild-origem-lembrada`; é da conta, fora do Exportar/Importar) e
+  `guildReturnTarget()` = origem > hunt padrão do painel (`cityIdleHunt`, `idleDefaultSlug`, aba Compras → Parada na cidade), o MESMO
+  campo da parada na cidade/viagem/cura (sem campo novo na aba Guild). Plano vazio com origem lembrada também volta. Toda volta por
+  objetivo fechado avisa em Alertas por conta (`guild-volta`, independe de `guildAlerts`: este é o aviso da guild inteira, só sai
+  com o frame `guild` — 30 min ou `guild-dirty` — e deve ficar ligado em UM painel). Sem destino: fica, avisa o motivo, badge ⚠ e
+  linha da rota "no fim volta para …". Caso 8 do `test/guild.test.js` (harness com `localStorage`/`idleDefaultSlug`, `init.store`).
   v3.39.1 (pedido em 16/10/2026: "cada personagem só pode matar 9600 e fica nessa quest"): cada caçada traz `mine` (parte do personagem)
   e `cap` (teto por membro, 40% da meta; bundle "Sua parte: n/cap — o resto precisa vir de outros membros"). `guildHuntCapped(h)` =
   `mine >= cap` com `done: false` → a caçada sai do plano desta conta (motivo `sua parte da caçada "…" fechou`), a rota segue para o
