@@ -317,7 +317,19 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   protegia quase toda captura e, sem stones, o box enchia sem parar): a proteção tem TETO por linhagem (`cfg.breedKeepMax`, painel
   "Fora da venda … até N da espécie", padrão 20, 0 = sem teto) — `breedKept(l, ref, max)` ranqueia box fora do time + `captureQueue`
   (comida que serve hoje primeiro, maior quality primeiro, depois quem é tão bom quanto quem sobe) e só os N primeiros passam em
-  `breedKeepsPoke`; o resto vende pelas regras da aba Venda; desconhecido só é protegido com vaga. Caso 13 do teste. v3.36.2: cruzamento feito NA MÃO é adotado em
+  `breedKeepsPoke`; o resto vende pelas regras da aba Venda; desconhecido só é protegido com vaga. Caso 13 do teste.
+  v3.48.0 (pedido do usuário em 26/10/2026: "quando o Pokémon chega a 1,96 já não dá para continuar subindo com Pokémon dropados;
+  precisamos breedar a comida"): **comida em criação** (`cfg.breedFoodBreed`, painel "Criar comida quando nenhuma servir", padrão
+  desligado). Quem sobe em Q 1,96 só come Q 1,81–1,96 e captura nunca chega lá. Sem NENHUMA comida que sirva, a linhagem ganha a
+  sub-linhagem `line.food` (mesmo formato de uma linhagem; `breedUnits()` = linhagens + comidas em criação, usado em proteção, ovos,
+  filho, hatch e cidade; `breedUnitInfo(u)` diz de quem é). `breedFoodTrunkPick(trunk)` escolhe quem VIRA comida: da espécie, ABAIXO
+  da faixa de 0,15 (quem está na faixa já serve ou tem IV demais, e cruzar não baixa IV), IV (+1 de margem se dobrar) abaixo do de
+  quem sobe e do teto, com comida própria que sirva (`breedFoodPick` dele); maior quality primeiro (menos gerações, `breedFoodGens`,
+  Δ esperado 0,01). `breedPlanFood` cota (mesmo checklist, `donorId` = quem vira comida) e pede a viagem; o filho vira a comida em
+  criação (geração +1) e repete até a quality entrar na faixa; aí `breedFoodReason` deixa a comida em criação da PRÓPRIA linhagem
+  ser comida de quem sobe (as outras unidades nunca) e, consumida, `line.food = null`. Só cruza comida enquanto quem sobe está parado
+  sem comida (usa o slot que ele não usa); quem vira comida pode estar na família (`food.familia`, retirado na viagem antes da cotação).
+  Logs `breeding-comida { fase: escolhida | sumiu | consumida }`; `breeding-cotacao`/`breeding-cruzou` trazem `criacao: true`. Caso 14 do teste. v3.36.2: cruzamento feito NA MÃO é adotado em
   `breedSyncLines` — linhagem com filho por identificar (ou quem sobe sumido de uma lista lida) + UM ovo livre da espécie no centro =
   o ovo é dela (`breeding-ovo-adotado`, geração +1 com Q/IV do `hatch`); 0 ou 2+ ovos livres = segue pendente. Grátis cobra 2.000.000 de gold + 20 stones (40 com dobrar);
   3000 abates para chocar. Fluxo: `breedTick` (1 min) lê o centro a cada 2 min, choca o `ready` (POST hatch → `{ ok, child{ quality,

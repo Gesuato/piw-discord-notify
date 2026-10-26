@@ -710,6 +710,16 @@ cruzamento consome UMA comida a cada 3000 abates. Agora `cfg.breedKeepMax` (aba 
 da espécie ficam fora da venda e do depósito (comida que serve hoje primeiro, maior quality primeiro, depois quem é tão bom quanto
 quem sobe); o resto vende pelas regras da aba Venda. A prévia da comida mostra "fora da venda: N de M (teto X)".
 
+**v3.48.0 (26/10/2026) — comida em criação:** pedido do usuário: "quando o Pokémon chega a 1,96, por exemplo, já não dá para ele continuar
+subindo com Pokémon dropados; precisamos breedar a comida para ele continuar subindo". Quem sobe em Q 1,96 só aceita comida de Q 1,81–1,96
+(diferença ≤ 0,15 e menor que ele) e nenhuma captura chega lá. Com `cfg.breedFoodBreed` (aba Breeding → "Criar comida quando nenhuma
+servir", padrão desligado), sem NENHUMA comida que sirva a linhagem ganha uma sub-linhagem de comida (`line.food`): o melhor da espécie
+abaixo da faixa (maior quality = menos gerações; IV menor que o de quem sobe e abaixo do teto, com margem de 1 se dobrar, porque o filho
+herda o IV dele) é cruzado com uma comida própria (mesmas regras, mesma cotação e checklist), o filho vira a comida em criação (geração +1)
+e repete até a quality entrar na faixa; aí quem sobe come esse filho e a sub-linhagem termina. Só cruza comida enquanto quem sobe está
+parado (usa o slot que ele não usa). Quem vira comida e a faixa dele ficam fora da venda e do depósito. Status e prévia mostram "Comida
+em criação: … falta X de Q (~N gerações)" e "vai virar comida: …"; o aviso do ovo/choco diz que é comida e se já serve. Caso 14 do teste.
+
 **Pendente:** se o `breed` funciona na hunt
 (o script sempre cruza na viagem). Teste: `node test/breeding.test.js`, caso novo no `pokesell.test.js`, passo no smoke e fixture no
 round-trip.

@@ -190,11 +190,12 @@ setTimeout(() => {
         $('#pg-dn-breed').checked = true; fire($('#pg-dn-breed'), 'change');
         $('#pg-dn-breed-l1').value = 'd1'; fire($('#pg-dn-breed-l1'), 'change');
         $('#pg-dn-breed-ivmax').value = 120; fire($('#pg-dn-breed-ivmax'), 'input');
+        $('#pg-dn-breed-foodbreed').checked = true; fire($('#pg-dn-breed-foodbreed'), 'change');   // v3.48.0
         log('breeding comida=' + $('#pg-dn-breed-food').textContent.replace(/\s+/g, ' ') + ' | badge=' + panel.querySelector('.dn-tab[data-tab=breeding] .b').dataset.state);
         $('#pg-dn-save').click();
         const cfgBr = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
         log('breeding salvo=' + cfgBr.breedEnabled + ' linhas=' + JSON.stringify(cfgBr.breedLines) + ' ivmax=' + cfgBr.breedFoodIvMax + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 120));
-        if (!(cfgBr.breedEnabled && cfgBr.breedLines[0] && cfgBr.breedLines[0].id === 'd1' && cfgBr.breedFoodIvMax === 120)) throw new Error('breeding não salvou como esperado');
+        if (!(cfgBr.breedEnabled && cfgBr.breedLines[0] && cfgBr.breedLines[0].id === 'd1' && cfgBr.breedFoodIvMax === 120 && cfgBr.breedFoodBreed === true)) throw new Error('breeding não salvou como esperado');
         $('#pg-dn-breed').checked = false; fire($('#pg-dn-breed'), 'change'); $('#pg-dn-save').click();
         // ---- venda de Pokémon: regras na tela mostram a prévia; salvar guarda; Vender agora chama o POST ----
         panel.querySelector('.dn-tab[data-tab=venda]').click();

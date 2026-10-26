@@ -350,5 +350,84 @@ function fakeApi(opts) {
         assert(api2.breedKeepsPoke(f2) && api2.breedKeepsPoke(f3) && !api2.breedKeepsPoke(g1), 'sem f1 e sem fila: f2 e f3 ficam, g1 vende');
     }
 
-    console.log('OK breeding.test — filtro da comida (Q e IV menores, teto, família), checklist da cotação (donorId/growth/baseQuality), teto de protegidos (v3.47.0), plano + viagem, cidade (stones e comida da família, POST breed), parado/retry, hatch e filho');
+    // 14) v3.48.0: criar comida — quem sobe em Q 1,96 não tem captura que sirva (faixa 1,81–1,96): o melhor da espécie abaixo da faixa vira
+    //     comida em criação, cruza com uma comida própria, choca, e o filho (já na faixa) é comido por quem sobe; a sub-linhagem termina
+    {
+        const ALTO = P({ id: 'alto', quality: 1.96, ivTotal: 150 });
+        const F = P({ id: 'f175', quality: 1.75, ivTotal: 126 });          // melhor abaixo da faixa → vira comida (IV 126 = GROWTH da cotação falsa)
+        const F2 = P({ id: 'f170', quality: 1.70, ivTotal: 120 });         // também pode, mas Q menor
+        const IVALTO = P({ id: 'iv160', quality: 1.78, ivTotal: 160 });    // IV ≥ quem sobe: cruzar não baixa IV
+        const FF = P({ id: 'ff160', quality: 1.60, ivTotal: 80 });         // comida própria de F (1,60 ≥ 1,75 − 0,15; IV 80 < 126); sem comida própria dela
+        const LIXO = P({ id: 'lixo', quality: 1.30, ivTotal: 50 });
+        const box = [LIDER, ALTO, F, F2, IVALTO, FF, LIXO];
+        const fake = fakeApi({ box: Object.fromEntries(box.map(p => [p.id, p])), have: 40 });
+        // desligado: só o motivo "sem comida", nada de criação
+        const off = loadBreedModule({ breedEnabled: true, breedLines: [{ id: 'alto', gen: 0 }], breedFoodIvMax: 150, breedFamily: false, breedDouble: false, breedFoodBreed: false }, { api: fake.api, pokes: box });
+        await off.api.breedTick(true);
+        assert(off.state.trips.length === 0 && off.api.breedWait && /sem comida que sirva/.test(off.api.breedWait.motivo) && !/comida em criação/.test(off.api.breedWait.motivo) && !off.cfg.breedLines[0].food, 'desligado: parado sem comida, não cria: ' + JSON.stringify(off.api.breedWait));
+        // ligado
+        const cfg = { breedEnabled: true, breedLines: [{ id: 'alto', gen: 0 }], breedFoodIvMax: 150, breedFamily: false, breedDouble: false, breedFoodBreed: true };
+        let boxNow = box.slice();
+        const { api, state, clock } = loadBreedModule(cfg, { api: fake.api, pokes: box, freshPokes: () => boxNow });
+        const t = api.breedTrunk(cfg.breedLines[0]);
+        assert(api.breedFoodPick(t) === null, 'ninguém serve de comida para Q 1,96');
+        const cands = Object.fromEntries(api.breedFoodTrunkList(t).map(f => [f.id, f.motivo]));
+        assert(cands.f175 === null && cands.f170 === null && /não ficaria abaixo de 150/.test(cands.iv160) && /sem comida própria/.test(cands.ff160) && /sem comida própria/.test(cands.lixo), 'quem pode virar comida: ' + JSON.stringify(cands));
+        const pick = api.breedFoodTrunkPick(t);
+        assert(pick.id === 'f175' && pick.geracoes === 6 && pick.propria.id === 'ff160', 'escolhe o de maior quality abaixo da faixa, ~6 gerações até 1,81, comida própria ff160: ' + JSON.stringify(pick));
+        const IV149 = P({ id: 'iv149', quality: 1.7, ivTotal: 149 });
+        const dobrar = loadBreedModule(Object.assign({}, cfg, { breedDouble: true }), { api: fake.api, pokes: box });
+        assert(api.breedFoodTrunkReason(IV149, t) === null && /IV 149 não ficaria abaixo de 150 \(dobrar pode dar \+1\)/.test(dobrar.api.breedFoodTrunkReason(IV149, t)), 'dobrar: margem de 1 no IV de quem vira comida: ' + dobrar.api.breedFoodTrunkReason(IV149, t));
+        await api.breedTick(true);
+        assert(cfg.breedLines[0].food && cfg.breedLines[0].food.id === 'f175' && cfg.breedLines[0].food.gen === 0 && cfg.breedLines[0].food.speciesId === 232 && cfg.breedLines[0].food.q0 === 1.75, 'comida em criação escolhida e salva no cfg: ' + JSON.stringify(cfg.breedLines[0].food));
+        assert(api.breedPlanned.f175 && api.breedPlanned.f175.foodId === 'ff160' && !api.breedPlanned.alto, 'plano é da comida (F × comida própria), não de quem sobe: ' + JSON.stringify(api.breedPlanned));
+        assert(state.trips.length === 1 && /comida para Donphan: Donphan Q 1\.750 IV 126 × Q 1\.600 IV 80/.test(state.trips[0].motivo), 'viagem pedida para criar comida: ' + JSON.stringify(state.trips));
+        assert(state.logs.some(([k, d]) => k === 'breeding-comida' && d.fase === 'escolhida' && d.id === 'f175' && d.geracoes === 6), 'log breeding-comida escolhida');
+        assert(api.breedWait === null, 'planejou: não fica parado');
+        assert(/comida em criação, ainda não serve: Q 1\.750 longe demais/.test(api.breedFoodReason(F, t)), 'na lista de quem sobe, a comida em criação diz que ainda não serve: ' + api.breedFoodReason(F, t));
+        assert(/Comida em criação/.test(api.breedStatus().join('\n')) && /falta 0\.060 de Q/.test(api.breedStatus().join('\n')), 'status mostra a comida em criação e o que falta: ' + api.breedStatus().join(' | '));
+        assert(api.breedFoodStatus().some(x => /🍖 comida em criação: Donphan · geração 0 · Q 1\.750 IV 126/.test(x.text)), 'prévia mostra a comida em criação: ' + api.breedFoodStatus().map(x => x.text).join(' | '));
+        // proteção: quem sobe, quem vira comida e a faixa dele (comida própria) ficam fora da venda; o lixo não
+        assert(api.breedKeepsPoke(ALTO) && api.breedKeepsPoke(F) && api.breedKeepsPoke(FF) && !api.breedKeepsPoke(LIXO), 'protege quem sobe, a comida em criação e a comida dela; o lixo vende');
+        // na cidade: POST breed parent1 = quem vira comida, parent2 = comida própria; o ovo é da sub-linhagem; quem sobe continua no box
+        const r = await api.breedCityWork();
+        assert(r.ok && fake.posts.length === 1 && fake.posts[0].parent1 === 'f175' && fake.posts[0].parent2 === 'ff160', 'cruzou quem vira comida com a comida própria: ' + JSON.stringify(fake.posts) + ' ' + JSON.stringify(r));
+        assert(cfg.breedLines[0].id === 'alto' && cfg.breedLines[0].food.eggId === 'ovo-1' && cfg.breedLines[0].food.id === null && cfg.breedLines[0].food.lastQ === 1.75, 'ovo da comida em criação; quem sobe segue no box: ' + JSON.stringify(cfg.breedLines[0]));
+        assert(/🍖 comida para \*\*Donphan\*\*/.test(state.hooks[state.hooks.length - 1].desc), 'aviso diz que o ovo é comida: ' + state.hooks[state.hooks.length - 1].desc);
+        assert(/comida da linhagem 1 \(geração 1\)/.test(api.breedStatus().join('\n')), 'status do ovo diz de quem é: ' + api.breedStatus().join(' | '));
+        // enquanto a comida choca, quem sobe fica parado com o motivo certo (e sem pedir viagem)
+        clock.now += 3 * 60 * 1000;
+        await api.breedTick(true);
+        assert(state.trips.length === 1 && api.breedWait && /comida em criação: ovo chocando/.test(api.breedWait.motivo), 'esperando a comida chocar: ' + JSON.stringify(api.breedWait));
+        // o ovo choca: filho Q 1,82 IV 126 (já na faixa de quem sobe) aparece no box e vira a comida em criação (geração 1)
+        const FILHO = P({ id: 'filho1', quality: 1.82, ivTotal: 126, xp: 0 });
+        fake.st.eggs[0].ready = true; fake.st.eggs[0].killsDone = 3000;
+        fake.st.hatch = { ok: true, child: { speciesId: 232, shiny: false, quality: 1.82, delta: 0.07, growth: GROWTH, ivTotal: 126, bqs: 48 } };
+        boxNow = [LIDER, ALTO, F2, IVALTO, LIXO, FILHO];   // os pais foram consumidos
+        fake.st.box.filho1 = FILHO; fake.st.growth = { hp: 30, atk: 30, def: 30, spAtk: 30, spDef: 15, speed: 15 };   // soma 150 = IV de quem sobe
+        clock.now += 31 * 60 * 1000;   // passa o retry do "parado"
+        await api.breedTick(true);
+        const chocou = state.hooks.find(h => /chocou/.test(h.content));
+        assert(chocou && /\(comida em criação\)/.test(chocou.content) && /Comida em criação da linhagem 1 \(Donphan\): geração 1/.test(chocou.desc) && /✔ Já serve de comida para Donphan Q 1\.960/.test(chocou.desc), 'aviso do choco diz que é comida e que já serve: ' + JSON.stringify(chocou));
+        assert(cfg.breedLines[0].food.id === 'filho1' && cfg.breedLines[0].food.gen === 1 && !cfg.breedLines[0].food.eggId, 'filho identificado vira a comida em criação (geração 1): ' + JSON.stringify(cfg.breedLines[0].food));
+        assert(api.breedFoodReason(FILHO, t) === null && api.breedPlanned.alto && api.breedPlanned.alto.foodId === 'filho1' && state.trips.length === 2, 'quem sobe come o filho da comida em criação: ' + JSON.stringify(api.breedPlanned) + ' ' + api.breedFoodReason(FILHO, t));
+        assert(/✔ já serve para quem sobe/.test(api.breedStatus().join('\n')), 'status: comida em criação já serve: ' + api.breedStatus().join(' | '));
+        const r2 = await api.breedCityWork();
+        assert(r2.ok && fake.posts.length === 3 && fake.posts[2].parent1 === 'alto' && fake.posts[2].parent2 === 'filho1', 'quem sobe cruzou com o filho (POSTs: breed, hatch, breed): ' + JSON.stringify(fake.posts) + ' ' + JSON.stringify(r2));
+        assert(cfg.breedLines[0].eggId === 'ovo-3' && cfg.breedLines[0].id === null && cfg.breedLines[0].food == null, 'sub-linhagem de comida terminou (consumida): ' + JSON.stringify(cfg.breedLines[0]));
+        assert(state.logs.some(([k, d]) => k === 'breeding-comida' && d.fase === 'consumida' && d.id === 'filho1' && d.geracao === 1), 'log breeding-comida consumida');
+        assert(!/comida para/.test(state.hooks[state.hooks.length - 1].desc), 'aviso do ovo de quem sobe é o normal');
+        // quem vira comida sumiu do box (vendido na mão): a sub-linhagem é descartada e outro é escolhido
+        const cfg2 = { breedEnabled: true, breedLines: [{ id: 'alto', gen: 0, food: { id: 'sumido', name: 'Donphan', speciesId: 232, gen: 0 } }], breedFoodIvMax: 150, breedFamily: false, breedDouble: false, breedFoodBreed: true };
+        const m2 = loadBreedModule(cfg2, { api: fakeApi({ box: Object.fromEntries(box.map(p => [p.id, p])), have: 40 }).api, pokes: box });
+        await m2.api.breedTick(true);
+        assert(cfg2.breedLines[0].food.id === 'f175' && m2.state.logs.some(([k, d]) => k === 'breeding-comida' && d.fase === 'sumiu' && d.id === 'sumido'), 'comida em criação sumida é trocada: ' + JSON.stringify(cfg2.breedLines[0].food));
+        // sem ninguém que possa virar comida: motivo claro, nada planejado
+        const cfg3 = { breedEnabled: true, breedLines: [{ id: 'alto', gen: 0 }], breedFoodIvMax: 150, breedFamily: false, breedDouble: false, breedFoodBreed: true };
+        const m3 = loadBreedModule(cfg3, { api: fakeApi({ box: { alto: ALTO, lixo: LIXO }, have: 40 }).api, pokes: [LIDER, ALTO, LIXO] });
+        await m3.api.breedTick(true);
+        assert(!cfg3.breedLines[0].food && m3.state.trips.length === 0 && /comida em criação: ninguém da espécie pode virar comida/.test(m3.api.breedWait.motivo), 'sem candidato: parado com motivo: ' + JSON.stringify(m3.api.breedWait));
+    }
+
+    console.log('OK breeding.test — filtro da comida (Q e IV menores, teto, família), checklist da cotação (donorId/growth/baseQuality), teto de protegidos (v3.47.0), comida em criação (v3.48.0), plano + viagem, cidade (stones e comida da família, POST breed), parado/retry, hatch e filho');
 })().catch(e => { console.error(e); process.exit(1); });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.47.0
+// @version      3.48.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.47.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.48.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -94,11 +94,12 @@
         bossResumeOnLoss: false, // ...também depois de derrota (cura na Joy antes; cada derrota perde 1 token)
         bossAlerts: true,       // ...avisar no canal de Alertas (retomada, desistência, fim)
         breedEnabled: false,    // v3.29.0 Breeding (aba 🥚): cruzar quem sobe com comida mais fraca (Grátis), chocar e repetir
-        breedLines: [],         // ...até 2 linhagens: [{ id, name, speciesId, gen, q0, iv0, lastQ, lastIv, eggId, pendingChild } | null]
+        breedLines: [],         // ...até 2 linhagens: [{ id, name, speciesId, gen, q0, iv0, lastQ, lastIv, eggId, pendingChild, food? } | null]; `food` (v3.48.0) = comida em criação, mesmo formato
         breedFoodIvMax: 150,    // ...comida só com IV abaixo disto (além de quality e IV menores que quem sobe); 0 = sem teto
         breedKeepMax: 20,       // v3.47.0 ...quantos da espécie (além de quem sobe) ficam fora da venda por linhagem; 0 = todos na faixa
         breedFamily: true,      // ...comida e stones também do depot da família (retirada na viagem à cidade)
         breedDouble: true,      // ...dobrar stones (40 em vez de 20): 5% de +1 IV no filho
+        breedFoodBreed: false,  // v3.48.0 ...criar comida: sem capturado que sirva, cruza o melhor da espécie abaixo da faixa com um mais fraco até ele entrar na faixa de quem sobe
         guildDonateGold: 0,     // v3.31.0 Guild (aba 🛡): gold a doar por dia para a próxima vaga (0 = não doa; o jogo limita a 500.000/dia por membro)
         guildDonateKeep: 0,     // ...gold que fica sempre na conta (não doa o que faria o saldo cair abaixo disto)
         guildTributeEnabled: false, // ...depositar o item do Tributo do Dia que estiver na mochila (o item fica fora da venda enquanto o tributo está aberto)
@@ -3185,6 +3186,15 @@
     //   módulo só lê (centro a cada 2 min, cotação quando tem comida no box) e choca quando o centro diz `ready`; o filho é
     //   achado no frame `pokes` (id novo da espécie, senão o único com o IV do tronco) e vira o tronco da linhagem.
     //   Sem comida/stone/gold: para, avisa 1x por motivo e tenta de novo a cada 30 min (a família pode abastecer).
+    //   v3.48.0 — comida em criação (`cfg.breedFoodBreed`, pedido do usuário em 26/10/2026: "quando o Pokémon chega a 1,96 já não dá para
+    //   continuar subindo com Pokémon dropados; precisamos breedar a comida"): quem sobe em Q 1,96 só come Q 1,81–1,96 e captura nunca
+    //   chega lá. Sem NENHUMA comida que sirva, a linhagem ganha uma sub-linhagem de comida (`line.food`, mesmo formato de uma linhagem,
+    //   `breedUnits()` = linhagens + comidas em criação): o melhor da espécie ABAIXO da faixa (maior quality = menos gerações; IV abaixo do
+    //   de quem sobe e do teto, com margem de 1 se dobrar, porque o filho herda o IV dele) é cruzado com uma comida própria (mesmas regras,
+    //   mesma cotação e checklist com `donorId` = ele), o filho vira a comida em criação (geração +1) e repete até a quality entrar na
+    //   faixa; aí quem sobe come esse filho (a comida em criação da PRÓPRIA linhagem é a única unidade que pode ser comida) e a
+    //   sub-linhagem termina (log `breeding-comida { fase: escolhida | sumiu | consumida }`). Só cruza comida enquanto quem sobe está
+    //   parado sem comida: a sub-linhagem usa o slot que ele não usa. Quem vira comida pode estar na família (retirado na viagem).
 
     const BREED_URL = '/api/game/breeding';
     const BREED_TICK_MS = 60 * 1000;
@@ -3194,6 +3204,7 @@
     const BREED_HUNT_RETRY_MS = 3 * 60 * 1000;     // v3.36.3: falhou porque a conta estava na hunt: tenta de novo depois disso
     const BREED_Q_GAP = 0.15;                      // o jogo exige diferença de quality ≤ 0,15 no breed normal
     const BREED_Q_EPS = 0.0005;
+    const BREED_Q_STEP = 0.01;                     // Δ esperado por cruzamento Grátis (estimativa de gerações da comida em criação)
     const BREED_MAX_LINES = 2;
     const BREED_WAIT_MS = 5000;                    // espera por frame (`pokes`/`family`)
     const BREED_BETWEEN_MS = [1500, 3000];
@@ -3231,12 +3242,29 @@
         return out;
     }
     function breedActiveLines(d) { return breedLines(d).filter(Boolean); }
+    // v3.48.0: comida em criação de uma linhagem (`line.food`, mesmo formato: id | eggId | pendingChild, gen, q0, iv0, lastQ, lastIv, name,
+    // speciesId, familia = ainda no depot da família). Unidades = linhagens + comidas em criação: tudo que tem id/ovo/filho próprio.
+    function breedFoodLine(l) { const f = l && l.food; return f && typeof f === 'object' && (f.id || f.eggId || f.pendingChild) ? f : null; }
+    function breedUnits(d) { const out = []; for (const l of breedActiveLines(d)) { out.push(l); const f = breedFoodLine(l); if (f) out.push(f); } return out; }
+    // Dona de uma unidade: { line, idx (1-based), food } — `food` = true quando `u` é a comida em criação de `line`.
+    function breedUnitInfo(u, d) {
+        const lines = breedLines(d);
+        for (let i = 0; i < lines.length; i++) { const l = lines[i]; if (!l) continue; if (l === u) return { line: l, idx: i + 1, food: false }; if (l.food === u) return { line: l, idx: i + 1, food: true }; }
+        return { line: null, idx: 0, food: false };
+    }
+    function breedUnitLabel(u, d) { const i = breedUnitInfo(u, d); return i.food ? `comida da linhagem ${i.idx}` : `linhagem ${i.idx || '?'}`; }
+    function breedFoodBreedOn(d) { return Boolean((d || cfg).breedFoodBreed); }
     // Quem sobe, pelo id, na lista `pokes` (box).
+    const breedPokeView = (p) => ({ id: String(p.id), name: p.name || '?', speciesId: Number(p.speciesId), quality: Number(p.quality), ivTotal: Number(p.ivTotal), level: Number(p.level) || 0, shiny: Boolean(p.shiny), team: Boolean(p.team || p.leader), starter: Boolean(p.starter) });
     function breedTrunk(line) {
         if (!line?.id) return null;
         const p = lastPokesList.find(x => x && String(x.id) === String(line.id));
-        if (!p) return null;
-        return { id: String(p.id), name: p.name || '?', speciesId: Number(p.speciesId), quality: Number(p.quality), ivTotal: Number(p.ivTotal), level: Number(p.level) || 0, shiny: Boolean(p.shiny), team: Boolean(p.team || p.leader), starter: Boolean(p.starter) };
+        if (!p) {
+            // v3.48.0: quem vira comida pode ter sido escolhido no depot da família (sai de lá na viagem)
+            const f = line.familia && cfg.breedFamily ? (lastFamilyDepot.pokes || []).find(x => x && String(x.id) === String(line.id)) : null;
+            return f ? Object.assign(breedPokeView(f), { origem: 'familia' }) : null;
+        }
+        return Object.assign(breedPokeView(p), { origem: 'box' });
     }
     // Quality de referência da linhagem: quem sobe no box; senão o filho chocado (`pendingChild`), senão quem entrou no ovo.
     function breedLineQ(l) {
@@ -3258,13 +3286,14 @@
     // quanto quem sobe ou tem IV alto demais para comida; o resto segue as regras da aba Venda (shiny, nível > 1, piso de qualidade e
     // tabela por raridade continuam valendo). Pokémon ainda não visto no box nem na fila só é protegido enquanto sobra vaga.
     function breedKeepMax(d) { const v = Number((d || cfg).breedKeepMax); return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0; }
-    let breedKeepCache = null;   // { key, list, kept:Set, known:Set, elegiveis, max } do último ranking (invalida por frame/fila/cfg)
+    const breedKeepCache = new Map();   // key -> { key, list, kept:Set, known:Set, elegiveis, max } (invalida por frame/fila/cfg; v3.48.0: uma entrada por unidade)
     function breedKept(l, ref, max) {
         const t = breedTrunk(l);
         const lsp = Number(l.speciesId) || (t ? t.speciesId : 0), lnome = normalize(l.name || (t ? t.name : ''));
         const fila = (typeof captureQueue !== 'undefined' && Array.isArray(captureQueue)) ? captureQueue : [];
         const key = `${breedPokesSeq}|${lastPokesList.length}|${fila.length}|${fila.length ? fila[fila.length - 1].id : ''}|${l.id || ''}|${l.eggId || ''}|${ref}|${max}|${lsp}|${lnome}`;
-        if (breedKeepCache && breedKeepCache.key === key && breedKeepCache.list === lastPokesList) return breedKeepCache;
+        const hit = breedKeepCache.get(key);
+        if (hit && hit.list === lastPokesList) return hit;
         const same = (p) => { const sp = Number(p.speciesId) || 0, n = normalize(p.name || ''); return (lsp && sp && lsp === sp) || (lnome && n && lnome === n); };
         const known = new Set(), pool = [];
         const add = (p) => {
@@ -3279,14 +3308,16 @@
         const rank = (p) => [t && !breedFoodReason(p, t) ? 1 : 0, Number(p.quality), Number(p.ivTotal) || 0];
         elegiveis.sort((a, b) => { const ka = rank(a), kb = rank(b); return kb[0] - ka[0] || kb[1] - ka[1] || kb[2] - ka[2]; });
         const kept = new Set((max ? elegiveis.slice(0, max) : elegiveis).map(p => String(p.id)));
-        breedKeepCache = { key, list: lastPokesList, kept, known, elegiveis: elegiveis.length, max };
-        return breedKeepCache;
+        if (breedKeepCache.size >= 8) breedKeepCache.clear();
+        const out = { key, list: lastPokesList, kept, known, elegiveis: elegiveis.length, max };
+        breedKeepCache.set(key, out);
+        return out;
     }
     function breedKeepsPoke(p) {
         if (!cfg.breedEnabled || !p || typeof p !== 'object') return false;
         const id = String(p.id ?? ''), sp = Number(p.speciesId) || 0, nome = normalize(p.name || '');
         const max = breedKeepMax();
-        for (const l of breedActiveLines()) {
+        for (const l of breedUnits()) {   // v3.48.0: a comida em criação e a faixa dela também ficam guardadas
             if (l.id && String(l.id) === id) return true;
             const t = l.speciesId ? null : breedTrunk(l);   // linhagem recém-escolhida: espécie pelo box
             const lsp = Number(l.speciesId) || (t ? t.speciesId : 0), lnome = normalize(l.name || (t ? t.name : ''));
@@ -3306,7 +3337,16 @@
         d = d || cfg;
         if (!p || typeof p !== 'object' || !trunk) return 'inválido';
         if (String(p.id) === trunk.id) return 'é quem sobe';
-        if (breedActiveLines(d).some(l => l.id && String(l.id) === String(p.id))) return 'é quem sobe de outra linhagem';
+        // v3.48.0: a comida em criação da PRÓPRIA linhagem existe para ser comida de quem sobe; as outras unidades (quem sobe e comida
+        // em criação das outras linhagens) nunca
+        const own = breedUnits(d).find(u => u.id && String(u.id) === trunk.id) || null;
+        const ownFood = own ? breedFoodLine(own) : null;
+        const outra = breedUnits(d).find(u => u !== ownFood && u.id && String(u.id) === String(p.id));
+        if (outra) return breedUnitInfo(outra, d).food ? 'é comida em criação de outra linhagem' : 'é quem sobe de outra linhagem';
+        const r = breedFoodReasonQ(p, trunk, d);
+        return r && ownFood && String(ownFood.id) === String(p.id) ? `comida em criação, ainda não serve: ${r}` : r;
+    }
+    function breedFoodReasonQ(p, trunk, d) {
         if (Number(p.speciesId) !== trunk.speciesId) return 'outra espécie';
         if (p.team || p.leader) return 'no time';
         if (p.starter) return 'inicial';
@@ -3335,6 +3375,48 @@
         return out.sort((a, b) => (a.motivo ? 1 : 0) - (b.motivo ? 1 : 0) || (a.quality || 0) - (b.quality || 0) || (a.ivTotal || 0) - (b.ivTotal || 0));
     }
     function breedFoodPick(trunk, d) { return breedFoodList(trunk, d).find(f => !f.motivo) || null; }
+    // v3.48.0: quem pode VIRAR comida de `trunk` (comida em criação): da espécie, ABAIXO da faixa de 0,15 (quem está na faixa já serve,
+    // ou tem IV demais — e cruzar não baixa IV), IV (com margem de 1 se dobrar) abaixo do de quem sobe e do teto, e com pelo menos uma
+    // comida própria que sirva. O melhor = maior quality (menos gerações até a faixa), depois maior IV (mais comida própria possível).
+    function breedFoodTrunkReason(p, trunk, d) {
+        d = d || cfg;
+        if (!p || typeof p !== 'object' || !trunk) return 'inválido';
+        if (String(p.id) === trunk.id) return 'é quem sobe';
+        const outra = breedUnits(d).find(u => u.id && String(u.id) === String(p.id));
+        if (outra) return breedUnitInfo(outra, d).food ? 'já é comida em criação' : 'é quem sobe de outra linhagem';
+        if (Number(p.speciesId) !== trunk.speciesId) return 'outra espécie';
+        if (p.team || p.leader) return 'no time';
+        if (p.starter) return 'inicial';
+        if (p.shiny) return 'shiny: nunca';
+        if (p.isDitto) return 'Ditto';
+        if (p.locked) return 'cadeado';
+        if (p.listed || p.tradeId) return 'anunciado no mercado';
+        const q = Number(p.quality), iv = Number(p.ivTotal);
+        if (!Number.isFinite(q) || !Number.isFinite(iv)) return 'sem IV/quality';
+        if (q >= trunk.quality - BREED_Q_GAP - BREED_Q_EPS) return `Q ${breedQ(q)} já está na faixa de quem sobe`;
+        const margem = d.breedDouble ? 1 : 0;
+        if (iv + margem >= trunk.ivTotal) return `IV ${iv} não ficaria abaixo de ${trunk.ivTotal}${margem ? ' (dobrar pode dar +1)' : ''}`;
+        const max = breedFoodIvMax(d);
+        if (max > 0 && iv + margem >= max) return `IV ${iv} não ficaria abaixo do teto ${max}`;
+        return null;
+    }
+    // Gerações estimadas até a quality entrar na faixa de quem sobe (Δ esperado 0,01 por cruzamento).
+    function breedFoodGens(q, trunk) { if (!Number.isFinite(q) || !trunk) return null; return Math.max(1, Math.ceil((trunk.quality - BREED_Q_GAP - q) / BREED_Q_STEP - BREED_Q_EPS)); }
+    function breedFoodTrunkList(trunk, d) {
+        d = d || cfg;
+        if (!trunk) return [];
+        const out = [];
+        const add = (p, origem) => {
+            const motivo = breedFoodTrunkReason(p, trunk, d);
+            const t = motivo ? null : Object.assign(breedPokeView(p), { origem });
+            const propria = t ? breedFoodPick(t, d) : null;
+            out.push({ id: String(p.id ?? ''), name: p.name || '?', quality: Number(p.quality), ivTotal: Number(p.ivTotal), level: Number(p.level) || 0, origem, motivo: motivo || (propria ? null : 'sem comida própria que sirva'), propria, geracoes: breedFoodGens(Number(p.quality), trunk) });
+        };
+        for (const p of lastPokesList) if (p && !p.team && Number(p.speciesId) === trunk.speciesId && String(p.id) !== trunk.id) add(p, 'box');
+        if (d.breedFamily) for (const p of (lastFamilyDepot.pokes || [])) if (p && Number(p.speciesId) === trunk.speciesId) add(p, 'familia');
+        return out.sort((a, b) => (a.motivo ? 1 : 0) - (b.motivo ? 1 : 0) || (b.quality || 0) - (a.quality || 0) || (b.ivTotal || 0) - (a.ivTotal || 0));
+    }
+    function breedFoodTrunkPick(trunk, d) { return breedFoodTrunkList(trunk, d).find(f => !f.motivo) || null; }
 
     function parseBreedCenter(raw) {
         if (!raw || typeof raw !== 'object') return null;
@@ -3431,7 +3513,7 @@
         breedPokesSeq++;
         if (!breedEnabled()) { breedNotify(); return; }
         let mudou = false;
-        for (const l of breedActiveLines()) {
+        for (const l of breedUnits()) {
             const t = breedTrunk(l);
             if (t && (l.name !== t.name || Number(l.speciesId) !== t.speciesId)) { l.name = t.name; l.speciesId = t.speciesId; mudou = true; }
             if (!l.id && !l.eggId && l.pendingChild && breedAdoptChild(l, Array.isArray(list) ? list : lastPokesList, null, l.pendingChild)) mudou = true;
@@ -3445,7 +3527,7 @@
     // de quem sobe (ou +1, do dobrar) e quality acima da dele. 0 ou 2+ candidatos = fica pendente (o painel deixa escolher à mão).
     function breedAdoptChild(line, list, novosIds, filho) {
         const sp = Number(line.speciesId) || 0;
-        const outros = breedActiveLines().filter(o => o !== line && o.id).map(o => String(o.id));
+        const outros = breedUnits().filter(o => o !== line && o.id).map(o => String(o.id));
         let cand = (Array.isArray(list) ? list : []).filter(p => p && !p.team && !p.leader && !p.shiny && (!sp || Number(p.speciesId) === sp) && !outros.includes(String(p.id)));
         if (novosIds && novosIds.size) {
             const n = cand.filter(p => novosIds.has(String(p.id)));
@@ -3462,14 +3544,14 @@
         const iv = Number(line.lastIv), q = Number(line.lastQ);
         const porIv = cand.filter(p => Number.isFinite(iv) && (Number(p.ivTotal) === iv || Number(p.ivTotal) === iv + 1) && (!Number.isFinite(q) || Number(p.quality) > q - BREED_Q_EPS));
         if (porIv.length === 1) return breedSetChild(line, porIv[0]);
-        logEvent('breeding-filho', { linhagem: line.name || null, achou: false, candidatos: porIv.length, exatos: exatos ? exatos.length : null, novos: novosIds ? novosIds.size : null, iv: Number.isFinite(iv) ? iv : null });
+        logEvent('breeding-filho', { linhagem: line.name || null, comida: breedUnitInfo(line).food || undefined, achou: false, candidatos: porIv.length, exatos: exatos ? exatos.length : null, novos: novosIds ? novosIds.size : null, iv: Number.isFinite(iv) ? iv : null });
         return false;
     }
     function breedSetChild(line, p) {
         line.id = String(p.id); line.pendingChild = null; line.eggId = null;
         line.gen = (Number(line.gen) || 0) + 1;
         line.lastQ = Number(p.quality); line.lastIv = Number(p.ivTotal); line.name = p.name || line.name; line.speciesId = Number(p.speciesId) || line.speciesId;
-        logEvent('breeding-filho', { linhagem: line.name, achou: true, id: line.id, geracao: line.gen, quality: line.lastQ, ivTotal: line.lastIv });
+        logEvent('breeding-filho', { linhagem: line.name, comida: breedUnitInfo(line).food || undefined, achou: true, id: line.id, geracao: line.gen, quality: line.lastQ, ivTotal: line.lastIv });
         return true;
     }
     // Ovos das linhagens x centro: ovo sem id conhecido ganha o único livre da espécie; ovo que sumiu (chocado na mão) vira filho pendente.
@@ -3479,9 +3561,9 @@
     // (`breeding-ovo-adotado`). Quem entrou no ovo foi o filho pendente (geração +1, Q/IV do `hatch` quando se sabe).
     function breedSyncLines(c) {
         let mudou = false;
-        const claimed = new Set(breedActiveLines().map(l => l.eggId).filter(id => id && c.eggs.some(e => e.id === id)));
+        const claimed = new Set(breedUnits().map(l => l.eggId).filter(id => id && c.eggs.some(e => e.id === id)));
         const livresDe = (l) => c.eggs.filter(e => !claimed.has(e.id) && (!l.speciesId || e.speciesId === Number(l.speciesId)));
-        for (const l of breedActiveLines()) {
+        for (const l of breedUnits()) {
             if (!l.eggId || c.eggs.some(e => e.id === l.eggId)) continue;
             const livres = livresDe(l);
             if (livres.length === 1) { l.eggId = livres[0].id; claimed.add(l.eggId); mudou = true; continue; }
@@ -3489,8 +3571,9 @@
             l.eggId = null; l.pendingChild = { at: Date.now() }; mudou = true;
             breedAdoptChild(l, lastPokesList);
         }
-        for (const l of breedActiveLines()) {
+        for (const l of breedUnits()) {
             if (l.eggId) continue;
+            if (l.familia && breedFamilySeq === 0) continue;   // v3.48.0: quem vira comida está na família e o depot ainda não foi lido
             const semTronco = l.id ? (lastPokesList.length > 0 && !breedTrunk(l)) : Boolean(l.pendingChild);
             if (!semTronco) continue;
             const livres = livresDe(l);
@@ -3552,7 +3635,8 @@
     }
     // Choca um ovo pronto (POST hatch). Falhou na hunt: pede a viagem (a tarefa choca na cidade).
     async function breedHatch(egg) {
-        const line = breedActiveLines().find(l => l.eggId === egg.id) || null;
+        const line = breedUnits().find(l => l.eggId === egg.id) || null;
+        const info = breedUnitInfo(line);   // v3.48.0: o ovo pode ser da comida em criação
         const antes = new Set(lastPokesList.map(p => String(p?.id)));
         let r;
         try { r = await gameApi(BREED_URL, { method: 'POST', body: JSON.stringify({ action: 'hatch', eggId: egg.id }) }); }
@@ -3584,14 +3668,18 @@
         const delta = Number.isFinite(Number(child?.delta)) ? ` (Δ +${Number(child.delta).toFixed(3)})` : '';
         const who = playerName();
         const gen = line ? Number(line.gen) || 0 : 0;
+        // v3.48.0: filho da comida em criação — já serve para quem sobe?
+        const mainTrunk = info.food && info.line ? breedTrunk(info.line) : null;
+        const serveMotivo = info.food && filho && mainTrunk ? breedFoodReason(filho, mainTrunk) : null;
         const linhas = [
-            line ? `Linhagem ${line.name || egg.speciesName}: geração ${gen}` : `Ovo sem linhagem no painel (${egg.speciesName})`,
+            line ? (info.food ? `Comida em criação da linhagem ${info.idx} (${info.line?.name || egg.speciesName}): geração ${gen}` : `Linhagem ${line.name || egg.speciesName}: geração ${gen}`) : `Ovo sem linhagem no painel (${egg.speciesName})`,
             mostra ? `Filho: Q ${breedQ(mostra.quality)} · IV ${mostra.ivTotal}/${IV_MAX}${delta}${line?.q0 != null ? ` (começou em Q ${breedQ(line.q0)})` : ''}` : '',
-            line && !filho ? '⚠ Filho não identificado no box: escolha no painel 🥚 quem continua' : '',
+            info.food && filho && mainTrunk ? (serveMotivo ? `Ainda não serve para ${mainTrunk.name} Q ${breedQ(mainTrunk.quality)} (${serveMotivo.replace(/^comida em criação, ainda não serve: /, '')}): continua a criação` : `✔ Já serve de comida para ${mainTrunk.name} Q ${breedQ(mainTrunk.quality)}: quem sobe come na próxima viagem`) : '',
+            line && !filho ? (info.food ? '⚠ Filho não identificado no box: a comida em criação fica esperando a lista' : '⚠ Filho não identificado no box: escolha no painel 🥚 quem continua') : '',
             child?.shiny ? '✨ Nasceu shiny!' : '',
         ].filter(Boolean);
         postWebhook('alert', {
-            content: `🥚 ${who ? `**${who}**` : 'Sua conta'} chocou **${egg.speciesName}**${mostra ? ` — Q ${breedQ(mostra.quality)}, IV ${mostra.ivTotal}` : ''}`,
+            content: `🥚 ${who ? `**${who}**` : 'Sua conta'} chocou **${egg.speciesName}**${info.food ? ' (comida em criação)' : ''}${mostra ? ` — Q ${breedQ(mostra.quality)}, IV ${mostra.ivTotal}` : ''}`,
             username: 'Poke Idle World',
             embeds: [{ title: 'Ovo chocou', description: `${who ? `Conta: ${who}\n` : ''}${linhas.join('\n')}\nEm ${new Date().toLocaleString('pt-BR')}`, color: filho ? 0x57f287 : 0xfee75c }],
         }, { evento: 'breeding-chocou', eggId: egg.id, filho: filho?.id || null });
@@ -3607,34 +3695,79 @@
         const linhas = breedActiveLines();
         if (!linhas.length) { breedWaitSet('escolha quem sobe na aba 🥚 Breeding'); return; }
         if (cfg.breedFamily && Date.now() - breedFamilyAskedAt > BREED_FAMILY_POLL_MS) await breedRefreshFamily();
+        // Cota o par (quando os dois estão no box), confere stones e gold e registra o plano da unidade; devolve o motivo de não dar
+        // (null = planejado). v3.48.0: serve para quem sobe e para a comida em criação.
+        const planeja = async (unit, trunk, food, rotulo) => {
+            let stones = null;
+            if (food.origem === 'box' && trunk.origem !== 'familia') {
+                let q = null;
+                try { q = await breedQuote(trunk, food); } catch (err) { return `${rotulo}: cotação falhou (${err?.message || err})`; }
+                const chk = breedCheckQuote(q, trunk);
+                stones = breedStoneNeeds(q);
+                logEvent('breeding-cotacao', { tronco: trunk.name, troncoId: trunk.id, comida: food.id, qTronco: trunk.quality, qComida: food.quality, ivTronco: trunk.ivTotal, ivComida: food.ivTotal, donorId: q?.ivPreview?.donorId ?? null, ok: !chk, motivo: chk, goldFee: q?.goldFee ?? null, stones: breedStonesTxt(stones), criacao: breedUnitInfo(unit).food || undefined });
+                if (chk) return `${rotulo}: ${chk}`;
+                const faltam = stones.filter(s => s.have + s.familia < s.need);
+                if (faltam.length) return `${rotulo}: faltam stones (${breedStonesTxt(faltam)})`;
+                if (c.gold < Number(q.goldFee || 0)) return `${rotulo}: gold ${fmtNum(c.gold)} < taxa ${fmtNum(q.goldFee)}`;
+            } else if (c.gold < BREED_GOLD_FEE_HINT) return `${rotulo}: gold ${fmtNum(c.gold)} < taxa ${fmtNum(BREED_GOLD_FEE_HINT)}`;
+            breedPlanned[unit.id] = { foodId: food.id, foodName: food.name, foodQ: food.quality, foodIv: food.ivTotal, origem: food.origem, troncoOrigem: trunk.origem || 'box', stones, at: Date.now() };
+            return null;
+        };
         for (const line of linhas) {
             if (!line.id) continue;                                  // ovo chocando ou filho por identificar
             if (breedPlanned[line.id]) { livres--; planejou = true; continue; }
+            const fu = breedFoodLine(line);
+            if (fu && fu.id && breedPlanned[fu.id]) { livres--; planejou = true; continue; }   // v3.48.0: comida em criação já planejada
             if (livres <= 0) { motivos.push('incubadora cheia'); break; }
             const trunk = breedTrunk(line);
             if (!trunk) { motivos.push(`${line.name || line.id}: não está no box (lista ainda não lida?)`); continue; }
             if (trunk.team || trunk.starter || trunk.shiny) { motivos.push(`${trunk.name}: no time, inicial ou shiny não cruza`); continue; }
             const food = breedFoodPick(trunk);
-            if (!food) { motivos.push(`${trunk.name} (Q ${breedQ(trunk.quality)}, IV ${trunk.ivTotal}): sem comida que sirva${cfg.breedFamily ? ' no box nem na família' : ' no box'}`); continue; }
-            let stones = null;
-            if (food.origem === 'box') {
-                let q = null;
-                try { q = await breedQuote(trunk, food); } catch (err) { motivos.push(`${trunk.name}: cotação falhou (${err?.message || err})`); continue; }
-                const chk = breedCheckQuote(q, trunk);
-                stones = breedStoneNeeds(q);
-                logEvent('breeding-cotacao', { tronco: trunk.name, troncoId: trunk.id, comida: food.id, qTronco: trunk.quality, qComida: food.quality, ivTronco: trunk.ivTotal, ivComida: food.ivTotal, donorId: q?.ivPreview?.donorId ?? null, ok: !chk, motivo: chk, goldFee: q?.goldFee ?? null, stones: breedStonesTxt(stones) });
-                if (chk) { motivos.push(`${trunk.name}: ${chk}`); continue; }
-                const faltam = stones.filter(s => s.have + s.familia < s.need);
-                if (faltam.length) { motivos.push(`${trunk.name}: faltam stones (${breedStonesTxt(faltam)})`); continue; }
-                if (c.gold < Number(q.goldFee || 0)) { motivos.push(`${trunk.name}: gold ${fmtNum(c.gold)} < taxa ${fmtNum(q.goldFee)}`); continue; }
-            } else if (c.gold < BREED_GOLD_FEE_HINT) { motivos.push(`${trunk.name}: gold ${fmtNum(c.gold)} < taxa ${fmtNum(BREED_GOLD_FEE_HINT)}`); continue; }
-            breedPlanned[line.id] = { foodId: food.id, foodName: food.name, foodQ: food.quality, foodIv: food.ivTotal, origem: food.origem, stones, at: Date.now() };
+            if (food) {
+                const m = await planeja(line, trunk, food, trunk.name);
+                if (m) { motivos.push(m); continue; }
+                livres--; planejou = true;
+                tripRequest('breeding', null, `${trunk.name} Q ${breedQ(trunk.quality)} IV ${trunk.ivTotal} × comida Q ${breedQ(food.quality)} IV ${food.ivTotal}${food.origem === 'familia' ? ' (família)' : ''}`);
+                continue;
+            }
+            const semComida = `${trunk.name} (Q ${breedQ(trunk.quality)}, IV ${trunk.ivTotal}): sem comida que sirva${cfg.breedFamily ? ' no box nem na família' : ' no box'}`;
+            if (!breedFoodBreedOn()) { motivos.push(semComida); continue; }
+            // v3.48.0: criar comida — a sub-linhagem cruza enquanto quem sobe está parado (usa o slot que ele não usa)
+            const m = await breedPlanFood(line, trunk, planeja);
+            if (m) { motivos.push(`${semComida}; comida em criação: ${m}`); continue; }
             livres--; planejou = true;
-            tripRequest('breeding', null, `${trunk.name} Q ${breedQ(trunk.quality)} IV ${trunk.ivTotal} × comida Q ${breedQ(food.quality)} IV ${food.ivTotal}${food.origem === 'familia' ? ' (família)' : ''}`);
         }
         if (planejou) breedWait = null;
         else if (motivos.length) breedWaitSet(motivos.join(' · '));
         else breedWait = null;
+    }
+    // v3.48.0: planeja o cruzamento da comida em criação de `line` (quem sobe = `trunk`, parado sem comida). Escolhe quem vira comida
+    // quando ainda não há (ou quando o escolhido sumiu do box e da família), cota com a comida própria dele e pede a viagem. Devolve o
+    // motivo de não dar; null = planejado.
+    async function breedPlanFood(line, trunk, planeja) {
+        let fu = breedFoodLine(line);
+        if (fu && (fu.eggId || fu.pendingChild)) return fu.eggId ? 'ovo chocando' : 'filho por identificar (lista do box não lida?)';
+        let ft = fu ? breedTrunk(fu) : null;
+        if (fu && !ft) {
+            logEvent('breeding-comida', { linhagem: line.name || null, fase: 'sumiu', id: fu.id, geracao: Number(fu.gen) || 0 });
+            line.food = null; fu = null; saveCfg(cfg);
+        }
+        if (!ft) {
+            const pick = breedFoodTrunkPick(trunk);
+            if (!pick) return 'ninguém da espécie pode virar comida (precisa estar abaixo da faixa, com IV menor que o de quem sobe e ter comida própria)';
+            line.food = { id: pick.id, name: pick.name, speciesId: trunk.speciesId, gen: 0, q0: pick.quality, iv0: pick.ivTotal, familia: pick.origem === 'familia' };
+            fu = line.food; saveCfg(cfg);
+            ft = breedTrunk(fu);
+            logEvent('breeding-comida', { linhagem: line.name || null, fase: 'escolhida', id: pick.id, quality: pick.quality, ivTotal: pick.ivTotal, origem: pick.origem, geracoes: pick.geracoes, faixaDe: breedQ(trunk.quality - BREED_Q_GAP) });
+            if (!ft) return 'quem vira comida não está no box';
+        }
+        if (ft.team || ft.starter || ft.shiny) return `${ft.name}: no time, inicial ou shiny não cruza`;
+        const ffood = breedFoodPick(ft);
+        if (!ffood) return `${ft.name} (Q ${breedQ(ft.quality)}, IV ${ft.ivTotal}) não tem comida própria que sirva`;
+        const m = await planeja(fu, ft, ffood, `comida ${ft.name}`);
+        if (m) return m;
+        tripRequest('breeding', null, `comida para ${trunk.name}: ${ft.name} Q ${breedQ(ft.quality)} IV ${ft.ivTotal} × Q ${breedQ(ffood.quality)} IV ${ffood.ivTotal}${ffood.origem === 'familia' ? ' (família)' : ''}${ft.origem === 'familia' ? ' (quem vira comida sai da família)' : ''}`);
+        return null;
     }
 
     // Tarefa da viagem (na cidade): choca o que estiver pronto, tira da família o que falta, cota de novo, confere e cruza.
@@ -3649,10 +3782,17 @@
             for (const troncoId of Object.keys(breedPlanned)) {
                 const plan = breedPlanned[troncoId];
                 delete breedPlanned[troncoId];
-                const line = breedActiveLines().find(l => l.id && String(l.id) === troncoId);
+                const line = breedUnits().find(u => u.id && String(u.id) === troncoId);
                 if (!line) continue;
+                const info = breedUnitInfo(line);   // v3.48.0: `line` pode ser a comida em criação de `info.line`
                 try {
                     if (c.usedSlots >= c.slots) throw new Error('incubadora cheia');
+                    if (plan.troncoOrigem === 'familia') {   // v3.48.0: quem vira comida estava no depot da família
+                        const r = await familyPokeWithdraw(troncoId, line.name || plan.foodName);
+                        if (!r.ok) throw new Error(`quem vira comida, da família: ${r.motivo}`);
+                        line.familia = false; saveCfg(cfg);
+                        await breedSleep();
+                    }
                     if (plan.origem === 'familia') {
                         const r = await familyPokeWithdraw(plan.foodId, plan.foodName);
                         if (!r.ok) throw new Error(`comida da família: ${r.motivo}`);
@@ -3660,7 +3800,8 @@
                     }
                     await breedRefreshPokes();
                     const trunk = breedTrunk(line);
-                    if (!trunk) throw new Error('quem sobe não está no box');
+                    if (!trunk) throw new Error(`${info.food ? 'quem vira comida' : 'quem sobe'} não está no box`);
+                    if (trunk.origem === 'familia') throw new Error('quem vira comida ainda está na família');
                     const food = lastPokesList.find(p => p && String(p.id) === plan.foodId);
                     if (!food) throw new Error('a comida não está no box');
                     const fr = breedFoodReason(food, trunk);
@@ -3699,10 +3840,16 @@
                     line.gen = Number(line.gen) || 0;
                     line.lastQ = trunk.quality; line.lastIv = trunk.ivTotal; line.name = trunk.name; line.speciesId = trunk.speciesId;
                     line.eggId = egg?.id || 'desconhecido'; line.id = null; line.pendingChild = null; line.eggAt = Date.now(); line.eggs = (Number(line.eggs) || 0) + 1;
+                    // v3.48.0: quem sobe comeu a comida em criação da própria linhagem: a sub-linhagem termina
+                    const ownFood = !info.food && info.line ? breedFoodLine(info.line) : null;
+                    if (ownFood && String(ownFood.id) === String(food.id)) {
+                        logEvent('breeding-comida', { linhagem: info.line.name || null, fase: 'consumida', id: String(food.id), quality: Number(food.quality), ivTotal: Number(food.ivTotal), geracao: Number(ownFood.gen) || 0, comecouEm: ownFood.q0 ?? null });
+                        info.line.food = null;
+                    }
                     saveCfg(cfg);
-                    const feito = { name: trunk.name, q: trunk.quality, iv: trunk.ivTotal, foodQ: Number(food.quality), foodIv: Number(food.ivTotal), min: q.delta?.minQuality, max: q.delta?.maxQuality, kills: egg?.killsRequired || null, gen: line.gen + 1, stones: stones.map(s => `${s.need}x ${s.name}`).join(', '), gold: Number(q.goldFee) || 0, dobrar: Boolean(cfg.breedDouble) };
+                    const feito = { name: trunk.name, q: trunk.quality, iv: trunk.ivTotal, foodQ: Number(food.quality), foodIv: Number(food.ivTotal), min: q.delta?.minQuality, max: q.delta?.maxQuality, kills: egg?.killsRequired || null, gen: line.gen + 1, stones: stones.map(s => `${s.need}x ${s.name}`).join(', '), gold: Number(q.goldFee) || 0, dobrar: Boolean(cfg.breedDouble), comida: info.food, para: info.food ? (info.line?.name || trunk.name) : null };
                     feitos.push(feito);
-                    logEvent('breeding-cruzou', { tronco: trunk.name, troncoId: trunk.id, comida: String(food.id), origem: plan.origem, qTronco: trunk.quality, qComida: feito.foodQ, ivTronco: trunk.ivTotal, ivComida: feito.foodIv, dobrar: feito.dobrar, ovo: egg?.id || null, abates: feito.kills, faixa: [feito.min, feito.max], gold: c.gold, geracao: feito.gen });
+                    logEvent('breeding-cruzou', { tronco: trunk.name, troncoId: trunk.id, comida: String(food.id), origem: plan.origem, criacao: info.food || undefined, qTronco: trunk.quality, qComida: feito.foodQ, ivTronco: trunk.ivTotal, ivComida: feito.foodIv, dobrar: feito.dobrar, ovo: egg?.id || null, abates: feito.kills, faixa: [feito.min, feito.max], gold: c.gold, geracao: feito.gen });
                 } catch (err) {
                     const motivo = String(err?.message || err);
                     falhas.push({ name: line.name || troncoId, motivo });
@@ -3724,7 +3871,7 @@
         if (falhas.length) breedWait = { motivo: falhas.map(f => `${f.name}: ${f.motivo}`).join(' · '), at: Date.now() - (transitorio ? BREED_RETRY_MS - BREED_HUNT_RETRY_MS : 0) };   // não insiste antes do retry
         if (feitos.length || falhas.length) {
             const who = playerName();
-            const linhas = feitos.map(f => `**${f.name}** geração ${f.gen}: Q ${breedQ(f.q)} → ${breedQ(f.min)}–${breedQ(f.max)} · IV ${f.iv} mantido · comida Q ${breedQ(f.foodQ)} IV ${f.foodIv}${f.kills ? ` · choca em ${fmtNum(f.kills)} abates` : ''}\nCustou ${fmtNum(f.gold)} gold + ${f.stones}${f.dobrar ? ' (dobrado)' : ''}`)
+            const linhas = feitos.map(f => `${f.comida ? `🍖 comida para **${f.para}** — ` : ''}**${f.name}** geração ${f.gen}: Q ${breedQ(f.q)} → ${breedQ(f.min)}–${breedQ(f.max)} · IV ${f.iv} mantido · comida Q ${breedQ(f.foodQ)} IV ${f.foodIv}${f.kills ? ` · choca em ${fmtNum(f.kills)} abates` : ''}\nCustou ${fmtNum(f.gold)} gold + ${f.stones}${f.dobrar ? ' (dobrado)' : ''}`)
                 .concat(falhas.map(f => `⚠ ${f.name}: ${f.motivo}`));
             postWebhook('alert', {
                 content: `🥚 ${who ? `**${who}**` : 'Sua conta'} ${feitos.length ? `criou ${feitos.length === 1 ? 'um ovo' : `${feitos.length} ovos`} de ${feitos.map(f => `**${f.name}**`).join(' e ')}` : `não conseguiu cruzar ${falhas.map(f => `**${f.name}**`).join(' e ')}`}`,
@@ -3744,8 +3891,8 @@
         if (c) {
             out.push(`Incubadora ${c.usedSlots}/${c.slots}${c.unlocked ? '' : ` (libera no nível ${c.unlockLevel})`} · gold ${fmtNum(c.gold)} · lido ${breedHora(breedCenterAt)}`);
             for (const e of c.eggs) {
-                const l = breedActiveLines(d).find(x => x.eggId === e.id);
-                out.push(`Ovo: ${e.speciesName} ${fmtNum(e.killsDone)}/${fmtNum(e.killsRequired)} abates${e.ready ? ' · PRONTO' : ''}${l ? ` · linhagem ${breedLines(d).indexOf(l) + 1} (geração ${(Number(l.gen) || 0) + 1})` : ''}`);
+                const l = breedUnits(d).find(x => x.eggId === e.id);
+                out.push(`Ovo: ${e.speciesName} ${fmtNum(e.killsDone)}/${fmtNum(e.killsRequired)} abates${e.ready ? ' · PRONTO' : ''}${l ? ` · ${breedUnitLabel(l, d)} (geração ${(Number(l.gen) || 0) + 1})` : ''}`);
             }
         } else out.push(d.breedEnabled ? 'Incubadora ainda não lida.' : 'Desligado.');
         breedLines(d).forEach((l, i) => {
@@ -3757,6 +3904,19 @@
             else if (!lastPokesList.length) estado = '⚠ filho não identificado: o jogo ainda não mandou a lista de Pokémon (box grande demais? venda na mão)';
             else estado = '⚠ filho não identificado: escolha no menu';
             out.push(`Linhagem ${i + 1}: ${t?.name || l.name || '?'} · geração ${Number(l.gen) || 0}${l.q0 != null ? ` · começou em Q ${breedQ(l.q0)}` : ''} · ${estado}`);
+            const fu = breedFoodLine(l);   // v3.48.0: comida em criação
+            if (fu) {
+                const ft = breedTrunk(fu);
+                let fe;
+                if (fu.id && ft) {
+                    const serve = t && !breedFoodReason(ft, t);
+                    const gens = t ? breedFoodGens(ft.quality, t) : null;
+                    fe = `Q ${breedQ(ft.quality)} · IV ${ft.ivTotal}${ft.origem === 'familia' ? ' · na família (sai na viagem)' : ''}${breedPlanned[fu.id] ? ' · viagem pedida para cruzar' : ''}${t ? (serve ? ` · ✔ já serve para quem sobe (Q a partir de ${breedQ(t.quality - BREED_Q_GAP)})` : ` · falta ${Math.max(0, t.quality - BREED_Q_GAP - ft.quality).toFixed(3)} de Q para servir (~${gens} ${gens === 1 ? 'geração' : 'gerações'})`) : ''}`;
+                } else if (fu.id) fe = 'não está no box (lista não lida?)';
+                else if (fu.eggId) fe = 'ovo chocando';
+                else fe = '⚠ filho não identificado (lista do box não lida?)';
+                out.push(`  🍖 Comida em criação: ${ft?.name || fu.name || '?'} · geração ${Number(fu.gen) || 0}${fu.q0 != null ? ` · começou em Q ${breedQ(fu.q0)}` : ''} · ${fe}`);
+            }
         });
         if (breedWait) out.push(`Parado: ${breedWait.motivo} · tenta de novo ${breedHora(breedWait.at + BREED_RETRY_MS)}`);
         if (breedLast) out.push(`Última viagem ${breedHora(breedLast.at)}: ${breedLast.feitos.length ? `criou ${breedLast.feitos.length} ovo(s)` : 'nada cruzado'}${breedLast.falhas.length ? ` · ⚠ ${breedLast.falhas[0].motivo}` : ''}`);
@@ -3786,6 +3946,13 @@
             if (max && Number.isFinite(refQ)) {   // v3.47.0: quantos ficam fora da venda com o teto
                 const k = breedKept(l, refQ, max);
                 out.push({ text: `  🔒 fora da venda: ${k.kept.size} de ${k.elegiveis} da espécie na faixa (teto ${max}); o resto vende pelas regras da aba Venda`, ok: k.elegiveis <= max });
+            }
+            if (breedFoodBreedOn(d) && t.id && !servem.length) {   // v3.48.0: ninguém serve — quem pode virar comida
+                const fu = breedFoodLine(l), ft = fu ? breedTrunk(fu) : null;
+                const cands = breedFoodTrunkList(t, d), bons = cands.filter(x => !x.motivo);
+                if (fu) out.push({ text: `  🍖 comida em criação: ${ft?.name || fu.name || '?'} · geração ${Number(fu.gen) || 0} · ${fu.id ? (ft ? `Q ${breedQ(ft.quality)} IV ${ft.ivTotal}${ft.origem === 'familia' ? ' (família)' : ''}` : 'fora do box') : (fu.eggId ? 'ovo chocando' : 'filho por identificar')} · faixa a partir de Q ${breedQ(t.quality - BREED_Q_GAP)}`, ok: true });
+                else if (bons.length) out.push({ text: `  🍖 vai virar comida: ${bons[0].name} Q ${breedQ(bons[0].quality)} IV ${bons[0].ivTotal} (${bons[0].origem === 'familia' ? 'família' : 'box'}) × comida própria Q ${breedQ(bons[0].propria.quality)} IV ${bons[0].propria.ivTotal} · faixa a partir de Q ${breedQ(t.quality - BREED_Q_GAP)} · ~${bons[0].geracoes} ${bons[0].geracoes === 1 ? 'geração' : 'gerações'} (Δ esperado 0,01)`, ok: true });
+                else out.push({ text: `  🍖 ninguém da espécie pode virar comida${cands.length ? ` — ${cands.slice(0, 3).map(x => `${x.name} Q ${breedQ(x.quality)} IV ${x.ivTotal}: ${x.motivo}`).join(' · ')}` : ''}`, ok: false });
             }
             for (const f of lista.slice(0, BREED_FOOD_SHOW)) out.push({ text: `  ${f.motivo ? '✖' : '✔'} ${f.name} Q ${breedQ(f.quality)} IV ${f.ivTotal}${f.level ? ` lv${f.level}` : ''} · ${f.origem === 'familia' ? 'família' : 'box'}${f.motivo ? ` — ${f.motivo}` : ''}`, ok: !f.motivo });
             if (lista.length > BREED_FOOD_SHOW) out.push({ text: `  … e mais ${lista.length - BREED_FOOD_SHOW} (as mais fracas aparecem primeiro)`, ok: false });
@@ -7763,7 +7930,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades${pokeSellKeepQ(d) ? `, guarda ≥ ${pokeSellKeepQ(d)}` : ''})` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
             `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? `daily sozinha (${dailyAreas(d).join('+')})` : 'daily') : '', d.giftEnabled ? 'gift' : '', d.evolveEnabled ? 'evolução' : '', d.slotEnabled ? 'slot machine' : '', bossOn(d) ? `auto boss${d.bossResumeOnLoss ? ' (até após derrota)' : ''}` : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
-            `Breeding: ${d.breedEnabled ? `${breedActiveLines(d).length} ${breedActiveLines(d).length === 1 ? 'linhagem' : 'linhagens'}${d.breedDouble ? ' + dobrar' : ''}` : 'desligado'}`,
+            `Breeding: ${d.breedEnabled ? `${breedActiveLines(d).length} ${breedActiveLines(d).length === 1 ? 'linhagem' : 'linhagens'}${d.breedDouble ? ' + dobrar' : ''}${d.breedFoodBreed ? ' + cria comida' : ''}` : 'desligado'}`,
             `Guild: ${[guildDonateWanted(d) > 0 ? `doa ${guildN(guildDonateWanted(d))}/dia` : '', d.guildTributeEnabled ? 'tributo' : '', d.guildFarmTribute ? 'farma tributo' : '', d.guildHuntEnabled ? 'caça' : '', d.guildFishEnabled ? 'pesca' : '', guildRouteOn(d) ? `ordem ${guildOrderText(d)}` : '', d.guildAlerts ? 'avisos' : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Farm: ${d.farmEnabled && farmList(d).length ? `${farmList(d).filter(farmEntryDone).length}/${farmList(d).length} itens` : 'desligado'}`,
             `Ginásios: ${d.gymEnabled ? ['insígnias', d.gymBonus !== false ? 'bônus' : '', d.gymRedo !== false ? 'refaz a cada 48 h' : ''].filter(Boolean).join(' + ') : 'desligados'}`,
@@ -8059,8 +8226,9 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <div class="dn-inline">Mesma espécie, com quality <b>e</b> IV menores que quem sobe, e IV abaixo de <input id="pg-dn-breed-ivmax" class="dn-input dn-input--sm" type="number" min="0" max="192"> <span class="dn-hint">(0 = sem teto)</span></div>
                         <label class="dn-toggle"><input id="pg-dn-breed-family" type="checkbox"><span class="sw"></span>Pegar da família também <span class="dn-hint">(comida e stones; a retirada acontece na viagem à cidade)</span></label>
                         <label class="dn-toggle"><input id="pg-dn-breed-double" type="checkbox"><span class="sw"></span>Dobrar stones <span class="dn-hint">(40 em vez de 20; 5% de chance de +1 IV no filho)</span></label>
+                        <label class="dn-toggle"><input id="pg-dn-breed-foodbreed" type="checkbox"><span class="sw"></span>Criar comida quando nenhuma servir <span class="dn-hint">(cruza o melhor da espécie abaixo da faixa com um mais fraco, geração a geração, até a quality dele entrar na faixa de quem sobe; cada ovo custa gold + stones e usa o slot que quem sobe não está usando)</span></label>
                         <div class="dn-status col" id="pg-dn-breed-food"></div>
-                        <p class="dn-help">O jogo só aceita par com até 0,15 de diferença de quality. Shiny, time, inicial, Ditto, travado e anunciado no mercado nunca viram comida. Usa primeiro a comida mais fraca que serve (a de quality baixa deixa de servir quando quem sobe cresce). A lista acima vem do último frame do box e da última leitura da família (botão ↻ acima); com quem sobe dentro do ovo ela é uma prévia.</p>
+                        <p class="dn-help">O jogo só aceita par com até 0,15 de diferença de quality. Shiny, time, inicial, Ditto, travado e anunciado no mercado nunca viram comida. Usa primeiro a comida mais fraca que serve (a de quality baixa deixa de servir quando quem sobe cresce). A lista acima vem do último frame do box e da última leitura da família (botão ↻ acima); com quem sobe dentro do ovo ela é uma prévia. "Criar comida": quando quem sobe passa de uma quality que captura nenhuma alcança (ex.: Q 1,96 só come Q 1,81–1,96), o script escolhe o melhor da espécie abaixo da faixa (IV menor que o de quem sobe, porque o filho herda o IV dele) e sobe a quality dele com comida própria até servir; quem sobe espera parado e come o resultado. Quem vira comida e a faixa dele também ficam fora da venda.</p>
                     </div>
                 </section>
                 <section class="dn-pane" data-pane="guild" hidden>
@@ -8314,6 +8482,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 breedKeepMax: Math.max(0, parseInt($('#pg-dn-breed-keepmax').value, 10) || 0),
                 breedFamily: $('#pg-dn-breed-family').checked,
                 breedDouble: $('#pg-dn-breed-double').checked,
+                breedFoodBreed: $('#pg-dn-breed-foodbreed').checked,
                 guildDonateGold: Math.max(0, parseInt($('#pg-dn-guild-donate').value, 10) || 0),
                 guildDonateKeep: Math.max(0, parseInt($('#pg-dn-guild-keep').value, 10) || 0),
                 guildTributeEnabled: $('#pg-dn-guild-tribute').checked,
@@ -9262,6 +9431,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-breed-keepmax').value = Math.max(0, Number(cfg.breedKeepMax) || 0);
             $('#pg-dn-breed-family').checked = cfg.breedFamily !== false;
             $('#pg-dn-breed-double').checked = cfg.breedDouble !== false;
+            $('#pg-dn-breed-foodbreed').checked = Boolean(cfg.breedFoodBreed);
             $('#pg-dn-guild-donate').value = Math.max(0, Number(cfg.guildDonateGold) || 0);
             $('#pg-dn-guild-keep').value = Math.max(0, Number(cfg.guildDonateKeep) || 0);
             $('#pg-dn-guild-tribute').checked = Boolean(cfg.guildTributeEnabled);
@@ -9368,7 +9538,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const giftAntes = JSON.stringify([cfg.giftEnabled, cfg.giftCenterMode]);
             const slotAntes = JSON.stringify([cfg.slotEnabled, cfg.slotWanted]);
             const gymAntes = JSON.stringify([cfg.gymEnabled, cfg.gymBonus, cfg.gymRedo]);
-            const breedAntes = JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble]);
+            const breedAntes = JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble, cfg.breedFoodBreed]);
             const guildAntes = JSON.stringify([cfg.guildDonateGold, cfg.guildDonateKeep, cfg.guildTributeEnabled, cfg.guildTributeKeep, cfg.guildAlerts, cfg.guildHuntEnabled, cfg.guildFishEnabled, cfg.guildFarmTribute, cfg.guildRouteOrder]);
             const capturaAntes = JSON.stringify([cfg.catchRouteEnabled, cfg.catchRouteAreas, cfg.catchRouteMaxLevel]);
             const viagemAntes = JSON.stringify([cfg.tripEveryMin, cfg.tripEveryMaxMin]);
@@ -9422,7 +9592,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 gymFailedAt = 0;
                 if (cfg.gymEnabled) setTimeout(() => gymTick(true), 500);
             }
-            if (JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble]) !== breedAntes) { // breeding mudou: replaneja já
+            if (JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble, cfg.breedFoodBreed]) !== breedAntes) { // breeding mudou: replaneja já
                 breedReset();
                 if (cfg.breedEnabled) setTimeout(() => breedTick(true), 500);
             }
