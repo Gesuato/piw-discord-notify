@@ -43,7 +43,7 @@ const rica = {
   guildDonateGold: 500000, guildDonateKeep: 2000000, guildTributeEnabled: true, guildTributeKeep: 5, guildAlerts: true, guildHuntEnabled: false, guildFishEnabled: false, guildFarmTribute: false, guildRouteOrder: ['fish', 'tributo', 'kill'], // rota da guild é excludente com a rota de treino do fixture
   // v3.33.0 (Farm por lista; desligado porque é excludente com a rota de treino do fixture; got round-trip pelo item+monstro)
   farmEnabled: false, farmList: [{ item: 'Magikarp Fin', qty: 1000, hunt: 'magikarp', got: 10 }, { item: 'Feather', qty: 200, hunt: '', got: 0 }],
-  breedEnabled: true, breedLines: [{ id: 'tronco1', name: 'Donphan', speciesId: 232, gen: 2, q0: 1.466, iv0: 126, lastQ: 1.48, lastIv: 126 }, null], breedFoodIvMax: 140, breedFamily: false, breedDouble: false,
+  breedEnabled: true, breedLines: [{ id: 'tronco1', name: 'Donphan', speciesId: 232, gen: 2, q0: 1.466, iv0: 126, lastQ: 1.48, lastIv: 126 }, null], breedFoodIvMax: 140, breedKeepMax: 25, breedFamily: false, breedDouble: false,
 };
 setTimeout(() => {
   const w1 = boot(rica, { pgDiscordNotifyDrops: JSON.stringify([120, 7]) });

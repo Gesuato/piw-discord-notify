@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.46.0
+// @version      3.47.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.46.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.47.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -96,6 +96,7 @@
         breedEnabled: false,    // v3.29.0 Breeding (aba 🥚): cruzar quem sobe com comida mais fraca (Grátis), chocar e repetir
         breedLines: [],         // ...até 2 linhagens: [{ id, name, speciesId, gen, q0, iv0, lastQ, lastIv, eggId, pendingChild } | null]
         breedFoodIvMax: 150,    // ...comida só com IV abaixo disto (além de quality e IV menores que quem sobe); 0 = sem teto
+        breedKeepMax: 20,       // v3.47.0 ...quantos da espécie (além de quem sobe) ficam fora da venda por linhagem; 0 = todos na faixa
         breedFamily: true,      // ...comida e stones também do depot da família (retirada na viagem à cidade)
         breedDouble: true,      // ...dobrar stones (40 em vez de 20): 5% de +1 IV no filho
         guildDonateGold: 0,     // v3.31.0 Guild (aba 🛡): gold a doar por dia para a próxima vaga (0 = não doa; o jogo limita a 500.000/dia por membro)
@@ -1509,7 +1510,7 @@
         const at = recentCaptureIds.get(String(p.id));
         if (at && Date.now() - at < POKE_SELL_RECENT_MS) return 'capturado agora';
         if (typeof clanKeepsSpecies === 'function' && clanKeepsSpecies(Number(p.speciesId))) return 'tarefa do clã';
-        if (typeof breedKeepsPoke === 'function' && breedKeepsPoke(p)) return 'breeding';   // v3.29.0: quem sobe e a espécie dele, SEMPRE
+        if (typeof breedKeepsPoke === 'function' && breedKeepsPoke(p)) return 'breeding';   // v3.29.0: quem sobe e a espécie dele (v3.47.0: até o teto `breedKeepMax`)
         const keepQ = pokeSellKeepQ(d), q = Number(p.quality);
         if (keepQ && Number.isFinite(q) && q >= keepQ) return `qualidade ${q} ≥ ${keepQ}`;   // v3.34.0: piso de qualidade
         const tier = qualityTier(Number(p.quality));
@@ -3174,6 +3175,9 @@
     //     - quem sobe e, da espécie dele, quem pode servir de comida ou é tão bom quanto ele (Q a partir de 0,15 abaixo) ficam fora
     //       da venda automática e do depósito na família (`breedKeepsPoke`, usado em `pokeSellReason`/`depositPokeReason`), mesmo
     //       com IV abaixo da tabela; o resto da espécie (Q longe demais, nunca vai servir) segue as regras normais da venda (v3.36.1);
+    //       v3.47.0: essa proteção tem TETO por linhagem (`breedKeepMax`, padrão 20): só os N melhores (comida que serve hoje primeiro,
+    //       maior quality primeiro) ficam guardados; o resto vende pelas regras da aba Venda (relato de 26/10/2026: quem sobe de Q baixa
+    //       protegia quase toda captura e, sem stones, o box enchia sem parar até o servidor calar o frame `pokes`);
     //     - só o caminho Grátis (que mesmo assim cobra gold + stones); nunca `hatch-now`/`buy-slot` (diamante).
     //   Comida e stones podem vir do depot da família (`breedFamily`): o frame `family` traz quality/ivTotal dos Pokémon e
     //   itemId/quantity dos itens (confirmado em `familia-campos`); a retirada (`family-action … dir:'withdraw'`, mesmo formato
@@ -3246,9 +3250,42 @@
     // ficava fora da venda — na conta1 (12/10/2026) 312 Rhyhorn de Q 0,9–1,3 (que nunca serviriam: quem sobe só cresce)
     // entupiram o box (313 ≥ 200), o servidor parou de mandar o frame `pokes`, o filho chocado nunca foi identificado
     // ("filho não identificado") e a venda não tinha lista nem candidatos: ciclo fechado. Sem quality conhecida, protege.
+    // v3.47.0: a proteção tem TETO por linhagem (`cfg.breedKeepMax`, 0 = sem teto). Relato do usuário em 26/10/2026: com quem sobe
+    // de quality baixa quase toda captura da espécie cai na faixa "até 0,15 abaixo" e ficava fora da venda; cada cruzamento consome
+    // UMA comida a cada 3000 abates (e nenhuma enquanto faltam stones), então o box enchia sem parar até o servidor calar o frame
+    // `pokes` e tudo travar. Agora só os N melhores da espécie (box fora do time + fila de capturas sem frame, `captureQueue`) ficam
+    // guardados: quem serve de comida HOJE primeiro (maior quality primeiro, porque serve por mais gerações), depois quem é tão bom
+    // quanto quem sobe ou tem IV alto demais para comida; o resto segue as regras da aba Venda (shiny, nível > 1, piso de qualidade e
+    // tabela por raridade continuam valendo). Pokémon ainda não visto no box nem na fila só é protegido enquanto sobra vaga.
+    function breedKeepMax(d) { const v = Number((d || cfg).breedKeepMax); return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0; }
+    let breedKeepCache = null;   // { key, list, kept:Set, known:Set, elegiveis, max } do último ranking (invalida por frame/fila/cfg)
+    function breedKept(l, ref, max) {
+        const t = breedTrunk(l);
+        const lsp = Number(l.speciesId) || (t ? t.speciesId : 0), lnome = normalize(l.name || (t ? t.name : ''));
+        const fila = (typeof captureQueue !== 'undefined' && Array.isArray(captureQueue)) ? captureQueue : [];
+        const key = `${breedPokesSeq}|${lastPokesList.length}|${fila.length}|${fila.length ? fila[fila.length - 1].id : ''}|${l.id || ''}|${l.eggId || ''}|${ref}|${max}|${lsp}|${lnome}`;
+        if (breedKeepCache && breedKeepCache.key === key && breedKeepCache.list === lastPokesList) return breedKeepCache;
+        const same = (p) => { const sp = Number(p.speciesId) || 0, n = normalize(p.name || ''); return (lsp && sp && lsp === sp) || (lnome && n && lnome === n); };
+        const known = new Set(), pool = [];
+        const add = (p) => {
+            if (!p || typeof p !== 'object' || p.id == null) return;
+            const id = String(p.id);
+            if (known.has(id) || id === String(l.id || '') || p.team || p.leader || !same(p)) return;
+            known.add(id); pool.push(p);
+        };
+        for (const p of lastPokesList) add(p);
+        for (const p of fila) add(p);
+        const elegiveis = pool.filter(p => Number.isFinite(Number(p.quality)) && Number(p.quality) >= ref - BREED_Q_GAP - BREED_Q_EPS);
+        const rank = (p) => [t && !breedFoodReason(p, t) ? 1 : 0, Number(p.quality), Number(p.ivTotal) || 0];
+        elegiveis.sort((a, b) => { const ka = rank(a), kb = rank(b); return kb[0] - ka[0] || kb[1] - ka[1] || kb[2] - ka[2]; });
+        const kept = new Set((max ? elegiveis.slice(0, max) : elegiveis).map(p => String(p.id)));
+        breedKeepCache = { key, list: lastPokesList, kept, known, elegiveis: elegiveis.length, max };
+        return breedKeepCache;
+    }
     function breedKeepsPoke(p) {
         if (!cfg.breedEnabled || !p || typeof p !== 'object') return false;
         const id = String(p.id ?? ''), sp = Number(p.speciesId) || 0, nome = normalize(p.name || '');
+        const max = breedKeepMax();
         for (const l of breedActiveLines()) {
             if (l.id && String(l.id) === id) return true;
             const t = l.speciesId ? null : breedTrunk(l);   // linhagem recém-escolhida: espécie pelo box
@@ -3256,7 +3293,11 @@
             if (!((lsp && sp && lsp === sp) || (lnome && nome && lnome === nome))) continue;
             const ref = breedLineQ(l), q = Number(p.quality);
             if (!Number.isFinite(ref) || !Number.isFinite(q)) return true;
-            if (q >= ref - BREED_Q_GAP - BREED_Q_EPS) return true;
+            if (q < ref - BREED_Q_GAP - BREED_Q_EPS) continue;   // nunca vai servir: regras normais da venda
+            if (!max) return true;
+            const k = breedKept(l, ref, max);
+            if (k.kept.has(id)) return true;
+            if (!k.known.has(id) && k.kept.size < max) return true;   // ainda não visto no box/fila e sobra vaga
         }
         return false;
     }
@@ -3741,6 +3782,11 @@
             const lista = breedFoodList(t, d);
             const servem = lista.filter(f => !f.motivo);
             out.push({ text: `Linhagem ${i + 1} (${t.name} Q ${breedQ(t.quality)} IV ${t.ivTotal}${previa}): ${servem.length} ${servem.length === 1 ? 'comida serve' : 'comidas servem'} de ${lista.length} da espécie${lista.length ? ` (${lista.filter(f => f.origem === 'box').length} no box, ${lista.filter(f => f.origem === 'familia').length} na família)` : ''}`, ok: servem.length > 0 });
+            const max = breedKeepMax(d), refQ = breedLineQ(l);
+            if (max && Number.isFinite(refQ)) {   // v3.47.0: quantos ficam fora da venda com o teto
+                const k = breedKept(l, refQ, max);
+                out.push({ text: `  🔒 fora da venda: ${k.kept.size} de ${k.elegiveis} da espécie na faixa (teto ${max}); o resto vende pelas regras da aba Venda`, ok: k.elegiveis <= max });
+            }
             for (const f of lista.slice(0, BREED_FOOD_SHOW)) out.push({ text: `  ${f.motivo ? '✖' : '✔'} ${f.name} Q ${breedQ(f.quality)} IV ${f.ivTotal}${f.level ? ` lv${f.level}` : ''} · ${f.origem === 'familia' ? 'família' : 'box'}${f.motivo ? ` — ${f.motivo}` : ''}`, ok: !f.motivo });
             if (lista.length > BREED_FOOD_SHOW) out.push({ text: `  … e mais ${lista.length - BREED_FOOD_SHOW} (as mais fracas aparecem primeiro)`, ok: false });
         });
@@ -8005,7 +8051,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <label class="dn-field"><span>Linhagem 2</span><select id="pg-dn-breed-l2" class="dn-select"></select></label>
                         <div class="dn-row"><button type="button" class="dn-btn dn-btn--sm" id="pg-dn-breed-refresh">↻ Atualizar box e família</button></div>
                         <p class="dn-help">Menu vazio = o jogo ainda não mandou a lista do box (na hunt ele costuma não responder; na cidade responde). O IV e a distribuição por stat do filho vêm do pai de MAIOR quality, por isso a comida é sempre mais fraca; quem sobe vai sempre no Slot 1 e o script confere na cotação, antes de todo cruzamento, que o IV vem dele.</p>
-                        <div class="dn-status"><span class="bad">🔒 Nunca vendido</span><span class="dn-hint">quem sobe e toda a espécie dele ficam fora da venda automática e do depósito na família, mesmo com IV abaixo da tabela da aba Venda.</span></div>
+                        <div class="dn-inline">🔒 Fora da venda e do depósito, por linhagem, até <input id="pg-dn-breed-keepmax" class="dn-input dn-input--sm" type="number" min="0" max="3000"> da espécie <span class="dn-hint">(0 = todos que ainda podem servir ou são tão bons quanto quem sobe)</span></div>
+                        <p class="dn-help">Quem sobe nunca é vendido. Dos outros da espécie ficam guardados, até esse teto, primeiro quem serve de comida hoje (maior quality primeiro: serve por mais gerações), depois quem é tão bom quanto quem sobe; o resto segue as regras da aba Venda (shiny, nível > 1 e o piso de qualidade continuam valendo). Sem teto, com quem sobe de quality baixa, quase toda captura ficava guardada e o box enchia até o jogo parar de mandar a lista.</p>
                     </div>
                     <div class="dn-section">
                         <h3>🍖 Quem vira comida</h3>
@@ -8264,6 +8311,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 breedEnabled: $('#pg-dn-breed').checked,
                 breedLines: readBreedLines(),
                 breedFoodIvMax: Math.max(0, Math.min(IV_MAX, parseInt($('#pg-dn-breed-ivmax').value, 10) || 0)),
+                breedKeepMax: Math.max(0, parseInt($('#pg-dn-breed-keepmax').value, 10) || 0),
                 breedFamily: $('#pg-dn-breed-family').checked,
                 breedDouble: $('#pg-dn-breed-double').checked,
                 guildDonateGold: Math.max(0, parseInt($('#pg-dn-guild-donate').value, 10) || 0),
@@ -9211,6 +9259,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-boss-alerts').checked = cfg.bossAlerts !== false;
             $('#pg-dn-breed').checked = Boolean(cfg.breedEnabled);
             $('#pg-dn-breed-ivmax').value = Math.max(0, Math.min(IV_MAX, Number(cfg.breedFoodIvMax) || 0));
+            $('#pg-dn-breed-keepmax').value = Math.max(0, Number(cfg.breedKeepMax) || 0);
             $('#pg-dn-breed-family').checked = cfg.breedFamily !== false;
             $('#pg-dn-breed-double').checked = cfg.breedDouble !== false;
             $('#pg-dn-guild-donate').value = Math.max(0, Number(cfg.guildDonateGold) || 0);

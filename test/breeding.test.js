@@ -320,5 +320,35 @@ function fakeApi(opts) {
         assert(r2.ok && fake.posts.length === 1, 'cruzou na 2ª tentativa: ' + JSON.stringify(r2));
     }
 
-    console.log('OK breeding.test — filtro da comida (Q e IV menores, teto, família), checklist da cotação (donorId/growth/baseQuality), plano + viagem, cidade (stones e comida da família, POST breed), parado/retry, hatch e filho');
+    // 13) v3.47.0: teto de protegidos por linhagem — só os N melhores da espécie ficam fora da venda (comida que serve hoje primeiro,
+    //     maior quality primeiro, depois quem é tão bom quanto quem sobe); o resto vende pelas regras normais; a fila de capturas sem
+    //     frame conta; desconhecido só é protegido com vaga sobrando; 0 = sem teto (como antes)
+    {
+        const cfg = { breedEnabled: true, breedLines: [{ id: TRONCO.id, gen: 0 }], breedFoodIvMax: 150, breedFamily: false, breedDouble: false, breedKeepMax: 3 };
+        const f1 = P({ id: 'f1', quality: 1.40, ivTotal: 100 }), f2 = P({ id: 'f2', quality: 1.35, ivTotal: 90 }), f3 = P({ id: 'f3', quality: 1.33, ivTotal: 80 });
+        const g1 = P({ id: 'g1', quality: 1.5, ivTotal: 50 }), g2 = P({ id: 'g2', quality: 1.466, ivTotal: 130 }), longe = P({ id: 'longe', quality: 1.2, ivTotal: 50 });
+        const fila1 = { id: 'fila1', speciesId: 232, name: 'Donphan', quality: 1.45, ivTotal: 110, level: 1 };   // capturado sem frame `pokes`
+        const pokes = [LIDER, TRONCO, f1, f2, f3, g1, g2, longe];
+        const { api } = loadBreedModule(cfg, { pokes, queue: [fila1] });
+        // ranking: comida que serve (fila1 1.45, f1 1.40, f2 1.35, f3 1.33) > g1 1.5 > g2 1.466; teto 3 = fila1, f1, f2
+        assert(api.breedKeepsPoke(TRONCO), 'quem sobe sempre');
+        assert(api.breedKeepsPoke(f1) && api.breedKeepsPoke(f2) && api.breedKeepsPoke(fila1), 'as 3 melhores comidas ficam (a da fila conta)');
+        assert(!api.breedKeepsPoke(f3) && !api.breedKeepsPoke(g1) && !api.breedKeepsPoke(g2), 'f3, g1 e g2 passam do teto: venda normal');
+        assert(!api.breedKeepsPoke(longe), 'Q longe demais segue sem proteção');
+        assert(!api.breedKeepsPoke({ id: 'novo', speciesId: 232, quality: 1.45, ivTotal: 100 }), 'desconhecido com o teto cheio não é protegido');
+        const st = api.breedFoodStatus().map(x => x.text).join('\n');
+        assert(/fora da venda: 3 de 6 da espécie na faixa \(teto 3\)/.test(st), 'status mostra protegidos/elegíveis: ' + st);
+        cfg.breedKeepMax = 10;
+        assert(api.breedKeepsPoke(f3) && api.breedKeepsPoke(g1) && api.breedKeepsPoke(g2) && api.breedKeepsPoke({ id: 'novo', speciesId: 232, quality: 1.45, ivTotal: 100 }) && !api.breedKeepsPoke(longe), 'teto folgado protege todos na faixa e o desconhecido');
+        cfg.breedKeepMax = 0;
+        assert(api.breedKeepsPoke(g2) && api.breedKeepsPoke({ id: 'novo', speciesId: 232, quality: 1.45, ivTotal: 100 }) && !api.breedKeepsPoke(longe), 'teto 0 = sem teto');
+        assert(!api.breedFoodStatus().some(x => /fora da venda/.test(x.text)), 'sem teto a linha de protegidos some');
+        // venda tirou f1 do box (lista nova) e a fila esvaziou: o ranking refaz sem f1
+        cfg.breedKeepMax = 2;
+        const semF1 = pokes.filter(p => p.id !== 'f1');
+        const { api: api2 } = loadBreedModule(cfg, { pokes: semF1, queue: [] });
+        assert(api2.breedKeepsPoke(f2) && api2.breedKeepsPoke(f3) && !api2.breedKeepsPoke(g1), 'sem f1 e sem fila: f2 e f3 ficam, g1 vende');
+    }
+
+    console.log('OK breeding.test — filtro da comida (Q e IV menores, teto, família), checklist da cotação (donorId/growth/baseQuality), teto de protegidos (v3.47.0), plano + viagem, cidade (stones e comida da família, POST breed), parado/retry, hatch e filho');
 })().catch(e => { console.error(e); process.exit(1); });

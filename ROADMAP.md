@@ -703,6 +703,13 @@ mesmo quando a lista demora. Farejador `rest-breeding` removido.
 
 **v3.29.2:** `family-action … dir:'withdraw'` CONFIRMADO (09/10/2026 13:15Z, conta1, pela janela Família): mesmos campos do depósito.
 
+**v3.47.0 (26/10/2026) — teto de protegidos por linhagem:** relato do usuário: "quando estou tentando fazer o breeding de um pokemon
+com qualidade baixa, a venda fica bloqueada para esse tipo de pokemon, então acumula muitos pokemons e para de funcionar; ou quando
+falta stones, os pokemons se acumulam infinitamente". A proteção da v3.36.1 (toda a espécie na faixa de 0,15) não tinha teto, e cada
+cruzamento consome UMA comida a cada 3000 abates. Agora `cfg.breedKeepMax` (aba Breeding, padrão 20; 0 = sem teto): só os N melhores
+da espécie ficam fora da venda e do depósito (comida que serve hoje primeiro, maior quality primeiro, depois quem é tão bom quanto
+quem sobe); o resto vende pelas regras da aba Venda. A prévia da comida mostra "fora da venda: N de M (teto X)".
+
 **Pendente:** se o `breed` funciona na hunt
 (o script sempre cruza na viagem). Teste: `node test/breeding.test.js`, caso novo no `pokesell.test.js`, passo no smoke e fixture no
 round-trip.

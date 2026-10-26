@@ -888,6 +888,7 @@ function loadBreedModule(cfg, init) {
         fmtNum: (n) => String(n),
         lastPokesList: state.pokes,
         lastFamilyDepot: state.family,
+        captureQueue: Array.isArray(init.queue) ? init.queue : [],   // v3.47.0: fila de capturas sem frame (conta no teto de protegidos)
         tripRunning: false,
         sendGame: (m) => {
             state.sent.push(m);
@@ -910,7 +911,7 @@ function loadBreedModule(cfg, init) {
         return {
             breedTick, breedCycle, breedPlan, breedCityWork, breedHatch, breedOnPokes, breedOnFamily, breedKeepsPoke, breedFoodReason, breedFoodList, breedFoodPick,
             breedCheckQuote, breedStoneNeeds, parseBreedCenter, breedTrunk, breedLines, breedActiveLines, breedStatus, breedFoodStatus, breedWanted, breedReset,
-            BREED_POLL_MS, BREED_RETRY_MS,
+            BREED_POLL_MS, BREED_RETRY_MS, breedKeepMax, breedKept,
             get breedPlanned() { return breedPlanned; },
             get breedWait() { return breedWait; },
             get breedCenter() { return breedCenter; },
