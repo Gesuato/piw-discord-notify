@@ -1292,4 +1292,85 @@ function loadGymModule(cfg, init) {
     return { api, state, cfg, clock };
 }
 
-module.exports = { loadGymModule, loadHoldModule, loadBossModule, loadHumanModule, loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+// ---- Invasão Rocket (v3.50.0): `// ---- Invasão Rocket` até `// ---- Ginásio (v3.45.0)`.
+// `state.sent` = o que foi mandado ao jogo; `state.switches` = chamadas a switchHunt ({ slug, origem }) — com `init.autoHunt !== false` a
+// troca "confirma" na hora (huntSlug vira o slug e invOnHuntChange roda, como setHunt faria); `state.trips` = tripRequest; `state.calls` =
+// REST (init.api(url, opts) responde); `state.env` muda os bloqueios (tripRunning, holdActive...); timers em `state.timers`, `state.fire(ms)`
+// dispara os desse prazo e avança o relógio; `clock.now` é o Date.now(). `init.store` = localStorage inicial; `init.team` = time (níveis);
+// `init.lastRealHunt` alimenta o idleTarget falso; `init.tripCity` = cidade da viagem (padrão cerulean).
+const IV_START = '    // ---- Invasão Rocket';
+const IV_END = '    // ---- Ginásio (v3.45.0)';
+function loadInvasionModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(IV_START), b = src.indexOf(IV_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo da invasão não encontrados no script');
+    const mod = src.slice(a, b);
+    const clock = { now: init.now || Date.UTC(2026, 9, 27, 17, 0, 30) };   // 14:00:30 de Brasília: entrada da janela das 14h aberta
+    const store = Object.assign({}, init.store || {});
+    const state = { logs: [], hooks: [], timers: [], sent: [], switches: [], trips: [], calls: [], nudges: 0, store, clock, env: { tripRunning: false, hold: false, human: false, boss: null, heal: false, inHunt: null } };
+    let nextId = 1;
+    state.fire = async (ms) => {
+        const due = state.timers.filter(t => t.ms === ms);
+        state.timers = state.timers.filter(t => t.ms !== ms || t.interval);
+        clock.now += ms;
+        for (const t of due) await t.fn();
+        await new Promise(r => setImmediate(r));
+        await new Promise(r => setImmediate(r));
+    };
+    state.flush = async () => { await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)); };
+    const FakeDate = class extends Date {
+        constructor(...args) { super(...(args.length ? args : [clock.now])); }
+        static now() { return clock.now; }
+    };
+    let apiRef = null;
+    const ctx = {
+        cfg: Object.assign({ invEnabled: false, invHours: '', invKeepEnergy: 0, invAlerts: true, invJennyEnabled: false, invJennyOffer: '', invJennyKeep: 0 }, cfg || {}),
+        normalize: (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim(),
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', title: p.embeds?.[0]?.title || '', desc: p.embeds?.[0]?.description || '', color: p.embeds?.[0]?.color, meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        fmtNum: (n) => Number(n).toLocaleString('pt-BR'),
+        sendGame: (obj) => { state.sent.push(obj); return init.socket !== false; },
+        gameApi: (url, opts) => { state.calls.push({ url, method: opts?.method || 'GET', body: opts?.body ? JSON.parse(opts.body) : null }); return Promise.resolve().then(() => (init.api ? init.api(url, opts) : {})); },
+        tripRequest: (key, dados, motivo) => state.trips.push({ key, dados, motivo }),
+        switchHunt: (slug, tentativa, origem) => { state.switches.push({ slug, tentativa, origem }); if (init.autoHunt !== false && apiRef) apiRef.setHunt(slug); return init.switchOk !== false; },
+        huntSlug: init.huntSlug || null,
+        huntSwitch: null,
+        team: init.team || [],
+        CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'],
+        localStorage: { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); }, removeItem: (k) => { delete store[k]; } },
+        setTimeout: (fn, ms) => { const id = nextId++; state.timers.push({ fn, ms, id }); return id; },
+        clearTimeout: (id) => { state.timers = state.timers.filter(t => t.id !== id); },
+        Date: FakeDate,
+        // bloqueios e vizinhos (lidos pelo módulo com typeof)
+        holdReason: () => (state.env.hold ? 'esperando na cidade pelo botão do painel' : null),
+        holdActive: () => Boolean(state.env.hold),
+        humanPending: () => Boolean(state.env.human),
+        bossBusyReason: () => state.env.boss,
+        bossIsArena: (slug) => /_boss$/.test(String(slug || '')),
+        healBusy: () => Boolean(state.env.heal),
+        idleTarget: () => (init.lastRealHunt ? { slug: init.lastRealHunt } : { motivo: 'não sei de que hunt veio' }),
+        tripInHunt: () => { const h = state.env.inHunt != null ? state.env.inHunt : apiRef?.hunt(); return Boolean(h) && !['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'].includes(h); },
+        tripCity: () => init.tripCity || 'cerulean',
+        nudgeClientToCity: () => { state.nudges++; return true; },
+        get tripRunning() { return state.env.tripRunning; },
+    };
+    // `tripRunning` é lido como variável livre dentro do módulo: vira parâmetro simples (o getter acima só serve de documentação)
+    const names = Object.keys(ctx).filter(k => k !== 'tripRunning');
+    const factory = new Function(...names, 'tripRunningRef', mod.replace(/typeof tripRunning !== 'undefined' && tripRunning/g, 'tripRunningRef()') + `
+        return {
+            tick: invTick, onMessage: invOnMessage, onField: invOnField, onKill: invOnKill, onHuntChange: invOnHuntChange, onSetCity: invOnSetCity, onSocket: invOnSocket,
+            load: invLoad, busy: invBusy, busyReason: invBusyReason, isRaid: invIsRaid, keepsItem: invKeepsItem, status: invStatus, jennyStatus: invJennyStatus,
+            jennyCityWork: invJennyCityWork, jennyWanted: invJennyWanted, jennyRead: invJennyRead, now: invNow, jennyNow: invJennyNow, huntFailed: invHuntFailed,
+            windowAt: invWindowAt, windowStart: invWindowStart, hourOf: invHourOf, hours: invHours, tierLabel: invTierLabel, blockedReason: invBlockedReason,
+            run: () => invRun, last: () => invLast, energy: () => invEnergy, jenny: () => invJenny, tried: () => invTried,
+            hunt: () => huntSlug, setHunt: (s) => { huntSlug = s; invOnHuntChange(s); }, leaveHunt: () => { huntSlug = null; },
+            INV_SLUG, INV_TICK_MS, INV_ENTER_DELAY_MS, INV_CITY_WAIT_MS, INV_LEAVE_WAIT_MS, INV_HEAL_WAIT_MS, INV_END_WAIT_MS, INV_RESULT_GRACE_MS, INV_GONE_MS, INV_JENNY_CITY_WAIT_MS, INV_JENNY_BETWEEN_MS, INV_PLANS_ITEM_ID,
+        };`);
+    const api = factory(...names.map(k => ctx[k]), () => state.env.tripRunning);
+    apiRef = api;
+    return { api, state, clock, cfg: ctx.cfg };
+}
+
+module.exports = { loadInvasionModule, loadGymModule, loadHoldModule, loadBossModule, loadHumanModule, loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

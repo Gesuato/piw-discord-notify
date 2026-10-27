@@ -935,6 +935,33 @@ Harness: `loadGymModule` precisa de `sendGame`, `familyAction`, `init.pokes`/`in
 
 ---
 
+## ✅ 38. Invasão Rocket: entrar sozinho a cada janela, voltar para a hunt e trocar os Plans na Officer Jenny (v3.50.0)
+
+**O que faz (pedido do usuário em 27/10/2026, patch notes do mesmo dia: "gostaria de implementar uma nova aba para esse evento"):** aba
+própria 🚀 Invasão. `invEnabled` entra na invasão de Cerulean em cada janela (a cada 2 h, horas pares de Brasília; 10 min de entrada), só
+nas horas de `invHours` (vazio = todas) e só com Energia Vermelha acima de `invKeepEnergy` (2/dia, acumula 10; nunca compra com diamantes);
+acompanha a rodada (wave, Rockets derrubados), avisa o resultado (`invAlerts`: wave, recorde, Rockets, XP, Plans, Nível de Invasão, marcos) e
+volta para a hunt de onde saiu (cura na Joy se o time caiu). Enquanto dura, viagem, parada na cidade, recarga, rotas, troca de líder e cura
+esperam (sair encerra a rodada). Entrada feita na mão pelo botão INVASÃO também é acompanhada e volta. `invJennyEnabled` + `invJennyOffer`
+(+ `invJennyKeep`) trocam os Rocket Plans na Officer Jenny (Shopping) na viagem à cidade, enquanto o saldo der (outfit 1x). A Police
+Bravery Medal o script no máximo compra: em quem usar é do jogador.
+
+**Mensagens (bundle em 27/10/2026, ainda NÃO vistas no log; `docs/mensagens-do-jogo.md` → "Invasão Rocket"):** a invasão é a hunt
+`rocket_cerulean` (`enter-hunt`); `invasion-state`, `invasion-announce`, `invasion-energy-get` → `invasion-energy { energy, … }`,
+`invasion-refused { message }`, `invasion-end { wave, bestWave, reason, kills, xp, tier, level, levelBefore, reward{ qty }, milestones,
+outfitReward }`; `field.wave`; Rocket Plans = item 240; `GET /api/game/officer-jenny` → `{ balance, token, offers[{ key, name, qty, cost,
+owned, kind }] }`, `POST .../exchange { offer }` → `{ prize }`.
+
+**Regras:** tique de 30 s; entra 20 s depois da abertura; registro da rodada em `localStorage.pgDiscordNotifyInvasion` (recarga no meio volta
+para a hunt); sem `invasion-end`, 1 min fora da hunt ou janela + 90 s encerra; recusa/entrada sem frame = aviso e volta. Logs `invasao-*`,
+`jenny-*`. Botões "Entrar agora" e "Trocar agora".
+
+**Pendente:** confirmar no log os formatos (`invasao-campos`, `jenny-campos`) na 1ª rodada real e as chaves das ofertas da Jenny.
+
+**Teste:** `node test/invasion.test.js` (`loadInvasionModule`); chaves no fixture do `test/config.roundtrip.js`; passo no `test/ui.smoke.js`.
+
+---
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

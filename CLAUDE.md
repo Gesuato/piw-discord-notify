@@ -461,6 +461,27 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   resgatado LOGO depois de cada vitória — a recarga da página no meio da viagem matava a passada final de resgates),
   `ginasio-bonus`, `ginasio-erro`, `ginasio-global`. Teste: `node test/gym.test.js` (`loadGymModule`:
   `// ---- Ginásio (v3.45.0)` até `// ---- Auto Boss (v3.43.0)`; `init.api` responde GET/POST; `clock.now`).
+- Invasão Rocket (v3.50.0, aba própria 🚀 Invasão (`TABS` id `invasao`), `cfg.invEnabled`/`invHours`/`invKeepEnergy`/`invAlerts` +
+  `invJennyEnabled`/`invJennyOffer`/`invJennyKeep`; módulo `// ---- Invasão Rocket` antes do Ginásio; patch notes e bundle de 27/10/2026,
+  `docs/mensagens-do-jogo.md` → "Invasão Rocket"; formatos ainda NÃO vistos no log — `invasao-campos`/`jenny-campos` registram as
+  chaves do 1º frame): evento do jogo a cada 2 h nas horas PARES de Brasília (10 min de entrada, 30 min de invasão, 1 Energia Vermelha
+  por entrada — 2/dia, acumula 10; o script NUNCA compra energia com diamantes). A invasão é a hunt de slug fixo `rocket_cerulean`
+  (o botão INVASÃO da tela só viaja e manda `enter-hunt`); `invIsRaid(slug)` a tira de `lastRealHunt`/retomada/espera, como
+  `bossIsArena`. Fluxo: `invTick` (30 s) → janela pelo relógio (`invWindowAt`, corrigida pelo `invasion-state`) → `invasion-energy-get`
+  → hora aceita + energia > reserva + `invBlockedReason()` nulo → `invEnterFlow` (guarda a hunt de volta em
+  `localStorage.pgDiscordNotifyInvasion`, sai da hunt pela tela ou `set-city`, `switchHunt('rocket_cerulean', 1, 'invasao')` — origem
+  SEM `leave-hunt`, como `invasao-volta`). Dentro: `field.wave` e `field-kill` contam; `invasion-end` → log `invasao-fim`, aviso em
+  Alertas (wave, recorde, Rockets, XP, Plans, Nível de Invasão) e `invReturnFlow` (`set-city`, `joy-heal` se `wipe`, volta por
+  `switchHunt(from, 1, 'invasao-volta')`). Sem `invasion-end`: 1 min fora da hunt ou janela + 90 s = encerra e volta (`semFrame`).
+  Recusa (`invasion-refused`) ou entrada sem frame em 30 s = `invAbort` (aviso + volta). Entrada feita NA MÃO pelo botão da tela também é
+  acompanhada (`invOnHuntChange`, origem `tela`) e volta para `idleTarget()`. `invBusy()`/`invBusyReason()` entram nos mesmos gates do
+  `bossBusy` (viagem, parada na cidade, recarga, rotas, troca de líder, cura — a queda do time ENCERRA a rodada, quem cura é a volta).
+  Rocket Plans = item 240 (`invKeepsItem`: fora da venda e do guardar). Officer Jenny (Shopping): `invJennyRead` a cada 2 h e após
+  cada rodada; `invJennyAffordable()` = (saldo − reserva) ÷ custo da oferta escolhida (chave `key` da janela; nome também vale);
+  tarefa `jenny` da viagem (`invJennyCityWork`: `set-city shopping`, exchange em série, outfit 1x, `inv-get` + `balls-get`). O select
+  do painel lista as ofertas lidas (`renderInvOffers`). A medalha o script no máximo compra; usar é do jogador. Botões "Entrar agora"
+  (`invNow`, ignora horas/reserva) e "Trocar agora" (`invJennyNow`). Horas no status são no fuso do PC; a lista `invHours` é em Brasília.
+  Teste: `node test/invasion.test.js` (`loadInvasionModule`: `// ---- Invasão Rocket` até `// ---- Ginásio (v3.45.0)`).
 - Guardar na cidade (v3.18.0, aba Venda, ROADMAP #23, módulo `// ---- Guardar na cidade` antes da Viagem): tarefa
   `guardar` no fim de toda viagem; drops → Depot (`POST /api/game/depot/move { itemId, dir:'store' }`, pilha inteira) ou
   família (`family-action item`); Pokémon não vendidos → só família (o box JÁ é o Depot comum de Pokémon). Lista escolhida
@@ -624,6 +645,9 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
   `state.onSend` reinjeta em `api.onOutgoing` como o `handleOutgoing`, `state.heals` = chamadas a `healStart`, `state.fire(ms)` timers).
   `node test/human.test.js` (`loadHumanModule`: `// ---- Verificação humana` até `// ---- Cura na Joy`; `state.api` responde ao GET
   /api/auth/human, `state.dom` simula janela/widget, `state.fire(ms)` dispara os timers do prazo, `state.events` guarda os `dispatchEvent`).
+  `node test/invasion.test.js` (`loadInvasionModule`: `// ---- Invasão Rocket` até `// ---- Ginásio (v3.45.0)`; `state.switches` = chamadas a
+  `switchHunt` (com `init.autoHunt !== false` a troca confirma na hora), `state.env` liga os bloqueios (tripRunning, hold, human, boss, heal),
+  `init.api` responde GET/POST da Officer Jenny, `init.lastRealHunt` alimenta o `idleTarget` falso, `state.fire(ms)` dispara os timers).
   `test/harness.js` recorta módulos do userscript pelos marcadores (`loadLevelModule`: `// ---- Alerta de nível do
   líder` até `// ---- Alerta de estoque de bolas`; `loadPokeSellModule`: `// ---- Venda automática de Pokémon` até
   `// ---- Rota de captura`; `loadCatchModule`: `// ---- Rota de captura` até `// ---- Daily Kill`, com `init.fetchJson(url)` para os

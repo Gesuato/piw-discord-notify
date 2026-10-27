@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.49.0
+// @version      3.50.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.49.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.50.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -90,6 +90,13 @@
         gymBonus: true,         // ...e resgata a Recompensa bônus (pedras de evolução) que a vitória libera
         gymRedo: true,          // ...refaz o ginásio quando o bônus volta a pedir vitória (a cada 48 h)
         gymAlerts: true,        // ...avisa no canal de Alertas (insígnia, derrota, bônus, outfit das 18)
+        invEnabled: false,      // v3.50.0 Invasão Rocket: entrar sozinho em cada janela (horas pares de Brasília) e voltar para a hunt
+        invHours: '',           // ...só nestas horas (pares, Brasília; ex.: "0, 12, 20"); vazio = toda invasão
+        invKeepEnergy: 0,       // ...não entra se a Energia Vermelha ficar em/abaixo disto (2 por dia, acumula 10)
+        invAlerts: true,        // ...avisa no canal de Alertas (fim da rodada, recusa, entrada que falhou, trocas na Jenny)
+        invJennyEnabled: false, // ...trocar Rocket Plans na Officer Jenny (Shopping) na viagem à cidade
+        invJennyOffer: '',      // ...chave da oferta escolhida (lida da janela da Jenny: ball, token, outfit, medal...)
+        invJennyKeep: 0,        // ...Plans que ficam guardados (nunca troca abaixo disto)
         bossResumeEnabled: true, // v3.43.0 Auto Boss do jogo: retomar quando parar sem terminar (erro, saiu da arena, reconexão)
         bossResumeOnLoss: false, // ...também depois de derrota (cura na Joy antes; cada derrota perde 1 token)
         bossAlerts: true,       // ...avisar no canal de Alertas (retomada, desistência, fim)
@@ -642,6 +649,7 @@
     function checkLeaderLevel() {
         if (!levelEnabled() || swapPending) return;
         if (typeof bossBusy === 'function' && bossBusy()) return;   // v3.43.0: o HUD do jogo bloqueia o summon durante boss; o script também espera
+        if (typeof invBusy === 'function' && invBusy()) return;    // v3.50.0: dentro da Invasão Rocket o time reveza sozinho; troca de líder espera
         if (typeof dailyHoldsLeader === 'function' && dailyHoldsLeader()) return; // daily sozinha escolheu o líder: treino espera ela acabar
         const alvo = levelTarget();
         const lider = teamLeader();
@@ -718,7 +726,7 @@
         origem = origem || 'rota';
         if (typeof holdActive === 'function' && holdActive()) { holdBlocked(slug, origem); return false; }   // v3.44.0: espera na cidade pelo botão do painel: nada entra em hunt
         if (huntSwitch?.timer) clearTimeout(huntSwitch.timer);
-        if (origem !== 'recarga' && origem !== 'viagem' && origem !== 'cura' && origem !== 'cidade') sendGame({ type: 'leave-hunt' }); // recarga/viagem/cura/cidade: a conta já está na cidade
+        if (origem !== 'recarga' && origem !== 'viagem' && origem !== 'cura' && origem !== 'cidade' && origem !== 'invasao' && origem !== 'invasao-volta') sendGame({ type: 'leave-hunt' }); // recarga/viagem/cura/cidade: a conta já está na cidade
         huntSwitch = { slug, at: 0, tries: tentativa, timer: null, origem };
         huntSwitch.timer = setTimeout(() => {
             if (!huntSwitch || huntSwitch.slug !== slug) return;
@@ -744,6 +752,7 @@
         if (huntSwitch.tries < 2) { switchHunt(slug, huntSwitch.tries + 1, origem); return; }
         logEvent('hunt-falhou', { slug, origem });
         huntSwitch = null;
+        if (origem === 'invasao') { invHuntFailed(slug, origem); return; }   // v3.50.0: o módulo da invasão avisa e devolve a conta à hunt
         const t = {
             recarga: { verbo: 'voltar para a', quando: 'depois da recarga automática', titulo: `Recarga: volta para ${slug} não confirmou`, dica: 'A conta deve estar na cidade: entre na hunt na mão.' },
             guild: { verbo: 'entrar na', quando: 'rota da guild', titulo: `Guild: entrada em ${slug} não confirmou`, dica: 'Essa hunt foi pulada nesta sessão; a rota da guild segue para o próximo objetivo.' },
@@ -756,6 +765,7 @@
             captura: { verbo: 'entrar na', quando: 'rota de captura', titulo: `Rota de captura: entrada em ${slug} não confirmou`, dica: 'Essa hunt foi pulada nesta sessão; a rota segue para a próxima espécie.' },
             cura: { verbo: 'voltar para a', quando: 'depois da cura na Nurse Joy', titulo: `Cura: volta para ${slug} não confirmou`, dica: 'A conta está curada na cidade: entre na hunt na mão (se o time caiu de novo na entrada, a hunt pode estar forte demais).' },
             cidade: { verbo: 'voltar para a', quando: 'conta parada na cidade', titulo: `Parada na cidade: volta para ${slug} não confirmou`, dica: 'Tento de novo depois de outro período parado (no máximo 3x em 1 h); ou entre na hunt na mão.' },
+            'invasao-volta': { verbo: 'voltar para a', quando: 'depois da Invasão Rocket', titulo: `Invasão Rocket: volta para ${slug} não confirmou`, dica: 'A conta deve estar em Cerulean: entre na hunt na mão (a parada na cidade também tenta).' },
             viagem: { verbo: 'voltar para a', quando: 'depois da viagem à cidade', titulo: `Viagem: volta para ${slug} não confirmou`, dica: 'A conta deve estar na cidade: entre na hunt na mão.' },
         }[origem] || { verbo: 'entrar na', quando: origem, titulo: `Entrada em ${slug} não confirmou`, dica: 'Entre na hunt na mão.' };
         postWebhook(origem === 'rota' ? 'level' : 'alert', {
@@ -772,6 +782,7 @@
         if (origem === 'cla') clanHuntFailed(slug);
         if (origem === 'guild') guildHuntFailed(slug);
         if (origem === 'farm') farmHuntFailed(slug);
+        if (origem === 'invasao-volta') invHuntFailed(slug, origem);
     }
 
     function handlePokeXp(message) {
@@ -1209,6 +1220,7 @@
         huntSlug = novo;
         huntLoot.clear();
         noteHuntChange(novo);
+        invOnHuntChange(novo);    // v3.50.0: a hunt virou a Invasão Rocket (nossa entrada confirmando ou botão INVASÃO da tela) — ANTES das rotas, para `invBusy()` já segurar a reentrada delas
         catchOnHuntChange(novo);
         guildOnHuntChange(novo);
         farmOnHuntChange(novo);
@@ -1225,7 +1237,7 @@
         try { m = JSON.parse(data); } catch { return; }
         if (m?.type === 'enter-hunt') setHunt(m.slug);
         else if (m?.type === 'leave-hunt') { healOnLeave(); setHunt(null); }
-        else if (m?.type === 'set-city') { tripOnSetCity(); healOnSetCity(); pokesOnSetCity(); holdOnSetCity(); armResume(RESUME_AFTER_CITY_MS); } // SPA na cidade: viagem chegou / hora de voltar pra hunt
+        else if (m?.type === 'set-city') { tripOnSetCity(); healOnSetCity(); pokesOnSetCity(); holdOnSetCity(); invOnSetCity(); armResume(RESUME_AFTER_CITY_MS); } // SPA na cidade: viagem chegou / hora de voltar pra hunt
         else if (m?.type === 'auto-boss-start' || m?.type === 'auto-boss-stop') bossOnOutgoing(m);   // v3.43.0: intenção do Auto Boss (pela tela ou pela retomada)
         // v3.29.2: todo `family-action` enviado (pela tela OU pelo script) entra no log com os campos, para confirmar o formato da
         // retirada (`dir:'withdraw'`) que o breeding usa — a janela "Família" do jogo passa por aqui também.
@@ -1280,6 +1292,7 @@
                 if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) continue;  // v3.31.0: item do Tributo do Dia da guild
                 if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) continue;    // v3.33.0: item da lista de farm
                 if (typeof bossKeepsItem === 'function' && bossKeepsItem(id)) continue;    // v3.43.1: token do Auto Boss pendente
+                if (typeof invKeepsItem === 'function' && invKeepsItem(id)) continue;     // v3.50.0: Rocket Plans (não vendem nem vão para a família)
                 const keep = Math.max(0, Number(cfg.sellItems[id]?.keep) || 0);
                 const qty = Math.floor(Number(inv.quantity) || 0) - keep;
                 if (qty <= 0) continue;
@@ -1989,7 +2002,7 @@
     // CATCH_REENTER_MS (chamado por setHunt). Para caçar na mão, desligue a rota. Exceção: a hunt da Daily Kill.
     function catchOnHuntChange(slug) {
         clearTimeout(catchReenterTimer); catchReenterTimer = null;
-        if (!catchRouteActive() || !catchTarget || !huntCatalog || tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy()) || (typeof holdActive === 'function' && holdActive())) return;
+        if (!catchRouteActive() || !catchTarget || !huntCatalog || tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy()) || (typeof invBusy === 'function' && invBusy()) || (typeof holdActive === 'function' && holdActive())) return;
         const h = normalize(slug || '');
         if (!h || CITY_SLUGS.includes(h) || h === catchTarget.slug) return;
         if (dailyEnabled() && dailyOnHunt()) return;
@@ -2006,7 +2019,7 @@
     function catchTick() {
         if (!catchRouteActive()) return;
         if (!huntCatalog) { startCatchRoute('tique'); return; }
-        if (!catchTarget || huntSwitch || catchBusy || catchReenterTimer || tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy()) || (typeof holdActive === 'function' && holdActive())) return;
+        if (!catchTarget || huntSwitch || catchBusy || catchReenterTimer || tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy()) || (typeof invBusy === 'function' && invBusy()) || (typeof holdActive === 'function' && holdActive())) return;
         const h = normalize(huntSlug || '');
         if (h === catchTarget.slug) return;
         if (dailyEnabled() && dailyOnHunt()) return;
@@ -2150,7 +2163,7 @@
     // Chamado por setHunt() a cada troca de hunt.
     function noteHuntChange(novo) {
         const slug = novo ? normalize(novo) : null;
-        if (!slug || CITY_SLUGS.includes(slug) || (typeof bossIsArena === 'function' && bossIsArena(slug))) return;   // v3.43.0: a arena do boss não é hunt de volta
+        if (!slug || CITY_SLUGS.includes(slug) || (typeof bossIsArena === 'function' && bossIsArena(slug)) || (typeof invIsRaid === 'function' && invIsRaid(slug))) return;   // v3.43.0: a arena do boss não é hunt de volta; v3.50.0: nem a invasão
         if (lastRealHunt && lastRealHunt !== slug) prevHuntSlug = lastRealHunt;
         if (lastRealHunt !== slug) dailyKillsHere = 0;
         lastRealHunt = slug;
@@ -2287,7 +2300,7 @@
     async function dailyAutoStep() {
         if (!dailyAutoOn() || dailyAutoBusy || !daily || daily.locked || daily.claimed || daily.done) return;
         if (daily.picked && dailyOnHunt()) { noteDailyAuto(''); return; }
-        if (huntSwitch || tripRunning || swapPending || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy()) || (typeof holdActive === 'function' && holdActive())) return;       // outra troca/viagem/cura/Auto Boss/espera na cidade em andamento: próximo tique
+        if (huntSwitch || tripRunning || swapPending || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy()) || (typeof invBusy === 'function' && invBusy()) || (typeof holdActive === 'function' && holdActive())) return;       // outra troca/viagem/cura/Auto Boss/espera na cidade em andamento: próximo tique
         dailyAutoBusy = true;
         try {
             try { await loadHuntCatalog(); }
@@ -4222,6 +4235,7 @@
             if (tripRunning) { farmSetWait('esperando a viagem à cidade acabar'); return; }
             if (typeof healBusy === 'function' && healBusy()) { farmSetWait('esperando a cura na Nurse Joy acabar'); return; }
             if (typeof bossBusy === 'function' && bossBusy()) { farmSetWait('esperando o Auto Boss do jogo acabar'); return; }
+            if (typeof invBusy === 'function' && invBusy()) { farmSetWait('esperando a Invasão Rocket acabar'); return; }   // v3.50.0
             if (typeof holdActive === 'function' && holdActive()) { farmSetWait('esperando na cidade (botão do painel)'); return; }
             if (huntSwitch) { farmSetWait(`esperando a troca para ${huntSwitch.slug} confirmar`); return; }
             if (swapPending) { farmSetWait('esperando a troca de líder confirmar'); return; }
@@ -4243,7 +4257,7 @@
     // O jogo entrou em outra hunt (tela reafirmando a escolhida na mão, reconexão): volta ao alvo 8 s depois.
     function farmOnHuntChange(slug) {
         clearTimeout(farmReenterTimer); farmReenterTimer = null;
-        if (!farmOn() || !farmTarget || tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy()) || (typeof holdActive === 'function' && holdActive())) return;
+        if (!farmOn() || !farmTarget || tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy()) || (typeof invBusy === 'function' && invBusy()) || (typeof holdActive === 'function' && holdActive())) return;
         const h = normalize(slug || '');
         if (!h || CITY_SLUGS.includes(h) || h === farmTarget.slug) return;
         if (typeof dailyWantsHunt === 'function' && dailyWantsHunt()) return;
@@ -4792,6 +4806,7 @@
             if (tripRunning) { guildSetWait('esperando a viagem à cidade acabar'); return; }
             if (typeof healBusy === 'function' && healBusy()) { guildSetWait('esperando a cura na Nurse Joy acabar'); return; }
             if (typeof bossBusy === 'function' && bossBusy()) { guildSetWait('esperando o Auto Boss do jogo acabar'); return; }
+            if (typeof invBusy === 'function' && invBusy()) { guildSetWait('esperando a Invasão Rocket acabar'); return; }   // v3.50.0
             if (typeof holdActive === 'function' && holdActive()) { guildSetWait('esperando na cidade (botão do painel)'); return; }
             if (huntSwitch) { guildSetWait(`esperando a troca para ${huntSwitch.slug} confirmar`); return; }
             if (swapPending) { guildSetWait('esperando a troca de líder confirmar'); return; }
@@ -4816,7 +4831,7 @@
     // O jogo entrou em outra hunt (tela reafirmando a escolhida na mão, reconexão): volta ao alvo 8 s depois.
     function guildOnHuntChange(slug) {
         clearTimeout(guildReenterTimer); guildReenterTimer = null;
-        if (!guildRouteOn() || !guildTarget || tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy()) || (typeof holdActive === 'function' && holdActive())) return;
+        if (!guildRouteOn() || !guildTarget || tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof bossBusy === 'function' && bossBusy()) || (typeof invBusy === 'function' && invBusy()) || (typeof holdActive === 'function' && holdActive())) return;
         const h = normalize(slug || '');
         if (!h || CITY_SLUGS.includes(h) || h === guildTarget.slug) return;
         if (typeof dailyWantsHunt === 'function' && dailyWantsHunt()) return;
@@ -5279,6 +5294,7 @@
         if (tripRunning) { clanSetWait('esperando a viagem à cidade acabar'); return; }
         if ((typeof healBusy === 'function' && healBusy())) { clanSetWait('esperando a cura na Nurse Joy acabar'); return; }
         if (typeof bossBusy === 'function' && bossBusy()) { clanSetWait('esperando o Auto Boss do jogo acabar'); return; }
+        if (typeof invBusy === 'function' && invBusy()) { clanSetWait('esperando a Invasão Rocket acabar'); return; }   // v3.50.0
         if (typeof holdActive === 'function' && holdActive()) { clanSetWait('esperando na cidade (botão do painel)'); return; }
         if (huntSwitch) { clanSetWait(`esperando a troca para ${huntSwitch.slug} confirmar`); return; }
         if (swapPending) { clanSetWait('esperando a troca de líder confirmar'); return; }
@@ -5416,6 +5432,7 @@
         if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) return 'tributo da guild';
         if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) return 'lista de farm';
         if (typeof bossKeepsItem === 'function' && bossKeepsItem(id)) return 'token do Auto Boss';
+        if (typeof invKeepsItem === 'function' && invKeepsItem(id)) return 'Rocket Plans (o jogo não deixa guardar)';   // v3.50.0
         return null;
     }
     // Motivo para um Pokémon NÃO ir para a família, ou null se vai.
@@ -5498,6 +5515,7 @@
                     if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) continue;
                     if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) continue;
                     if (typeof bossKeepsItem === 'function' && bossKeepsItem(id)) continue;   // v3.43.1: token do Auto Boss pendente
+                    if (typeof invKeepsItem === 'function' && invKeepsItem(id)) continue;     // v3.50.0: Rocket Plans (não vendem nem vão para a família)
                     const qty = Math.floor(Number(inv.quantity) || 0) - e.keep;
                     if (qty <= 0) continue;
                     if (!familiaNaConta()) break;
@@ -5687,7 +5705,7 @@
     const TRIP_PHASE_PCT = { 'indo para a cidade': 15, 'na cidade': 50, 'voltando': 90 };
     function tripLastText() {
         if (!lastTripInfo) return '';
-        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time', breeding: 'breeding', ginasio: 'ginásios' };
+        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time', breeding: 'breeding', ginasio: 'ginásios', jenny: 'Officer Jenny' };
         return `Última ${new Date(lastTripInfo.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}: ${lastTripInfo.tarefas.map(t => `${nome[t.key] || t.key} ${t.ok ? '✔' : '✖'}`).join(' · ')}`;
     }
     // Estado para a faixa do painel: { busy, pct, title, sub }.
@@ -5729,6 +5747,7 @@
             else if (key === 'evoluir') tarefas.push({ key, run: () => evolveCityWork() });
             else if (key === 'slot') tarefas.push({ key, run: () => slotCityWork() });
             else if (key === 'ginasio') tarefas.push({ key, run: () => gymCityWork() });
+            else if (key === 'jenny') tarefas.push({ key, run: () => invJennyCityWork() });   // v3.50.0: Officer Jenny (Shopping)
             else if (key === 'breeding') tarefas.push({ key, run: () => breedCityWork() });
         }
         // Guardar na cidade (v3.18.0): última tarefa de toda viagem que tenha outra coisa a fazer.
@@ -5813,6 +5832,7 @@
         if (!has('evoluir') && typeof evolveWanted === 'function' && evolveWanted()) needs.push(['evoluir', { dados: null, motivo: 'carona' }]);
         if (!has('slot') && typeof slotWanted === 'function' && slotWanted()) needs.push(['slot', { dados: null, motivo: 'carona' }]);
         if (!has('ginasio') && typeof gymWanted === 'function' && gymWanted()) needs.push(['ginasio', { dados: null, motivo: 'carona' }]);
+        if (!has('jenny') && typeof invJennyWanted === 'function' && invJennyWanted()) needs.push(['jenny', { dados: null, motivo: 'carona' }]);
         if (!has('breeding') && typeof breedWanted === 'function' && breedWanted()) needs.push(['breeding', { dados: null, motivo: 'carona' }]);
         return needs;
     }
@@ -5826,6 +5846,7 @@
         if (typeof healBusy === 'function' && healBusy()) return 'cura na Nurse Joy em andamento';
         if (typeof bossBusyReason === 'function' && bossBusyReason()) return bossBusyReason();
         if (typeof bossBusy === 'function' && bossBusy()) return 'Auto Boss em andamento';
+        if (typeof invBusyReason === 'function' && invBusyReason()) return invBusyReason();   // v3.50.0
         if (typeof idleRunning !== 'undefined' && idleRunning) return 'volta da cidade parada em andamento';
         if (huntSwitch) return 'troca de hunt em andamento';
         if (swapPending) return 'troca de líder em andamento';
@@ -5911,6 +5932,7 @@
         if (tripRunning) return 'viagem à cidade em andamento';
         if ((typeof healBusy === 'function' && healBusy())) return 'cura na Nurse Joy em andamento';
         if (typeof bossBusyReason === 'function' && bossBusyReason()) return bossBusyReason();   // v3.43.0
+        if (typeof invBusyReason === 'function' && invBusyReason()) return invBusyReason();   // v3.50.0
         if (typeof idleRunning !== 'undefined' && idleRunning) return 'volta da cidade parada em andamento';
         if (huntSwitch) return 'troca de hunt em andamento';
         if (swapPending) return 'troca de líder em andamento';
@@ -5929,7 +5951,7 @@
     // passagem), a hunt de volta. Na cidade por vontade do jogador: null (a parada na cidade decide depois).
     function resumeSlugNow() {
         const h = huntSlug ? normalize(huntSlug) : null;
-        if (h && !CITY_SLUGS.includes(h) && !(typeof bossIsArena === 'function' && bossIsArena(h))) return h;   // v3.43.0: a arena do Auto Boss não se reentra (o servidor segue a sessão)
+        if (h && !CITY_SLUGS.includes(h) && !(typeof bossIsArena === 'function' && bossIsArena(h)) && !(typeof invIsRaid === 'function' && invIsRaid(h))) return h;   // v3.43.0: a arena do Auto Boss não se reentra (o servidor segue a sessão); v3.50.0: nem a invasão
         const voltando = tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof idleRunning !== 'undefined' && idleRunning);
         const ult = typeof lastRealHunt === 'string' && lastRealHunt ? normalize(lastRealHunt) : null;
         return voltando && ult && !CITY_SLUGS.includes(ult) ? ult : null;
@@ -6025,7 +6047,7 @@
     // o que importa para diagnóstico (import, viagem, clã...). Agora cada tipo barulhento tem cota própria e o resto dura horas.
     const LOG_KEY = 'pgDiscordNotifyLog';
     const LOG_MAX = 200;
-    const LOG_NOISY = { 'socket-fechado': 10, 'humano-desafio': 10, 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10, 'poke-delta': 15, 'pokes-frame': 10, 'pokes-get': 10, guild: 10, 'guild-get': 10, 'auto-boss': 15, ginasio: 10, 'ginasio-global': 10 };
+    const LOG_NOISY = { 'socket-fechado': 10, 'humano-desafio': 10, 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10, 'poke-delta': 15, 'pokes-frame': 10, 'pokes-get': 10, guild: 10, 'guild-get': 10, 'auto-boss': 15, ginasio: 10, 'ginasio-global': 10, 'invasao-wave': 10, 'invasao-energia-pedida': 5, 'invasao-espera': 10, 'invasao-janela': 5 };
 
     function logEvent(kind, data) {
         if (cfg.debug) console.log(TAG, kind, data);
@@ -6255,6 +6277,629 @@
             info.family = r.ok;
             info.familyMotivo = r.motivo || null;
         }
+    }
+
+    // ---- Invasão Rocket (v3.50.0): entrar na invasão de Cerulean a cada janela, voltar para a hunt e trocar os Rocket Plans com a Officer Jenny ----
+    // Patch notes de 27/10/2026 (colado pelo usuário) + bundle do mesmo dia (módulo de constantes `tD` no chunk compartilhado; HUD do jogo
+    // `hh`/`hp`/`hu`/`hx`/`tW`/`ii`; janela `lK` da Officer Jenny). Protocolo em docs/mensagens-do-jogo.md → "Invasão Rocket".
+    //   - Janela: a cada 2 h nas horas PARES de Brasília (`INVASION_EVERY_MS` 7 200 000; `scheduledWindow`: início = hora par BRT,
+    //     `entryUntil` = +10 min, `endsAt` = +30 min). O servidor manda `invasion-state { live, entryOpen, entryUntil, endsAt }` a todos e
+    //     `invasion-announce { text, until }` (a Oficial chama o jogador pelo nome). Energia: `invasion-energy-get` → `invasion-energy
+    //     { energy, live, entryOpen, entryUntil, endsAt }` (a tela pede ao montar e 0–3 s depois de cada `invasion-state` com entrada aberta).
+    //   - Entrar = o botão INVASÃO da cidade: a tela só viaja para o mapa `rocket_cerulean` (`ROCKET_SLUG`; desenho de cerulean_novo) e o
+    //     componente da hunt manda `enter-hunt { slug:'rocket_cerulean' }` — a invasão É uma hunt de slug fixo, como a arena do boss
+    //     (`*_boss`) e a pesca (`pesca`). Recusa = `invasion-refused { message }` (sem Energia Vermelha, entrada fechada, líder caído...).
+    //     1 Energia Vermelha por entrada (2 por dia, acumula 10; 15 💎 na Loja de Diamantes — o script NUNCA compra); uma entrada por invasão.
+    //   - Lá dentro: 10 s de apresentação, waves de 20 duplas (`PAIRS_PER_WAVE`), frames `field` normais com `wave` e um `field-kill` por
+    //     Rocket derrubado; sem vantagem de tipo. Acaba por `wipe` (time caiu), `time` (30 min), `stall` (3 min sem abate), `left` ou
+    //     `restart` → `invasion-end { wave, bestWave, reason, kills, xp, tier, level, levelBefore, reward{ qty, name, icon }, milestones[],
+    //     outfitReward{ items[{ looktype, gender, milestone }], equipped } }` (janela "Resultado da Invasão Rocket").
+    //   - Rocket Plans = item 240 (`REWARD_ITEM_ID`): não vendem, não trocam, não vão para a família → fora da venda e do guardar.
+    //   - Officer Jenny (NPC `officer_jenny` do Shopping): `GET /api/game/officer-jenny` → `{ balance, token{ name, icon }, offers[{ key,
+    //     name, qty, cost, icon, description, owned, looktype, kind }] }`; `POST /api/game/officer-jenny/exchange { offer:key }` → `{ prize{
+    //     kind, name, qty, icon, looktype } }` (a tela manda `inv-get` depois). Preços do anúncio: 100 Idle Balls 200, Bronze Boss Token
+    //     1 500, outfits 5 000/10 000 (uma por gênero), Police Bravery Medal 15 000 (+2 IV, uma por Pokémon, para sempre — o script no
+    //     máximo COMPRA a medalha; em quem usar é escolha do jogador).
+    // Formatos ainda NÃO vistos no log (patch de hoje): `invasao-campos` registra as chaves do 1º frame de cada tipo; `jenny-campos` idem.
+    // Fluxo: `invTick` (30 s) → entrada aberta + hora aceita (`invHours`, vazio = todas) + energia > reserva (`invKeepEnergy`) + nada em
+    // andamento (viagem/cura/boss/espera/humano/troca) → `invEnterFlow`: guarda a hunt de volta (`invRun.from`; registro em
+    // localStorage[INV_KEY] para sobreviver à recarga), sai da hunt (tela → cidade; `set-city` nós mesmos se ela não for),
+    // `switchHunt('rocket_cerulean', 1, 'invasao')` (enter-hunt + `hunt-resume` sintético para a tela viajar). `invasion-end` → log e aviso,
+    // `set-city`, `joy-heal` se o time caiu, volta com `switchHunt(from, 1, 'invasao-volta')`. Janela encerrada sem `invasion-end` (recarga
+    // no meio, tela saiu) = volta do mesmo jeito. Enquanto entra/está dentro/volta (`invBusy()`), viagem, parada na cidade, recarga, rotas,
+    // troca de líder e cura esperam — sair da hunt encerra a rodada (o que foi conquistado fica salvo). `invIsRaid(slug)` tira a invasão de
+    // `lastRealHunt`, da retomada da recarga e da espera na cidade. Entrada feita na mão (botão da tela) também é acompanhada e volta.
+    // Jenny: com `invJennyEnabled` + oferta escolhida (`invJennyOffer`, chave da oferta lida da janela), lê o saldo após cada rodada e a cada
+    // 2 h; saldo − reserva (`invJennyKeep`) ≥ custo → tarefa `jenny` da viagem (`set-city shopping`, exchange; repete enquanto der, outfit 1x).
+
+    const INV_SLUG = 'rocket_cerulean';           // `ROCKET_SLUG` do bundle
+    const INV_EVERY_MS = 2 * 60 * 60 * 1000;      // `INVASION_EVERY_MS`: horas pares de Brasília
+    const INV_ENTRY_MS = 10 * 60 * 1000;          // `ENTRY_WINDOW_MS`
+    const INV_RAID_MS = 30 * 60 * 1000;           // `RAID_DURATION_MS`
+    const INV_BRT_OFFSET_MS = 3 * 60 * 60 * 1000; // Brasília = UTC−3 (o jogo usa o deslocamento fixo −108e5)
+    const INV_ENERGY_MAX = 10;                    // `ENERGY_MAX`
+    const INV_ENERGY_PER_DAY = 2;                 // `ENERGY_PER_DAY`
+    const INV_PLANS_ITEM_ID = 240;                // `REWARD_ITEM_ID`: Rocket Plans
+    const INV_KANTO_STEPS = [1, 10, 20, 30, 40, 50, 60, 70, 80, 100, 150];   // faixas Kanto do `invasionTierForLevel` (150 = Outland)
+    const INV_TICK_MS = 30 * 1000;
+    const INV_ENTER_DELAY_MS = 20 * 1000;         // entra 20 s depois da abertura (anúncio, outros jogadores; nada de correr)
+    const INV_CITY_WAIT_MS = 10 * 1000;           // a tela não viajou depois do teleporte sintético: `set-city` nós mesmos
+    const INV_LEAVE_WAIT_MS = 1500;
+    const INV_HEAL_WAIT_MS = 2500;
+    const INV_END_WAIT_MS = 4000;                 // `invasion-end` → espera a janela de resultado antes de sair/voltar
+    const INV_ENTER_TIMEOUT_MS = 3 * 60 * 1000;   // entrada que não confirmou (o switchHunt já avisa em 30 s; isto é a rede de segurança)
+    const INV_RESULT_GRACE_MS = 90 * 1000;        // janela encerrada (endsAt) sem `invasion-end`: espera isto e volta mesmo assim
+    const INV_GONE_MS = 60 * 1000;                // fora da hunt da invasão há 1 min sem `invasion-end` = rodada acabou
+    const INV_ENERGY_STALE_MS = 15 * 60 * 1000;   // energia sem leitura há 15 min: pede de novo antes de decidir
+    const INV_ENERGY_ASK_GAP_MS = 20 * 1000;
+    const INV_KEY = 'pgDiscordNotifyInvasion';
+    const INV_RUN_MAX_AGE_MS = 60 * 60 * 1000;    // registro da rodada (recarga no meio) vale 1 h
+    const INV_JENNY_URL = '/api/game/officer-jenny';
+    const INV_JENNY_POLL_MS = 2 * 60 * 60 * 1000;
+    const INV_JENNY_RETRY_MS = 15 * 60 * 1000;
+    const INV_JENNY_CITY = 'shopping';
+    const INV_JENNY_CITY_WAIT_MS = 3000;
+    const INV_JENNY_BETWEEN_MS = 1200;
+    const INV_JENNY_MAX_PER_TRIP = 20;
+    const INV_REASON_LABEL = { wipe: 'todo o time caiu', time: 'a invasão terminou', stall: '3 min sem derrubar ninguém', left: 'saiu da invasão', restart: 'o servidor reiniciou' };
+
+    let invWindowSrv = null;    // último `invasion-state`/`invasion-energy` do servidor: { live, entryOpen, entryUntil, endsAt, at }
+    let invStateLogged = 0;     // janela (startedAt) cujo `invasion-state` já foi logado
+    let invEnergy = null;       // Energia Vermelha (null = nunca lida)
+    let invEnergyAt = 0;
+    let invEnergyAskedAt = 0;
+    let invRun = null;          // rodada: { from, origem, at, windowStart, endsAt, fase, entered, enteredAt, lastFieldAt, wave, kills, ended, result }
+    let invTried = {};          // windowStart -> o que aconteceu nesta janela ('entrou', 'hora fora da lista', 'energia …'): não repete
+    let invLast = null;         // último resultado (`invasion-end` normalizado)
+    let invRefused = null;      // última recusa { at, message }
+    let invWaitNote = null;     // por que não entrou ainda (bloqueio do momento), para o painel e o log
+    let invWaitLoggedAt = 0;
+    let invCityWaiter = null;
+    let invFieldsLogged = {};
+    let invAnnounceLoggedAt = 0;
+    let invJenny = null;        // { balance, token, offers[{ key, name, qty, cost, owned, kind, description }], at }
+    let invJennyAt = 0;
+    let invJennyFailedAt = 0;
+    let invJennyWorking = false;
+    let invJennyLast = null;    // { at, feitas:[{ name, qty }], oferta }
+    let onInvChange = null;     // painel (aba Invasão)
+
+    function invOn(d) { return Boolean((d || cfg).invEnabled); }
+    function invJennyOffer(d) { return String((d || cfg).invJennyOffer || '').trim(); }
+    function invJennyOn(d) { d = d || cfg; return Boolean(d.invJennyEnabled) && Boolean(invJennyOffer(d)); }
+    function invIsRaid(slug) { return normalize(slug || '') === INV_SLUG; }
+    function invKeepEnergy(d) { return Math.max(0, Math.min(INV_ENERGY_MAX, Math.floor(Number((d || cfg).invKeepEnergy) || 0))); }
+    function invJennyKeep(d) { return Math.max(0, Math.floor(Number((d || cfg).invJennyKeep) || 0)); }
+    function invNotify() { if (onInvChange) { try { onInvChange(); } catch { /* painel fechado */ } } }
+    function invWait(ms) { return new Promise(r => setTimeout(r, ms)); }
+    function invFmt(ms) {
+        const s = Math.max(0, Math.round(ms / 1000));
+        if (s < 60) return `${s} s`;
+        const m = Math.floor(s / 60);
+        return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`;
+    }
+    function invHora(ts) { return new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }); }
+    // Hora de Brasília (0..23) de um instante — o horário das janelas é fixo em BRT, seja qual for o fuso do PC.
+    function invHourOf(ts) { return Math.floor((((ts - INV_BRT_OFFSET_MS) % 86400000) + 86400000) % 86400000 / 3600000); }
+    // Início da janela de 2 h (hora par BRT) que contém `now` — porte de `invasionStartAt` do bundle.
+    function invWindowStart(now) {
+        now = now ?? Date.now();
+        const r = new Date(now - INV_BRT_OFFSET_MS);
+        const midnight = Date.UTC(r.getUTCFullYear(), r.getUTCMonth(), r.getUTCDate()) + INV_BRT_OFFSET_MS;
+        return midnight + INV_EVERY_MS * Math.floor((now - midnight) / INV_EVERY_MS);
+    }
+    // Janela da vez pelo relógio, corrigida pelo que o servidor disse desta MESMA janela (`invasion-state`/`invasion-energy`).
+    function invWindowAt(now) {
+        now = now ?? Date.now();
+        const s = invWindowStart(now);
+        const w = { startedAt: s, entryUntil: s + INV_ENTRY_MS, endsAt: s + INV_RAID_MS, nextAt: s + INV_EVERY_MS, fonte: 'relógio' };
+        const sv = invWindowSrv;
+        if (sv && sv.entryUntil > s && sv.entryUntil <= s + INV_EVERY_MS) {
+            w.entryUntil = sv.entryUntil;
+            if (sv.endsAt > s) w.endsAt = sv.endsAt;
+            w.fonte = 'servidor';
+            if (sv.live === false && now - sv.at < 60 * 1000) { w.entryUntil = Math.min(w.entryUntil, sv.at); w.endsAt = Math.min(w.endsAt, sv.at); }   // o servidor disse que já acabou
+        }
+        w.live = now < w.endsAt;
+        w.entryOpen = now < w.entryUntil;
+        return w;
+    }
+    // Horas pares aceitas (texto "0, 2, 14" ou lista); vazio = toda invasão.
+    function invHours(d) {
+        const raw = (d || cfg).invHours;
+        const list = Array.isArray(raw) ? raw : String(raw || '').split(/[\s,;]+/);
+        const out = [];
+        for (const x of list) {
+            const tx = String(x).trim();
+            if (!tx) continue;
+            const n = Number(tx.replace(/h$/i, ''));
+            if (Number.isInteger(n) && n >= 0 && n <= 23 && n % 2 === 0 && !out.includes(n)) out.push(n);
+        }
+        return out.sort((a, b) => a - b);
+    }
+    function invHourOk(start, d) { const hs = invHours(d); return !hs.length || hs.includes(invHourOf(start)); }
+    function invNextAllowedStart(base, d) { let s = base; for (let i = 0; i < 13; i++) { if (invHourOk(s, d)) return s; s += INV_EVERY_MS; } return s; }
+    function invTeamTop() { return (Array.isArray(team) ? team : []).reduce((m, p) => Math.max(m, Number(p?.level) || 0), 0); }
+    // Rótulo da faixa pelo nível do Pokémon mais forte do time (porte de `invasionTierForLevel`; o servidor decide, isto é só previsão).
+    function invTierLabel(level) {
+        const t = Math.max(1, Math.floor(level) || 1);
+        const pct = (a, b) => Math.round((1 - (0.5 + 0.5 * Math.min(1, Math.max(0, (t - a) / (b - a))))) * 100);
+        if (t >= 3500) return 'Nightmare 3000';
+        if (t >= 2000) { const o = pct(2000, 3499); return o > 0 ? `Nightmare 2000 (−${o}%)` : 'Nightmare 2000'; }
+        if (t >= 1000) return 'Orre 600';
+        if (t >= 500) { const o = pct(500, 999); return o > 0 ? `Orre 520 (−${o}%)` : 'Orre 520'; }
+        if (t >= 251) return 'Outland+';
+        if (t >= 151) return 'Outland';
+        if (t >= 91) return 'Kanto 100';
+        let best = INV_KANTO_STEPS[0];
+        for (const s of INV_KANTO_STEPS) if (Math.abs(t - s) < Math.abs(t - best)) best = s;
+        return best === 150 ? 'Outland' : `Kanto ${best}`;
+    }
+    function invBusy() { return Boolean(invRun); }
+    function invBusyReason() {
+        if (!invRun) return null;
+        if (invRun.fase === 'dentro') return `Invasão Rocket em andamento (wave ${invRun.wave || '?'}, ${invRun.kills || 0} Rockets)`;
+        return `Invasão Rocket: ${invRun.fase}`;
+    }
+    // Rocket Plans ficam fora da venda de drops e do guardar na cidade (o jogo recusa; evita erro em toda viagem).
+    function invKeepsItem(id) { return Number(id) === INV_PLANS_ITEM_ID; }
+    function invLogFields(tipo, m) {
+        if (invFieldsLogged[tipo]) return;
+        invFieldsLogged[tipo] = true;
+        const sub = {};
+        for (const k of ['reward', 'outfitReward', 'token']) if (m && m[k] && typeof m[k] === 'object') sub[k] = Object.keys(m[k]);
+        logEvent('invasao-campos', { tipo, chaves: Object.keys(m || {}).filter(k => k !== 'type'), sub, exemplo: tipo === 'field' ? { wave: m?.wave ?? null } : m });
+    }
+    function invSave() {
+        try {
+            if (invRun && !invRun.ended) localStorage.setItem(INV_KEY, JSON.stringify({ from: invRun.from, origem: invRun.origem, at: invRun.at, windowStart: invRun.windowStart, endsAt: invRun.endsAt, enteredAt: invRun.enteredAt || 0, kills: invRun.kills || 0, wave: invRun.wave || 0 }));
+            else localStorage.removeItem(INV_KEY);
+        } catch { /* sem espaço: a rodada vale só nesta carga */ }
+    }
+    // Carga nova no meio de uma rodada (⟳ do PokeGrid, recarga automática): a hunt de volta e o progresso voltam; o tique decide.
+    function invLoad() {
+        let rec = null;
+        try { rec = JSON.parse(localStorage.getItem(INV_KEY) || 'null'); } catch { rec = null; }
+        if (!rec || typeof rec !== 'object') return;
+        const idade = Date.now() - (Number(rec.at) || 0);
+        if (idade < 0 || idade > INV_RUN_MAX_AGE_MS) { try { localStorage.removeItem(INV_KEY); } catch { /* nada */ } return; }
+        const at = Number(rec.at) || Date.now();
+        invRun = {
+            from: rec.from ? String(rec.from) : null, origem: 'lembrado', at, loadedAt: Date.now(), windowStart: Number(rec.windowStart) || invWindowStart(at),
+            endsAt: Number(rec.endsAt) || invWindowAt(at).endsAt, fase: 'dentro', entered: true, enteredAt: Number(rec.enteredAt) || at, lastFieldAt: 0,
+            wave: Math.max(0, Number(rec.wave) || 0), kills: Math.max(0, Number(rec.kills) || 0), ended: false, result: null,
+        };
+        invTried[invRun.windowStart] = 'entrou';
+        logEvent('invasao-lembrada', { from: invRun.from, idadeMin: Math.round(idade / 60000), wave: invRun.wave, kills: invRun.kills, acabaEm: invFmt(invRun.endsAt - Date.now()) });
+        invNotify();
+    }
+    function invAskEnergy(motivo) {
+        invEnergyAskedAt = Date.now();
+        const ok = sendGame({ type: 'invasion-energy-get' });
+        logEvent('invasao-energia-pedida', { motivo, enviado: ok });
+        return ok;
+    }
+    function invOnSocket() { if (invOn() || invRun) invAskEnergy('socket'); }
+    function invOnSetCity() { if (invCityWaiter) invCityWaiter(true); }
+    function invWaitCity(ms) {
+        return new Promise(resolve => {
+            let done = false;
+            const fim = (ok) => { if (!done) { done = true; if (invCityWaiter === fim) invCityWaiter = null; resolve(ok); } };
+            invCityWaiter = fim;
+            setTimeout(() => fim(false), ms);
+        });
+    }
+    // Hunt para onde voltar depois da rodada: a hunt atual (fora de cidade/arena/invasão) ou o destino da parada na cidade.
+    function invFromSlug() {
+        const h = normalize(huntSlug || '');
+        if (h && !CITY_SLUGS.includes(h) && !invIsRaid(h) && !(typeof bossIsArena === 'function' && bossIsArena(h))) return h;
+        const t = typeof idleTarget === 'function' ? idleTarget() : null;   // clã > rota > última hunt > hunt padrão
+        return t?.slug || null;
+    }
+    // O que impede a entrada agora (null = pode entrar). Mesma lista de bloqueios das outras rotas, com nome.
+    function invBlockedReason() {
+        if (typeof holdReason === 'function' && holdReason()) return holdReason();
+        if (typeof humanPending === 'function' && humanPending()) return 'verificação humana pendente';
+        if (typeof bossBusyReason === 'function' && bossBusyReason()) return bossBusyReason();
+        if (typeof tripRunning !== 'undefined' && tripRunning) return 'viagem à cidade em andamento';
+        if (typeof healBusy === 'function' && healBusy()) return 'cura na Nurse Joy em andamento';
+        if (typeof idleRunning !== 'undefined' && idleRunning) return 'volta da cidade parada em andamento';
+        if (typeof huntSwitch !== 'undefined' && huntSwitch) return `troca para ${huntSwitch.slug} em andamento`;
+        if (typeof swapPending !== 'undefined' && swapPending) return 'troca de líder em andamento';
+        if (typeof sellRunning !== 'undefined' && sellRunning) return 'venda em andamento';
+        if (typeof resumeHunt !== 'undefined' && resumeHunt) return 'volta da recarga pendente';
+        if (typeof dailyAutoBusy !== 'undefined' && dailyAutoBusy) return 'Daily Kill sozinha decidindo';
+        if (typeof awaitingDetails !== 'undefined' && awaitingDetails.length) return 'captura aguardando detalhes';
+        return null;
+    }
+    function invSetWait(motivo) {
+        if (motivo !== invWaitNote) { invWaitNote = motivo; invNotify(); }
+        if (!motivo) return;
+        if (Date.now() - invWaitLoggedAt < 60 * 1000) return;
+        invWaitLoggedAt = Date.now();
+        logEvent('invasao-espera', { motivo });
+    }
+
+    // Tique (30 s): fora de rodada, decide se entra; em rodada, vigia o fim.
+    function invTick() {
+        const now = Date.now();
+        if (invRun) { invRunTick(now); return; }
+        invJennyTick(now);
+        if (!invOn()) { invSetWait(null); return; }
+        const w = invWindowAt(now);
+        if (!w.entryOpen) { invSetWait(null); return; }
+        if (invTried[w.startedAt]) return;
+        const janela = `${invHourOf(w.startedAt)}h`;
+        if (!invHourOk(w.startedAt)) { invTried[w.startedAt] = 'hora fora da lista'; logEvent('invasao-pulada', { janela, motivo: 'hora fora da lista', horas: invHours() }); invNotify(); return; }
+        if (invEnergy == null || now - invEnergyAt > INV_ENERGY_STALE_MS) {
+            if (now - invEnergyAskedAt > INV_ENERGY_ASK_GAP_MS) invAskEnergy(invEnergy == null ? 'energia nunca lida' : 'energia velha');
+            invSetWait('esperando a leitura da Energia Vermelha');
+            return;
+        }
+        if (invEnergy <= invKeepEnergy()) {
+            invTried[w.startedAt] = invEnergy <= 0 ? 'sem Energia Vermelha' : `energia ${invEnergy} ≤ reserva ${invKeepEnergy()}`;
+            logEvent('invasao-pulada', { janela, motivo: invTried[w.startedAt], energia: invEnergy, reserva: invKeepEnergy() });
+            invSetWait(null); invNotify();
+            return;
+        }
+        if (now - w.startedAt < INV_ENTER_DELAY_MS) return;   // deixa a abertura assentar (anúncio, outros jogadores)
+        const bloqueio = invBlockedReason();
+        if (bloqueio) { invSetWait(bloqueio); return; }   // tenta no próximo tique enquanto a entrada estiver aberta
+        invSetWait(null);
+        invTried[w.startedAt] = 'entrou';
+        invEnterFlow(w, 'tique');
+    }
+    function invRunTick(now) {
+        const r = invRun;
+        if (r.ended) return;   // voltando
+        const raidNow = invIsRaid(huntSlug);
+        if (r.fase === 'dentro') {
+            if (raidNow && now - (r.lastFieldAt || now) < INV_GONE_MS) return;   // frames chegando: rodada viva (mesmo depois do endsAt previsto)
+            if (r.origem === 'lembrado' && !raidNow && !r.lastFieldAt && now - (r.loadedAt || r.at) > 15 * 1000) { invFinishSilent(r, 'recarga no meio da rodada (a conta nasceu na cidade)'); return; }
+            if (now > r.endsAt + INV_RESULT_GRACE_MS) { invFinishSilent(r, 'janela encerrada sem invasion-end'); return; }
+            const base = r.lastFieldAt || (r.origem === 'lembrado' ? r.loadedAt : 0) || r.enteredAt || r.at;   // lembrada: conta a partir da carga
+            if (!raidNow && now - base > INV_GONE_MS) { invFinishSilent(r, 'fora da hunt da invasão há 1 min sem invasion-end'); return; }
+            return;
+        }
+        if (now - r.at > INV_ENTER_TIMEOUT_MS) invAbort('a entrada não confirmou em 3 min');
+    }
+
+    async function invEnterFlow(w, origem) {
+        const from = invFromSlug();
+        invRun = { from, origem, at: Date.now(), windowStart: w.startedAt, endsAt: w.endsAt, fase: 'saindo da hunt', entered: false, enteredAt: 0, lastFieldAt: 0, wave: 0, kills: 0, ended: false, result: null };
+        const r = invRun;
+        invSave(); invNotify();
+        logEvent('invasao-entrada', { fase: 'inicio', origem, from, hunt: huntSlug || null, energia: invEnergy, janela: `${invHourOf(w.startedAt)}h`, fechaEm: invFmt(w.entryUntil - Date.now()), faixa: invTierLabel(invTeamTop()), timeLv: invTeamTop() });
+        try {
+            const emHunt = typeof tripInHunt === 'function' ? tripInHunt() : Boolean(normalize(huntSlug || '')) && !CITY_SLUGS.includes(normalize(huntSlug || ''));
+            if (emHunt) {
+                sendGame({ type: 'leave-hunt' });
+                const tela = typeof nudgeClientToCity === 'function' ? nudgeClientToCity() : false;
+                const chegou = await invWaitCity(INV_CITY_WAIT_MS);
+                if (invRun !== r) return;
+                if (!chegou) sendGame({ type: 'set-city', slug: 'cerulean' });   // a tela não viajou: avisa o servidor nós mesmos
+                logEvent('invasao-entrada', { fase: 'cidade', pelaTela: chegou, tela });
+                await invWait(INV_LEAVE_WAIT_MS);
+            }
+            if (invRun !== r) return;   // recusa/cancelamento no meio
+            r.fase = 'entrando'; invNotify();
+            const ok = switchHunt(INV_SLUG, 1, 'invasao');
+            logEvent('invasao-entrada', { fase: 'enter-hunt', enviado: ok });
+            if (!ok && invRun === r) invAbort('a troca de hunt foi recusada (espera na cidade ligada?)');
+        } catch (err) { if (invRun === r) invAbort(String(err?.message || err)); }
+    }
+    // Entrada que não aconteceu: registra, avisa e devolve a conta à hunt (ela ficou na cidade).
+    function invAbort(porque) {
+        const r = invRun;
+        if (!r) return;
+        invRun = null; invSave();
+        logEvent('invasao-entrada', { fase: 'falhou', porque, origem: r.origem, from: r.from, hunt: huntSlug || null });
+        if (cfg.invAlerts !== false) {
+            const who = playerName();
+            postWebhook('alert', {
+                content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: não entrei na Invasão Rocket — ${porque}`,
+                username: 'Poke Idle World',
+                embeds: [{ title: 'Invasão Rocket: entrada falhou', color: 0xed4245, description: (who ? `Conta: ${who}\n` : '') + `${porque}.${r.from ? ` Voltando para ${r.from}.` : ' A parada na cidade decide a volta.'}${invEnergy != null ? `\nEnergia Vermelha: ${invEnergy}/${INV_ENERGY_MAX}` : ''}` }],
+            }, { evento: 'invasao-entrada-falhou', porque });
+        }
+        if (r.from && !(typeof holdActive === 'function' && holdActive())) {
+            setTimeout(() => { if (!invRun) logEvent('invasao-volta', { para: r.from, motivo: 'entrada falhou', enviado: switchHunt(r.from, 1, 'invasao-volta') }); }, INV_LEAVE_WAIT_MS);
+        }
+        invNotify();
+    }
+    // `confirmHuntSwitch` sem frame em 30 s (2 tentativas) para as nossas trocas.
+    function invHuntFailed(slug, origem) {
+        if (origem === 'invasao') { if (invRun && !invRun.entered) invAbort('nenhum frame da invasão chegou em 30 s após duas tentativas'); return; }
+        if (origem === 'invasao-volta') logEvent('invasao-volta', { para: slug, fase: 'falhou', motivo: 'a parada na cidade tenta depois' });
+    }
+    // `setHunt`: a hunt virou a invasão (nossa entrada confirmando, ou o jogador clicou INVASÃO na tela / carga no meio da rodada).
+    function invOnHuntChange(novo) {
+        if (!invIsRaid(novo)) return;
+        const now = Date.now();
+        if (!invRun) {
+            const w = invWindowAt(now);
+            invRun = { from: invFromSlug(), origem: 'tela', at: now, windowStart: w.startedAt, endsAt: w.endsAt, fase: 'dentro', entered: true, enteredAt: now, lastFieldAt: now, wave: 0, kills: 0, ended: false, result: null };
+            invTried[w.startedAt] = 'entrou (tela)';
+            logEvent('invasao-entrada', { fase: 'tela', from: invRun.from, janela: `${invHourOf(w.startedAt)}h`, acabaEm: invFmt(w.endsAt - now) });
+        } else if (!invRun.entered || invRun.fase !== 'dentro') {
+            invRun.entered = true; invRun.enteredAt = now; invRun.lastFieldAt = now; invRun.fase = 'dentro';
+            logEvent('invasao-entrada', { fase: 'dentro', origem: invRun.origem, segundos: Math.round((now - invRun.at) / 1000), from: invRun.from });
+            if (invJennyOn()) invJennyAt = 0;   // a rodada vai render Plans: relê a Jenny depois
+        }
+        invSave(); invNotify();
+    }
+    function invOnField(m) {
+        if (!invRun || invRun.ended || !invIsRaid(huntSlug)) return;
+        const r = invRun;
+        r.lastFieldAt = Date.now();
+        if (r.fase !== 'dentro') { r.fase = 'dentro'; r.entered = true; r.enteredAt = r.enteredAt || Date.now(); }
+        invLogFields('field', m);
+        const w = Number(m?.wave);
+        if (Number.isFinite(w) && w > 0 && w !== r.wave) { r.wave = w; logEvent('invasao-wave', { wave: w, kills: r.kills }); invSave(); invNotify(); }
+    }
+    function invOnKill(m) {
+        if (!invRun || invRun.ended || !invIsRaid(huntSlug)) return;
+        const r = invRun;
+        r.kills = (r.kills || 0) + 1;
+        r.lastFieldAt = Date.now();
+        if (r.kills <= 2) logEvent('invasao-abate', { speciesName: m?.speciesName ?? null, shiny: Boolean(m?.shiny), level: m?.level ?? null, xp: m?.xpGained ?? null, loot: Array.isArray(m?.loot) ? m.loot.length : null });
+        if (r.kills % 20 === 0) invSave();
+        invNotify();
+    }
+    // Frames `invasion-*` do servidor.
+    function invOnMessage(m) {
+        const t = String(m.type || '');
+        if (t === 'invasion-state' || t === 'invasion-energy') {
+            invLogFields(t, m);
+            if (typeof m.entryUntil === 'number') invWindowSrv = { live: Boolean(m.live), entryOpen: Boolean(m.entryOpen), entryUntil: Number(m.entryUntil), endsAt: Number(m.endsAt) || 0, at: Date.now() };
+            if (t === 'invasion-energy') {
+                const e = Number(m.energy);
+                if (Number.isFinite(e)) { const antes = invEnergy; invEnergy = Math.max(0, e); invEnergyAt = Date.now(); if (antes !== invEnergy) logEvent('invasao-energia', { energia: invEnergy, antes }); }
+            } else {
+                const w = invWindowAt();
+                if (invStateLogged !== w.startedAt) { invStateLogged = w.startedAt; logEvent('invasao-janela', { janela: `${invHourOf(w.startedAt)}h`, live: Boolean(m.live), entradaAberta: Boolean(m.entryOpen), entradaAte: m.entryUntil ? invHora(m.entryUntil) : null, acabaAs: m.endsAt ? invHora(m.endsAt) : null }); }
+                if (m.entryOpen && (invOn() || invRun) && Date.now() - invEnergyAskedAt > INV_ENERGY_ASK_GAP_MS) setTimeout(() => invAskEnergy('invasion-state'), 2000 + Math.floor(Math.random() * 3000));
+            }
+            invNotify();
+            return;
+        }
+        if (t === 'invasion-announce') {
+            if (Date.now() - invAnnounceLoggedAt > 10 * 60 * 1000) { invAnnounceLoggedAt = Date.now(); invLogFields(t, m); logEvent('invasao-anuncio', { texto: String(m.text || '').slice(0, 200), ateAs: m.until ? invHora(m.until) : null }); }
+            return;
+        }
+        if (t === 'invasion-refused') { invLogFields(t, m); invOnRefused(String(m.message || '')); return; }
+        if (t === 'invasion-end') { invLogFields(t, m); invOnEnd(m); return; }
+        invLogFields(t, m);
+    }
+    function invOnRefused(message) {
+        invRefused = { at: Date.now(), message };
+        logEvent('invasao-recusada', { mensagem: message, fase: invRun?.fase || null, origem: invRun?.origem || null, energia: invEnergy, hunt: huntSlug || null });
+        if (invRun && !invRun.entered) {
+            if (typeof huntSwitch !== 'undefined' && huntSwitch && huntSwitch.slug === INV_SLUG) { clearTimeout(huntSwitch.timer); huntSwitch = null; }   // não insiste: o jogo já disse não
+            invAbort(`o jogo recusou (${message || 'sem motivo'})`);
+        }
+        invNotify();
+    }
+    function invOnEnd(m) {
+        const r = invRun;
+        const n = (v) => Math.max(0, Number(v) || 0);
+        const res = {
+            at: Date.now(), reason: m.reason ? String(m.reason) : null, wave: n(m.wave), bestWave: n(m.bestWave), kills: n(m.kills), xp: n(m.xp),
+            tier: m.tier ? String(m.tier) : null, level: n(m.level), levelBefore: typeof m.levelBefore === 'number' ? m.levelBefore : null,
+            plans: n(m.reward?.qty), plansName: m.reward?.name ? String(m.reward.name) : 'Rocket Plans',
+            milestones: Array.isArray(m.milestones) ? m.milestones.map(Number).filter(Number.isFinite) : (m.milestone ? [Number(m.milestone)] : []),
+            outfit: Array.isArray(m.outfitReward?.items) ? m.outfitReward.items.length : 0,
+            from: r?.from || null, origem: r?.origem || 'sem rodada acompanhada', killsVistos: r?.kills || 0,
+        };
+        invLast = res;
+        logEvent('invasao-fim', { motivo: res.reason, wave: res.wave, recorde: res.bestWave, rockets: res.kills, abatesVistos: res.killsVistos, xp: res.xp, faixa: res.tier, nivel: res.level, nivelAntes: res.levelBefore, plans: res.plans, marcos: res.milestones, outfit: res.outfit, origem: res.origem, from: res.from, hunt: huntSlug || null });
+        if (cfg.invAlerts !== false) invAlertEnd(res);
+        if (invJennyOn()) invJennyAt = 0;   // o saldo de Plans mudou: relê a Jenny no próximo tique
+        if (r && !r.ended) { r.result = res; invReturnFlow(r, res.reason === 'wipe'); }
+        invNotify();
+    }
+    function invFinishSilent(r, motivo) {
+        logEvent('invasao-fim', { motivo, semFrame: true, wave: r.wave, abatesVistos: r.kills, origem: r.origem, from: r.from, hunt: huntSlug || null });
+        invReturnFlow(r, false);
+    }
+    // Fim da rodada: espera a janela de resultado, garante a conta na cidade, cura se o time caiu e volta para a hunt de origem.
+    async function invReturnFlow(r, caiu) {
+        r.ended = true; r.fase = 'voltando'; invSave(); invNotify();
+        try {
+            await invWait(INV_END_WAIT_MS);
+            if (invRun !== r) return;
+            const h = normalize(huntSlug || '');
+            if (h && !CITY_SLUGS.includes(h)) { sendGame({ type: 'leave-hunt' }); sendGame({ type: 'set-city', slug: 'cerulean' }); await invWait(INV_LEAVE_WAIT_MS); }
+            if (invRun !== r) return;
+            if (caiu) { sendGame({ type: 'joy-heal' }); await invWait(INV_HEAL_WAIT_MS); }   // grátis; líder em hp 0 = a tela recusa viajar
+            if (invRun !== r) return;
+            const para = r.from;
+            if (!para) { logEvent('invasao-volta', { para: null, motivo: 'sem hunt de volta (a parada na cidade decide)', curou: caiu }); return; }
+            if (typeof holdActive === 'function' && holdActive()) { logEvent('invasao-volta', { para, motivo: 'espera na cidade ligada: fica', curou: caiu }); return; }
+            const ok = switchHunt(para, 1, 'invasao-volta');
+            logEvent('invasao-volta', { para, enviado: ok, curou: caiu, motivo: r.result?.reason || 'fim' });
+        } finally {
+            if (invRun === r) { invRun = null; invSave(); invNotify(); }
+        }
+    }
+    function invAlertEnd(r) {
+        const who = playerName();
+        const conta = who ? `**${who}**` : 'Sua conta';
+        const up = r.levelBefore != null && r.level > r.levelBefore ? ` (+${r.level - r.levelBefore})` : '';
+        const recorde = r.wave > 0 && r.bestWave > 0 && r.wave >= r.bestWave ? ' 🏅 recorde' : '';
+        postWebhook('alert', {
+            content: `🚀 ${conta}: Invasão Rocket — wave **${r.wave}**${recorde}, ${r.kills} Rockets, **${fmtNum(r.plans)} ${r.plansName}**${r.tier ? ` · ${r.tier}` : ''}`,
+            username: 'Poke Idle World',
+            embeds: [{
+                title: `Invasão Rocket: ${INV_REASON_LABEL[r.reason] || r.reason || 'fim da rodada'}`,
+                color: r.reason === 'wipe' ? 0xed4245 : 0x5865f2,
+                description: (who ? `Conta: ${who}\n` : '') + `Wave ${r.wave}${r.bestWave ? ` (recorde ${r.bestWave})` : ''} · ${r.kills} Rockets derrotados · ${fmtNum(r.xp)} XP\nNível de Invasão ${r.level}${up}${r.milestones.length ? ` · 🏁 marco ${r.milestones.join(', ')}` : ''}${r.outfit ? ' · outfit nova' : ''}\nRecompensa: ${fmtNum(r.plans)} ${r.plansName}${r.from ? `\nVolta para ${r.from}` : ''}`,
+            }],
+        }, { evento: 'invasao-fim', wave: r.wave, plans: r.plans, motivo: r.reason });
+    }
+    // Botão "Entrar agora" do painel: entrada aberta e energia → entra já (ignora a lista de horas e a reserva).
+    function invNow() {
+        if (invRun) return { ok: false, msg: `Já há uma rodada em andamento (${invRun.fase}).` };
+        const w = invWindowAt();
+        if (!w.entryOpen) {
+            const prox = w.nextAt;   // o botão não olha a lista de horas
+            return { ok: false, msg: `Entrada fechada agora${w.live ? ' (invasão em andamento)' : ''}. Próxima às ${invHora(prox)} (${invFmt(prox - Date.now())}).` };
+        }
+        if (invEnergy != null && invEnergy <= 0) return { ok: false, msg: 'Sem Energia Vermelha (2 por dia; o script não compra com diamantes).' };
+        const bloqueio = invBlockedReason();
+        if (bloqueio) return { ok: false, msg: `Não dá agora: ${bloqueio}.` };
+        invTried[w.startedAt] = 'entrou (botão)';
+        invEnterFlow(w, 'botão');
+        return { ok: true, msg: `Entrando na Invasão Rocket (entrada fecha em ${invFmt(w.entryUntil - Date.now())})…` };
+    }
+
+    // ---- Officer Jenny: trocar Rocket Plans pela oferta escolhida ----
+    async function invJennyRead(motivo) {
+        try {
+            const r = await gameApi(INV_JENNY_URL);
+            const rawOffers = Array.isArray(r?.offers) ? r.offers : [];
+            const offers = rawOffers.map(o => ({
+                key: String(o?.key ?? ''), name: String(o?.name || o?.key || '?'), qty: Math.max(1, Number(o?.qty) || 1), cost: Math.max(0, Number(o?.cost) || 0),
+                owned: Boolean(o?.owned), kind: o?.kind ? String(o.kind) : (o?.looktype ? 'outfit' : 'item'), description: o?.description ? String(o.description) : '',
+            })).filter(o => o.key);
+            if (!invJenny) logEvent('jenny-campos', { chaves: Object.keys(r || {}), oferta: rawOffers.length ? Object.keys(rawOffers[0]) : [], ofertas: offers.map(o => `${o.key}=${o.cost}${o.owned ? ' (tem)' : ''}`) });
+            invJenny = { balance: Math.max(0, Number(r?.balance) || 0), token: r?.token?.name ? String(r.token.name) : 'Rocket Plans', offers, at: Date.now() };
+            invJennyAt = Date.now(); invJennyFailedAt = 0;
+            logEvent('jenny', { motivo, saldo: invJenny.balance, ofertas: offers.length, escolhida: invJennyPick()?.name || null, cabem: invJennyAffordable() });
+            invNotify();
+            return invJenny;
+        } catch (err) {
+            invJennyFailedAt = Date.now();
+            logEvent('jenny-erro', { motivo, erro: String(err?.message || err) });
+            invNotify();
+            return null;
+        }
+    }
+    function invJennyPick(d) {
+        const key = invJennyOffer(d);
+        if (!key || !invJenny) return null;
+        return invJenny.offers.find(o => o.key === key) || invJenny.offers.find(o => normalize(o.name) === normalize(key)) || null;
+    }
+    // Quantas trocas cabem agora: (saldo − reserva) ÷ custo; oferta já possuída (outfit) = 0.
+    function invJennyAffordable(d) {
+        const o = invJennyPick(d);
+        if (!o || !invJenny || o.owned || o.cost <= 0) return 0;
+        return Math.max(0, Math.floor((invJenny.balance - invJennyKeep(d)) / o.cost));
+    }
+    function invJennyWanted() { return invJennyOn() && !invJennyWorking && invJennyAffordable() > 0 && Date.now() - invJennyFailedAt > INV_JENNY_RETRY_MS; }
+    function invJennyAsk() { if (invJennyWanted()) tripRequest('jenny', null, `${invJennyAffordable()}× ${invJennyPick()?.name || invJennyOffer()}`); }
+    function invJennyTick(now) {
+        if (!invJennyOn() || invJennyWorking) return;
+        if (now - invJennyFailedAt < INV_JENNY_RETRY_MS) return;
+        if (now - invJennyAt > INV_JENNY_POLL_MS) { invJennyRead(invJennyAt ? 'prazo' : '1ª leitura').then(j => { if (j) invJennyAsk(); }); return; }
+        invJennyAsk();
+    }
+    // Tarefa `jenny` da viagem: Shopping, troca enquanto o saldo (menos a reserva) der, relê e avisa.
+    async function invJennyCityWork() {
+        if (!invJennyOn()) return { ok: true, motivo: 'desligada' };
+        invJennyWorking = true;
+        const feitas = [];
+        let o = null;
+        try {
+            const j = await invJennyRead('cidade');
+            if (!j) return { ok: false, motivo: 'não consegui ler a Officer Jenny' };
+            o = invJennyPick();
+            if (!o) return { ok: false, motivo: `oferta "${invJennyOffer()}" não existe na Jenny (${j.offers.map(x => x.name).join(', ') || 'lista vazia'})` };
+            const n = invJennyAffordable();
+            if (n <= 0) return { ok: true, motivo: o.owned ? `${o.name} já é sua` : `saldo ${fmtNum(j.balance)} ${j.token} não dá para ${o.name} (${fmtNum(o.cost)})${invJennyKeep() ? ` com reserva ${fmtNum(invJennyKeep())}` : ''}` };
+            if (tripCity() !== INV_JENNY_CITY) {
+                logEvent('jenny-cidade', { de: tripCity(), para: INV_JENNY_CITY });
+                sendGame({ type: 'set-city', slug: INV_JENNY_CITY });
+                await invWait(INV_JENNY_CITY_WAIT_MS);
+            }
+            const max = Math.min(n, o.kind === 'outfit' ? 1 : INV_JENNY_MAX_PER_TRIP);
+            for (let i = 0; i < max; i++) {
+                const r = await gameApi(`${INV_JENNY_URL}/exchange`, { method: 'POST', body: JSON.stringify({ offer: o.key }) });
+                const prize = r?.prize && typeof r.prize === 'object' ? r.prize : {};
+                feitas.push({ name: String(prize.name || o.name), qty: Math.max(1, Number(prize.qty) || o.qty) });
+                logEvent('jenny-troca', { oferta: o.key, premio: prize.name ?? null, qty: prize.qty ?? null, kind: prize.kind ?? null, chaves: Object.keys(r || {}) });
+                if (o.kind === 'outfit') break;
+                await invWait(INV_JENNY_BETWEEN_MS);
+            }
+            sendGame({ type: 'inv-get' });
+            sendGame({ type: 'balls-get' });   // 100 Idle Balls vão direto para a carteira de bolas
+            await invJennyRead('depois da troca');
+            return { ok: true, motivo: `${feitas.length}× ${o.name}` };
+        } catch (err) {
+            invJennyFailedAt = Date.now();
+            logEvent('jenny-erro', { fase: 'troca', erro: String(err?.message || err), feitas: feitas.length });
+            return { ok: false, motivo: String(err?.message || err) };
+        } finally {
+            invJennyWorking = false;
+            if (feitas.length) { invJennyLast = { at: Date.now(), feitas, oferta: o?.name || invJennyOffer() }; if (cfg.invAlerts !== false) invAlertJenny(feitas, o); }
+            invNotify();
+        }
+    }
+    function invAlertJenny(feitas, o) {
+        const who = playerName();
+        const total = feitas.reduce((s, f) => s + f.qty, 0);
+        const nome = feitas[0]?.name || o?.name || 'prêmio';
+        postWebhook('alert', {
+            content: `👮 ${who ? `**${who}**` : 'Sua conta'}: Officer Jenny — ${feitas.length}× ${o?.name || nome} (${fmtNum(total)} ${nome})${o ? ` por ${fmtNum(o.cost * feitas.length)} Plans` : ''}`,
+            username: 'Poke Idle World',
+            embeds: [{ title: `Officer Jenny: ${feitas.length} troca${feitas.length === 1 ? '' : 's'}`, color: 0x5865f2, description: (who ? `Conta: ${who}\n` : '') + `${feitas.map(f => `${f.qty}× ${f.name}`).join(', ')}${invJenny ? `\nSaldo: ${fmtNum(invJenny.balance)} ${invJenny.token}` : ''}` }],
+        }, { evento: 'jenny-troca', n: feitas.length });
+    }
+    // Botão "Trocar agora": na cidade troca já; na hunt pede a viagem.
+    async function invJennyNow() {
+        if (!invJennyOn()) return { ok: false, msg: 'Ligue a troca na Jenny, escolha a oferta e salve antes.' };
+        if (invJennyWorking) return { ok: false, msg: 'Troca em andamento.' };
+        const j = await invJennyRead('botão');
+        if (!j) return { ok: false, msg: 'Não consegui ler a Officer Jenny (veja o log).' };
+        const o = invJennyPick();
+        if (!o) return { ok: false, msg: `A oferta escolhida não existe na Jenny. Ofertas: ${j.offers.map(x => `${x.name} (${fmtNum(x.cost)})`).join(', ')}` };
+        const n = invJennyAffordable();
+        if (n <= 0) return { ok: false, msg: o.owned ? `${o.name} já é sua.` : `Saldo ${fmtNum(j.balance)} ${j.token} não dá para ${o.name} (${fmtNum(o.cost)}${invJennyKeep() ? `, reserva ${fmtNum(invJennyKeep())}` : ''}).` };
+        const naCidade = !(typeof tripInHunt === 'function' && tripInHunt()) && !(typeof tripRunning !== 'undefined' && tripRunning) && !invRun;
+        if (naCidade) { const r = await invJennyCityWork(); return { ok: r.ok, msg: r.ok ? `Troca feita: ${r.motivo}.` : `Troca falhou: ${r.motivo}` }; }
+        tripRequest('jenny', null, `botão: ${n}× ${o.name}`);
+        return { ok: true, msg: `Viagem pedida: ${n}× ${o.name} na Officer Jenny (Shopping).` };
+    }
+
+    // Linhas de estado do painel.
+    function invStatus(d) {
+        d = d || cfg;
+        const now = Date.now();
+        const partes = [];
+        if (invRun) {
+            if (invRun.fase === 'dentro') partes.push(`▶ dentro da invasão: wave ${invRun.wave || '?'} · ${invRun.kills || 0} Rockets · acaba em ${invFmt(invRun.endsAt - now)}${invRun.from ? ` · volta para ${invRun.from}` : ''}`);
+            else partes.push(`${invRun.fase}${invRun.from ? ` (volta: ${invRun.from})` : ''}`);
+        } else {
+            const w = invWindowAt(now);
+            const feito = invTried[w.startedAt];
+            if (w.entryOpen) partes.push(`entrada aberta até ${invHora(w.entryUntil)} (${invFmt(w.entryUntil - now)})${feito ? ` · esta janela: ${feito}` : ''}`);
+            else if (w.live) partes.push(`invasão rolando até ${invHora(w.endsAt)} (entrada fechada${feito ? `; esta janela: ${feito}` : ''})`);
+            if (d.invEnabled) {
+                const base = w.entryOpen && !feito ? w.startedAt : w.nextAt;
+                const prox = invNextAllowedStart(base, d);
+                if (!(w.entryOpen && !feito)) partes.push(`próxima entrada ${invHora(prox)} (${invFmt(prox - now)})${invHours(d).length ? ` · horas ${invHours(d).map(h => `${h}h`).join(', ')} (Brasília)` : ''}`);
+            }
+            if (invWaitNote) partes.push(`parado: ${invWaitNote}`);
+        }
+        partes.push(`energia ${invEnergy == null ? '?' : `${invEnergy}/${INV_ENERGY_MAX}`}${invKeepEnergy(d) ? ` (reserva ${invKeepEnergy(d)})` : ''}`);
+        const top = invTeamTop();
+        if (top) partes.push(`faixa ${invTierLabel(top)} (time lv ${top})`);
+        if (invLast) partes.push(`última ${invHora(invLast.at)}: wave ${invLast.wave}, ${invLast.kills} Rockets, ${fmtNum(invLast.plans)} Plans${invLast.tier ? `, ${invLast.tier}` : ''} (${INV_REASON_LABEL[invLast.reason] || invLast.reason || 'fim'})`);
+        if (invRefused && now - invRefused.at < 2 * 60 * 60 * 1000) partes.push(`recusa ${invHora(invRefused.at)}: ${invRefused.message}`);
+        return partes.join(' · ');
+    }
+    function invJennyStatus(d) {
+        d = d || cfg;
+        if (!d.invJennyEnabled) return 'desligada';
+        if (!invJennyOffer(d)) return 'escolha a oferta';
+        if (!invJenny) return invJennyFailedAt ? 'não consegui ler a Jenny (veja o log)' : 'ainda não li a Jenny';
+        const o = invJennyPick(d);
+        const partes = [`${fmtNum(invJenny.balance)} ${invJenny.token}`];
+        if (!o) partes.push(`oferta "${invJennyOffer(d)}" não está na lista`);
+        else if (o.owned) partes.push(`${o.name}: já é sua`);
+        else { const n = invJennyAffordable(d); partes.push(n > 0 ? `cabem ${n}× ${o.name} (${fmtNum(o.cost)} cada)${invJennyWorking ? ' · trocando' : ' · na próxima viagem'}` : `faltam ${fmtNum(o.cost + invJennyKeep(d) - invJenny.balance)} para ${o.name}`); }
+        if (invJennyLast) partes.push(`última ${invHora(invJennyLast.at)}: ${invJennyLast.feitas.map(f => `${f.qty}× ${f.name}`).join(', ')}`);
+        return partes.join(' · ');
     }
 
     // ---- Ginásio (v3.45.0): conquistar as insígnias que faltam e resgatar a Recompensa bônus, na viagem à cidade ------------
@@ -7241,7 +7886,8 @@
     // slug: hunt para onde voltar (sem ela, a última hunt vista); caiu: queda confirmada (senão foi só um teleporte);
     // naCidade: a conta já está fora de hunt, não espera set-city.
     function healStart(motivo, slugHint, caiu, naCidade) {
-        if (typeof bossBusy === 'function' && bossBusy()) { faintSeen = null; logEvent('cura', { fase: 'pulada', motivo, autoBoss: true }); return false; }   // v3.43.0: durante o Auto Boss (ou a retomada) quem cura é o módulo do boss
+        if (typeof bossBusy === 'function' && bossBusy()) { faintSeen = null; logEvent('cura', { fase: 'pulada', motivo, autoBoss: true }); return false; }
+        if (typeof invBusy === 'function' && invBusy()) { faintSeen = null; logEvent('cura', { fase: 'pulada', motivo, invasao: true }); return false; }   // v3.50.0: o time cair ENCERRA a rodada; a volta da invasão cura na Joy   // v3.43.0: durante o Auto Boss (ou a retomada) quem cura é o módulo do boss
         if (typeof holdActive === 'function' && holdActive()) { faintSeen = null; logEvent('cura', { fase: 'pulada', motivo, esperaCidade: true }); return false; }   // v3.44.0: esperando na cidade de propósito: não volta para hunt nenhuma
         const noRevive = Boolean(faintSeen?.noRevive);
         faintSeen = null;
@@ -7386,6 +8032,7 @@
         if (typeof holdReason === 'function' && holdReason()) return holdReason();   // v3.44.0: espera na cidade pelo botão do painel
         if (typeof humanPending === 'function' && humanPending()) return 'verificação humana pendente (clique no desafio da Cloudflare)';
         if (typeof bossBusyReason === 'function' && bossBusyReason()) return bossBusyReason();   // v3.43.0: Auto Boss do jogo em andamento / retomada
+        if (typeof invBusyReason === 'function' && invBusyReason()) return invBusyReason();   // v3.50.0: Invasão Rocket (entrando, dentro ou voltando)
         if (tripRunning) return 'viagem à cidade em andamento';
         if (healBusy()) return 'cura na Nurse Joy em andamento';
         if (huntSwitch) return `troca para ${huntSwitch.slug} em andamento`;
@@ -7523,14 +8170,16 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         if (message.type === 'field' || message.type === 'field-init') {
             lastFieldAt = Date.now();
             if (message.type === 'field') healOnField(message);
+            if (message.type === 'field') invOnField(message);   // v3.50.0: wave da Invasão Rocket
             if (message.type === 'field-init' && message.slug && !huntSlug) setHunt(message.slug); // script carregou depois do enter-hunt
             idleOnAlive();
             return;
         }
+        if (typeof message.type === 'string' && message.type.startsWith('invasion-')) { invOnMessage(message); return; }   // v3.50.0: Invasão Rocket (janela, energia, recusa, fim)
         if (message.type === 'auto-boss') { bossOnFrame(message); return; }   // v3.43.0: Auto Boss do jogo (estado/encerramento)
         if (message.type === 'gym-global') { gymOnGlobal(message); return; }   // v3.45.0: anúncio global do ginásio (só log)
         if (message.type === 'field-teleport-city') { healOnTeleport(); return; }   // o sintético da viagem já saiu acima
-        if (message.type === 'field-kill') { idleOnAlive(); noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteDepositDrop(message); guildOnKill(message); fishOnKill(message); farmOnKill(message); return; }
+        if (message.type === 'field-kill') { idleOnAlive(); invOnKill(message); noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteDepositDrop(message); guildOnKill(message); fishOnKill(message); farmOnKill(message); return; }
         if (message.type === 'inventory' && Array.isArray(message.items)) { clanOnInventory(message.items); supplyOnInventory(message.items); bossOnInventory(message.items); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
         if (message.type === 'pokes' && Array.isArray(message.list)) { logEvent('pokes-frame', { total: message.list.length, time: message.list.filter(p => p && p.team).map(p => `${p.name} lv${p.level}`), hunt: huntSlug || null }); updateTeam(message.list); healOnPokes(message.list); idleOnPokes(message.list);handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); evolveOnPokes(message.list); breedOnPokes(message.list); return; }
@@ -7608,7 +8257,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
     function holdNotify() { if (onHoldChange) { try { onHoldChange(); } catch { /* painel fechado */ } } }
     function holdActive() { return Boolean(holdRun); }
     function holdReason() { return holdRun ? 'esperando na cidade (botão do painel)' : null; }
-    function holdIsHunt(slug) { const h = normalize(slug || ''); return Boolean(h) && !CITY_SLUGS.includes(h) && !(typeof bossIsArena === 'function' && bossIsArena(h)); }
+    function holdIsHunt(slug) { const h = normalize(slug || ''); return Boolean(h) && !CITY_SLUGS.includes(h) && !(typeof bossIsArena === 'function' && bossIsArena(h)) && !(typeof invIsRaid === 'function' && invIsRaid(h)); }
     const holdHora = (at) => new Date(at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
     function holdSave() {
         try { if (holdRun) localStorage.setItem(HOLD_KEY, JSON.stringify(holdRun)); else localStorage.removeItem(HOLD_KEY); }
@@ -7691,6 +8340,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         let slug = null, motivo = null;
         if (holdIsHunt(huntSlug)) motivo = `a conta já está em ${normalize(huntSlug)}`;
         else if (typeof bossBusy === 'function' && bossBusy()) motivo = 'Auto Boss do jogo em andamento';
+        else if (typeof invBusy === 'function' && invBusy()) motivo = 'Invasão Rocket em andamento (ela volta para a hunt no fim)';
         else if (tripRunning) motivo = 'viagem à cidade em andamento (ela volta para a hunt no fim)';
         else {
             const alvo = typeof idleTarget === 'function' ? idleTarget() : { motivo: 'não sei de que hunt veio' };
@@ -7736,6 +8386,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         requestBalls(BALLS_AFTER_SOCKET_MS);
         setTimeout(requestSupplies, SUPPLY_AFTER_SOCKET_MS);
         setTimeout(bossOnSocket, BOSS_AFTER_SOCKET_MS);   // v3.43.0: Auto Boss pedido? pergunta ao servidor se ainda roda
+        setTimeout(invOnSocket, 4000);   // v3.50.0: Energia Vermelha (só com a invasão ligada ou rodada em andamento)
         requestPokes(POKES_AFTER_SOCKET_MS);
         armResume(RESUME_AFTER_SOCKET_MS);
         setTimeout(() => guildRequest('socket'), GUILD_AFTER_SOCKET_MS);
@@ -7943,6 +8594,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         { id: 'guild', icon: '🛡', label: 'Guild' },
         { id: 'farm', icon: '🎒', label: 'Farm' },
         { id: 'ginasio', icon: '🏟', label: 'Ginásio' },
+        { id: 'invasao', icon: '🚀', label: 'Invasão' },
         { id: 'sistema', icon: '⚙', label: 'Sistema' },
     ];
 
@@ -7999,6 +8651,12 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
                 if (d.gymAlerts !== false && !temAlertas) return 'warn';
                 return 'on';
             }
+            case 'invasao': {
+                if (!d.invEnabled && !d.invJennyEnabled) return 'off';
+                if (d.invJennyEnabled && !invJennyOffer(d)) return 'warn';   // troca ligada sem oferta escolhida
+                if (d.invAlerts !== false && !temAlertas) return 'warn';
+                return 'on';
+            }
             case 'sistema': return holdActive() ? 'warn' : d.reloadEnabled ? 'on' : 'off';   // v3.44.0: esperando na cidade de propósito = ⚠ para não esquecer
         }
         return 'off';
@@ -8016,6 +8674,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             `Guild: ${[guildDonateWanted(d) > 0 ? `doa ${guildN(guildDonateWanted(d))}/dia` : '', d.guildTributeEnabled ? 'tributo' : '', d.guildFarmTribute ? 'farma tributo' : '', d.guildHuntEnabled ? 'caça' : '', d.guildFishEnabled ? 'pesca' : '', guildRouteOn(d) ? `ordem ${guildOrderText(d)}` : '', d.guildAlerts ? 'avisos' : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Farm: ${d.farmEnabled && farmList(d).length ? `${farmList(d).filter(farmEntryDone).length}/${farmList(d).length} itens` : 'desligado'}`,
             `Ginásios: ${d.gymEnabled ? ['insígnias', d.gymBonus !== false ? 'bônus' : '', d.gymRedo !== false ? 'refaz a cada 48 h' : ''].filter(Boolean).join(' + ') : 'desligados'}`,
+            `Invasão: ${d.invEnabled ? `entra${invHours(d).length ? ` às ${invHours(d).map(h => `${h}h`).join(', ')}` : ' em toda janela'}${invKeepEnergy(d) ? `, reserva ${invKeepEnergy(d)}` : ''}` : 'desligada'}${d.invJennyEnabled ? ` + Jenny (${invJennyOffer(d) || 'sem oferta'})` : ''}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
             holdActive() ? '⏸ esperando na cidade (botão do painel)' : '',
         ].filter(Boolean).join(' · ');
@@ -8380,6 +9039,27 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <div class="dn-status"><span>🏟️</span><span id="pg-dn-gym-status"></span></div>
                     </div>
                 </section>
+                <section class="dn-pane" data-pane="invasao" hidden>
+                    <div class="dn-section">
+                        <h3>🚀 Invasão Rocket: entrar sozinho e voltar para a hunt</h3>
+                        <label class="dn-toggle"><input id="pg-dn-inv" type="checkbox"><span class="sw"></span>Entrar na invasão de Cerulean a cada janela <span class="dn-hint">(horas pares de Brasília; 10 min para entrar, 30 min de invasão; 1 Energia Vermelha por entrada)</span></label>
+                        <label class="dn-field"><span>Só nestas horas</span><input id="pg-dn-inv-hours" class="dn-input" type="text" placeholder="ex.: 0, 12, 20 — horas pares de Brasília; vazio = toda invasão" spellcheck="false"></label>
+                        <div class="dn-inline">Não entrar com Energia Vermelha em <input id="pg-dn-inv-keep" class="dn-input dn-input--sm" type="number" min="0" max="10" step="1" placeholder="0"> ou menos <span class="dn-hint">(2 por dia, acumula 10; o script não compra com diamantes)</span></div>
+                        <label class="dn-toggle"><input id="pg-dn-inv-alerts" type="checkbox"><span class="sw"></span>Avisar no canal de Alertas <span class="dn-hint">(fim da rodada com wave, Rockets, XP e Plans; recusa; trocas na Jenny)</span></label>
+                        <p class="dn-help">A dificuldade é escolhida pelo jogo pelo nível do Pokémon mais forte do time (Kanto, Outland, Orre, Nightmare); não há vantagem de tipo. O script sai da hunt, entra pela mesma mensagem do botão INVASÃO, acompanha a rodada (wave e Rockets derrubados) e, quando ela acaba (time caiu, 30 min, 3 min sem abate), cura na Joy se preciso e volta para a hunt de onde saiu. Enquanto dura, viagem à cidade, parada na cidade, recarga, rotas e troca de líder esperam — sair encerra a rodada. Entrada feita na mão pelo botão da tela também é acompanhada e volta.</p>
+                        <div class="dn-actions"><button type="button" class="dn-btn dn-btn--sm" id="pg-dn-inv-now" title="Com a entrada aberta: entra agora (ignora a lista de horas e a reserva de energia).">🚀 Entrar agora</button></div>
+                        <div class="dn-status"><span>🚀</span><span id="pg-dn-inv-status"></span></div>
+                    </div>
+                    <div class="dn-section">
+                        <h3>👮 Officer Jenny: trocar Rocket Plans</h3>
+                        <label class="dn-toggle"><input id="pg-dn-inv-jenny" type="checkbox"><span class="sw"></span>Trocar os Plans pela oferta abaixo na viagem à cidade <span class="dn-hint">(a Jenny fica no Shopping; repete enquanto o saldo der)</span></label>
+                        <div class="dn-inline">Oferta <select id="pg-dn-inv-jenny-offer" class="dn-input"><option value="">(nenhuma)</option></select></div>
+                        <div class="dn-inline">Guardar <input id="pg-dn-inv-jenny-keep" class="dn-input dn-input--sm" type="number" min="0" step="100" placeholder="0"> Plans <span class="dn-hint">(nunca troca abaixo disto)</span></div>
+                        <p class="dn-help">Anúncio do jogo: 100 Idle Balls 200 Plans · Bronze Boss Token 1.500 · outfit Police Recruit 5.000 · Police Officer 10.000 · Police Bravery Medal 15.000 (+2 IV, uma por Pokémon, para sempre; nunca em Pokémon que passou pelo mercado, troca ou baú da família — o script só compra a medalha; em quem usar é com você). A lista de ofertas vem da própria janela da Jenny na 1ª leitura (ligue a troca para ler).</p>
+                        <div class="dn-actions"><button type="button" class="dn-btn dn-btn--sm" id="pg-dn-inv-jenny-now" title="Na cidade: troca agora. Na hunt: pede a viagem à cidade.">👮 Trocar agora</button></div>
+                        <div class="dn-status"><span>👮</span><span id="pg-dn-inv-jenny-status"></span></div>
+                    </div>
+                </section>
                 <section class="dn-pane" data-pane="sistema" hidden>
                     <div class="dn-section">
                         <h3>⏸ Esperar na cidade</h3>
@@ -8555,6 +9235,13 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 gymBonus: $('#pg-dn-gym-bonus').checked,
                 gymRedo: $('#pg-dn-gym-redo').checked,
                 gymAlerts: $('#pg-dn-gym-alerts').checked,
+                invEnabled: $('#pg-dn-inv').checked,
+                invHours: $('#pg-dn-inv-hours').value.trim(),
+                invKeepEnergy: Math.max(0, Math.min(10, parseInt($('#pg-dn-inv-keep').value, 10) || 0)),
+                invAlerts: $('#pg-dn-inv-alerts').checked,
+                invJennyEnabled: $('#pg-dn-inv-jenny').checked,
+                invJennyOffer: $('#pg-dn-inv-jenny-offer').value,
+                invJennyKeep: Math.max(0, parseInt($('#pg-dn-inv-jenny-keep').value, 10) || 0),
                 bossResumeEnabled: $('#pg-dn-boss').checked,
                 bossResumeOnLoss: $('#pg-dn-boss-loss').checked,
                 bossAlerts: $('#pg-dn-boss-alerts').checked,
@@ -8924,6 +9611,26 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-boss-status').textContent = `Auto Boss: ${bossStatus(d)}`;
         }
         onBossChange = () => { if (!panel.hidden) renderBoss(); };
+        // ---- Invasão Rocket (v3.50.0) ----
+        function renderInvOffers(selected) {
+            const sel = $('#pg-dn-inv-jenny-offer');
+            const atual = selected != null ? selected : sel.value;
+            const offers = invJenny?.offers || [];
+            const opts = ['<option value="">(nenhuma)</option>'];
+            for (const o of offers) opts.push(`<option value="${escHtml(o.key)}">${escHtml(o.name)} — ${fmtNum(o.cost)} Plans${o.owned ? ' (já tem)' : ''}</option>`);
+            if (atual && !offers.some(o => o.key === atual)) opts.push(`<option value="${escHtml(atual)}">${escHtml(atual)}${offers.length ? ' (não está na lista)' : ''}</option>`);
+            sel.innerHTML = opts.join('');
+            sel.value = atual || '';
+        }
+        function renderInv() {
+            const d = current();
+            $('#pg-dn-inv-status').textContent = `Invasão${d.invEnabled ? '' : ' (desligada)'}: ${invStatus(d)}`;
+            const sel = $('#pg-dn-inv-jenny-offer');
+            if (invJenny?.offers?.length && sel.options.length < invJenny.offers.length + 1) renderInvOffers();   // ofertas chegaram depois do fill
+            $('#pg-dn-inv-jenny-status').textContent = `Jenny: ${invJennyStatus(d)}`;
+            if (d.invJennyEnabled && !invJenny && !invJennyFailedAt && !invJennyWorking) invJennyRead('painel');   // lista as ofertas para o menu
+        }
+        onInvChange = () => { if (!panel.hidden) renderInv(); };
         // ---- Breeding (v3.29.0) ----
         const breedEsc = (v) => String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
         function breedBoxOptions() {
@@ -8986,6 +9693,15 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-farm-status').textContent = `${farmLine(d)}${!salvo ? ' · (lista alterada: salve)' : ''}${ruins.length ? ` · ${ruins.length} linha(s) inválida(s)` : ''}`;
         }
         onFarmChange = () => { if (!panel.hidden) renderFarm(); };
+        $('#pg-dn-inv-now').onclick = () => {
+            const r = invNow();
+            flash(`${r.ok ? '✔' : '⚠'} ${r.msg}`, r.ok ? 'ok' : 'warn', 15000);
+            renderInv();
+        };
+        $('#pg-dn-inv-jenny-now').onclick = () => {
+            flash('👮 Lendo a Officer Jenny…', 'info', 60000);
+            invJennyNow().then(r => { flash(`${r.ok ? '✔' : '⚠'} ${r.msg}`, r.ok ? 'ok' : 'warn', 15000); renderInv(); }).catch(e => flash(`⚠ Jenny: ${e?.message || e}`, 'error'));
+        };
         $('#pg-dn-gym-now').onclick = () => {
             flash('🏟 Lendo os ginásios…', 'info', 60000);
             gymNow().then(r => flash(`${r.ok ? '✔' : '⚠'} ${r.msg}`, r.ok ? 'ok' : 'warn', 15000)).catch(e => flash(`⚠ Ginásios: ${e?.message || e}`, 'error'));
@@ -9375,7 +10091,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             if (dirty) $('#pg-dn-save').click();
             const needs = tripAugment([]);
             if (!needs.length) { flash('⚠ Nada para levar: nenhum drop marcado nesta hunt, nenhum Pokémon nas regras e bolas, poções e revives acima do limite.', 'warn'); return; }
-            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time', breeding: 'breeding', ginasio: 'ginásios' };
+            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time', breeding: 'breeding', ginasio: 'ginásios', jenny: 'Officer Jenny' };
             flash(`🏙 Indo à cidade: ${needs.map(n => nome[n[0]]).join(', ')}…`, 'info', 90000);
             tripNeeds.clear();
             cityTrip('manual: ' + needs.map(n => n[0]).join('+'), tripTasksFor(needs)).then(r => {
@@ -9434,7 +10150,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
 
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderHold(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderEvolve(); renderSlot(); renderBoss(); renderBreed(); renderGuild(); renderFarm(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderHold(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderEvolve(); renderSlot(); renderBoss(); renderInv(); renderBreed(); renderGuild(); renderFarm(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -9505,6 +10221,13 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-gym-bonus').checked = cfg.gymBonus !== false;
             $('#pg-dn-gym-redo').checked = cfg.gymRedo !== false;
             $('#pg-dn-gym-alerts').checked = cfg.gymAlerts !== false;
+            $('#pg-dn-inv').checked = Boolean(cfg.invEnabled);
+            $('#pg-dn-inv-hours').value = Array.isArray(cfg.invHours) ? cfg.invHours.join(', ') : (cfg.invHours || '');
+            $('#pg-dn-inv-keep').value = invKeepEnergy(cfg) || '';
+            $('#pg-dn-inv-alerts').checked = cfg.invAlerts !== false;
+            $('#pg-dn-inv-jenny').checked = Boolean(cfg.invJennyEnabled);
+            renderInvOffers(cfg.invJennyOffer || '');
+            $('#pg-dn-inv-jenny-keep').value = invJennyKeep(cfg) || '';
             $('#pg-dn-boss').checked = cfg.bossResumeEnabled !== false;
             $('#pg-dn-boss-loss').checked = Boolean(cfg.bossResumeOnLoss);
             $('#pg-dn-boss-alerts').checked = cfg.bossAlerts !== false;
@@ -9620,6 +10343,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const giftAntes = JSON.stringify([cfg.giftEnabled, cfg.giftCenterMode]);
             const slotAntes = JSON.stringify([cfg.slotEnabled, cfg.slotWanted]);
             const gymAntes = JSON.stringify([cfg.gymEnabled, cfg.gymBonus, cfg.gymRedo]);
+            const invAntes = JSON.stringify([cfg.invJennyEnabled, cfg.invJennyOffer, cfg.invJennyKeep]);
             const breedAntes = JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble, cfg.breedFoodBreed]);
             const guildAntes = JSON.stringify([cfg.guildDonateGold, cfg.guildDonateKeep, cfg.guildTributeEnabled, cfg.guildTributeKeep, cfg.guildAlerts, cfg.guildHuntEnabled, cfg.guildFishEnabled, cfg.guildFarmTribute, cfg.guildRouteOrder]);
             const capturaAntes = JSON.stringify([cfg.catchRouteEnabled, cfg.catchRouteAreas, cfg.catchRouteMaxLevel]);
@@ -9670,6 +10394,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 for (const k of Object.keys(slotTriedAt)) delete slotTriedAt[k];
                 if (cfg.slotEnabled) setTimeout(() => slotTick(true), 500);
             }
+            if (JSON.stringify([cfg.invJennyEnabled, cfg.invJennyOffer, cfg.invJennyKeep]) !== invAntes) { invJennyAt = 0; invJennyFailedAt = 0; }   // v3.50.0: Jenny mudou: relê no próximo tique
             if (JSON.stringify([cfg.gymEnabled, cfg.gymBonus, cfg.gymRedo]) !== gymAntes) { // ginásios mudaram: relê a janela já
                 gymFailedAt = 0;
                 if (cfg.gymEnabled) setTimeout(() => gymTick(true), 500);
@@ -9919,6 +10644,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
     holdLoad();   // v3.44.0: espera na cidade ligada na carga anterior continua (antes de loadResume: a volta da recarga respeita)
     loadResume(); // antes do painel e dos timers: restaura o que a carga anterior guardou
     bossLoad();   // v3.43.0: Auto Boss pedido na carga anterior (o frame do auto-boss-get decide se ainda roda)
+    invLoad();    // v3.50.0: rodada da Invasão Rocket em andamento na carga anterior (hunt de volta e progresso)
     if (cfg.reloadEnabled) scheduleReload();
     buildUI();
     setInterval(() => requestBalls(0), BALLS_POLL_MS);
@@ -9937,6 +10663,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
     setTimeout(humanSniff, 15000);  // v3.40.0: lê o prazo da verificação humana uma vez (REST) para confirmar o formato no log
     setInterval(humanWatchTick, HUMAN_WATCH_MS);   // v3.40.0: janela "Confirme que você é humano" / widget do Turnstile aberto
     setInterval(bossTick, BOSS_TICK_MS);   // v3.43.0: sessão do Auto Boss muda sem frame há 10 min: pergunta ao servidor
+    setInterval(invTick, INV_TICK_MS);   // v3.50.0: Invasão Rocket (entrada por janela, fim da rodada, Officer Jenny)
     if (cfg.breedEnabled) setTimeout(() => breedTick(true), 9000);   // 1ª leitura da incubadora logo após a carga
     if (cfg.slotEnabled) setTimeout(() => slotTick(true), 8000);   // 1ª leitura da slot machine logo após a carga
     if (cfg.gymEnabled) setTimeout(() => gymTick(true), 10000);   // v3.45.0: 1ª leitura dos ginásios logo após a carga

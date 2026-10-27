@@ -36,6 +36,8 @@ const rica = {
   // v3.26.0 (Poke Slot Machine)
   slotEnabled: true, slotWanted: 'Dratini, Larvitar',
   gymEnabled: true, gymBonus: false, gymRedo: false, gymAlerts: false,
+  // v3.50.0 (Invasão Rocket)
+  invEnabled: true, invHours: '0, 12, 20', invKeepEnergy: 2, invAlerts: false, invJennyEnabled: true, invJennyOffer: 'ball', invJennyKeep: 400,
   // v3.43.0 (Auto Boss)
   bossResumeEnabled: false, bossResumeOnLoss: true, bossAlerts: false,
   // v3.29.0 (Breeding)

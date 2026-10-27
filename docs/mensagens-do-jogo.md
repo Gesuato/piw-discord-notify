@@ -32,6 +32,7 @@ Confirmados no bundle. Os marcados com ✔ já são usados ou interceptados pelo
 | `pokes-get` ✔ | — | pede a lista de Pokémon (`pokes`) |
 | `balls-get` ✔ | — | pede o estoque de bolas (`balls`) |
 | `inv-get` | — | pede a mochila (`inventory`) |
+| `invasion-energy-get` | — | Energia Vermelha da Invasão Rocket (`invasion-energy`; ver "Invasão Rocket") |
 | `pending-get` ✔ | — | pede a fila de captura (`pending`) |
 | `enter-hunt` ✔ | `slug` | entra numa hunt (slug = nome em minúsculas, ex. `pidgey`) |
 | `leave-hunt` ✔ | — | sai da hunt |
@@ -58,7 +59,7 @@ Confirmados no bundle. Os marcados com ✔ já são usados ou interceptados pelo
 `catch-cooldown`, `catch-result` ✔, `chat`, `chat-blocked`, `chat-deleted`, `field` ✔ (só para marcar
 "hunt viva"), `field-init` ✔, `field-kill` ✔, `field-none`, `field-teleport-city`, `fishing-cooldown`, `fishing-levelup` (ver "Pesca"),
 `guild` ✔, `guild-dirty` ✔, `guild-history`, `gym-global`, `heal-used`, `held-replace-confirm`, `held-used`, `history`, `hunt-cooldown`, `hunt-resume`,
-`inventory`, `mail-badge`, `pending` ✔, `poke-delta` ✔, `poke-xp` ✔, `pokes` ✔, `profession-gather`,
+`inventory`, `invasion-announce`/`invasion-end`/`invasion-energy`/`invasion-refused`/`invasion-state` ✔ (ver "Invasão Rocket"), `mail-badge`, `pending` ✔, `poke-delta` ✔, `poke-xp` ✔, `pokes` ✔, `profession-gather`,
 `profession-photo`, `pvp-*`, `shiny-global`, `sleep-ok`, `tm-replace-confirm`, `tm-used`, `trade-invite`,
 `trade-settled`.
 
@@ -392,6 +393,44 @@ luta é resolvida na hora pelo servidor e o HUD da arena (o mesmo do PvP) só an
   bônus `needWin`, com `gymRedo`) fora do cooldown → tarefa `ginasio` da viagem à cidade: `POST /challenge { mode:'badge' }` um a um, relê,
   `POST /bonus` nos `claimable` (com `gymBonus`), avisa em Alertas. Logs `ginasio-campos`, `ginasio`, `ginasio-desafio`, `ginasio-bonus`,
   `ginasio-erro`. Teste: `node test/gym.test.js`.
+
+### Invasão Rocket (bundle em 27/10/2026, patch do mesmo dia — formatos ainda NÃO vistos no log; feature na v3.50.0)
+
+Anúncio (colado pelo usuário): "A cada 2 horas, nas horas pares (horário de Brasília), a invasão começa. Você tem 10 minutos pra entrar e
+30 minutos de invasão." Botão **INVASÃO** em Cerulean (acima de "Ir ao Mercado"), 1 Energia Vermelha por entrada (2/dia, acumula 10,
+15 💎 na Loja de Diamantes — item `rocketenergy`), uma entrada por invasão; waves de 20 duplas (Grunt + Pokémon), sem vantagem de tipo;
+dificuldade pelo nível do Pokémon mais forte do time (Kanto 1…100, Outland, Outland+, Orre 520/600, Nightmare 2000/3000); acaba quando o
+time cai, a invasão fecha, 3 min sem abate ou o jogador sai. Rocket Plans (item **240**) só na Officer Jenny (Shopping). Levantado no
+chunk compartilhado (módulo `tD`: `ROCKET_SLUG:"rocket_cerulean"`, `INVASION_EVERY_MS:72e5`, `ENTRY_WINDOW_MS:6e5`, `RAID_DURATION_MS:18e5`,
+`STALL_MS:18e4`, `PAIRS_PER_WAVE:20`, `ENERGY_MAX:10`, `ENERGY_PER_DAY:2`, `ENERGY_PRICE_DIAMONDS:15`, `REWARD_ITEM_ID:240`,
+`MILESTONES:[100,250,500,1000]`, `INTRO_HOLD_MS:1e4`, `invasionStartAt` = hora par em BRT (deslocamento fixo −108e5), `scheduledWindow`,
+`invasionTierForLevel`) e no HUD (`hh`/`hp`/`hu`/`hx`/`tW`, botão `ii`, janela `lK` da Jenny).
+
+- **Entrar** = a tela viaja para o mapa `rocket_cerulean` (`n2(tD.ROCKET_SLUG, "Invasão Rocket")`; desenho de `cerulean_novo`) e o componente
+  da hunt manda `enter-hunt { slug:'rocket_cerulean', resume }` — a invasão É uma hunt de slug fixo, como `*_boss` e `pesca`. A tela só
+  mostra o botão com `entryOpen` e recusa com o líder em hp 0 ("faintedNoTravel"). Sair = `leave-hunt` (encerra a rodada; o ganho fica).
+- Servidor → cliente: `invasion-state { live, entryOpen, entryUntil, endsAt }` (a todos, na abertura/fechamento), `invasion-announce { text,
+  until }` ("ATENÇÃO A CIDADE DE CERULEAN ESTÁ SENDO INVADIDA … {nome}!"), `invasion-energy { energy, live, entryOpen, entryUntil, endsAt }`
+  (resposta a `invasion-energy-get`; a tela pede ao montar e 0–3 s depois de cada `invasion-state` com `entryOpen`; a Loja de Diamantes
+  dispara `pw:invasion-energy` com a energia nova), `invasion-refused { message }` (entrada negada), `invasion-end { wave, bestWave,
+  reason:'wipe'|'time'|'stall'|'left'|'restart', kills, xp, tier, level, levelBefore, reward{ qty, name, icon }, milestones[] | milestone,
+  outfitReward{ items[{ looktype, gender, milestone }], equipped } }` (janela "Resultado da Invasão Rocket": "Wave alcançada", "Rockets
+  derrotados", "XP na invasão", "Dificuldade", "Nível de Invasão", "Recompensa"). Dentro da hunt os frames `field` trazem `wave` (e
+  `allMobsDead`/`waveRespawnAt`, já existentes); cada Rocket derrubado é um `field-kill` normal.
+- Officer Jenny (NPC `officer_jenny` do `shopping`, ação `openJenny` "Trade Rocket Plans"): `GET /api/game/officer-jenny` → `{ balance,
+  token{ name, icon }, offers[{ key, name, qty, cost, icon, description, owned, looktype, kind }] }`; `POST /api/game/officer-jenny/exchange
+  { offer: key }` → `{ prize{ kind, name, qty, icon, looktype } }`; a tela manda `inv-get` depois. Erros: "Not enough Plans"/"Already owned"
+  (i18n `shop.officerJenny.*`). Preços do anúncio: 100 Idle Balls 200 · Bronze Boss Token 1.500 · outfits 5.000/10.000 · Police Bravery
+  Medal 15.000 (+2 IV, uma por Pokémon, nunca em Pokémon do mercado/troca/família nem em filho de medalhado).
+- Ranking: aba `rocket` (`/assets/invasion/rocket_r.png`). Pokédex: página "Invasão Rocket" (i18n `systems.rocket.*`).
+- Script (v3.50.0, aba 🚀 Invasão, módulo `// ---- Invasão Rocket`): `invTick` (30 s) entra pela janela do relógio corrigida pelo
+  `invasion-state`, com `invasion-energy-get` antes (energia > reserva), horas aceitas e nada em andamento; sai da hunt (tela → cidade,
+  `set-city` se ela não for), `switchHunt('rocket_cerulean', 1, 'invasao')`; acompanha `field.wave`/`field-kill`; `invasion-end` → aviso e
+  volta (`set-city`, `joy-heal` se `wipe`, `switchHunt(from, 1, 'invasao-volta')`); silêncio (1 min fora da hunt, janela + 90 s) também
+  encerra. `invBusy()` segura viagem/parada/recarga/rotas/líder/cura. Jenny = tarefa `jenny` da viagem (`set-city shopping` + exchange).
+  Logs `invasao-campos`, `invasao-janela`, `invasao-energia(-pedida)`, `invasao-anuncio`, `invasao-pulada`, `invasao-espera`,
+  `invasao-entrada { fase }`, `invasao-wave`, `invasao-abate`, `invasao-recusada`, `invasao-fim`, `invasao-volta`, `invasao-lembrada`,
+  `jenny-campos`, `jenny`, `jenny-cidade`, `jenny-troca`, `jenny-erro`. Teste: `node test/invasion.test.js`.
 
 ## Ideias que esses nomes destravam
 

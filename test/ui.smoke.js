@@ -365,6 +365,25 @@ setTimeout(() => {
             const logG = JSON.parse(window.localStorage.getItem('pgDiscordNotifyLog') || '[]').filter(e => e.kind === 'guild-doacao').pop();
             if (!(logG && logG.data.ok === false && /máximo/.test(logG.data.erro))) errors.push('guild: log guild-doacao com o erro do jogo não gravado: ' + JSON.stringify(logG));
             if (!/Small Stone/.test($('#pg-dn-guild-status').textContent) || !/Tributo/.test($('#pg-dn-guild-status').textContent)) errors.push('guild: status da aba não mostra o tributo');
+            // v3.50.0: aba Invasão: liga, horas, reserva e Jenny; salva; frames invasion-* chegam (janela, energia, fim sem rodada) e o status reflete
+            panel.querySelector('.dn-tab[data-tab=invasao]').click();
+            $('#pg-dn-inv').checked = true; fire($('#pg-dn-inv'), 'change');
+            $('#pg-dn-inv-hours').value = '0, 12, 20'; fire($('#pg-dn-inv-hours'), 'input');
+            $('#pg-dn-inv-keep').value = '1'; fire($('#pg-dn-inv-keep'), 'input');
+            $('#pg-dn-inv-jenny').checked = true; fire($('#pg-dn-inv-jenny'), 'change');
+            log('invasao rascunho=' + $('#pg-dn-inv-status').textContent + ' | jenny=' + $('#pg-dn-inv-jenny-status').textContent + ' | badge=' + panel.querySelector('.dn-tab[data-tab=invasao] .b').dataset.state);
+            if (panel.querySelector('.dn-tab[data-tab=invasao] .b').dataset.state !== 'warn') errors.push('invasao: Jenny ligada sem oferta devia dar badge warn');
+            $('#pg-dn-save').click();
+            const cfgI = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+            if (!(cfgI.invEnabled && cfgI.invHours === '0, 12, 20' && cfgI.invKeepEnergy === 1 && cfgI.invJennyEnabled && cfgI.invJennyOffer === '' && cfgI.invAlerts)) errors.push('invasao: config não salvou: ' + JSON.stringify([cfgI.invEnabled, cfgI.invHours, cfgI.invKeepEnergy, cfgI.invJennyEnabled, cfgI.invJennyOffer, cfgI.invAlerts]));
+            recv({ type: 'invasion-state', live: true, entryOpen: true, entryUntil: Date.now() + 600e3, endsAt: Date.now() + 1800e3 });
+            recv({ type: 'invasion-energy', energy: 3, live: true, entryOpen: true, entryUntil: Date.now() + 600e3, endsAt: Date.now() + 1800e3 });
+            recv({ type: 'invasion-end', wave: 4, bestWave: 4, reason: 'time', kills: 70, xp: 1000, tier: 'Kanto 60', level: 5, levelBefore: 4, reward: { qty: 8, name: 'Rocket Plans' } });
+            const logI = JSON.parse(window.localStorage.getItem('pgDiscordNotifyLog') || '[]').filter(e => e.kind.startsWith('invasao') || e.kind.startsWith('jenny')).map(e => e.kind);
+            log('invasao log=' + logI.join(',') + ' | status=' + $('#pg-dn-inv-status').textContent);
+            for (const k of ['invasao-campos', 'invasao-janela', 'invasao-energia', 'invasao-fim']) if (!logI.includes(k)) errors.push('invasao: log ' + k + ' não gravado: ' + logI.join(','));
+            if (!/energia 3\/10 \(reserva 1\)/.test($('#pg-dn-inv-status').textContent) || !/wave 4, 70 Rockets, 8 Plans, Kanto 60/.test($('#pg-dn-inv-status').textContent)) errors.push('invasao: status errado: ' + $('#pg-dn-inv-status').textContent);
+            if (!/^Jenny: /.test($('#pg-dn-inv-jenny-status').textContent)) errors.push('invasao: status da Jenny vazio');
             // v3.33.0: aba Farm: lista com linha ruim, salvar (vira a rota que manda), drops contam, etapa fecha com aviso e passa para a próxima
             panel.querySelector('.dn-tab[data-tab=farm]').click();
             $('#pg-dn-farm').checked = true; fire($('#pg-dn-farm'), 'change');

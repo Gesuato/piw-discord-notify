@@ -53,6 +53,15 @@ sem ter vencido o próprio intervalo. Intervalo mínimo entre viagens: 3 min (co
 | Poke Slot Machine | `GET /api/game/golden-stars` (REST); na viagem: `POST .../roll { slot }` + `POST .../pick { slot, speciesId }` (`set-city shopping` se a viagem foi para outra cidade) | leitura quando um roll grátis/estrela vence ou a cada 30 min; roll e escolha só na viagem, com slot pronto |
 | Ginásios | `GET /api/game/gyms` (REST); na viagem: `POST /api/game/gyms/challenge { gymId, mode:'badge' }` + `POST /api/game/gyms/bonus { gymId }` | leitura quando um cooldown/prazo de bônus/espera por derrota vence ou a cada 30 min; desafio e resgate só na viagem, com ginásio pronto |
 
+## 🚀 Invasão (v3.50.0)
+
+| O quê | Como | Quando |
+|---|---|---|
+| Energia Vermelha | `invasion-energy-get` (socket) | 4 s após o socket, 2–5 s após cada `invasion-state` com entrada aberta e antes de decidir a entrada (energia nunca lida ou com mais de 15 min) — só com a invasão ligada ou rodada em andamento |
+| Entrar na invasão | `leave-hunt` + `field-teleport-city` sintético (tela) ou `set-city`, depois `enter-hunt { slug:'rocket_cerulean' }` + `pending-get` + `hunt-resume` sintético (socket) | uma vez por janela (hora par de Brasília), 20 s depois da abertura, se a hora está na lista, a energia passa da reserva e nada está em andamento |
+| Fim da rodada | `invasion-end` (chega sozinho); volta = `leave-hunt` + `set-city cerulean` (+ `joy-heal` se o time caiu) + `enter-hunt` da hunt de origem | por rodada; sem `invasion-end`, 1 min fora da hunt ou 90 s depois do fim da janela |
+| Officer Jenny | `GET /api/game/officer-jenny` (REST) a cada 2 h e após cada rodada; na viagem (Shopping): `set-city shopping` + `POST .../officer-jenny/exchange { offer }` por troca + `inv-get` + `balls-get` | só com a troca ligada e oferta escolhida; troca enquanto saldo − reserva ≥ custo (máx. 20 por viagem; outfit 1x) |
+
 ## 📖 Profissão (rota de captura)
 
 | O quê | Como | Quando |
