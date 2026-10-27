@@ -720,6 +720,14 @@ e repete até a quality entrar na faixa; aí quem sobe come esse filho e a sub-l
 parado (usa o slot que ele não usa). Quem vira comida e a faixa dele ficam fora da venda e do depósito. Status e prévia mostram "Comida
 em criação: … falta X de Q (~N gerações)" e "vai virar comida: …"; o aviso do ovo/choco diz que é comida e se já serve. Caso 14 do teste.
 
+**v3.49.0 (26/10/2026) — Breeding Box:** mudança do jogo vista no outro PC do usuário ("Comida em criação … porém não tem nada sendo
+incubado"): a cotação e a última viagem falhavam com "Os dois pais precisam estar na Breeding Box — separe-os na aba Breeding Box do
+Depósito". O Depósito ganhou a aba 🥚 Breeding Box; só quem está nela aparece no Breeding Center, lá dentro ninguém vai para o Mark,
+Mercado, troca, família ou time, e os filhotes nascem lá (`pokes[].breedingBox`; socket `breedbox-move { dir, pokeIds }` →
+`breedbox-moved`). O script: na hunt a cotação recusada por isso não para a linhagem (planeja sem cotar); na viagem separa quem sobe e a
+comida na Breeding Box antes de cotar e cruzar (log `breeding-box`); venda e depósito pulam quem está lá; o filho é procurado entre os
+que nasceram lá. Sem campo novo no painel. Caso 15 do teste.
+
 **Pendente:** se o `breed` funciona na hunt
 (o script sempre cruza na viagem). Teste: `node test/breeding.test.js`, caso novo no `pokesell.test.js`, passo no smoke e fixture no
 round-trip.

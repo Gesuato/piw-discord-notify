@@ -879,7 +879,7 @@ function loadBreedModule(cfg, init) {
     const clock = { now: Date.UTC(2026, 9, 9, 12, 0, 0), rnd: 0 };
     const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
     const FakeMath = new Proxy(Math, { get(t, k) { return k === 'random' ? () => clock.rnd : t[k]; } });
-    const state = { sent: [], hooks: [], logs: [], trips: [], calls: [], familyActions: [], saves: 0, pokes: Array.isArray(init.pokes) ? init.pokes.slice() : [], family: init.family || { pokes: [], items: [] }, pokesGets: 0, onPokes: null, onFamily: null };
+    const state = { sent: [], hooks: [], logs: [], trips: [], calls: [], familyActions: [], boxMoves: [], saves: 0, pokes: Array.isArray(init.pokes) ? init.pokes.slice() : [], family: init.family || { pokes: [], items: [] }, pokesGets: 0, onPokes: null, onFamily: null, onBoxMoved: null, onError: null };
     const normalize = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
     const ctx = {
         cfg,
@@ -894,6 +894,19 @@ function loadBreedModule(cfg, init) {
             state.sent.push(m);
             if (m.type === 'pokes-get' && init.freshPokes) { const l = init.freshPokes(++state.pokesGets); if (l && state.onPokes) { state.pokes.splice(0, state.pokes.length, ...l); state.onPokes(state.pokes); } }
             if (m.type === 'family-get' && init.familyReply !== false && state.onFamily) state.onFamily();
+            // v3.49.0: Breeding Box — `init.breedBoxMove(m, state)` responde ({ moved, skipped, frame? } | { error } | null = padrão); o padrão
+            // troca cada Pokémon movido por uma cópia com `breedingBox` (os fixtures são compartilhados entre os casos), manda a lista nova
+            // (como o servidor faz) e o frame `breedbox-moved`
+            if (m.type === 'breedbox-move') {
+                state.boxMoves.push(m);
+                const r = init.breedBoxMove ? init.breedBoxMove(m, state) : null;
+                if (r && r.error) { if (state.onError) state.onError({ type: 'error', message: r.error }); }
+                else {
+                    if (!r) state.pokes.forEach((p, i) => { if (p && m.pokeIds.includes(String(p.id))) state.pokes[i] = Object.assign({}, p, { breedingBox: m.dir === 'in' }); });
+                    if (!r || r.frame !== false) { if (state.onPokes) state.onPokes(state.pokes); }
+                    if (state.onBoxMoved) state.onBoxMoved(Object.assign({ type: 'breedbox-moved', moved: m.pokeIds.length, skipped: 0 }, r || {}));
+                }
+            }
             return true;
         },
         gameApi: (url, opts) => { state.calls.push({ url, method: opts?.method || 'GET', body: opts?.body ? JSON.parse(opts.body) : null }); return Promise.resolve().then(() => (init.api ? init.api(url, opts) : {})); },
@@ -912,6 +925,7 @@ function loadBreedModule(cfg, init) {
             breedTick, breedCycle, breedPlan, breedCityWork, breedHatch, breedOnPokes, breedOnFamily, breedKeepsPoke, breedFoodReason, breedFoodList, breedFoodPick,
             breedCheckQuote, breedStoneNeeds, parseBreedCenter, breedTrunk, breedLines, breedActiveLines, breedStatus, breedFoodStatus, breedWanted, breedReset,
             BREED_POLL_MS, BREED_RETRY_MS, breedKeepMax, breedKept, breedUnits, breedFoodLine, breedFoodTrunkReason, breedFoodTrunkList, breedFoodTrunkPick, breedFoodGens,
+            breedBoxMove, breedOnBoxMoved, breedOnError, breedInBox,
             get breedPlanned() { return breedPlanned; },
             get breedWait() { return breedWait; },
             get breedCenter() { return breedCenter; },
@@ -920,6 +934,8 @@ function loadBreedModule(cfg, init) {
     const api = factory(...Object.values(ctx));
     state.onPokes = (l) => api.breedOnPokes(l);
     state.onFamily = () => api.breedOnFamily();
+    state.onBoxMoved = (m) => api.breedOnBoxMoved(m);
+    state.onError = (m) => api.breedOnError(m);
     return { api, state, cfg, clock };
 }
 

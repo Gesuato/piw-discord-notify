@@ -10,6 +10,7 @@ const LISTA = [
     P({ id: 'locked', name: 'Dratini', locked: true, ivTotal: 10, quality: 1.7 }),
     P({ id: 'semvalor', name: 'Magikarp', sellValue: 0, ivTotal: 10, quality: 1.0 }),
     P({ id: 'listed', name: 'Growlithe', listed: true, ivTotal: 10, quality: 1.0 }),
+    P({ id: 'bbox', name: 'Pinsir', breedingBox: true, ivTotal: 10, quality: 1.0 }),   // v3.49.0: na Breeding Box do Depósito o jogo não vende
     P({ id: 'lv2', name: 'Rattata', level: 2, ivTotal: 10, quality: 1.0 }),           // v3.38.0: nível > 1 nunca vende
     P({ id: 'semiv', name: 'Zubat', ivTotal: undefined, quality: undefined }),
     P({ id: 'c40', name: 'Rattata', ivTotal: 40, quality: 1.0 }),        // Common 40
@@ -30,7 +31,7 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         const { api } = loadPokeSellModule(cfg, { api: okApi() });
         const motivos = Object.fromEntries(LISTA.map(p => [p.id, api.pokeSellReason(p, cfg)]));
         assert(motivos.lider === 'no time' && motivos.time2 === 'no time', 'time protegido');
-        assert(motivos.starter === 'inicial' && motivos.shiny === 'shiny' && motivos.locked === 'cadeado' && motivos.semvalor === 'sem valor' && motivos.semiv === 'sem IV' && motivos.listed === 'anunciado no mercado', 'proteções fixas: ' + JSON.stringify(motivos));
+        assert(motivos.starter === 'inicial' && motivos.shiny === 'shiny' && motivos.locked === 'cadeado' && motivos.semvalor === 'sem valor' && motivos.semiv === 'sem IV' && motivos.listed === 'anunciado no mercado' && motivos.bbox === 'na Breeding Box', 'proteções fixas: ' + JSON.stringify(motivos));
         assert(motivos.lv2 === 'nível 2', 'v3.38.0: nível > 1 nunca vende: ' + motivos.lv2);
         assert(api.pokeSellReason(P({ id: 'lv50', level: 50, ivTotal: 10, quality: 1.0 }), cfg) === 'nível 50' && api.pokeSellReason(P({ id: 'lv1', level: 1, ivTotal: 10, quality: 1.0 }), cfg) === null && api.pokeSellReason(P({ id: 'lvx', level: undefined, ivTotal: 10, quality: 1.0 }), cfg) === null, 'nível 1 ou desconhecido segue as regras normais');
         assert(motivos.c40 === null && motivos.e99 === null && motivos.l90 === null, 'abaixo do limite da raridade vende');
@@ -197,14 +198,14 @@ const flush = () => new Promise(r => setTimeout(r, 5));
     // v3.28.0: box e plano B
     // a) estimativa do box = frame + capturas − vendidas; acima do limite pede viagem e avisa 1x/h
     {
-        const cfg = { pokeSellEnabled: true, pokeSellLimits: REGRAS, boxAlertAt: 16 };
+        const cfg = { pokeSellEnabled: true, pokeSellLimits: REGRAS, boxAlertAt: 17 };
         const { api, state, clock } = loadPokeSellModule(cfg, { api: okApi() });
-        api.pokeSellOnPokes(LISTA);                                   // 14 na conta
-        assert(api.boxEstimate() === 14 && !state.hooks.length && !(state.trips || []).length, 'box 14 abaixo do limite');
+        api.pokeSellOnPokes(LISTA);                                   // 15 na conta (v3.49.0: + o da Breeding Box)
+        assert(api.boxEstimate() === 15 && !state.hooks.length && !(state.trips || []).length, 'box 15 abaixo do limite');
         api.boxNoteCapture({ id: 'n1', speciesId: 19, name: 'Rattata', level: 1, xp: 0, shiny: false, sellValue: 100, ivTotal: 30, quality: 1.0 });
         api.boxNoteCapture({ id: 'n2', speciesId: 19, name: 'Rattata', level: 1, xp: 0, shiny: false, sellValue: 100, ivTotal: 30, quality: 1.0 });
-        assert(api.boxEstimate() === 16 && state.trips.length === 1 && state.trips[0].key === 'pokes' && /box com ~16/.test(state.trips[0].motivo), 'no limite: viagem pedida: ' + JSON.stringify(state.trips));
-        assert(state.hooks.length === 1 && /box com \*\*~16 Pokémon\*\*/.test(state.hooks[0].content) && state.hooks[0].meta.evento === 'box-alerta', 'alerta do box: ' + (state.hooks[0] || {}).content);
+        assert(api.boxEstimate() === 17 && state.trips.length === 1 && state.trips[0].key === 'pokes' && /box com ~17/.test(state.trips[0].motivo), 'no limite: viagem pedida: ' + JSON.stringify(state.trips));
+        assert(state.hooks.length === 1 && /box com \*\*~17 Pokémon\*\*/.test(state.hooks[0].content) && state.hooks[0].meta.evento === 'box-alerta', 'alerta do box: ' + (state.hooks[0] || {}).content);
         api.boxNoteCapture({ id: 'n3', speciesId: 19, name: 'Rattata', level: 1, xp: 0, shiny: false, sellValue: 100, ivTotal: 30, quality: 1.0 });
         assert(state.hooks.length === 1, 'segundo alerta só depois de 1 h');
         assert(JSON.parse(state.store.pgDiscordNotifyBox).length === 3, 'fila persistida: ' + state.store.pgDiscordNotifyBox);

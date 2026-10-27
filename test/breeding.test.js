@@ -21,14 +21,16 @@ const quoteOf = (a, b, opts) => Object.assign({
 const centerOf = (eggs, extra) => Object.assign({ unlocked: true, unlockLevel: 60, level: 410, slots: 2, maxSlots: 6, usedSlots: eggs.length, nextSlotCost: 30, gold: 5280331, diamonds: 1, pheromones: 0, pheromoneItemId: 44417, instantHatchCost: 2, eggs }, extra || {});
 const EGG = { id: 'cmv0eimak2ya7labrq97qy157', speciesId: 232, speciesName: 'Donphan', rank: 'N', shinyChild: false, killsDone: 0, killsRequired: 3000, ready: false };
 
-// API falsa: `box` é um mapa id -> Pokémon para a cotação; `have` = stones na mochila (muda com a retirada da família)
+const BB_ERRO = 'Os dois pais precisam estar na Breeding Box — separe-os na aba Breeding Box do Depósito.';   // texto real do jogo (26/10/2026)
+// API falsa: `box` é um mapa id -> Pokémon para a cotação; `have` = stones na mochila (muda com a retirada da família); `boxOnly` = o jogo
+// exige os dois pais com `breedingBox` (v3.49.0)
 function fakeApi(opts) {
     const st = Object.assign({ eggs: [], have: 40, gold: 5280331, hatch: null, box: {} }, opts);
     const posts = [];
     const api = (url, o) => {
         if (o?.method === 'POST') {
             const b = JSON.parse(o.body); posts.push(b);
-            if (b.action === 'breed') { if (st.breedError) throw new Error(st.breedError); st.eggs = st.eggs.concat([Object.assign({}, EGG, { id: 'ovo-' + posts.length })]); st.gold -= 2000000; return centerOf(st.eggs, { gold: st.gold }); }
+            if (b.action === 'breed') { if (st.breedError) throw new Error(st.breedError); if (st.boxOnly && !(st.box[b.parent1]?.breedingBox && st.box[b.parent2]?.breedingBox)) throw new Error(BB_ERRO); st.eggs = st.eggs.concat([Object.assign({}, EGG, { id: 'ovo-' + posts.length })]); st.gold -= 2000000; return centerOf(st.eggs, { gold: st.gold }); }
             if (b.action === 'hatch') { if (st.hatchError) throw new Error(st.hatchError); st.eggs = st.eggs.filter(e => e.id !== b.eggId); return st.hatch || { ok: true }; }
             throw new Error('POST inesperado ' + JSON.stringify(b));
         }
@@ -37,6 +39,7 @@ function fakeApi(opts) {
         if (!m) throw new Error('GET inesperado ' + url);
         const a = st.box[decodeURIComponent(m[1])], b = st.box[decodeURIComponent(m[2])];
         if (!a || !b) throw new Error('Pokémon não encontrado');
+        if (st.boxOnly && !(a.breedingBox && b.breedingBox)) throw new Error(BB_ERRO);   // v3.49.0: o jogo só cota com os dois na Breeding Box
         return quoteOf(a, b, { have: st.have, growth: st.growth });
     };
     return { api, posts, st };
@@ -429,5 +432,78 @@ function fakeApi(opts) {
         assert(!cfg3.breedLines[0].food && m3.state.trips.length === 0 && /comida em criação: ninguém da espécie pode virar comida/.test(m3.api.breedWait.motivo), 'sem candidato: parado com motivo: ' + JSON.stringify(m3.api.breedWait));
     }
 
-    console.log('OK breeding.test — filtro da comida (Q e IV menores, teto, família), checklist da cotação (donorId/growth/baseQuality), teto de protegidos (v3.47.0), comida em criação (v3.48.0), plano + viagem, cidade (stones e comida da família, POST breed), parado/retry, hatch e filho');
+    // 15) v3.49.0: Breeding Box — o jogo só cota/cruza com os dois pais lá; a cotação na hunt falha sem parar a linhagem, a viagem separa
+    //     os dois (`breedbox-move`), relê a lista e cota na cidade; movimento recusado = falha com o motivo; já na Breeding Box = como antes;
+    //     filho identificado entre os que nasceram lá; venda e depósito pulam quem está lá (pokesell.test).
+    {
+        const tronco = Object.assign({}, TRONCO), comida = Object.assign({}, COMIDA);
+        const fake = fakeApi({ box: { [tronco.id]: tronco, [comida.id]: comida }, have: 40, boxOnly: true });
+        const cfg = { breedEnabled: true, breedLines: [{ id: TRONCO.id, gen: 0 }], breedFoodIvMax: 120, breedFamily: false, breedDouble: false };
+        const marca = (m) => { for (const p of [tronco, comida]) if (m.pokeIds.includes(p.id)) p.breedingBox = m.dir === 'in'; return null; };   // a API falsa lê os originais
+        const { api, state } = loadBreedModule(cfg, { api: fake.api, pokes: [LIDER, tronco, comida], breedBoxMove: marca });
+        await api.breedTick(true);
+        assert(api.breedPlanned[TRONCO.id] && state.trips.length === 1 && !api.breedWait, 'cotação fora da Breeding Box adia para a viagem sem parar: ' + JSON.stringify(api.breedWait) + ' ' + JSON.stringify(api.breedPlanned));
+        assert(state.logs.some(([k, d]) => k === 'breeding-box' && d.fase === 'cotacao-na-viagem' && /Breeding Box/.test(d.erro) && d.naBox.join() === 'false,false'), 'log breeding-box cotacao-na-viagem: ' + JSON.stringify(state.logs.filter(([k]) => k === 'breeding-box')));
+        assert(!state.logs.some(([k]) => k === 'breeding-parado'), 'não avisa parado por causa da Breeding Box');
+        const r = await api.breedCityWork();
+        assert(state.boxMoves.length === 1 && state.boxMoves[0].dir === 'in' && state.boxMoves[0].pokeIds.length === 2 && state.boxMoves[0].pokeIds.includes(TRONCO.id) && state.boxMoves[0].pokeIds.includes(COMIDA.id), 'na cidade separa os dois pais: ' + JSON.stringify(state.boxMoves));
+        assert(r.ok && fake.posts.length === 1 && fake.posts[0].parent1 === TRONCO.id && fake.posts[0].parent2 === COMIDA.id && tronco.breedingBox && comida.breedingBox, 'cotou e cruzou depois da Breeding Box: ' + JSON.stringify(r) + ' ' + JSON.stringify(fake.posts));
+        assert(state.calls.filter(c => /action=quote/.test(c.url)).length === 2, 'cotou 2x: na hunt (recusada) e na cidade (depois da Breeding Box): ' + state.calls.map(c => c.url).join(' | '));
+        assert(state.logs.some(([k, d]) => k === 'breeding-box' && d.ok === true && d.dir === 'in' && d.moved === 2 && d.frame === true), 'log breeding-box ok: ' + JSON.stringify(state.logs.filter(([k]) => k === 'breeding-box')));
+        // o jogo recusa o movimento: a viagem falha com o motivo, sem cruzar
+        {
+            const t2 = Object.assign({}, TRONCO), c2 = Object.assign({}, COMIDA);
+            const f2 = fakeApi({ box: { [t2.id]: t2, [c2.id]: c2 }, have: 40, boxOnly: true });
+            const cfg2 = { breedEnabled: true, breedLines: [{ id: TRONCO.id, gen: 0 }], breedFoodIvMax: 120, breedFamily: false, breedDouble: false };
+            const m2 = loadBreedModule(cfg2, { api: f2.api, pokes: [LIDER, t2, c2], breedBoxMove: () => ({ error: 'Depósito indisponível durante a hunt' }) });
+            await m2.api.breedTick(true);
+            const r2 = await m2.api.breedCityWork();
+            assert(!r2.ok && /Breeding Box: Depósito indisponível/.test(r2.motivo) && f2.posts.length === 0 && m2.api.breedWait && /Breeding Box/.test(m2.api.breedWait.motivo), 'movimento recusado: falha com o motivo, sem cruzar: ' + JSON.stringify(r2));
+            assert(m2.state.logs.some(([k, d]) => k === 'breeding-box' && d.ok === false && /Depósito indisponível/.test(d.motivo) && d.faltam.length === 2), 'log breeding-box recusado: ' + JSON.stringify(m2.state.logs.filter(([k]) => k === 'breeding-box')));
+        }
+        // o jogo não responde nem move: "sem resposta do jogo" (pede a lista com pokes-get antes de desistir)
+        {
+            const t3 = Object.assign({}, TRONCO), c3 = Object.assign({}, COMIDA);
+            const f3 = fakeApi({ box: { [t3.id]: t3, [c3.id]: c3 }, have: 40, boxOnly: true });
+            const cfg3 = { breedEnabled: true, breedLines: [{ id: TRONCO.id, gen: 0 }], breedFoodIvMax: 120, breedFamily: false, breedDouble: false };
+            const m3 = loadBreedModule(cfg3, { api: f3.api, pokes: [LIDER, t3, c3], breedBoxMove: () => ({ frame: false, moved: 0, skipped: 2 }) });
+            await m3.api.breedTick(true);
+            const r3 = await m3.api.breedCityWork();
+            assert(!r3.ok && /Breeding Box: o jogo não moveu 2 de 2/.test(r3.motivo) && f3.posts.length === 0, 'frame sem movimento: motivo claro: ' + JSON.stringify(r3));
+            assert(m3.state.sent.filter(m => m.type === 'pokes-get').length >= 2, 'pediu a lista de novo antes de desistir: ' + JSON.stringify(m3.state.sent.map(m => m.type)));
+        }
+        // já na Breeding Box (o filhote nasce lá): cota na hunt como antes e a cidade não move ninguém
+        {
+            const t4 = Object.assign({}, TRONCO, { breedingBox: true }), c4 = Object.assign({}, COMIDA, { breedingBox: true });
+            const f4 = fakeApi({ box: { [t4.id]: t4, [c4.id]: c4 }, have: 40, boxOnly: true });
+            const cfg4 = { breedEnabled: true, breedLines: [{ id: TRONCO.id, gen: 0 }], breedFoodIvMax: 120, breedFamily: false, breedDouble: false };
+            const m4 = loadBreedModule(cfg4, { api: f4.api, pokes: [LIDER, t4, c4] });
+            await m4.api.breedTick(true);
+            assert(m4.api.breedPlanned[TRONCO.id] && m4.state.logs.some(([k, d]) => k === 'breeding-cotacao' && d.ok) && !m4.state.logs.some(([k]) => k === 'breeding-box'), 'já na Breeding Box: cotação na hunt como antes');
+            assert(/Q 1\.466 · IV 126\/192 · na Breeding Box/.test(m4.api.breedStatus().join('\n')), 'status diz que quem sobe está na Breeding Box: ' + m4.api.breedStatus().join(' | '));
+            assert(m4.api.breedFoodStatus().some(x => /✔ Donphan Q 1\.345 IV 104 lv18 · Breeding Box/.test(x.text)), 'prévia marca a comida na Breeding Box: ' + JSON.stringify(m4.api.breedFoodStatus()));
+            const r4 = await m4.api.breedCityWork();
+            assert(r4.ok && m4.state.boxMoves.length === 0 && f4.posts.length === 1, 'cidade não move quem já está lá: ' + JSON.stringify(r4) + ' ' + JSON.stringify(m4.state.boxMoves));
+        }
+        // quem sobe já está lá e só a comida falta: move só a comida
+        {
+            const t5 = Object.assign({}, TRONCO, { breedingBox: true }), c5 = Object.assign({}, COMIDA);
+            const f5 = fakeApi({ box: { [t5.id]: t5, [c5.id]: c5 }, have: 40, boxOnly: true });
+            const cfg5 = { breedEnabled: true, breedLines: [{ id: TRONCO.id, gen: 0 }], breedFoodIvMax: 120, breedFamily: false, breedDouble: false };
+            const m5 = loadBreedModule(cfg5, { api: f5.api, pokes: [LIDER, t5, c5], breedBoxMove: (m) => { if (m.pokeIds.includes(c5.id)) c5.breedingBox = true; return null; } });
+            await m5.api.breedTick(true);
+            const r5 = await m5.api.breedCityWork();
+            assert(r5.ok && m5.state.boxMoves.length === 1 && m5.state.boxMoves[0].pokeIds.join() === COMIDA.id && f5.posts.length === 1, 'só a comida vai para a Breeding Box: ' + JSON.stringify(m5.state.boxMoves));
+        }
+        // o filho nasce na Breeding Box: com dois candidatos de mesmo Q/IV, fica o que está lá
+        {
+            const cfgF = { breedEnabled: true, breedLines: [{ id: null, eggId: null, pendingChild: { quality: 1.471, ivTotal: 126 }, speciesId: 232, name: 'Donphan', gen: 0, lastQ: 1.466, lastIv: 126 }] };
+            const fora = P({ id: 'fora', quality: 1.471, ivTotal: 126 }), dentro = P({ id: 'dentro', quality: 1.471, ivTotal: 126, breedingBox: true });
+            const mF = loadBreedModule(cfgF, { pokes: [LIDER, fora, dentro] });
+            mF.api.breedOnPokes(mF.state.pokes);
+            assert(cfgF.breedLines[0].id === 'dentro' && cfgF.breedLines[0].gen === 1, 'filho = o que nasceu na Breeding Box: ' + JSON.stringify(cfgF.breedLines[0]));
+        }
+    }
+
+    console.log('OK breeding.test — filtro da comida (Q e IV menores, teto, família), checklist da cotação (donorId/growth/baseQuality), teto de protegidos (v3.47.0), comida em criação (v3.48.0), Breeding Box (v3.49.0), plano + viagem, cidade (stones e comida da família, Breeding Box, POST breed), parado/retry, hatch e filho');
 })().catch(e => { console.error(e); process.exit(1); });

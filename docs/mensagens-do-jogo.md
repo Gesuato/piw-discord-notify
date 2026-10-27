@@ -173,6 +173,16 @@ killsRequired`, 3000 para um Donphan rank N); "chocar agora" e slot extra custam
   tms[], type1, type2, stats{...}, ivTotal, quality, power }` e `depot.items[]` traz `{ itemId, quantity, name, icon }`; `family`
   tem `{ id, name, isOwner, frozen, movesUsed, movesCap, lockedUntil, leaveCost, members, pendingInvites }`. Ou seja, dá para
   escolher comida na família por quality/IV sem tirar antes.
+- **Breeding Box** (bundle em 26/10/2026; mudança do jogo vista primeiro no painel do usuário: cotação e `breed` falhando com
+  "Os dois pais precisam estar na Breeding Box — separe-os na aba Breeding Box do Depósito."): o Depósito (NPC da cidade, "📦 Abrir
+  Depósito") ganhou a aba 🥚 Breeding Box (i18n `window.depot.tabBreedingBox`/`bbHint`: "Só os Pokémon da Breeding Box aparecem no
+  Centro de Breeding. Lá eles não vão pro Mark, Mercado, troca, baú nem time"; `bbEmpty`: "os filhotes também nascem aqui"; inicial e
+  Ditto não entram). A lista do centro é o frame `pokes` filtrado por `breedingBox && !team && !starter`; a venda no Mark, o Mercado,
+  a troca e a família filtram `!breedingBox`. Pelo **socket**: a tela manda `breedbox-move { dir: 'in' | 'out', pokeIds: [até 200] }`
+  (botões "Separar filtrados"/"Devolver filtrados" mandam a lista inteira de uma vez) e o servidor responde `breedbox-moved { moved,
+  skipped }` ou `error { message }` (a tela só mostra o erro que chega em até 4 s). Não se sabe se o servidor aceita o movimento na
+  hunt (o Depósito é da cidade): o script move na viagem, antes da cotação (`breedBoxMove`, log `breeding-box`; `breedbox-envio` e
+  `breedbox-moved` registram o que a tela e o jogo mandam). Formato do `breedbox-moved` ainda NÃO visto no log.
 
 ### Guild (bundle em 09/10/2026, patch 1.9 do mesmo dia; frame `guild` CONFIRMADO no log em 10/10/2026 01:25Z)
 

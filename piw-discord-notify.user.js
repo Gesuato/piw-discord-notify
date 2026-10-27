@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.48.0
+// @version      3.49.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.48.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.49.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -1233,6 +1233,7 @@
         // para confirmar o formato de doação de gold, tributo etc. antes de automatizar.
         else if (m?.type === 'guild-action') logEvent('guild-envio', { action: m.action ?? null, dados: Object.fromEntries(Object.entries(m).filter(([k]) => k !== 'type' && k !== 'action')) });
         else if (m?.type === 'family-action') logEvent('familia-envio', { action: m.action ?? null, dir: m.dir ?? null, itemId: m.itemId ?? null, quantity: m.quantity ?? null, capturedId: m.capturedId ?? null, campos: Object.keys(m).filter(k => k !== 'type') });
+        else if (m?.type === 'breedbox-move') logEvent('breedbox-envio', { dir: m.dir ?? null, n: Array.isArray(m.pokeIds) ? m.pokeIds.length : null, campos: Object.keys(m).filter(k => k !== 'type') });   // v3.49.0: Breeding Box (pela tela ou pelo script)
     }
 
     function handleFieldKill(message) {
@@ -1506,6 +1507,7 @@
         if (Number(p.level) > 1) return `nível ${Number(p.level)}`;   // v3.38.0: quem já treinou (nível > 1) NUNCA vende (pedido do usuário em 16/10/2026)
         if (p.locked) return 'cadeado';
         if (p.listed || p.tradeId) return 'anunciado no mercado';   // `listed` = anúncio no mercado (bundle: o depósito também bloqueia)
+        if (p.breedingBox) return 'na Breeding Box';   // v3.49.0: lá dentro o jogo não vende (nem Mercado, troca, família ou time)
         if (p.sellValue != null && !(Number(p.sellValue) > 0)) return 'sem valor';
         if (pokeSellRejected.has(String(p.id))) return `recusado pelo jogo (${pokeSellRejected.get(String(p.id))})`;
         const at = recentCaptureIds.get(String(p.id));
@@ -3195,6 +3197,14 @@
     //   faixa; aí quem sobe come esse filho (a comida em criação da PRÓPRIA linhagem é a única unidade que pode ser comida) e a
     //   sub-linhagem termina (log `breeding-comida { fase: escolhida | sumiu | consumida }`). Só cruza comida enquanto quem sobe está
     //   parado sem comida: a sub-linhagem usa o slot que ele não usa. Quem vira comida pode estar na família (retirado na viagem).
+    //   v3.49.0 — Breeding Box (mudança do JOGO vista em 26/10/2026 no outro PC do usuário: "Comida em criação … porém não tem nada
+    //   sendo incubado"; a cotação e a última viagem falhavam com "Os dois pais precisam estar na Breeding Box — separe-os na aba
+    //   Breeding Box do Depósito"): o Depósito ganhou a aba 🥚 Breeding Box e só quem está nela aparece no Breeding Center. A lista
+    //   `pokes` traz `breedingBox: true` para quem está lá; a tela move com `breedbox-move { dir:'in'|'out', pokeIds[] }` pelo socket e o
+    //   servidor responde `breedbox-moved { moved, skipped }` ou `error`. Lá dentro o Pokémon não vai para o Mark, Mercado, troca, família
+    //   nem time (a venda e o depósito do script pulam quem tem `breedingBox`), e os filhotes nascem lá. O script: na hunt a cotação fora da
+    //   Breeding Box não é falta de material (planeja sem cotar, log `breeding-box { fase:'cotacao-na-viagem' }`); na viagem, antes da
+    //   cotação, `breedBoxMove([quem sobe, comida], 'in')` separa os dois e confere pela lista nova (log `breeding-box`). Caso 15 do teste.
 
     const BREED_URL = '/api/game/breeding';
     const BREED_TICK_MS = 60 * 1000;
@@ -3224,6 +3234,7 @@
     let breedPokesSeq = 0;         // frames `pokes` vistos pelo módulo (espera por lista fresca)
     let breedFamilySeq = 0;        // frames `family` vistos pelo módulo
     let breedFamilyAskedAt = 0;
+    let breedBoxPending = null;    // v3.49.0: { ids, dir, at, resolve } esperando o `breedbox-moved`/`error` do movimento da Breeding Box
     let onBreedChange = null;      // callback do painel
 
     function breedEnabled(d) { return Boolean((d || cfg).breedEnabled); }
@@ -3255,7 +3266,7 @@
     function breedUnitLabel(u, d) { const i = breedUnitInfo(u, d); return i.food ? `comida da linhagem ${i.idx}` : `linhagem ${i.idx || '?'}`; }
     function breedFoodBreedOn(d) { return Boolean((d || cfg).breedFoodBreed); }
     // Quem sobe, pelo id, na lista `pokes` (box).
-    const breedPokeView = (p) => ({ id: String(p.id), name: p.name || '?', speciesId: Number(p.speciesId), quality: Number(p.quality), ivTotal: Number(p.ivTotal), level: Number(p.level) || 0, shiny: Boolean(p.shiny), team: Boolean(p.team || p.leader), starter: Boolean(p.starter) });
+    const breedPokeView = (p) => ({ id: String(p.id), name: p.name || '?', speciesId: Number(p.speciesId), quality: Number(p.quality), ivTotal: Number(p.ivTotal), level: Number(p.level) || 0, shiny: Boolean(p.shiny), team: Boolean(p.team || p.leader), starter: Boolean(p.starter), breedingBox: Boolean(p.breedingBox) });
     function breedTrunk(line) {
         if (!line?.id) return null;
         const p = lastPokesList.find(x => x && String(x.id) === String(line.id));
@@ -3369,7 +3380,7 @@
         d = d || cfg;
         if (!trunk) return [];
         const out = [];
-        const add = (p, origem) => out.push({ id: String(p.id ?? ''), name: p.name || '?', quality: Number(p.quality), ivTotal: Number(p.ivTotal), level: Number(p.level) || 0, origem, motivo: breedFoodReason(p, trunk, d) });
+        const add = (p, origem) => out.push({ id: String(p.id ?? ''), name: p.name || '?', quality: Number(p.quality), ivTotal: Number(p.ivTotal), level: Number(p.level) || 0, breedingBox: Boolean(p.breedingBox), origem, motivo: breedFoodReason(p, trunk, d) });
         for (const p of lastPokesList) if (p && !p.team && Number(p.speciesId) === trunk.speciesId && String(p.id) !== trunk.id) add(p, 'box');
         if (d.breedFamily) for (const p of (lastFamilyDepot.pokes || [])) if (p && Number(p.speciesId) === trunk.speciesId) add(p, 'familia');
         return out.sort((a, b) => (a.motivo ? 1 : 0) - (b.motivo ? 1 : 0) || (a.quality || 0) - (b.quality || 0) || (a.ivTotal || 0) - (b.ivTotal || 0));
@@ -3507,6 +3518,56 @@
         return familyAction({ action: 'poke', dir: 'withdraw', capturedId: pokeId }, 'poke-familia-retira', { name, pokeId },
             (depot) => !(Array.isArray(depot.pokes) ? depot.pokes : []).some(p => String(p?.id) === String(pokeId)));
     }
+    // v3.49.0: Breeding Box (aba 🥚 do Depósito; mudança do jogo vista em 26/10/2026). A cotação e o breed só saem com os dois pais lá
+    // ("Os dois pais precisam estar na Breeding Box — separe-os na aba Breeding Box do Depósito"). Pelo socket, como a tela faz:
+    // `breedbox-move { dir:'in'|'out', pokeIds[] (até 200) }` → `breedbox-moved { moved, skipped }` ou `error { message }` (a tela só
+    // mostra o erro que chega em até 4 s). Cada Pokémon da lista `pokes` traz `breedingBox: true` quando está lá (ausente = fora).
+    const breedBoxErrorRe = /breeding box/i;
+    function breedInBox(p) { return Boolean(p && p.breedingBox); }
+    // Põe `ids` na Breeding Box (`dir` 'in') ou devolve ao box ('out'); confere pela lista `pokes` nova (o servidor manda a lista
+    // depois do movimento; sem frame em BREED_WAIT_MS pede com `pokes-get`). Devolve { ok, moved, skipped, motivo }.
+    function breedBoxMove(ids, dir) {
+        ids = [...new Set((ids || []).map(id => String(id ?? '')).filter(Boolean))];
+        if (!ids.length) return Promise.resolve({ ok: true, moved: 0, skipped: 0, motivo: null });
+        return new Promise((resolve) => {
+            if (breedBoxPending) breedBoxPending.resolve({ motivo: 'outro movimento da Breeding Box em andamento' });
+            const antes = breedPokesSeq;
+            const entry = { ids, dir, at: Date.now(), timer: null, done: false, resolve: null };
+            entry.resolve = async (r) => {
+                if (entry.done) return;
+                entry.done = true;
+                clearTimeout(entry.timer);
+                if (breedBoxPending === entry) breedBoxPending = null;
+                if (breedPokesSeq === antes) await breedWaitPokes(antes);
+                if (breedPokesSeq === antes) await breedRefreshPokes();
+                const faltam = ids.filter(id => { const p = lastPokesList.find(x => x && String(x.id) === id); return !p || breedInBox(p) !== (dir === 'in'); });
+                const ok = !faltam.length;
+                const motivo = ok ? null : (r.motivo || (r.frame ? `o jogo não moveu ${faltam.length} de ${ids.length}` : 'sem resposta do jogo'));
+                logEvent('breeding-box', { dir, ids, ok, moved: r.moved ?? null, skipped: r.skipped ?? null, frame: Boolean(r.frame), motivo, faltam: ok ? undefined : faltam });
+                resolve({ ok, moved: r.moved ?? null, skipped: r.skipped ?? null, motivo });
+            };
+            breedBoxPending = entry;
+            if (!sendGame({ type: 'breedbox-move', dir, pokeIds: ids.slice(0, 200) })) { entry.resolve({ motivo: 'socket do jogo não rastreado' }); return; }
+            entry.timer = setTimeout(() => entry.resolve({}), BREED_WAIT_MS);
+        });
+    }
+    function breedWaitPokes(antes) {
+        const t0 = Date.now();
+        return new Promise(res => (function loop() {
+            if (breedPokesSeq !== antes) return res(true);
+            if (Date.now() - t0 >= BREED_WAIT_MS) return res(false);
+            setTimeout(loop, 250);
+        })());
+    }
+    // Frame `breedbox-moved` (resposta do movimento, pela tela ou pelo script).
+    function breedOnBoxMoved(m) {
+        logEvent('breedbox-moved', { moved: m?.moved ?? null, skipped: m?.skipped ?? null, pendente: Boolean(breedBoxPending) });
+        if (breedBoxPending) breedBoxPending.resolve({ frame: true, moved: m?.moved, skipped: m?.skipped });
+    }
+    // Frame `error` do jogo logo depois do movimento (até 4 s, como a tela faz).
+    function breedOnError(m) {
+        if (breedBoxPending && Date.now() - breedBoxPending.at <= 4000) breedBoxPending.resolve({ frame: true, motivo: m?.message || 'erro do jogo' });
+    }
 
     // Frame `pokes`: guarda nome/espécie de quem sobe (a proteção da venda usa isso) e identifica o filho pendente.
     function breedOnPokes(list) {
@@ -3529,6 +3590,8 @@
         const sp = Number(line.speciesId) || 0;
         const outros = breedUnits().filter(o => o !== line && o.id).map(o => String(o.id));
         let cand = (Array.isArray(list) ? list : []).filter(p => p && !p.team && !p.leader && !p.shiny && (!sp || Number(p.speciesId) === sp) && !outros.includes(String(p.id)));
+        const naBox = cand.filter(p => breedInBox(p));   // v3.49.0: os filhotes nascem na Breeding Box — com candidatos lá, só eles contam
+        if (naBox.length) cand = naBox;
         if (novosIds && novosIds.size) {
             const n = cand.filter(p => novosIds.has(String(p.id)));
             if (n.length === 1) return breedSetChild(line, n[0]);
@@ -3698,18 +3761,26 @@
         // Cota o par (quando os dois estão no box), confere stones e gold e registra o plano da unidade; devolve o motivo de não dar
         // (null = planejado). v3.48.0: serve para quem sobe e para a comida em criação.
         const planeja = async (unit, trunk, food, rotulo) => {
-            let stones = null;
+            let stones = null, cotou = false;
             if (food.origem === 'box' && trunk.origem !== 'familia') {
-                let q = null;
-                try { q = await breedQuote(trunk, food); } catch (err) { return `${rotulo}: cotação falhou (${err?.message || err})`; }
-                const chk = breedCheckQuote(q, trunk);
-                stones = breedStoneNeeds(q);
-                logEvent('breeding-cotacao', { tronco: trunk.name, troncoId: trunk.id, comida: food.id, qTronco: trunk.quality, qComida: food.quality, ivTronco: trunk.ivTotal, ivComida: food.ivTotal, donorId: q?.ivPreview?.donorId ?? null, ok: !chk, motivo: chk, goldFee: q?.goldFee ?? null, stones: breedStonesTxt(stones), criacao: breedUnitInfo(unit).food || undefined });
-                if (chk) return `${rotulo}: ${chk}`;
-                const faltam = stones.filter(s => s.have + s.familia < s.need);
-                if (faltam.length) return `${rotulo}: faltam stones (${breedStonesTxt(faltam)})`;
-                if (c.gold < Number(q.goldFee || 0)) return `${rotulo}: gold ${fmtNum(c.gold)} < taxa ${fmtNum(q.goldFee)}`;
-            } else if (c.gold < BREED_GOLD_FEE_HINT) return `${rotulo}: gold ${fmtNum(c.gold)} < taxa ${fmtNum(BREED_GOLD_FEE_HINT)}`;
+                let q = null, erro = null;
+                try { q = await breedQuote(trunk, food); } catch (err) { erro = String(err?.message || err); }
+                // v3.49.0: fora da Breeding Box o jogo não cota ("Os dois pais precisam estar na Breeding Box"): não é falta de material —
+                // a viagem separa os dois lá e cota de novo na cidade. Qualquer outro erro segue parando a linhagem.
+                if (erro && !breedBoxErrorRe.test(erro)) return `${rotulo}: cotação falhou (${erro})`;
+                if (erro) logEvent('breeding-box', { fase: 'cotacao-na-viagem', tronco: trunk.name, troncoId: trunk.id, comida: food.id, naBox: [breedInBox(trunk), breedInBox(food)], erro, criacao: breedUnitInfo(unit).food || undefined });
+                else {
+                    cotou = true;
+                    const chk = breedCheckQuote(q, trunk);
+                    stones = breedStoneNeeds(q);
+                    logEvent('breeding-cotacao', { tronco: trunk.name, troncoId: trunk.id, comida: food.id, qTronco: trunk.quality, qComida: food.quality, ivTronco: trunk.ivTotal, ivComida: food.ivTotal, donorId: q?.ivPreview?.donorId ?? null, ok: !chk, motivo: chk, goldFee: q?.goldFee ?? null, stones: breedStonesTxt(stones), criacao: breedUnitInfo(unit).food || undefined });
+                    if (chk) return `${rotulo}: ${chk}`;
+                    const faltam = stones.filter(s => s.have + s.familia < s.need);
+                    if (faltam.length) return `${rotulo}: faltam stones (${breedStonesTxt(faltam)})`;
+                    if (c.gold < Number(q.goldFee || 0)) return `${rotulo}: gold ${fmtNum(c.gold)} < taxa ${fmtNum(q.goldFee)}`;
+                }
+            }
+            if (!cotou && c.gold < BREED_GOLD_FEE_HINT) return `${rotulo}: gold ${fmtNum(c.gold)} < taxa ${fmtNum(BREED_GOLD_FEE_HINT)}`;
             breedPlanned[unit.id] = { foodId: food.id, foodName: food.name, foodQ: food.quality, foodIv: food.ivTotal, origem: food.origem, troncoOrigem: trunk.origem || 'box', stones, at: Date.now() };
             return null;
         };
@@ -3799,11 +3870,19 @@
                         await breedSleep();
                     }
                     await breedRefreshPokes();
-                    const trunk = breedTrunk(line);
+                    let trunk = breedTrunk(line);
                     if (!trunk) throw new Error(`${info.food ? 'quem vira comida' : 'quem sobe'} não está no box`);
                     if (trunk.origem === 'familia') throw new Error('quem vira comida ainda está na família');
-                    const food = lastPokesList.find(p => p && String(p.id) === plan.foodId);
+                    let food = lastPokesList.find(p => p && String(p.id) === plan.foodId);
                     if (!food) throw new Error('a comida não está no box');
+                    // v3.49.0: o jogo só cota e cruza com os dois pais na Breeding Box — separa quem falta e relê a lista
+                    if (!breedInBox(trunk) || !breedInBox(food)) {
+                        const mv = await breedBoxMove([trunk.id, String(food.id)].filter(id => !breedInBox(lastPokesList.find(x => x && String(x.id) === id))), 'in');
+                        if (!mv.ok) throw new Error(`Breeding Box: ${mv.motivo}`);
+                        trunk = breedTrunk(line); food = lastPokesList.find(p => p && String(p.id) === plan.foodId);
+                        if (!trunk || !food) throw new Error('os pais sumiram do box ao ir para a Breeding Box');
+                        await breedSleep();
+                    }
                     const fr = breedFoodReason(food, trunk);
                     if (fr) throw new Error(`a comida não serve mais: ${fr}`);
                     let q = await breedQuote(trunk, food);
@@ -3899,7 +3978,7 @@
             if (!l) return;
             const t = breedTrunk(l);
             let estado;
-            if (l.id) estado = t ? `Q ${breedQ(t.quality)} · IV ${t.ivTotal}/${IV_MAX}${breedPlanned[l.id] ? ' · viagem pedida para cruzar' : ''}` : 'não está no box (lista não lida?)';
+            if (l.id) estado = t ? `Q ${breedQ(t.quality)} · IV ${t.ivTotal}/${IV_MAX}${t.breedingBox ? ' · na Breeding Box' : ''}${breedPlanned[l.id] ? ' · viagem pedida para cruzar' : ''}` : 'não está no box (lista não lida?)';
             else if (l.eggId) estado = 'ovo chocando';
             else if (!lastPokesList.length) estado = '⚠ filho não identificado: o jogo ainda não mandou a lista de Pokémon (box grande demais? venda na mão)';
             else estado = '⚠ filho não identificado: escolha no menu';
@@ -3911,7 +3990,7 @@
                 if (fu.id && ft) {
                     const serve = t && !breedFoodReason(ft, t);
                     const gens = t ? breedFoodGens(ft.quality, t) : null;
-                    fe = `Q ${breedQ(ft.quality)} · IV ${ft.ivTotal}${ft.origem === 'familia' ? ' · na família (sai na viagem)' : ''}${breedPlanned[fu.id] ? ' · viagem pedida para cruzar' : ''}${t ? (serve ? ` · ✔ já serve para quem sobe (Q a partir de ${breedQ(t.quality - BREED_Q_GAP)})` : ` · falta ${Math.max(0, t.quality - BREED_Q_GAP - ft.quality).toFixed(3)} de Q para servir (~${gens} ${gens === 1 ? 'geração' : 'gerações'})`) : ''}`;
+                    fe = `Q ${breedQ(ft.quality)} · IV ${ft.ivTotal}${ft.breedingBox ? ' · na Breeding Box' : ''}${ft.origem === 'familia' ? ' · na família (sai na viagem)' : ''}${breedPlanned[fu.id] ? ' · viagem pedida para cruzar' : ''}${t ? (serve ? ` · ✔ já serve para quem sobe (Q a partir de ${breedQ(t.quality - BREED_Q_GAP)})` : ` · falta ${Math.max(0, t.quality - BREED_Q_GAP - ft.quality).toFixed(3)} de Q para servir (~${gens} ${gens === 1 ? 'geração' : 'gerações'})`) : ''}`;
                 } else if (fu.id) fe = 'não está no box (lista não lida?)';
                 else if (fu.eggId) fe = 'ovo chocando';
                 else fe = '⚠ filho não identificado (lista do box não lida?)';
@@ -3954,7 +4033,7 @@
                 else if (bons.length) out.push({ text: `  🍖 vai virar comida: ${bons[0].name} Q ${breedQ(bons[0].quality)} IV ${bons[0].ivTotal} (${bons[0].origem === 'familia' ? 'família' : 'box'}) × comida própria Q ${breedQ(bons[0].propria.quality)} IV ${bons[0].propria.ivTotal} · faixa a partir de Q ${breedQ(t.quality - BREED_Q_GAP)} · ~${bons[0].geracoes} ${bons[0].geracoes === 1 ? 'geração' : 'gerações'} (Δ esperado 0,01)`, ok: true });
                 else out.push({ text: `  🍖 ninguém da espécie pode virar comida${cands.length ? ` — ${cands.slice(0, 3).map(x => `${x.name} Q ${breedQ(x.quality)} IV ${x.ivTotal}: ${x.motivo}`).join(' · ')}` : ''}`, ok: false });
             }
-            for (const f of lista.slice(0, BREED_FOOD_SHOW)) out.push({ text: `  ${f.motivo ? '✖' : '✔'} ${f.name} Q ${breedQ(f.quality)} IV ${f.ivTotal}${f.level ? ` lv${f.level}` : ''} · ${f.origem === 'familia' ? 'família' : 'box'}${f.motivo ? ` — ${f.motivo}` : ''}`, ok: !f.motivo });
+            for (const f of lista.slice(0, BREED_FOOD_SHOW)) out.push({ text: `  ${f.motivo ? '✖' : '✔'} ${f.name} Q ${breedQ(f.quality)} IV ${f.ivTotal}${f.level ? ` lv${f.level}` : ''} · ${f.origem === 'familia' ? 'família' : (f.breedingBox ? 'Breeding Box' : 'box')}${f.motivo ? ` — ${f.motivo}` : ''}`, ok: !f.motivo });
             if (lista.length > BREED_FOOD_SHOW) out.push({ text: `  … e mais ${lista.length - BREED_FOOD_SHOW} (as mais fracas aparecem primeiro)`, ok: false });
         });
         return out;
@@ -5346,6 +5425,7 @@
         if (p.team || p.leader || String(p.id).startsWith('team-')) return 'no time';
         if (p.starter) return 'inicial';
         if (p.listed || p.tradeId) return 'anunciado no mercado';
+        if (p.breedingBox) return 'na Breeding Box';   // v3.49.0: lá dentro não vai para a família
         if (p.locked) return 'cadeado';          // o jogo recusa: "Este Pokémon está TRAVADO (cadeado)" (log da conta3, 28/09/2026)
         if (!d.depositPokesRare && p.shiny) return 'shiny';
         const at = recentCaptureIds.get(String(p.id));
@@ -6152,6 +6232,7 @@
         logEvent('erro-jogo', { message: message.message || null });
         if (typeof guildOnError === 'function') guildOnError(message);
         if (typeof bossOnError === 'function') bossOnError(message);          // v3.43.1: texto do erro no log da retomada do Auto Boss
+        if (typeof breedOnError === 'function') breedOnError(message);        // v3.49.0: o jogo recusou o movimento da Breeding Box
         if (familyPending) familyPending.resolve({ ok: false, motivo: message.message || 'erro do jogo' });
         if (huntSwitch?.origem === 'captura' && huntSwitch.at && catchTarget && huntSwitch.slug === catchTarget.slug) {
             const slug = huntSwitch.slug;
@@ -7432,6 +7513,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         if (message.type === 'catch-cooldown') { catchOnCooldown(message); return; }
 
         if (message.type === 'poke-delta') { handlePokeDelta(message); return; }
+        if (message.type === 'breedbox-moved') { breedOnBoxMoved(message); return; }   // v3.49.0: resposta do movimento da Breeding Box
         if (message.type === 'family') { handleFamily(message); return; }
         if (message.type === 'guild') { handleGuild(message); return; }
         if (message.type === 'guild-dirty') { guildOnDirty(); return; }
@@ -8228,7 +8310,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <label class="dn-toggle"><input id="pg-dn-breed-double" type="checkbox"><span class="sw"></span>Dobrar stones <span class="dn-hint">(40 em vez de 20; 5% de chance de +1 IV no filho)</span></label>
                         <label class="dn-toggle"><input id="pg-dn-breed-foodbreed" type="checkbox"><span class="sw"></span>Criar comida quando nenhuma servir <span class="dn-hint">(cruza o melhor da espécie abaixo da faixa com um mais fraco, geração a geração, até a quality dele entrar na faixa de quem sobe; cada ovo custa gold + stones e usa o slot que quem sobe não está usando)</span></label>
                         <div class="dn-status col" id="pg-dn-breed-food"></div>
-                        <p class="dn-help">O jogo só aceita par com até 0,15 de diferença de quality. Shiny, time, inicial, Ditto, travado e anunciado no mercado nunca viram comida. Usa primeiro a comida mais fraca que serve (a de quality baixa deixa de servir quando quem sobe cresce). A lista acima vem do último frame do box e da última leitura da família (botão ↻ acima); com quem sobe dentro do ovo ela é uma prévia. "Criar comida": quando quem sobe passa de uma quality que captura nenhuma alcança (ex.: Q 1,96 só come Q 1,81–1,96), o script escolhe o melhor da espécie abaixo da faixa (IV menor que o de quem sobe, porque o filho herda o IV dele) e sobe a quality dele com comida própria até servir; quem sobe espera parado e come o resultado. Quem vira comida e a faixa dele também ficam fora da venda.</p>
+                        <p class="dn-help">O jogo só aceita par com até 0,15 de diferença de quality. Shiny, time, inicial, Ditto, travado e anunciado no mercado nunca viram comida. Usa primeiro a comida mais fraca que serve (a de quality baixa deixa de servir quando quem sobe cresce). A lista acima vem do último frame do box e da última leitura da família (botão ↻ acima); com quem sobe dentro do ovo ela é uma prévia. "Criar comida": quando quem sobe passa de uma quality que captura nenhuma alcança (ex.: Q 1,96 só come Q 1,81–1,96), o script escolhe o melhor da espécie abaixo da faixa (IV menor que o de quem sobe, porque o filho herda o IV dele) e sobe a quality dele com comida própria até servir; quem sobe espera parado e come o resultado. Quem vira comida e a faixa dele também ficam fora da venda. Desde 26/10/2026 o jogo só cota e cruza quem está na aba <b>Breeding Box</b> do Depósito: na viagem o script separa quem sobe e a comida lá antes de cotar (quem está na Breeding Box não é vendido nem vai para a família; os filhotes nascem lá).</p>
                     </div>
                 </section>
                 <section class="dn-pane" data-pane="guild" hidden>

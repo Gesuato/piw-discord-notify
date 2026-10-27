@@ -329,7 +329,16 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   criação (geração +1) e repete até a quality entrar na faixa; aí `breedFoodReason` deixa a comida em criação da PRÓPRIA linhagem
   ser comida de quem sobe (as outras unidades nunca) e, consumida, `line.food = null`. Só cruza comida enquanto quem sobe está parado
   sem comida (usa o slot que ele não usa); quem vira comida pode estar na família (`food.familia`, retirado na viagem antes da cotação).
-  Logs `breeding-comida { fase: escolhida | sumiu | consumida }`; `breeding-cotacao`/`breeding-cruzou` trazem `criacao: true`. Caso 14 do teste. v3.36.2: cruzamento feito NA MÃO é adotado em
+  Logs `breeding-comida { fase: escolhida | sumiu | consumida }`; `breeding-cotacao`/`breeding-cruzou` trazem `criacao: true`. Caso 14 do teste.
+  v3.49.0 (mudança do JOGO, 26/10/2026, vista no outro PC: "Comida em criação … porém não tem nada sendo incubado" — cotação e última
+  viagem falhando com "Os dois pais precisam estar na Breeding Box — separe-os na aba Breeding Box do Depósito"): o Depósito ganhou a
+  aba 🥚 **Breeding Box** e só quem está nela cota/cruza no centro (`docs/mensagens-do-jogo.md` → "Breeding Box"). `pokes[].breedingBox`
+  = está lá; socket `breedbox-move { dir, pokeIds }` → `breedbox-moved { moved, skipped }` | `error`. Na hunt a cotação que falha com
+  esse texto NÃO para a linhagem (planeja sem cotar, log `breeding-box { fase:'cotacao-na-viagem' }`); na viagem `breedBoxMove([quem
+  sobe, comida], 'in')` separa quem falta antes da cotação e confere pela lista nova (espera o frame `pokes` que o servidor manda, senão
+  `pokes-get`; log `breeding-box { ok, moved, skipped, faltam }`). Lá dentro o jogo não vende nem deposita na família: `pokeSellReason`/
+  `depositPokeReason` devolvem 'na Breeding Box'. Os filhotes nascem lá: `breedAdoptChild` prefere candidatos com `breedingBox`. Caso 15
+  do teste. v3.36.2: cruzamento feito NA MÃO é adotado em
   `breedSyncLines` — linhagem com filho por identificar (ou quem sobe sumido de uma lista lida) + UM ovo livre da espécie no centro =
   o ovo é dela (`breeding-ovo-adotado`, geração +1 com Q/IV do `hatch`); 0 ou 2+ ovos livres = segue pendente. Grátis cobra 2.000.000 de gold + 20 stones (40 com dobrar);
   3000 abates para chocar. Fluxo: `breedTick` (1 min) lê o centro a cada 2 min, choca o `ready` (POST hatch → `{ ok, child{ quality,
