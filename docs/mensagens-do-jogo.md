@@ -182,7 +182,8 @@ killsRequired`, 3000 para um Donphan rank N); "chocar agora" e slot extra custam
   (botões "Separar filtrados"/"Devolver filtrados" mandam a lista inteira de uma vez) e o servidor responde `breedbox-moved { moved,
   skipped }` ou `error { message }` (a tela só mostra o erro que chega em até 4 s). Não se sabe se o servidor aceita o movimento na
   hunt (o Depósito é da cidade): o script move na viagem, antes da cotação (`breedBoxMove`, log `breeding-box`; `breedbox-envio` e
-  `breedbox-moved` registram o que a tela e o jogo mandam). Formato do `breedbox-moved` ainda NÃO visto no log.
+  `breedbox-moved` registram o que a tela e o jogo mandam). CONFIRMADO em 26/10/2026 (v3.49.0, relato do usuário: o movimento na
+  viagem foi aceito e o ovo foi criado); o formato exato do `breedbox-moved` ainda não foi lido do log.
 
 ### Guild (bundle em 09/10/2026, patch 1.9 do mesmo dia; frame `guild` CONFIRMADO no log em 10/10/2026 01:25Z)
 
