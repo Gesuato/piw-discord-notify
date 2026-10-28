@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.50.0
+// @version      3.50.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.50.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.50.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -6327,7 +6327,9 @@
     const INV_LEAVE_WAIT_MS = 1500;
     const INV_HEAL_WAIT_MS = 2500;
     const INV_END_WAIT_MS = 4000;                 // `invasion-end` → espera a janela de resultado antes de sair/voltar
-    const INV_ENTER_TIMEOUT_MS = 3 * 60 * 1000;   // entrada que não confirmou (o switchHunt já avisa em 30 s; isto é a rede de segurança)
+    const INV_TELA_WAIT_MS = 5000;                // v3.50.1: a TELA viaja para a invasão e manda o enter-hunt; sem a hunt em 5 s mandamos nós
+    const INV_CONFIRM_MS = 30 * 1000;             // enter-hunt mandado e nenhum frame da invasão em 30 s = entrada falhou (aviso + volta)
+    const INV_ENTER_TIMEOUT_MS = 3 * 60 * 1000;   // rede de segurança da entrada (a régua de 30 s acima avisa antes)
     const INV_RESULT_GRACE_MS = 90 * 1000;        // janela encerrada (endsAt) sem `invasion-end`: espera isto e volta mesmo assim
     const INV_GONE_MS = 60 * 1000;                // fora da hunt da invasão há 1 min sem `invasion-end` = rodada acabou
     const INV_ENERGY_STALE_MS = 15 * 60 * 1000;   // energia sem leitura há 15 min: pede de novo antes de decidir
@@ -6466,7 +6468,7 @@
         const at = Number(rec.at) || Date.now();
         invRun = {
             from: rec.from ? String(rec.from) : null, origem: 'lembrado', at, loadedAt: Date.now(), windowStart: Number(rec.windowStart) || invWindowStart(at),
-            endsAt: Number(rec.endsAt) || invWindowAt(at).endsAt, fase: 'dentro', entered: true, enteredAt: Number(rec.enteredAt) || at, lastFieldAt: 0,
+            endsAt: Number(rec.endsAt) || invWindowAt(at).endsAt, fase: 'dentro', entered: true, enteredAt: Number(rec.enteredAt) || at, sentAt: at, fieldSeen: false, lastFieldAt: 0,
             wave: Math.max(0, Number(rec.wave) || 0), kills: Math.max(0, Number(rec.kills) || 0), ended: false, result: null,
         };
         invTried[invRun.windowStart] = 'entrou';
@@ -6554,6 +6556,8 @@
         if (r.ended) return;   // voltando
         const raidNow = invIsRaid(huntSlug);
         if (r.fase === 'dentro') {
+            // v3.50.1: `dentro` = enter-hunt visto (`invOnHuntChange`), não confirmado; sem NENHUM frame da invasão em 30 s a entrada falhou
+            if (!r.fieldSeen && r.origem !== 'lembrado' && now - (r.enteredAt || r.at) > INV_CONFIRM_MS) { invAbort('nenhum frame da invasão chegou em 30 s depois do enter-hunt'); return; }
             if (raidNow && now - (r.lastFieldAt || now) < INV_GONE_MS) return;   // frames chegando: rodada viva (mesmo depois do endsAt previsto)
             if (r.origem === 'lembrado' && !raidNow && !r.lastFieldAt && now - (r.loadedAt || r.at) > 15 * 1000) { invFinishSilent(r, 'recarga no meio da rodada (a conta nasceu na cidade)'); return; }
             if (now > r.endsAt + INV_RESULT_GRACE_MS) { invFinishSilent(r, 'janela encerrada sem invasion-end'); return; }
@@ -6561,12 +6565,13 @@
             if (!raidNow && now - base > INV_GONE_MS) { invFinishSilent(r, 'fora da hunt da invasão há 1 min sem invasion-end'); return; }
             return;
         }
+        if (r.sentAt && now - r.sentAt > INV_CONFIRM_MS) { invAbort('nenhum frame da invasão chegou em 30 s depois do enter-hunt'); return; }
         if (now - r.at > INV_ENTER_TIMEOUT_MS) invAbort('a entrada não confirmou em 3 min');
     }
 
     async function invEnterFlow(w, origem) {
         const from = invFromSlug();
-        invRun = { from, origem, at: Date.now(), windowStart: w.startedAt, endsAt: w.endsAt, fase: 'saindo da hunt', entered: false, enteredAt: 0, lastFieldAt: 0, wave: 0, kills: 0, ended: false, result: null };
+        invRun = { from, origem, at: Date.now(), windowStart: w.startedAt, endsAt: w.endsAt, fase: 'saindo da hunt', entered: false, enteredAt: 0, sentAt: 0, fieldSeen: false, lastFieldAt: 0, wave: 0, kills: 0, ended: false, result: null };
         const r = invRun;
         invSave(); invNotify();
         logEvent('invasao-entrada', { fase: 'inicio', origem, from, hunt: huntSlug || null, energia: invEnergy, janela: `${invHourOf(w.startedAt)}h`, fechaEm: invFmt(w.entryUntil - Date.now()), faixa: invTierLabel(invTeamTop()), timeLv: invTeamTop() });
@@ -6582,10 +6587,22 @@
                 await invWait(INV_LEAVE_WAIT_MS);
             }
             if (invRun !== r) return;   // recusa/cancelamento no meio
+            if (typeof holdActive === 'function' && holdActive()) { invAbort('espera na cidade ligada'); return; }
             r.fase = 'entrando'; invNotify();
-            const ok = switchHunt(INV_SLUG, 1, 'invasao');
-            logEvent('invasao-entrada', { fase: 'enter-hunt', enviado: ok });
-            if (!ok && invRun === r) invAbort('a troca de hunt foi recusada (espera na cidade ligada?)');
+            // v3.50.1: a TELA manda o ÚNICO enter-hunt. Na 1ª rodada real (conta1, 28/10/2026 01:00Z, janela das 22h BRT) o `switchHunt`
+            // mandava o nosso enter-hunt (a conta ENTROU: energia 4→3, `field { wave:1 }`) e o `hunt-resume` sintético fazia a tela viajar
+            // para o mapa e mandar OUTRO enter-hunt 4 s depois → `error`/`invasion-refused` "Você já participou dessa invasão. Espere a
+            // próxima!" + `invasion-end { reason:'left' }`: rodada perdida com a energia gasta. Agora só injetamos o `hunt-resume` (a tela
+            // viaja e manda o enter-hunt, exatamente o que o botão INVASÃO faz); sem a hunt da invasão em 5 s (tela sem o handler, socket
+            // sem dispatchEvent) mandamos o enter-hunt nós mesmos. NUNCA mandar dois `enter-hunt rocket_cerulean`.
+            const tela = typeof nudgeClientToHunt === 'function' ? Boolean(nudgeClientToHunt(INV_SLUG)) : false;
+            logEvent('invasao-entrada', { fase: 'tela', tela });
+            if (tela) { await invWait(INV_TELA_WAIT_MS); if (invRun !== r) return; }
+            if (invIsRaid(huntSlug)) { r.sentAt = r.sentAt || Date.now(); logEvent('invasao-entrada', { fase: 'enter-hunt', pelaTela: true }); return; }
+            const ok = sendGame({ type: 'enter-hunt', slug: INV_SLUG });
+            r.sentAt = Date.now();
+            logEvent('invasao-entrada', { fase: 'enter-hunt', pelaTela: false, enviado: ok });
+            if (!ok && invRun === r) invAbort('não consegui mandar o enter-hunt (socket fechado?)');
         } catch (err) { if (invRun === r) invAbort(String(err?.message || err)); }
     }
     // Entrada que não aconteceu: registra, avisa e devolve a conta à hunt (ela ficou na cidade).
@@ -6609,7 +6626,7 @@
     }
     // `confirmHuntSwitch` sem frame em 30 s (2 tentativas) para as nossas trocas.
     function invHuntFailed(slug, origem) {
-        if (origem === 'invasao') { if (invRun && !invRun.entered) invAbort('nenhum frame da invasão chegou em 30 s após duas tentativas'); return; }
+        if (origem === 'invasao') { if (invRun && !invRun.fieldSeen) invAbort('nenhum frame da invasão chegou em 30 s após duas tentativas'); return; }
         if (origem === 'invasao-volta') logEvent('invasao-volta', { para: slug, fase: 'falhou', motivo: 'a parada na cidade tenta depois' });
     }
     // `setHunt`: a hunt virou a invasão (nossa entrada confirmando, ou o jogador clicou INVASÃO na tela / carga no meio da rodada).
@@ -6618,11 +6635,11 @@
         const now = Date.now();
         if (!invRun) {
             const w = invWindowAt(now);
-            invRun = { from: invFromSlug(), origem: 'tela', at: now, windowStart: w.startedAt, endsAt: w.endsAt, fase: 'dentro', entered: true, enteredAt: now, lastFieldAt: now, wave: 0, kills: 0, ended: false, result: null };
+            invRun = { from: invFromSlug(), origem: 'tela', at: now, windowStart: w.startedAt, endsAt: w.endsAt, fase: 'dentro', entered: true, enteredAt: now, sentAt: now, fieldSeen: false, lastFieldAt: now, wave: 0, kills: 0, ended: false, result: null };
             invTried[w.startedAt] = 'entrou (tela)';
             logEvent('invasao-entrada', { fase: 'tela', from: invRun.from, janela: `${invHourOf(w.startedAt)}h`, acabaEm: invFmt(w.endsAt - now) });
         } else if (!invRun.entered || invRun.fase !== 'dentro') {
-            invRun.entered = true; invRun.enteredAt = now; invRun.lastFieldAt = now; invRun.fase = 'dentro';
+            invRun.entered = true; invRun.enteredAt = now; invRun.sentAt = invRun.sentAt || now; invRun.lastFieldAt = now; invRun.fase = 'dentro';
             logEvent('invasao-entrada', { fase: 'dentro', origem: invRun.origem, segundos: Math.round((now - invRun.at) / 1000), from: invRun.from });
             if (invJennyOn()) invJennyAt = 0;   // a rodada vai render Plans: relê a Jenny depois
         }
@@ -6631,7 +6648,7 @@
     function invOnField(m) {
         if (!invRun || invRun.ended || !invIsRaid(huntSlug)) return;
         const r = invRun;
-        r.lastFieldAt = Date.now();
+        r.lastFieldAt = Date.now(); r.fieldSeen = true;
         if (r.fase !== 'dentro') { r.fase = 'dentro'; r.entered = true; r.enteredAt = r.enteredAt || Date.now(); }
         invLogFields('field', m);
         const w = Number(m?.wave);
@@ -6641,7 +6658,7 @@
         if (!invRun || invRun.ended || !invIsRaid(huntSlug)) return;
         const r = invRun;
         r.kills = (r.kills || 0) + 1;
-        r.lastFieldAt = Date.now();
+        r.lastFieldAt = Date.now(); r.fieldSeen = true;
         if (r.kills <= 2) logEvent('invasao-abate', { speciesName: m?.speciesName ?? null, shiny: Boolean(m?.shiny), level: m?.level ?? null, xp: m?.xpGained ?? null, loot: Array.isArray(m?.loot) ? m.loot.length : null });
         if (r.kills % 20 === 0) invSave();
         invNotify();
@@ -6673,8 +6690,10 @@
     }
     function invOnRefused(message) {
         invRefused = { at: Date.now(), message };
-        logEvent('invasao-recusada', { mensagem: message, fase: invRun?.fase || null, origem: invRun?.origem || null, energia: invEnergy, hunt: huntSlug || null });
-        if (invRun && !invRun.entered) {
+        logEvent('invasao-recusada', { mensagem: message, fase: invRun?.fase || null, origem: invRun?.origem || null, jaDentro: Boolean(invRun?.fieldSeen), energia: invEnergy, hunt: huntSlug || null });
+        // Recusa DEPOIS do 1º frame = enter-hunt duplicado (a tela mandou outro): a conta estava dentro e o servidor a tira com
+        // `invasion-end { reason:'left' }` logo depois — quem encerra é ele; aqui só fica o registro. Antes do 1º frame é a resposta à entrada.
+        if (invRun && !invRun.ended && !invRun.fieldSeen) {
             if (typeof huntSwitch !== 'undefined' && huntSwitch && huntSwitch.slug === INV_SLUG) { clearTimeout(huntSwitch.timer); huntSwitch = null; }   // não insiste: o jogo já disse não
             invAbort(`o jogo recusou (${message || 'sem motivo'})`);
         }

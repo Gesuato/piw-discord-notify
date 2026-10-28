@@ -394,7 +394,7 @@ luta é resolvida na hora pelo servidor e o HUD da arena (o mesmo do PvP) só an
   `POST /bonus` nos `claimable` (com `gymBonus`), avisa em Alertas. Logs `ginasio-campos`, `ginasio`, `ginasio-desafio`, `ginasio-bonus`,
   `ginasio-erro`. Teste: `node test/gym.test.js`.
 
-### Invasão Rocket (bundle em 27/10/2026, patch do mesmo dia — formatos ainda NÃO vistos no log; feature na v3.50.0)
+### Invasão Rocket (bundle em 27/10/2026, patch do mesmo dia; frames `invasion-*` CONFIRMADOS no log em 28/10/2026 01:00Z, conta1, janela das 22h BRT; feature na v3.50.0, entrada corrigida na v3.50.1)
 
 Anúncio (colado pelo usuário): "A cada 2 horas, nas horas pares (horário de Brasília), a invasão começa. Você tem 10 minutos pra entrar e
 30 minutos de invasão." Botão **INVASÃO** em Cerulean (acima de "Ir ao Mercado"), 1 Energia Vermelha por entrada (2/dia, acumula 10,
@@ -409,14 +409,26 @@ chunk compartilhado (módulo `tD`: `ROCKET_SLUG:"rocket_cerulean"`, `INVASION_EV
 - **Entrar** = a tela viaja para o mapa `rocket_cerulean` (`n2(tD.ROCKET_SLUG, "Invasão Rocket")`; desenho de `cerulean_novo`) e o componente
   da hunt manda `enter-hunt { slug:'rocket_cerulean', resume }` — a invasão É uma hunt de slug fixo, como `*_boss` e `pesca`. A tela só
   mostra o botão com `entryOpen` e recusa com o líder em hp 0 ("faintedNoTravel"). Sair = `leave-hunt` (encerra a rodada; o ganho fica).
+- **Dois `enter-hunt rocket_cerulean` = expulso (CONFIRMADO em 28/10/2026 01:00Z, conta1):** o script mandou `enter-hunt` (a conta ENTROU:
+  `invasion-energy` 4→3 chegou sozinho 1,9 s depois, `field { wave:1 }` 2,2 s depois) e o `hunt-resume` sintético do `switchHunt` fez a tela
+  viajar e mandar OUTRO `enter-hunt` 4,5 s depois → `error { message:"Você já participou dessa invasão. Espere a próxima!" }` +
+  `invasion-refused { message }` (mesmo texto) + `invasion-end { reason:'left', wave:1, kills:0 }` 200 ms depois; a tela saiu da hunt
+  (`leave-hunt`) e a energia ficou gasta. O componente da hunt também reenvia `enter-hunt { slug, resume }` sozinho em `field-lost` (1 s),
+  em `hunt-cooldown`/`fishing-cooldown` e quando fica 10 s sem `field` (checagem a cada 2,5 s); o handler `hunt-resume` com `slug` igual ao
+  mapa atual manda `enter-hunt { slug, resume:true }`, senão viaja (`onResume`) e o componente manda o dele. Regra: deixar a TELA mandar o
+  único `enter-hunt` (é o que o botão faz); o script só injeta o `hunt-resume` sintético.
 - Servidor → cliente: `invasion-state { live, entryOpen, entryUntil, endsAt }` (a todos, na abertura/fechamento), `invasion-announce { text,
-  until }` ("ATENÇÃO A CIDADE DE CERULEAN ESTÁ SENDO INVADIDA … {nome}!"), `invasion-energy { energy, live, entryOpen, entryUntil, endsAt }`
+  until }` ("ATENÇÃO A CIDADE DE CERULEAN ESTÁ SENDO INVADIDA … {nome}!"; `until` ≈ 10 s), `invasion-energy { energy, max, live, entryOpen,
+  entryUntil, endsAt }` (✔ `max: 10`; o servidor também o manda SOZINHO ao entrar, com a energia descontada)
   (resposta a `invasion-energy-get`; a tela pede ao montar e 0–3 s depois de cada `invasion-state` com `entryOpen`; a Loja de Diamantes
   dispara `pw:invasion-energy` com a energia nova), `invasion-refused { message }` (entrada negada), `invasion-end { wave, bestWave,
-  reason:'wipe'|'time'|'stall'|'left'|'restart', kills, xp, tier, level, levelBefore, reward{ qty, name, icon }, milestones[] | milestone,
-  outfitReward{ items[{ looktype, gender, milestone }], equipped } }` (janela "Resultado da Invasão Rocket": "Wave alcançada", "Rockets
-  derrotados", "XP na invasão", "Dificuldade", "Nível de Invasão", "Recompensa"). Dentro da hunt os frames `field` trazem `wave` (e
-  `allMobsDead`/`waveRespawnAt`, já existentes); cada Rocket derrubado é um `field-kill` normal.
+  reason:'wipe'|'time'|'stall'|'left'|'restart', kills, xp, totalXp, tier, level, levelBefore, reward{ itemId, qty, icon, name },
+  milestone, milestones[], outfitReward{ items[{ looktype, gender, milestone }], equipped } }` (✔ chaves vistas em 28/10/2026: `reason, wave,
+  kills, xp, tier, level, totalXp, bestWave, milestone, milestones, outfitReward, levelBefore, reward`; janela "Resultado da Invasão
+  Rocket": "Wave alcançada", "Rockets derrotados", "XP na invasão", "Dificuldade", "Nível de Invasão", "Recompensa"). Dentro da hunt os
+  frames `field` trazem `wave` (✔ chaves: `seq, serverNow, heroLooktype, heroName, bossTeam, bossActiveIdx, hero, trainer, mobs, corpses,
+  targetSlot, fighting, heroHp, heroMaxHp, fainted, reviveInMs, allMobsDead, waveRespawnAt, wave, hits`); cada Rocket derrubado é um
+  `field-kill` normal. `invasion-state`/`invasion-announce` chegam juntos na abertura (01:00:04Z para a janela das 22h BRT).
 - Officer Jenny (NPC `officer_jenny` do `shopping`, ação `openJenny` "Trade Rocket Plans"): `GET /api/game/officer-jenny` → `{ balance,
   token{ name, icon }, offers[{ key, name, qty, cost, icon, description, owned, looktype, kind }] }`; `POST /api/game/officer-jenny/exchange
   { offer: key }` → `{ prize{ kind, name, qty, icon, looktype } }`; a tela manda `inv-get` depois. Erros: "Not enough Plans"/"Already owned"
@@ -425,7 +437,8 @@ chunk compartilhado (módulo `tD`: `ROCKET_SLUG:"rocket_cerulean"`, `INVASION_EV
 - Ranking: aba `rocket` (`/assets/invasion/rocket_r.png`). Pokédex: página "Invasão Rocket" (i18n `systems.rocket.*`).
 - Script (v3.50.0, aba 🚀 Invasão, módulo `// ---- Invasão Rocket`): `invTick` (30 s) entra pela janela do relógio corrigida pelo
   `invasion-state`, com `invasion-energy-get` antes (energia > reserva), horas aceitas e nada em andamento; sai da hunt (tela → cidade,
-  `set-city` se ela não for), `switchHunt('rocket_cerulean', 1, 'invasao')`; acompanha `field.wave`/`field-kill`; `invasion-end` → aviso e
+  `set-city` se ela não for), injeta o `hunt-resume` sintético e a TELA manda o único `enter-hunt` (v3.50.1; sem a hunt em 5 s manda
+  direto; 30 s sem frame = aviso e volta); acompanha `field.wave`/`field-kill`; `invasion-end` → aviso e
   volta (`set-city`, `joy-heal` se `wipe`, `switchHunt(from, 1, 'invasao-volta')`); silêncio (1 min fora da hunt, janela + 90 s) também
   encerra. `invBusy()` segura viagem/parada/recarga/rotas/líder/cura. Jenny = tarefa `jenny` da viagem (`set-city shopping` + exchange).
   Logs `invasao-campos`, `invasao-janela`, `invasao-energia(-pedida)`, `invasao-anuncio`, `invasao-pulada`, `invasao-espera`,

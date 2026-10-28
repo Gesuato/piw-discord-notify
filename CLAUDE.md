@@ -463,17 +463,21 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `// ---- Ginásio (v3.45.0)` até `// ---- Auto Boss (v3.43.0)`; `init.api` responde GET/POST; `clock.now`).
 - Invasão Rocket (v3.50.0, aba própria 🚀 Invasão (`TABS` id `invasao`), `cfg.invEnabled`/`invHours`/`invKeepEnergy`/`invAlerts` +
   `invJennyEnabled`/`invJennyOffer`/`invJennyKeep`; módulo `// ---- Invasão Rocket` antes do Ginásio; patch notes e bundle de 27/10/2026,
-  `docs/mensagens-do-jogo.md` → "Invasão Rocket"; formatos ainda NÃO vistos no log — `invasao-campos`/`jenny-campos` registram as
-  chaves do 1º frame): evento do jogo a cada 2 h nas horas PARES de Brasília (10 min de entrada, 30 min de invasão, 1 Energia Vermelha
+  `docs/mensagens-do-jogo.md` → "Invasão Rocket"; frames `invasion-*`/`field.wave` CONFIRMADOS no log em 28/10/2026 01:00Z (conta1);
+  Officer Jenny ainda não vista — `jenny-campos` registra as chaves): evento do jogo a cada 2 h nas horas PARES de Brasília (10 min de entrada, 30 min de invasão, 1 Energia Vermelha
   por entrada — 2/dia, acumula 10; o script NUNCA compra energia com diamantes). A invasão é a hunt de slug fixo `rocket_cerulean`
   (o botão INVASÃO da tela só viaja e manda `enter-hunt`); `invIsRaid(slug)` a tira de `lastRealHunt`/retomada/espera, como
   `bossIsArena`. Fluxo: `invTick` (30 s) → janela pelo relógio (`invWindowAt`, corrigida pelo `invasion-state`) → `invasion-energy-get`
   → hora aceita + energia > reserva + `invBlockedReason()` nulo → `invEnterFlow` (guarda a hunt de volta em
-  `localStorage.pgDiscordNotifyInvasion`, sai da hunt pela tela ou `set-city`, `switchHunt('rocket_cerulean', 1, 'invasao')` — origem
-  SEM `leave-hunt`, como `invasao-volta`). Dentro: `field.wave` e `field-kill` contam; `invasion-end` → log `invasao-fim`, aviso em
+  `localStorage.pgDiscordNotifyInvasion`, sai da hunt pela tela ou `set-city` e, v3.50.1, injeta o `hunt-resume` sintético para a TELA
+  mandar o ÚNICO `enter-hunt` — sem a hunt da invasão em 5 s (`INV_TELA_WAIT_MS`) manda o `enter-hunt` direto). NUNCA mandar dois
+  `enter-hunt rocket_cerulean`: na 1ª rodada real (conta1, 28/10/2026 01:00Z) o `switchHunt` mandava o nosso E o `hunt-resume` fazia a tela
+  mandar outro 4 s depois → "Você já participou dessa invasão. Espere a próxima!" + `invasion-end { reason:'left' }`, energia gasta à toa.
+  Dentro: `field.wave` e `field-kill` contam (`fieldSeen`); `invasion-end` → log `invasao-fim`, aviso em
   Alertas (wave, recorde, Rockets, XP, Plans, Nível de Invasão) e `invReturnFlow` (`set-city`, `joy-heal` se `wipe`, volta por
   `switchHunt(from, 1, 'invasao-volta')`). Sem `invasion-end`: 1 min fora da hunt ou janela + 90 s = encerra e volta (`semFrame`).
-  Recusa (`invasion-refused`) ou entrada sem frame em 30 s = `invAbort` (aviso + volta). Entrada feita NA MÃO pelo botão da tela também é
+  Recusa (`invasion-refused`) ANTES do 1º frame ou `enter-hunt` sem frame em 30 s (`INV_CONFIRM_MS`, no tique) = `invAbort` (aviso + volta);
+  recusa DEPOIS do 1º frame (enter-hunt duplicado) só loga `jaDentro` — o servidor encerra com `invasion-end`. Entrada feita NA MÃO pelo botão da tela também é
   acompanhada (`invOnHuntChange`, origem `tela`) e volta para `idleTarget()`. `invBusy()`/`invBusyReason()` entram nos mesmos gates do
   `bossBusy` (viagem, parada na cidade, recarga, rotas, troca de líder, cura — a queda do time ENCERRA a rodada, quem cura é a volta).
   Rocket Plans = item 240 (`invKeepsItem`: fora da venda e do guardar). Officer Jenny (Shopping): `invJennyRead` a cada 2 h e após

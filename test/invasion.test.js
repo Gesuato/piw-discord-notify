@@ -1,6 +1,8 @@
 // Invasão Rocket (v3.50.0): janela por hora par de Brasília, entrada sozinha (energia, horas, bloqueios), acompanhamento da rodada
 // (wave/abates), fim pelo `invasion-end` ou por silêncio, volta para a hunt (cura se o time caiu), recusa do jogo, entrada na mão,
-// recarga no meio, Rocket Plans fora da venda e troca na Officer Jenny. Formatos levantados do bundle em 27/10/2026 (ainda não vistos no log).
+// recarga no meio, Rocket Plans fora da venda e troca na Officer Jenny. Formatos levantados do bundle em 27/10/2026; frames `invasion-*`
+// CONFIRMADOS no log em 28/10/2026 01:00Z (conta1). v3.50.1: a TELA manda o único enter-hunt (hunt-resume sintético) — dois enter-hunt
+// = "Você já participou dessa invasão" + invasion-end left (rodada perdida com a energia gasta).
 // Rodar: node test/invasion.test.js
 const { loadInvasionModule, assert } = require('./harness');
 
@@ -99,8 +101,11 @@ process.on('exit', () => { if (!done) { console.error('invasion.test.js: termino
         api.onSetCity(); await state.flush();
         assert(!sentTypes(state).includes('set-city'), 'a tela chegou à cidade: não manda set-city');
         await state.fire(api.INV_LEAVE_WAIT_MS);
-        assert(state.switches.length === 1 && state.switches[0].slug === ROCKET && state.switches[0].origem === 'invasao', 'switchHunt para rocket_cerulean com origem invasao');
-        assert(api.run().fase === 'dentro' && api.run().entered && api.hunt() === ROCKET, 'enter-hunt confirmou: dentro');
+        const enters = () => state.sent.filter(m => m.type === 'enter-hunt' && m.slug === ROCKET);
+        assert(state.huntNudges.length === 1 && state.switches.length === 0 && enters().length === 1 && enters()[0].pelaTela === true, 'hunt-resume sintético: a TELA manda o único enter-hunt (sem switchHunt)');
+        assert(api.run().fase === 'dentro' && api.run().entered && api.hunt() === ROCKET, 'enter-hunt da tela visto: dentro');
+        await state.fire(api.INV_TELA_WAIT_MS);
+        assert(enters().length === 1 && logsOf(state, 'invasao-entrada').some(l => l.fase === 'enter-hunt' && l.pelaTela === true), 'a tela já estava na invasão: nenhum enter-hunt nosso (o 2º expulsava com "já participou")');
         assert(/Invasão Rocket em andamento/.test(api.busyReason()), 'motivo do bloqueio para os outros módulos');
         assert(JSON.parse(state.store.pgDiscordNotifyInvasion).from === 'rhyhorn', 'registro da rodada em localStorage com a hunt de volta');
         api.onField({ type: 'field', wave: 1, mobs: [] });
@@ -108,6 +113,8 @@ process.on('exit', () => { if (!done) { console.error('invasion.test.js: termino
         api.onKill({ speciesName: 'Zubat', level: 60, xpGained: 2168 });
         api.onField({ type: 'field', wave: 2, mobs: [] });
         assert(api.run().wave === 2 && api.run().kills === 2 && logsOf(state, 'invasao-wave').length === 2 && logsOf(state, 'invasao-abate').length === 2, 'wave e abates acompanhados');
+        api.onMessage({ type: 'invasion-refused', message: 'Você já participou dessa invasão. Espere a próxima!' });
+        assert(api.run() && !api.run().ended && state.hooks.length === 0 && logsOf(state, 'invasao-recusada')[0].jaDentro === true, 'recusa com a rodada já em frames (enter-hunt duplicado): não aborta, o servidor decide');
         assert(/wave 2 · 2 Rockets/.test(api.status()) && /faixa Kanto 60 \(time lv 58\)/.test(api.status()), 'status dentro da invasão com a faixa prevista');
         // sem ligar a cura: o módulo da invasão NÃO entra (fica para a cura própria), só confere o bloqueio
         assert(api.blockedReason() === null, 'sem bloqueio externo');
@@ -120,11 +127,11 @@ process.on('exit', () => { if (!done) { console.error('invasion.test.js: termino
         await state.fire(api.INV_END_WAIT_MS);
         assert(sentTypes(state).filter(t => t === 'leave-hunt').length === 2 && sentTypes(state).includes('set-city') && !sentTypes(state).includes('joy-heal'), 'saiu da invasão para a cidade; sem cura (o time não caiu)');
         await state.fire(api.INV_LEAVE_WAIT_MS);
-        assert(state.switches.length === 2 && state.switches[1].slug === 'rhyhorn' && state.switches[1].origem === 'invasao-volta', 'voltou para rhyhorn');
+        assert(state.switches.length === 1 && state.switches[0].slug === 'rhyhorn' && state.switches[0].origem === 'invasao-volta', 'voltou para rhyhorn');
         assert(!api.run() && !api.busy() && !state.store.pgDiscordNotifyInvasion && api.last().wave === 5, 'rodada encerrada: livre, registro apagado, último resultado guardado');
         assert(/última \d\d:\d\d: wave 5, 95 Rockets, 8 Plans, Kanto 60/.test(api.status()), 'status: último resultado');
         clock.now = T14 + 21 * MIN; api.tick();
-        assert(!api.run() && state.switches.length === 2, 'mesma janela depois do fim: não entra de novo');
+        assert(!api.run() && state.switches.length === 1 && state.huntNudges.length === 1, 'mesma janela depois do fim: não entra de novo');
         console.log('ok 3: ciclo completo');
     }
 
@@ -170,21 +177,35 @@ process.on('exit', () => { if (!done) { console.error('invasion.test.js: termino
         api.tick();
         api.onSetCity(); await state.flush();
         await state.fire(api.INV_LEAVE_WAIT_MS);
-        assert(state.switches.length === 1 && api.run().fase === 'entrando', 'enter-hunt mandado, esperando confirmar');
+        assert(state.huntNudges.length === 1 && state.switches.length === 0 && api.run().fase === 'entrando' && !sentTypes(state).includes('enter-hunt'), 'tela avisada (hunt-resume), esperando ela mandar o enter-hunt');
+        await state.fire(api.INV_TELA_WAIT_MS);
+        assert(sentTypes(state).filter(t => t === 'enter-hunt').length === 1 && logsOf(state, 'invasao-entrada').some(l => l.fase === 'enter-hunt' && l.pelaTela === false), 'a tela não entrou em 5 s: enter-hunt direto (um só)');
         api.onMessage({ type: 'invasion-refused', message: 'Você não tem Energia Vermelha.' });
         assert(!api.run() && !api.busy(), 'recusa: rodada abortada');
         assert(state.hooks.length === 1 && /não entrei na Invasão Rocket — o jogo recusou \(Você não tem Energia Vermelha\.\)/.test(state.hooks[0].content), 'aviso da recusa');
         assert(logsOf(state, 'invasao-recusada').length === 1 && logsOf(state, 'invasao-entrada').some(l => l.fase === 'falhou'), 'logs da recusa e da entrada falhada');
         await state.fire(api.INV_LEAVE_WAIT_MS);
-        assert(state.switches.length === 2 && state.switches[1].slug === 'rhyhorn' && state.switches[1].origem === 'invasao-volta', 'voltou para a hunt depois da recusa');
+        assert(state.switches.length === 1 && state.switches[0].slug === 'rhyhorn' && state.switches[0].origem === 'invasao-volta', 'voltou para a hunt depois da recusa');
         assert(/recusa \d\d:\d\d: Você não tem Energia Vermelha/.test(api.status()), 'status mostra a recusa');
-        // entrada que não confirma em 30 s (confirmHuntSwitch) também aborta
+        // enter-hunt direto sem frame em 30 s também aborta (régua INV_CONFIRM_MS no tique)
         const t2 = loadInvasionModule({ invEnabled: true }, { huntSlug: 'rhyhorn', autoHunt: false });
         t2.clock.now = T14 + 30e3;
         t2.api.onMessage({ type: 'invasion-energy', energy: 1 });
-        t2.api.tick(); t2.api.onSetCity(); await t2.state.flush(); await t2.state.fire(t2.api.INV_LEAVE_WAIT_MS);
-        t2.api.huntFailed(ROCKET, 'invasao');
-        assert(!t2.api.run() && t2.state.hooks.length === 1 && /nenhum frame da invasão chegou/.test(t2.state.hooks[0].content), 'hunt-falhou da entrada: aborta e avisa');
+        t2.api.tick(); t2.api.onSetCity(); await t2.state.flush(); await t2.state.fire(t2.api.INV_LEAVE_WAIT_MS); await t2.state.fire(t2.api.INV_TELA_WAIT_MS);
+        assert(sentTypes(t2.state).includes('enter-hunt') && t2.api.run().fase === 'entrando', 'enter-hunt direto mandado');
+        t2.clock.now += 20e3; t2.api.tick();
+        assert(t2.api.run() && t2.state.hooks.length === 0, '20 s depois: ainda espera o frame');
+        t2.clock.now += 15e3; t2.api.tick();
+        assert(!t2.api.run() && t2.state.hooks.length === 1 && /nenhum frame da invasão chegou em 30 s/.test(t2.state.hooks[0].content), 'enter-hunt sem frame em 30 s: aborta e avisa');
+        // enter-hunt da tela visto (dentro) mas nenhum frame: a mesma régua
+        const t3 = loadInvasionModule({ invEnabled: true }, { huntSlug: 'rhyhorn' });
+        t3.clock.now = T14 + 30e3; t3.api.onMessage({ type: 'invasion-energy', energy: 1 });
+        t3.api.tick(); t3.api.onSetCity(); await t3.state.flush(); await t3.state.fire(t3.api.INV_LEAVE_WAIT_MS);
+        assert(t3.api.run().fase === 'dentro' && !t3.api.run().fieldSeen, 'dentro pelo enter-hunt da tela, sem frame');
+        t3.clock.now += 35e3; t3.api.tick();
+        assert(!t3.api.run() && t3.state.hooks.length === 1 && /nenhum frame da invasão chegou em 30 s/.test(t3.state.hooks[0].content), 'dentro sem frame em 30 s: aborta e volta');
+        await t3.state.fire(t3.api.INV_LEAVE_WAIT_MS);
+        assert(t3.state.switches.length === 1 && t3.state.switches[0].slug === 'rhyhorn', 'voltou para rhyhorn');
         console.log('ok 5: recusa');
     }
 
@@ -199,9 +220,9 @@ process.on('exit', () => { if (!done) { console.error('invasion.test.js: termino
         assert(state.hooks[0].color === 0xed4245 && /todo o time caiu/.test(state.hooks[0].title) && /recorde 5/.test(state.hooks[0].desc), 'aviso vermelho com o recorde antigo');
         await state.fire(api.INV_END_WAIT_MS);
         await state.fire(api.INV_LEAVE_WAIT_MS);
-        assert(sentTypes(state).includes('joy-heal') && state.switches.length === 1, 'curou na Joy e ainda não voltou');
+        assert(sentTypes(state).includes('joy-heal') && state.switches.length === 0, 'curou na Joy e ainda não voltou');
         await state.fire(api.INV_HEAL_WAIT_MS);
-        assert(state.switches.length === 2 && state.switches[1].slug === 'rhyhorn' && logsOf(state, 'invasao-volta')[0].curou === true, 'voltou depois da cura');
+        assert(state.switches.length === 1 && state.switches[0].slug === 'rhyhorn' && logsOf(state, 'invasao-volta')[0].curou === true, 'voltou depois da cura');
         console.log('ok 6: wipe cura e volta');
     }
 
@@ -261,7 +282,7 @@ process.on('exit', () => { if (!done) { console.error('invasion.test.js: termino
         clock.now += 40e3; api.tick();
         assert(api.run().ended && /fora da hunt da invasão há 1 min/.test(logsOf(state, 'invasao-fim')[0].motivo), '1 min fora sem invasion-end: encerra');
         await state.fire(api.INV_END_WAIT_MS);
-        assert(state.switches.length === 2 && state.switches[1].slug === 'rhyhorn' && !api.run(), 'voltou para rhyhorn');
+        assert(state.switches.length === 1 && state.switches[0].slug === 'rhyhorn' && !api.run(), 'voltou para rhyhorn');
         const t2 = loadInvasionModule({ invEnabled: true }, { huntSlug: 'rhyhorn' });
         t2.clock.now = T14 + 30e3; t2.api.onMessage({ type: 'invasion-energy', energy: 4 });
         t2.api.tick(); t2.api.onSetCity(); await t2.state.flush(); await t2.state.fire(t2.api.INV_LEAVE_WAIT_MS);
@@ -354,6 +375,20 @@ process.on('exit', () => { if (!done) { console.error('invasion.test.js: termino
         api.onMessage({ type: 'invasion-announce', text: 'de novo' });
         assert(logsOf(state, 'invasao-anuncio').length === 1, 'anúncio logado 1x por 10 min');
         console.log('ok 12: fim sem rodada e anúncio');
+    }
+
+    // 13) tela sem o handler do hunt-resume (nudge falhou): enter-hunt nosso na hora, sem esperar os 5 s; com frame a rodada segue
+    {
+        const { api, state, clock } = loadInvasionModule({ invEnabled: true }, { huntSlug: 'rhyhorn', tela: false });
+        clock.now = T14 + 30e3;
+        api.onMessage({ type: 'invasion-energy', energy: 4 });
+        api.tick(); api.onSetCity(); await state.flush(); await state.fire(api.INV_LEAVE_WAIT_MS);
+        assert(state.huntNudges.length === 1 && sentTypes(state).filter(t => t === 'enter-hunt').length === 1 && api.run().fase === 'dentro', 'nudge falhou: enter-hunt nosso na hora, dentro');
+        assert(logsOf(state, 'invasao-entrada').some(l => l.fase === 'tela' && l.tela === false), 'log da tela sem handler');
+        api.onField({ type: 'field', wave: 1 });
+        clock.now += 40e3; api.tick();
+        assert(api.run() && !api.run().ended && api.run().fieldSeen, 'com frame: a rodada segue depois dos 30 s');
+        console.log('ok 13: tela sem handler');
     }
 
     done = true;

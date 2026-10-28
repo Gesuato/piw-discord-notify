@@ -935,7 +935,7 @@ Harness: `loadGymModule` precisa de `sendGame`, `familyAction`, `init.pokes`/`in
 
 ---
 
-## ✅ 38. Invasão Rocket: entrar sozinho a cada janela, voltar para a hunt e trocar os Plans na Officer Jenny (v3.50.0)
+## ✅ 38. Invasão Rocket: entrar sozinho a cada janela, voltar para a hunt e trocar os Plans na Officer Jenny (v3.50.0; entrada corrigida na v3.50.1)
 
 **O que faz (pedido do usuário em 27/10/2026, patch notes do mesmo dia: "gostaria de implementar uma nova aba para esse evento"):** aba
 própria 🚀 Invasão. `invEnabled` entra na invasão de Cerulean em cada janela (a cada 2 h, horas pares de Brasília; 10 min de entrada), só
@@ -946,7 +946,7 @@ esperam (sair encerra a rodada). Entrada feita na mão pelo botão INVASÃO tamb
 (+ `invJennyKeep`) trocam os Rocket Plans na Officer Jenny (Shopping) na viagem à cidade, enquanto o saldo der (outfit 1x). A Police
 Bravery Medal o script no máximo compra: em quem usar é do jogador.
 
-**Mensagens (bundle em 27/10/2026, ainda NÃO vistas no log; `docs/mensagens-do-jogo.md` → "Invasão Rocket"):** a invasão é a hunt
+**Mensagens (bundle em 27/10/2026; frames da invasão CONFIRMADOS no log em 28/10/2026 01:00Z, conta1; `docs/mensagens-do-jogo.md` → "Invasão Rocket"):** a invasão é a hunt
 `rocket_cerulean` (`enter-hunt`); `invasion-state`, `invasion-announce`, `invasion-energy-get` → `invasion-energy { energy, … }`,
 `invasion-refused { message }`, `invasion-end { wave, bestWave, reason, kills, xp, tier, level, levelBefore, reward{ qty }, milestones,
 outfitReward }`; `field.wave`; Rocket Plans = item 240; `GET /api/game/officer-jenny` → `{ balance, token, offers[{ key, name, qty, cost,
@@ -956,7 +956,14 @@ owned, kind }] }`, `POST .../exchange { offer }` → `{ prize }`.
 para a hunt); sem `invasion-end`, 1 min fora da hunt ou janela + 90 s encerra; recusa/entrada sem frame = aviso e volta. Logs `invasao-*`,
 `jenny-*`. Botões "Entrar agora" e "Trocar agora".
 
-**Pendente:** confirmar no log os formatos (`invasao-campos`, `jenny-campos`) na 1ª rodada real e as chaves das ofertas da Jenny.
+**v3.50.1 (28/10/2026, 1ª rodada real na conta1):** o script entrou (energia 4→3, `field { wave:1 }`), mas o `switchHunt` mandava o NOSSO
+`enter-hunt` e o `hunt-resume` sintético fazia a tela viajar e mandar OUTRO 4 s depois → "Você já participou dessa invasão. Espere a próxima!"
++ `invasion-end { reason:'left' }`: rodada perdida com a energia gasta. Agora a entrada só injeta o `hunt-resume` e a TELA manda o único
+`enter-hunt` (igual ao botão INVASÃO); sem a hunt em 5 s manda direto; `enter-hunt` sem frame em 30 s = aviso e volta; recusa depois do 1º
+frame só loga (o servidor encerra). A volta (`invasao-volta` → taillow, `hunt-ok` em 30 s) funcionou de primeira.
+
+**Pendente:** confirmar `jenny-campos` e as chaves das ofertas da Officer Jenny na 1ª troca real; ver uma rodada inteira (waves, `invasion-end`
+com `reward.qty` > 0, marcos).
 
 **Teste:** `node test/invasion.test.js` (`loadInvasionModule`); chaves no fixture do `test/config.roundtrip.js`; passo no `test/ui.smoke.js`.
 
