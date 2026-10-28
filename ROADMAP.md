@@ -941,7 +941,7 @@ Harness: `loadGymModule` precisa de `sendGame`, `familyAction`, `init.pokes`/`in
 
 ---
 
-## ✅ 38. Invasão Rocket: entrar sozinho a cada janela, voltar para a hunt e trocar os Plans na Officer Jenny (v3.50.0; entrada corrigida na v3.50.1)
+## ✅ 38. Invasão Rocket: entrar sozinho a cada janela, voltar para a hunt e trocar os Plans na Officer Jenny (v3.50.0; entrada corrigida na v3.50.1 e v3.51.1)
 
 **O que faz (pedido do usuário em 27/10/2026, patch notes do mesmo dia: "gostaria de implementar uma nova aba para esse evento"):** aba
 própria 🚀 Invasão. `invEnabled` entra na invasão de Cerulean em cada janela (a cada 2 h, horas pares de Brasília; 10 min de entrada), só
@@ -967,6 +967,16 @@ para a hunt); sem `invasion-end`, 1 min fora da hunt ou janela + 90 s encerra; r
 + `invasion-end { reason:'left' }`: rodada perdida com a energia gasta. Agora a entrada só injeta o `hunt-resume` e a TELA manda o único
 `enter-hunt` (igual ao botão INVASÃO); sem a hunt em 5 s manda direto; `enter-hunt` sem frame em 30 s = aviso e volta; recusa depois do 1º
 frame só loga (o servidor encerra). A volta (`invasao-volta` → taillow, `hunt-ok` em 30 s) funcionou de primeira.
+
+**v3.51.1 (28/10/2026 03:00Z, janela da meia-noite):** contas 3 e 4 entraram e seguiram nas waves (frames `field.wave`, `field-kill` de
+Poochyena/Sableye, wave 3 aos 3,5 min); a conta1 não. O servidor estava lento na virada do dia (o `invasion-state` chegou 20 s atrasado às
+contas 1 e 2): o `enter-hunt` da tela ficou 19 s sem resposta, o componente da hunt da tela REENVIOU sozinho (10 s sem `field`), o servidor
+recusou o reenvio ("Você já participou dessa invasão", 03:01:01) e registrou a 1ª entrada 2 s depois (energia 5→4) — o script já tinha
+abortado e mandado a conta de volta para taillow, e o enter-hunt seguinte da tela ainda virou uma rodada "tela" fantasma (2º aviso). Agora:
+`invOutgoingBlocked` no interceptador do `send` barra todo `enter-hunt rocket_cerulean` depois do primeiro da rodada, durante a volta e por
+20 s depois do fim (log `invasao-enter-hunt-barrado`; o nosso direto e o clique do jogador fora disso passam); `INV_CONFIRM_MS` 30 → 60 s;
+"já participou" ANTES do 1º frame espera 15 s (`INV_REFUSE_GRACE_MS`) por um frame antes de desistir (`invasao-recusa-ignorada` se ele
+vier; outra recusa aborta na hora). Caso 14 do teste.
 
 **Pendente:** confirmar `jenny-campos` e as chaves das ofertas da Officer Jenny na 1ª troca real; ver uma rodada inteira (waves, `invasion-end`
 com `reward.qty` > 0, marcos).

@@ -2,7 +2,9 @@
 // (wave/abates), fim pelo `invasion-end` ou por silêncio, volta para a hunt (cura se o time caiu), recusa do jogo, entrada na mão,
 // recarga no meio, Rocket Plans fora da venda e troca na Officer Jenny. Formatos levantados do bundle em 27/10/2026; frames `invasion-*`
 // CONFIRMADOS no log em 28/10/2026 01:00Z (conta1). v3.50.1: a TELA manda o único enter-hunt (hunt-resume sintético) — dois enter-hunt
-// = "Você já participou dessa invasão" + invasion-end left (rodada perdida com a energia gasta).
+// = "Você já participou dessa invasão" + invasion-end left (rodada perdida com a energia gasta). v3.51.1 (28/10/2026 03:00Z, conta1): o
+// servidor demorou ~20 s à meia-noite, a tela reenviou o enter-hunt sozinha e a 2ª foi recusada enquanto a 1ª valeu — agora o reenvio é
+// barrado no socket (`invOutgoingBlocked`, caso 14), a confirmação espera 60 s e "já participou" antes do 1º frame espera 15 s por um frame.
 // Rodar: node test/invasion.test.js
 const { loadInvasionModule, assert } = require('./harness');
 
@@ -104,6 +106,7 @@ process.on('exit', () => { if (!done) { console.error('invasion.test.js: termino
         const enters = () => state.sent.filter(m => m.type === 'enter-hunt' && m.slug === ROCKET);
         assert(state.huntNudges.length === 1 && state.switches.length === 0 && enters().length === 1 && enters()[0].pelaTela === true, 'hunt-resume sintético: a TELA manda o único enter-hunt (sem switchHunt)');
         assert(api.run().fase === 'dentro' && api.run().entered && api.hunt() === ROCKET, 'enter-hunt da tela visto: dentro');
+        assert(!api.telaEnter(true) && enters().length === 1 && state.blocked.length === 1 && logsOf(state, 'invasao-enter-hunt-barrado')[0].motivo === 'enter-hunt já mandado, esperando o 1º frame', 'reenvio da tela (10 s sem field) antes do 1º frame: barrado no socket');
         await state.fire(api.INV_TELA_WAIT_MS);
         assert(enters().length === 1 && logsOf(state, 'invasao-entrada').some(l => l.fase === 'enter-hunt' && l.pelaTela === true), 'a tela já estava na invasão: nenhum enter-hunt nosso (o 2º expulsava com "já participou")');
         assert(/Invasão Rocket em andamento/.test(api.busyReason()), 'motivo do bloqueio para os outros módulos');
@@ -113,6 +116,7 @@ process.on('exit', () => { if (!done) { console.error('invasion.test.js: termino
         api.onKill({ speciesName: 'Zubat', level: 60, xpGained: 2168 });
         api.onField({ type: 'field', wave: 2, mobs: [] });
         assert(api.run().wave === 2 && api.run().kills === 2 && logsOf(state, 'invasao-wave').length === 2 && logsOf(state, 'invasao-abate').length === 2, 'wave e abates acompanhados');
+        assert(!api.telaEnter(true) && enters().length === 1 && logsOf(state, 'invasao-enter-hunt-barrado')[1].motivo === 'rodada em andamento' && api.run().blocked === 2, 'reenvio da tela no meio da rodada (field-lost/cooldown): barrado');
         api.onMessage({ type: 'invasion-refused', message: 'Você já participou dessa invasão. Espere a próxima!' });
         assert(api.run() && !api.run().ended && state.hooks.length === 0 && logsOf(state, 'invasao-recusada')[0].jaDentro === true, 'recusa com a rodada já em frames (enter-hunt duplicado): não aborta, o servidor decide');
         assert(/wave 2 · 2 Rockets/.test(api.status()) && /faixa Kanto 60 \(time lv 58\)/.test(api.status()), 'status dentro da invasão com a faixa prevista');
@@ -124,14 +128,18 @@ process.on('exit', () => { if (!done) { console.error('invasion.test.js: termino
         assert(fim && fim.wave === 5 && fim.rockets === 95 && fim.abatesVistos === 2 && fim.plans === 8 && fim.motivo === 'time', 'log invasao-fim com os números do servidor');
         assert(state.hooks.length === 1 && /wave \*\*5\*\* 🏅 recorde/.test(state.hooks[0].content) && /8 Rocket Plans/.test(state.hooks[0].content) && /Nível de Invasão 12 \(\+2\)/.test(state.hooks[0].desc), 'aviso do fim com recorde, Plans e nível');
         assert(api.run().ended && api.run().fase === 'voltando' && api.busy(), 'voltando: ainda ocupado');
+        assert(!api.telaEnter(true) && logsOf(state, 'invasao-enter-hunt-barrado')[2].motivo === 'rodada encerrada, voltando', 'enter-hunt da tela enquanto volta: barrado');
         await state.fire(api.INV_END_WAIT_MS);
         assert(sentTypes(state).filter(t => t === 'leave-hunt').length === 2 && sentTypes(state).includes('set-city') && !sentTypes(state).includes('joy-heal'), 'saiu da invasão para a cidade; sem cura (o time não caiu)');
         await state.fire(api.INV_LEAVE_WAIT_MS);
         assert(state.switches.length === 1 && state.switches[0].slug === 'rhyhorn' && state.switches[0].origem === 'invasao-volta', 'voltou para rhyhorn');
         assert(!api.run() && !api.busy() && !state.store.pgDiscordNotifyInvasion && api.last().wave === 5, 'rodada encerrada: livre, registro apagado, último resultado guardado');
         assert(/última \d\d:\d\d: wave 5, 95 Rockets, 8 Plans, Kanto 60/.test(api.status()), 'status: último resultado');
+        assert(!api.telaEnter(true) && !api.run() && /acabou há menos de 20 s/.test(logsOf(state, 'invasao-enter-hunt-barrado')[3].motivo), 'enter-hunt da tela logo depois do fim (componente da hunt ainda montado): barrado, sem rodada fantasma');
         clock.now = T14 + 21 * MIN; api.tick();
         assert(!api.run() && state.switches.length === 1 && state.huntNudges.length === 1, 'mesma janela depois do fim: não entra de novo');
+        clock.now += 25e3;
+        assert(api.telaEnter(true) && api.run() && api.run().origem === 'tela', 'passados 20 s do fim, o enter-hunt da tela (clique do jogador) passa e vira rodada acompanhada');
         console.log('ok 3: ciclo completo');
     }
 
@@ -187,23 +195,25 @@ process.on('exit', () => { if (!done) { console.error('invasion.test.js: termino
         await state.fire(api.INV_LEAVE_WAIT_MS);
         assert(state.switches.length === 1 && state.switches[0].slug === 'rhyhorn' && state.switches[0].origem === 'invasao-volta', 'voltou para a hunt depois da recusa');
         assert(/recusa \d\d:\d\d: Você não tem Energia Vermelha/.test(api.status()), 'status mostra a recusa');
-        // enter-hunt direto sem frame em 30 s também aborta (régua INV_CONFIRM_MS no tique)
+        // enter-hunt direto sem frame em 60 s também aborta (régua INV_CONFIRM_MS no tique; v3.51.1: era 30 s, o servidor levou 21 s à meia-noite)
         const t2 = loadInvasionModule({ invEnabled: true }, { huntSlug: 'rhyhorn', autoHunt: false });
         t2.clock.now = T14 + 30e3;
         t2.api.onMessage({ type: 'invasion-energy', energy: 1 });
         t2.api.tick(); t2.api.onSetCity(); await t2.state.flush(); await t2.state.fire(t2.api.INV_LEAVE_WAIT_MS); await t2.state.fire(t2.api.INV_TELA_WAIT_MS);
         assert(sentTypes(t2.state).includes('enter-hunt') && t2.api.run().fase === 'entrando', 'enter-hunt direto mandado');
-        t2.clock.now += 20e3; t2.api.tick();
-        assert(t2.api.run() && t2.state.hooks.length === 0, '20 s depois: ainda espera o frame');
-        t2.clock.now += 15e3; t2.api.tick();
-        assert(!t2.api.run() && t2.state.hooks.length === 1 && /nenhum frame da invasão chegou em 30 s/.test(t2.state.hooks[0].content), 'enter-hunt sem frame em 30 s: aborta e avisa');
+        t2.clock.now += 35e3; t2.api.tick();
+        assert(t2.api.run() && t2.state.hooks.length === 0, '35 s depois: ainda espera o frame (o servidor pode estar lento)');
+        t2.clock.now += 30e3; t2.api.tick();
+        assert(!t2.api.run() && t2.state.hooks.length === 1 && /nenhum frame da invasão chegou em 60 s/.test(t2.state.hooks[0].content), 'enter-hunt sem frame em 60 s: aborta e avisa');
         // enter-hunt da tela visto (dentro) mas nenhum frame: a mesma régua
         const t3 = loadInvasionModule({ invEnabled: true }, { huntSlug: 'rhyhorn' });
         t3.clock.now = T14 + 30e3; t3.api.onMessage({ type: 'invasion-energy', energy: 1 });
         t3.api.tick(); t3.api.onSetCity(); await t3.state.flush(); await t3.state.fire(t3.api.INV_LEAVE_WAIT_MS);
         assert(t3.api.run().fase === 'dentro' && !t3.api.run().fieldSeen, 'dentro pelo enter-hunt da tela, sem frame');
         t3.clock.now += 35e3; t3.api.tick();
-        assert(!t3.api.run() && t3.state.hooks.length === 1 && /nenhum frame da invasão chegou em 30 s/.test(t3.state.hooks[0].content), 'dentro sem frame em 30 s: aborta e volta');
+        assert(t3.api.run() && t3.state.hooks.length === 0, 'dentro sem frame há 35 s: ainda espera');
+        t3.clock.now += 30e3; t3.api.tick();
+        assert(!t3.api.run() && t3.state.hooks.length === 1 && /nenhum frame da invasão chegou em 60 s/.test(t3.state.hooks[0].content), 'dentro sem frame em 60 s: aborta e volta');
         await t3.state.fire(t3.api.INV_LEAVE_WAIT_MS);
         assert(t3.state.switches.length === 1 && t3.state.switches[0].slug === 'rhyhorn', 'voltou para rhyhorn');
         console.log('ok 5: recusa');
@@ -389,6 +399,57 @@ process.on('exit', () => { if (!done) { console.error('invasion.test.js: termino
         clock.now += 40e3; api.tick();
         assert(api.run() && !api.run().ended && api.run().fieldSeen, 'com frame: a rodada segue depois dos 30 s');
         console.log('ok 13: tela sem handler');
+    }
+
+    // 14) meia-noite da conta1 (28/10/2026 03:00Z): servidor lento — a tela reenvia o enter-hunt (barrado), a recusa "já participou"
+    // chega antes do 1º frame e a entrada vale 2 s depois (energia 5→4 + field): a rodada segue; sem frame em 15 s a recusa vale e volta
+    {
+        const { api, state, clock } = loadInvasionModule({ invEnabled: true }, { huntSlug: 'taillow' });
+        clock.now = T14 + 40e3;
+        api.onMessage({ type: 'invasion-energy', energy: 5 });
+        api.tick(); api.onSetCity(); await state.flush(); await state.fire(api.INV_LEAVE_WAIT_MS);
+        const enters = () => state.sent.filter(m => m.type === 'enter-hunt' && m.slug === ROCKET);
+        assert(api.run().fase === 'dentro' && enters().length === 1 && api.run().sentAt === clock.now, 'tela mandou o enter-hunt (resume) na hora: dentro, sem frame');
+        clock.now += 10e3;
+        assert(!api.telaEnter(true) && enters().length === 1, '10 s sem field: o reenvio da tela é barrado');
+        clock.now += 9e3; api.tick();
+        api.onMessage({ type: 'invasion-refused', message: 'Você já participou dessa invasão. Espere a próxima!' });
+        const rec = logsOf(state, 'invasao-recusada')[0];
+        assert(api.run() && !api.run().ended && api.run().refusedAt === clock.now && rec.aguardando === true && rec.jaDentro === false, '"já participou" antes do 1º frame: espera (a recusa pode ser do reenvio)');
+        assert(state.hooks.length === 0 && state.switches.length === 0 && api.hunt() === ROCKET, 'não avisou nem saiu da invasão');
+        clock.now += 2e3; api.tick();
+        api.onMessage({ type: 'invasion-energy', energy: 4 });
+        api.onField({ type: 'field', wave: 1, mobs: [] });
+        const ign = logsOf(state, 'invasao-recusa-ignorada')[0];
+        assert(api.run().fieldSeen && ign && /já participou/.test(ign.mensagem) && ign.depoisDeS === 2, 'frame chegou 2 s depois da recusa: a entrada valeu, recusa ignorada');
+        clock.now += 20e3; api.tick();
+        assert(api.run() && !api.run().ended && state.hooks.length === 0, 'passados os 15 s de espera com frame: a rodada segue');
+        api.onKill({ speciesName: 'Poochyena', level: 635, xpGained: 101393 });
+        api.onMessage({ type: 'invasion-end', wave: 7, bestWave: 7, reason: 'time', kills: 130, xp: 1e6, tier: 'Outland+', level: 2, levelBefore: 1, reward: { itemId: 240, qty: 12, name: 'Rocket Plans' }, milestones: [] });
+        await state.fire(api.INV_END_WAIT_MS); await state.fire(api.INV_LEAVE_WAIT_MS);
+        assert(!api.run() && state.switches.length === 1 && state.switches[0].slug === 'taillow' && state.hooks.length === 1 && /12 Rocket Plans/.test(state.hooks[0].content), 'rodada inteira: voltou para taillow com o aviso do fim');
+        // sem frame nenhum depois da recusa: 15 s e a recusa vale (aviso + volta); o enter-hunt da tela 2 s depois é barrado (sem rodada fantasma)
+        const t2 = loadInvasionModule({ invEnabled: true }, { huntSlug: 'taillow' });
+        t2.clock.now = T14 + 40e3; t2.api.onMessage({ type: 'invasion-energy', energy: 5 });
+        t2.api.tick(); t2.api.onSetCity(); await t2.state.flush(); await t2.state.fire(t2.api.INV_LEAVE_WAIT_MS);
+        t2.clock.now += 19e3;
+        t2.api.onMessage({ type: 'invasion-refused', message: 'Você já participou dessa invasão. Espere a próxima!' });
+        t2.clock.now += 10e3; t2.api.tick();
+        assert(t2.api.run() && t2.state.hooks.length === 0, '10 s depois da recusa: ainda espera um frame');
+        t2.clock.now += 6e3; t2.api.tick();
+        assert(!t2.api.run() && t2.state.hooks.length === 1 && /o jogo recusou \(Você já participou/.test(t2.state.hooks[0].content), '15 s sem frame: a recusa vale, aviso');
+        t2.clock.now += 2e3;
+        assert(!t2.api.telaEnter(true) && !t2.api.run() && t2.state.blocked.length === 1, 'enter-hunt da tela 2 s depois do aborto: barrado, nenhuma rodada "tela" fantasma');
+        await t2.state.fire(t2.api.INV_LEAVE_WAIT_MS);
+        assert(t2.state.switches.length === 1 && t2.state.switches[0].slug === 'taillow' && t2.state.switches[0].origem === 'invasao-volta', 'voltou para taillow uma vez só');
+        assert(logsOf(t2.state, 'invasao-entrada').some(l => l.fase === 'falhou' && l.barrados === 0), 'log da entrada falhada traz quantos reenvios foram barrados');
+        // enter-hunt nosso direto (tela sem handler) nunca é barrado: sentAt ainda zerado quando sai
+        const t3 = loadInvasionModule({ invEnabled: true }, { huntSlug: 'taillow', tela: false });
+        t3.clock.now = T14 + 40e3; t3.api.onMessage({ type: 'invasion-energy', energy: 5 });
+        t3.api.tick(); t3.api.onSetCity(); await t3.state.flush(); await t3.state.fire(t3.api.INV_LEAVE_WAIT_MS);
+        assert(t3.state.sent.filter(m => m.type === 'enter-hunt').length === 1 && t3.state.blocked.length === 0 && t3.api.run().fase === 'dentro', 'enter-hunt nosso passou pelo filtro');
+        assert(!t3.api.telaEnter(true) && t3.state.blocked.length === 1, 'o da tela depois dele: barrado');
+        console.log('ok 14: servidor lento à meia-noite (reenvio barrado, recusa com espera)');
     }
 
     done = true;

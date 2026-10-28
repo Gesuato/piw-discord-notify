@@ -480,8 +480,15 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   Dentro: `field.wave` e `field-kill` contam (`fieldSeen`); `invasion-end` → log `invasao-fim`, aviso em
   Alertas (wave, recorde, Rockets, XP, Plans, Nível de Invasão) e `invReturnFlow` (`set-city`, `joy-heal` se `wipe`, volta por
   `switchHunt(from, 1, 'invasao-volta')`). Sem `invasion-end`: 1 min fora da hunt ou janela + 90 s = encerra e volta (`semFrame`).
-  Recusa (`invasion-refused`) ANTES do 1º frame ou `enter-hunt` sem frame em 30 s (`INV_CONFIRM_MS`, no tique) = `invAbort` (aviso + volta);
-  recusa DEPOIS do 1º frame (enter-hunt duplicado) só loga `jaDentro` — o servidor encerra com `invasion-end`. Entrada feita NA MÃO pelo botão da tela também é
+  Recusa (`invasion-refused`) ANTES do 1º frame ou `enter-hunt` sem frame em 60 s (`INV_CONFIRM_MS`, no tique) = `invAbort` (aviso + volta);
+  recusa DEPOIS do 1º frame (enter-hunt duplicado) só loga `jaDentro` — o servidor encerra com `invasion-end`. v3.51.1 (janela da meia-noite
+  de 28/10/2026, conta1): o servidor demorou ~20 s, o componente da hunt da tela REENVIOU o enter-hunt sozinho (10 s sem `field`), a recusa
+  "já participou" (do reenvio) chegou 2 s ANTES da energia cair (a 1ª entrada valeu) e o script abortou com a conta já dentro. Agora
+  `invOutgoingBlocked(m)`, chamado pelo interceptador do `send` ANTES de `handleOutgoing`, barra (não envia, não passa pelo `setHunt`) todo
+  `enter-hunt rocket_cerulean` depois do primeiro da rodada (`sentAt`), durante a volta e por 20 s depois do fim (`INV_BLOCK_AFTER_MS`; log
+  `invasao-enter-hunt-barrado`); o nosso enter-hunt direto sai com `sentAt` zerado e passa. "Já participou" antes do 1º frame espera 15 s
+  (`INV_REFUSE_GRACE_MS`, `r.refusedAt`) por um frame antes de abortar (`invasao-recusa-ignorada` se ele vier); outras recusas abortam na hora.
+  Harness: `api.telaEnter(resume)` simula a tela mandando/reenviando o enter-hunt pelo filtro (`state.blocked`). Entrada feita NA MÃO pelo botão da tela também é
   acompanhada (`invOnHuntChange`, origem `tela`) e volta para `idleTarget()`. `invBusy()`/`invBusyReason()` entram nos mesmos gates do
   `bossBusy` (viagem, parada na cidade, recarga, rotas, troca de líder, cura — a queda do time ENCERRA a rodada, quem cura é a volta).
   Rocket Plans = item 240 (`invKeepsItem`: fora da venda e do guardar). Officer Jenny (Shopping): `invJennyRead` a cada 2 h e após

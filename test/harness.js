@@ -1370,10 +1370,19 @@ function loadInvasionModule(cfg, init) {
             windowAt: invWindowAt, windowStart: invWindowStart, hourOf: invHourOf, hours: invHours, tierLabel: invTierLabel, blockedReason: invBlockedReason,
             run: () => invRun, last: () => invLast, energy: () => invEnergy, jenny: () => invJenny, tried: () => invTried,
             hunt: () => huntSlug, setHunt: (s) => { huntSlug = s; invOnHuntChange(s); }, leaveHunt: () => { huntSlug = null; },
-            INV_SLUG, INV_TICK_MS, INV_ENTER_DELAY_MS, INV_CITY_WAIT_MS, INV_LEAVE_WAIT_MS, INV_HEAL_WAIT_MS, INV_END_WAIT_MS, INV_TELA_WAIT_MS, INV_CONFIRM_MS, INV_RESULT_GRACE_MS, INV_GONE_MS, INV_JENNY_CITY_WAIT_MS, INV_JENNY_BETWEEN_MS, INV_PLANS_ITEM_ID,
+            outgoingBlocked: invOutgoingBlocked,
+            INV_SLUG, INV_TICK_MS, INV_ENTER_DELAY_MS, INV_CITY_WAIT_MS, INV_LEAVE_WAIT_MS, INV_HEAL_WAIT_MS, INV_END_WAIT_MS, INV_TELA_WAIT_MS, INV_CONFIRM_MS, INV_REFUSE_GRACE_MS, INV_BLOCK_AFTER_MS, INV_RESULT_GRACE_MS, INV_GONE_MS, INV_JENNY_CITY_WAIT_MS, INV_JENNY_BETWEEN_MS, INV_PLANS_ITEM_ID,
         };`);
     const api = factory(...names.map(k => ctx[k]), () => state.env.tripRunning);
     apiRef = api;
+    // v3.51.1: a TELA manda (ou reenvia) `enter-hunt rocket_cerulean`; passa pelo mesmo filtro do interceptador do `send` do script
+    // (`invOutgoingBlocked`): barrado vai para `state.blocked` e não chega ao servidor nem ao `setHunt`. Devolve se passou.
+    state.blocked = [];
+    api.telaEnter = (resume) => {
+        const m = { type: 'enter-hunt', slug: 'rocket_cerulean', resume: Boolean(resume), pelaTela: true };
+        if (api.outgoingBlocked(m)) { state.blocked.push(m); return false; }
+        state.sent.push(m); api.setHunt(m.slug); return true;
+    };
     return { api, state, clock, cfg: ctx.cfg };
 }
 

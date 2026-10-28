@@ -409,6 +409,12 @@ chunk compartilhado (módulo `tD`: `ROCKET_SLUG:"rocket_cerulean"`, `INVASION_EV
 - **Entrar** = a tela viaja para o mapa `rocket_cerulean` (`n2(tD.ROCKET_SLUG, "Invasão Rocket")`; desenho de `cerulean_novo`) e o componente
   da hunt manda `enter-hunt { slug:'rocket_cerulean', resume }` — a invasão É uma hunt de slug fixo, como `*_boss` e `pesca`. A tela só
   mostra o botão com `entryOpen` e recusa com o líder em hp 0 ("faintedNoTravel"). Sair = `leave-hunt` (encerra a rodada; o ganho fica).
+- **Servidor lento na virada do dia (CONFIRMADO em 28/10/2026 03:00Z, janela da meia-noite, conta1):** o `invasion-state` chegou às contas 1 e 2
+  20 s depois do das contas 3 e 4 (03:00:20 vs 03:00:00); o `enter-hunt` da conta1 (03:00:42) ficou 19 s sem resposta, o componente da hunt da
+  tela reenviou (10 s sem `field`), e aí vieram `invasion-refused` "Você já participou dessa invasão" (03:01:01, para o reenvio) e a energia
+  5→4 (03:01:03, a 1ª entrada registrada). As contas 3 e 4 entraram em 4 s. v3.51.1: o script barra no `send` todo `enter-hunt rocket_cerulean`
+  depois do primeiro da rodada (`invOutgoingBlocked`; log `invasao-enter-hunt-barrado`), espera 60 s pelo 1º frame e, com "já participou"
+  antes do 1º frame, espera 15 s por um frame antes de desistir (`invasao-recusa-ignorada` se ele vier).
 - **Dois `enter-hunt rocket_cerulean` = expulso (CONFIRMADO em 28/10/2026 01:00Z, conta1):** o script mandou `enter-hunt` (a conta ENTROU:
   `invasion-energy` 4→3 chegou sozinho 1,9 s depois, `field { wave:1 }` 2,2 s depois) e o `hunt-resume` sintético do `switchHunt` fez a tela
   viajar e mandar OUTRO `enter-hunt` 4,5 s depois → `error { message:"Você já participou dessa invasão. Espere a próxima!" }` +
