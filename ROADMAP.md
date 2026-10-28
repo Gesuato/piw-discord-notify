@@ -728,6 +728,12 @@ Mercado, troca, família ou time, e os filhotes nascem lá (`pokes[].breedingBox
 comida na Breeding Box antes de cotar e cruzar (log `breeding-box`); venda e depósito pulam quem está lá; o filho é procurado entre os
 que nasceram lá. Sem campo novo no painel. Caso 15 do teste.
 
+**v3.51.0 (27/10/2026) — piso de quality para virar comida:** pedido do usuário: "adicionar uma condição para fazer a food: qualidade mínima
+da food a ser criada, ex.: 1.7 — a partir dessa qualidade pode upar a food". `cfg.breedFoodMinQ` (aba Breeding → "Só vira comida quem já
+tem quality a partir de", 0 = qualquer): `breedFoodTrunkReason` recusa quem está abaixo do piso ("Q 1,70 abaixo do piso 1,72 para virar
+comida"), então a criação de comida só começa de um candidato já bom, em vez de subir um Q baixo por dezenas de gerações. Sem candidato
+no piso, o motivo da linhagem cita o piso. Fim do caso 14 do teste.
+
 **Pendente:** se o `breed` funciona na hunt
 (o script sempre cruza na viagem). Teste: `node test/breeding.test.js`, caso novo no `pokesell.test.js`, passo no smoke e fixture no
 round-trip.

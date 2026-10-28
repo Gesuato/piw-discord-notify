@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.50.1
+// @version      3.51.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.50.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.51.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -107,6 +107,7 @@
         breedFamily: true,      // ...comida e stones também do depot da família (retirada na viagem à cidade)
         breedDouble: true,      // ...dobrar stones (40 em vez de 20): 5% de +1 IV no filho
         breedFoodBreed: false,  // v3.48.0 ...criar comida: sem capturado que sirva, cruza o melhor da espécie abaixo da faixa com um mais fraco até ele entrar na faixa de quem sobe
+        breedFoodMinQ: 0,       // v3.51.0 ...piso de quality para VIRAR comida em criação (ex.: 1.7): candidato com quality abaixo disto não entra; 0 = qualquer
         guildDonateGold: 0,     // v3.31.0 Guild (aba 🛡): gold a doar por dia para a próxima vaga (0 = não doa; o jogo limita a 500.000/dia por membro)
         guildDonateKeep: 0,     // ...gold que fica sempre na conta (não doa o que faria o saldo cair abaixo disto)
         guildTributeEnabled: false, // ...depositar o item do Tributo do Dia que estiver na mochila (o item fica fora da venda enquanto o tributo está aberto)
@@ -3278,6 +3279,9 @@
     }
     function breedUnitLabel(u, d) { const i = breedUnitInfo(u, d); return i.food ? `comida da linhagem ${i.idx}` : `linhagem ${i.idx || '?'}`; }
     function breedFoodBreedOn(d) { return Boolean((d || cfg).breedFoodBreed); }
+    // v3.51.0: piso de quality para virar comida em criação (pedido do usuário em 27/10/2026: "qualidade mínima da food a ser criada,
+    // ex.: 1.7"): quem está abaixo não é escolhido, para não gastar gold e stones subindo um Q 1,2 por dezenas de gerações. Aceita vírgula.
+    function breedFoodMinQ(d) { const v = parseFloat(String((d || cfg).breedFoodMinQ ?? '').replace(',', '.')); return Number.isFinite(v) && v > 0 ? v : 0; }
     // Quem sobe, pelo id, na lista `pokes` (box).
     const breedPokeView = (p) => ({ id: String(p.id), name: p.name || '?', speciesId: Number(p.speciesId), quality: Number(p.quality), ivTotal: Number(p.ivTotal), level: Number(p.level) || 0, shiny: Boolean(p.shiny), team: Boolean(p.team || p.leader), starter: Boolean(p.starter), breedingBox: Boolean(p.breedingBox) });
     function breedTrunk(line) {
@@ -3417,6 +3421,8 @@
         if (p.listed || p.tradeId) return 'anunciado no mercado';
         const q = Number(p.quality), iv = Number(p.ivTotal);
         if (!Number.isFinite(q) || !Number.isFinite(iv)) return 'sem IV/quality';
+        const minQ = breedFoodMinQ(d);   // v3.51.0
+        if (minQ && q < minQ - BREED_Q_EPS) return `Q ${breedQ(q)} abaixo do piso ${breedQ(minQ)} para virar comida`;
         if (q >= trunk.quality - BREED_Q_GAP - BREED_Q_EPS) return `Q ${breedQ(q)} já está na faixa de quem sobe`;
         const margem = d.breedDouble ? 1 : 0;
         if (iv + margem >= trunk.ivTotal) return `IV ${iv} não ficaria abaixo de ${trunk.ivTotal}${margem ? ' (dobrar pode dar +1)' : ''}`;
@@ -3838,7 +3844,7 @@
         }
         if (!ft) {
             const pick = breedFoodTrunkPick(trunk);
-            if (!pick) return 'ninguém da espécie pode virar comida (precisa estar abaixo da faixa, com IV menor que o de quem sobe e ter comida própria)';
+            if (!pick) return `ninguém da espécie pode virar comida (precisa estar abaixo da faixa${breedFoodMinQ() ? ` e a partir de Q ${breedQ(breedFoodMinQ())}` : ''}, com IV menor que o de quem sobe e ter comida própria)`;
             line.food = { id: pick.id, name: pick.name, speciesId: trunk.speciesId, gen: 0, q0: pick.quality, iv0: pick.ivTotal, familia: pick.origem === 'familia' };
             fu = line.food; saveCfg(cfg);
             ft = breedTrunk(fu);
@@ -8987,6 +8993,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <label class="dn-toggle"><input id="pg-dn-breed-family" type="checkbox"><span class="sw"></span>Pegar da família também <span class="dn-hint">(comida e stones; a retirada acontece na viagem à cidade)</span></label>
                         <label class="dn-toggle"><input id="pg-dn-breed-double" type="checkbox"><span class="sw"></span>Dobrar stones <span class="dn-hint">(40 em vez de 20; 5% de chance de +1 IV no filho)</span></label>
                         <label class="dn-toggle"><input id="pg-dn-breed-foodbreed" type="checkbox"><span class="sw"></span>Criar comida quando nenhuma servir <span class="dn-hint">(cruza o melhor da espécie abaixo da faixa com um mais fraco, geração a geração, até a quality dele entrar na faixa de quem sobe; cada ovo custa gold + stones e usa o slot que quem sobe não está usando)</span></label>
+                        <div class="dn-inline">Só vira comida quem já tem quality a partir de <input id="pg-dn-breed-foodminq" class="dn-input dn-input--sm" type="number" min="0" step="0.01" placeholder="0 = qualquer"> <span class="dn-hint">(ex.: 1,7 — quem está abaixo não é escolhido para virar comida; evita gastar gold e stones subindo um Q baixo por dezenas de gerações)</span></div>
                         <div class="dn-status col" id="pg-dn-breed-food"></div>
                         <p class="dn-help">O jogo só aceita par com até 0,15 de diferença de quality. Shiny, time, inicial, Ditto, travado e anunciado no mercado nunca viram comida. Usa primeiro a comida mais fraca que serve (a de quality baixa deixa de servir quando quem sobe cresce). A lista acima vem do último frame do box e da última leitura da família (botão ↻ acima); com quem sobe dentro do ovo ela é uma prévia. "Criar comida": quando quem sobe passa de uma quality que captura nenhuma alcança (ex.: Q 1,96 só come Q 1,81–1,96), o script escolhe o melhor da espécie abaixo da faixa (IV menor que o de quem sobe, porque o filho herda o IV dele) e sobe a quality dele com comida própria até servir; quem sobe espera parado e come o resultado. Quem vira comida e a faixa dele também ficam fora da venda. Desde 26/10/2026 o jogo só cota e cruza quem está na aba <b>Breeding Box</b> do Depósito: na viagem o script separa quem sobe e a comida lá antes de cotar (quem está na Breeding Box não é vendido nem vai para a família; os filhotes nascem lá).</p>
                     </div>
@@ -9271,6 +9278,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 breedFamily: $('#pg-dn-breed-family').checked,
                 breedDouble: $('#pg-dn-breed-double').checked,
                 breedFoodBreed: $('#pg-dn-breed-foodbreed').checked,
+                breedFoodMinQ: breedFoodMinQ({ breedFoodMinQ: $('#pg-dn-breed-foodminq').value }),
                 guildDonateGold: Math.max(0, parseInt($('#pg-dn-guild-donate').value, 10) || 0),
                 guildDonateKeep: Math.max(0, parseInt($('#pg-dn-guild-keep').value, 10) || 0),
                 guildTributeEnabled: $('#pg-dn-guild-tribute').checked,
@@ -10256,6 +10264,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-breed-family').checked = cfg.breedFamily !== false;
             $('#pg-dn-breed-double').checked = cfg.breedDouble !== false;
             $('#pg-dn-breed-foodbreed').checked = Boolean(cfg.breedFoodBreed);
+            $('#pg-dn-breed-foodminq').value = breedFoodMinQ(cfg) || '';
             $('#pg-dn-guild-donate').value = Math.max(0, Number(cfg.guildDonateGold) || 0);
             $('#pg-dn-guild-keep').value = Math.max(0, Number(cfg.guildDonateKeep) || 0);
             $('#pg-dn-guild-tribute').checked = Boolean(cfg.guildTributeEnabled);
@@ -10363,7 +10372,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const slotAntes = JSON.stringify([cfg.slotEnabled, cfg.slotWanted]);
             const gymAntes = JSON.stringify([cfg.gymEnabled, cfg.gymBonus, cfg.gymRedo]);
             const invAntes = JSON.stringify([cfg.invJennyEnabled, cfg.invJennyOffer, cfg.invJennyKeep]);
-            const breedAntes = JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble, cfg.breedFoodBreed]);
+            const breedAntes = JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble, cfg.breedFoodBreed, cfg.breedFoodMinQ]);
             const guildAntes = JSON.stringify([cfg.guildDonateGold, cfg.guildDonateKeep, cfg.guildTributeEnabled, cfg.guildTributeKeep, cfg.guildAlerts, cfg.guildHuntEnabled, cfg.guildFishEnabled, cfg.guildFarmTribute, cfg.guildRouteOrder]);
             const capturaAntes = JSON.stringify([cfg.catchRouteEnabled, cfg.catchRouteAreas, cfg.catchRouteMaxLevel]);
             const viagemAntes = JSON.stringify([cfg.tripEveryMin, cfg.tripEveryMaxMin]);
@@ -10418,7 +10427,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 gymFailedAt = 0;
                 if (cfg.gymEnabled) setTimeout(() => gymTick(true), 500);
             }
-            if (JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble, cfg.breedFoodBreed]) !== breedAntes) { // breeding mudou: replaneja já
+            if (JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble, cfg.breedFoodBreed, cfg.breedFoodMinQ]) !== breedAntes) { // breeding mudou: replaneja já
                 breedReset();
                 if (cfg.breedEnabled) setTimeout(() => breedTick(true), 500);
             }

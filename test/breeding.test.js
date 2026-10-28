@@ -430,6 +430,21 @@ function fakeApi(opts) {
         const m3 = loadBreedModule(cfg3, { api: fakeApi({ box: { alto: ALTO, lixo: LIXO }, have: 40 }).api, pokes: [LIDER, ALTO, LIXO] });
         await m3.api.breedTick(true);
         assert(!cfg3.breedLines[0].food && m3.state.trips.length === 0 && /comida em criação: ninguém da espécie pode virar comida/.test(m3.api.breedWait.motivo), 'sem candidato: parado com motivo: ' + JSON.stringify(m3.api.breedWait));
+        // v3.51.0: piso de quality para virar comida — abaixo dele o candidato não entra, mesmo sendo o melhor; vírgula vale
+        const cfg4 = { breedEnabled: true, breedLines: [{ id: 'alto', gen: 0 }], breedFoodIvMax: 150, breedFamily: false, breedDouble: false, breedFoodBreed: true, breedFoodMinQ: '1,72' };
+        const m4 = loadBreedModule(cfg4, { api: fakeApi({ box: Object.fromEntries(box.map(p => [p.id, p])), have: 40 }).api, pokes: box });
+        assert(m4.api.breedFoodMinQ() === 1.72, 'piso aceita vírgula: ' + m4.api.breedFoodMinQ());
+        const l4 = m4.api.breedFoodTrunkList(m4.api.breedTrunk(cfg4.breedLines[0]));
+        assert(l4.find(x => x.id === 'f175' && !x.motivo) && /abaixo do piso 1\.720/.test(l4.find(x => x.id === 'f170').motivo), 'piso 1,72: F (1,75) entra, F2 (1,70) sai com motivo: ' + JSON.stringify(l4.map(x => [x.id, x.motivo])));
+        await m4.api.breedTick(true);
+        assert(cfg4.breedLines[0].food && cfg4.breedLines[0].food.id === 'f175', 'piso 1,72 ainda escolhe F: ' + JSON.stringify(cfg4.breedLines[0].food));
+        const cfg5 = { breedEnabled: true, breedLines: [{ id: 'alto', gen: 0 }], breedFoodIvMax: 150, breedFamily: false, breedDouble: false, breedFoodBreed: true, breedFoodMinQ: 1.8 };
+        const m5 = loadBreedModule(cfg5, { api: fakeApi({ box: Object.fromEntries(box.map(p => [p.id, p])), have: 40 }).api, pokes: box });
+        await m5.api.breedTick(true);
+        assert(!cfg5.breedLines[0].food && m5.state.trips.length === 0 && /ninguém da espécie pode virar comida \(precisa estar abaixo da faixa e a partir de Q 1\.800/.test(m5.api.breedWait.motivo), 'piso 1,80: ninguém serve, motivo cita o piso: ' + JSON.stringify(m5.api.breedWait));
+        const cfg6 = { breedEnabled: true, breedLines: [{ id: 'alto', gen: 0 }], breedFoodIvMax: 150, breedFamily: false, breedDouble: false, breedFoodBreed: true, breedFoodMinQ: 0 };
+        const m6 = loadBreedModule(cfg6, { api: fakeApi({ box: Object.fromEntries(box.map(p => [p.id, p])), have: 40 }).api, pokes: box });
+        assert(m6.api.breedFoodTrunkList(m6.api.breedTrunk(cfg6.breedLines[0])).filter(x => !x.motivo).length === 2, 'piso 0 = sem piso (F e F2 servem)');
     }
 
     // 15) v3.49.0: Breeding Box — o jogo só cota/cruza com os dois pais lá; a cotação na hunt falha sem parar a linhagem, a viagem separa

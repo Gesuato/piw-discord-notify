@@ -330,6 +330,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   ser comida de quem sobe (as outras unidades nunca) e, consumida, `line.food = null`. Só cruza comida enquanto quem sobe está parado
   sem comida (usa o slot que ele não usa); quem vira comida pode estar na família (`food.familia`, retirado na viagem antes da cotação).
   Logs `breeding-comida { fase: escolhida | sumiu | consumida }`; `breeding-cotacao`/`breeding-cruzou` trazem `criacao: true`. Caso 14 do teste.
+  v3.51.0 (pedido do usuário em 27/10/2026: "qualidade mínima da food a ser criada, ex.: 1.7"): `cfg.breedFoodMinQ` (painel "Só vira comida
+  quem já tem quality a partir de", `breedFoodMinQ(d)`, aceita vírgula, 0 = qualquer) — em `breedFoodTrunkReason` o candidato com
+  quality abaixo do piso não vira comida em criação (motivo "abaixo do piso"), para não gastar gold e stones subindo um Q baixo por
+  dezenas de gerações. Vale só para QUEM VIRA comida; a comida própria dele segue as regras de sempre. Fim do caso 14 do teste.
   v3.49.0 (mudança do JOGO, 26/10/2026, vista no outro PC: "Comida em criação … porém não tem nada sendo incubado" — cotação e última
   viagem falhando com "Os dois pais precisam estar na Breeding Box — separe-os na aba Breeding Box do Depósito"): o Depósito ganhou a
   aba 🥚 **Breeding Box** e só quem está nela cota/cruza no centro (`docs/mensagens-do-jogo.md` → "Breeding Box"). `pokes[].breedingBox`
