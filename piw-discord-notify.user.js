@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.51.1
+// @version      3.51.2
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.51.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.51.2';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -6299,7 +6299,8 @@
     //   - Lá dentro: 10 s de apresentação, waves de 20 duplas (`PAIRS_PER_WAVE`), frames `field` normais com `wave` e um `field-kill` por
     //     Rocket derrubado; sem vantagem de tipo. Acaba por `wipe` (time caiu), `time` (30 min), `stall` (3 min sem abate), `left` ou
     //     `restart` → `invasion-end { wave, bestWave, reason, kills, xp, tier, level, levelBefore, reward{ qty, name, icon }, milestones[],
-    //     outfitReward{ items[{ looktype, gender, milestone }], equipped } }` (janela "Resultado da Invasão Rocket").
+    //     outfitReward{ items[{ looktype, gender, milestone }], equipped } }` (janela "Resultado da Invasão Rocket"). v3.51.2: o botão
+    //     "Continuar" dessa janela (`button.irw-ok`) é só o `onClose` — nada vai ao servidor; a recompensa já vem no frame. O script a fecha.
     //   - Rocket Plans = item 240 (`REWARD_ITEM_ID`): não vendem, não trocam, não vão para a família → fora da venda e do guardar.
     //   - Officer Jenny (NPC `officer_jenny` do Shopping): `GET /api/game/officer-jenny` → `{ balance, token{ name, icon }, offers[{ key,
     //     name, qty, cost, icon, description, owned, looktype, kind }] }`; `POST /api/game/officer-jenny/exchange { offer:key }` → `{ prize{
@@ -6333,6 +6334,10 @@
     const INV_LEAVE_WAIT_MS = 1500;
     const INV_HEAL_WAIT_MS = 2500;
     const INV_END_WAIT_MS = 4000;                 // `invasion-end` → espera a janela de resultado antes de sair/voltar
+    const INV_MODAL_POLL_MS = 500;                // v3.51.2: procura a janela "Resultado da Invasão Rocket" a cada 0,5 s depois do `invasion-end`
+    const INV_MODAL_WAIT_MS = 20 * 1000;          // ...por até 20 s (ela abre no frame seguinte ao `invasion-end`; sem ela não há o que fechar)
+    const INV_MODAL_HOLD_MS = 3000;               // ...e aperta o "Continuar" 3 s depois de ela aparecer (o resultado já foi para o log e o Discord)
+    const INV_JENNY_AFTER_END_MS = 6000;          // v3.51.2: relê o saldo da Officer Jenny 6 s depois de cada `invasion-end` (prova de que os Plans entraram)
     const INV_TELA_WAIT_MS = 5000;                // v3.50.1: a TELA viaja para a invasão e manda o enter-hunt; sem a hunt em 5 s mandamos nós
     const INV_CONFIRM_MS = 60 * 1000;             // enter-hunt mandado e nenhum frame da invasão em 60 s = entrada falhou (aviso + volta). v3.51.1: era 30 s;
                                                   // à meia-noite (28/10/2026 03:00Z, conta1) o servidor levou 21 s para registrar a entrada (energia 5→4)
@@ -6367,6 +6372,7 @@
     let invRefused = null;      // última recusa { at, message }
     let invEndedAt = 0;         // v3.51.1: fim/aborto da última rodada (barra o enter-hunt da tela logo depois)
     let invBlockedAfterEnd = 0;
+    let invModalTimer = null;   // v3.51.2: vigia da janela "Resultado da Invasão Rocket"
     let invWaitNote = null;     // por que não entrou ainda (bloqueio do momento), para o painel e o log
     let invWaitLoggedAt = 0;
     let invCityWaiter = null;
@@ -6755,9 +6761,44 @@
         invLast = res;
         logEvent('invasao-fim', { motivo: res.reason, wave: res.wave, recorde: res.bestWave, rockets: res.kills, abatesVistos: res.killsVistos, xp: res.xp, faixa: res.tier, nivel: res.level, nivelAntes: res.levelBefore, plans: res.plans, marcos: res.milestones, outfit: res.outfit, origem: res.origem, from: res.from, hunt: huntSlug || null });
         if (cfg.invAlerts !== false) invAlertEnd(res);
-        if (invJennyOn()) invJennyAt = 0;   // o saldo de Plans mudou: relê a Jenny no próximo tique
+        invCloseResultModal(res);
+        // v3.51.2: relê o saldo da Jenny depois de TODA rodada, com a troca ligada ou não — o log `jenny { saldo }` prova que os Plans
+        // entraram sem "coletar" nada (a recompensa vem no próprio `invasion-end`); com a troca ligada, já pede a viagem se couber.
+        setTimeout(() => { if (!invJennyWorking) invJennyRead('fim da rodada').then(j => { if (j && invJennyOn()) invJennyAsk(); }); }, INV_JENNY_AFTER_END_MS);
         if (r && !r.ended) { r.result = res; invReturnFlow(r, res.reason === 'wipe'); }
         invNotify();
+    }
+    // Janela "Resultado da Invasão Rocket" (`tW` do bundle, 27/10/2026): o botão "Continuar" (`button.irw-ok`) é só o `onClose` da janela —
+    // não manda nada ao servidor (nem socket nem REST) e a recompensa já veio no `invasion-end` (`reward`). Mesmo assim fechamos a janela
+    // (pedido do usuário em 28/10/2026): ela fica cobrindo o painel até alguém clicar. Sem o botão, Esc fecha (a janela ouve `keydown`).
+    function invCloseResultModal(res) {
+        if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return;
+        if (invModalTimer) { clearTimeout(invModalTimer); invModalTimer = null; }
+        const t0 = Date.now();
+        let seenAt = 0, como = null;
+        const win = () => { try { return document.querySelector('.irw-window'); } catch { return null; } };
+        const fim = (dados) => { invModalTimer = null; logEvent('invasao-resultado', Object.assign({ depoisDeS: Math.round((Date.now() - t0) / 1000), wave: res?.wave, plans: res?.plans }, dados)); };
+        const step = () => {
+            invModalTimer = null;
+            const w = win(), now = Date.now();
+            if (como) { fim({ fechada: !w, como }); return; }   // conferência 0,5 s depois do clique
+            if (!w) {
+                if (seenAt) { fim({ fechada: true, como: 'fechada por fora (jogador ou tela)' }); return; }
+                if (now - t0 > INV_MODAL_WAIT_MS) { fim({ fechada: false, motivo: 'a janela de resultado não apareceu' }); return; }
+            } else {
+                if (!seenAt) seenAt = now;
+                if (now - seenAt >= INV_MODAL_HOLD_MS) {
+                    try {
+                        const btn = w.querySelector('button.irw-ok');
+                        if (btn) { btn.click(); como = 'botão Continuar'; }
+                        else if (typeof window !== 'undefined' && typeof KeyboardEvent === 'function') { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); como = 'Esc'; }
+                        else { fim({ fechada: false, motivo: 'janela sem o botão Continuar' }); return; }
+                    } catch (err) { fim({ fechada: false, motivo: String(err?.message || err) }); return; }
+                }
+            }
+            invModalTimer = setTimeout(step, INV_MODAL_POLL_MS);
+        };
+        step();
     }
     function invFinishSilent(r, motivo) {
         logEvent('invasao-fim', { motivo, semFrame: true, wave: r.wave, abatesVistos: r.kills, origem: r.origem, from: r.from, hunt: huntSlug || null });
@@ -6943,6 +6984,7 @@
             if (invWaitNote) partes.push(`parado: ${invWaitNote}`);
         }
         partes.push(`energia ${invEnergy == null ? '?' : `${invEnergy}/${INV_ENERGY_MAX}`}${invKeepEnergy(d) ? ` (reserva ${invKeepEnergy(d)})` : ''}`);
+        if (invJenny) partes.push(`${fmtNum(invJenny.balance)} ${invJenny.token} na Jenny`);   // v3.51.2: saldo relido depois de cada rodada
         const top = invTeamTop();
         if (top) partes.push(`faixa ${invTierLabel(top)} (time lv ${top})`);
         if (invLast) partes.push(`última ${invHora(invLast.at)}: wave ${invLast.wave}, ${invLast.kills} Rockets, ${fmtNum(invLast.plans)} Plans${invLast.tier ? `, ${invLast.tier}` : ''} (${INV_REASON_LABEL[invLast.reason] || invLast.reason || 'fim'})`);

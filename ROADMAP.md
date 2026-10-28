@@ -941,7 +941,7 @@ Harness: `loadGymModule` precisa de `sendGame`, `familyAction`, `init.pokes`/`in
 
 ---
 
-## ✅ 38. Invasão Rocket: entrar sozinho a cada janela, voltar para a hunt e trocar os Plans na Officer Jenny (v3.50.0; entrada corrigida na v3.50.1 e v3.51.1)
+## ✅ 38. Invasão Rocket: entrar sozinho a cada janela, voltar para a hunt e trocar os Plans na Officer Jenny (v3.50.0; entrada corrigida na v3.50.1 e v3.51.1; janela de resultado fechada na v3.51.2)
 
 **O que faz (pedido do usuário em 27/10/2026, patch notes do mesmo dia: "gostaria de implementar uma nova aba para esse evento"):** aba
 própria 🚀 Invasão. `invEnabled` entra na invasão de Cerulean em cada janela (a cada 2 h, horas pares de Brasília; 10 min de entrada), só
@@ -978,8 +978,16 @@ abortado e mandado a conta de volta para taillow, e o enter-hunt seguinte da tel
 "já participou" ANTES do 1º frame espera 15 s (`INV_REFUSE_GRACE_MS`) por um frame antes de desistir (`invasao-recusa-ignorada` se ele
 vier; outra recusa aborta na hora). Caso 14 do teste.
 
-**Pendente:** confirmar `jenny-campos` e as chaves das ofertas da Officer Jenny na 1ª troca real; ver uma rodada inteira (waves, `invasion-end`
-com `reward.qty` > 0, marcos).
+**v3.51.2 (28/10/2026, pedido do usuário: "após terminar as waves, precisamos confirmar e coletar o recurso da invasão. Aparece uma modal na
+tela e precisamos apertar no botão Continuar"):** no bundle o "Continuar" da janela "Resultado da Invasão Rocket" é só o `onClose` — não manda
+nada ao servidor (socket ou REST) e a recompensa já vem concedida no `invasion-end` (as rodadas das 08h e 10h de Brasília de 28/10 chegaram no
+log com `plans` 286, 158 e 112 e `marcos [250]`). Mesmo assim o script fecha a janela 3 s depois de ela aparecer (`invCloseResultModal`:
+`button.irw-ok`, senão Esc; log `invasao-resultado { fechada, como, depoisDeS, wave, plans }`) para ela não ficar cobrindo a tela, e relê o
+saldo da Officer Jenny 6 s depois de toda rodada, com a troca ligada ou não (`jenny { motivo:'fim da rodada', saldo }`; a aba mostra "N Rocket
+Plans na Jenny") — é a prova, no log, de que os Plans entraram sem clique nenhum. Caso 15 do teste (`init.dom`).
+
+**Pendente:** confirmar `jenny-campos` e as chaves das ofertas da Officer Jenny na 1ª troca real; conferir no log `jenny { saldo }` que o saldo
+acompanha os `plans` dos `invasao-fim`. ~~Ver uma rodada inteira~~ visto em 28/10/2026 (waves 6–11, 112–286 Plans, marco 250, fins `wipe` e `time`).
 
 **Teste:** `node test/invasion.test.js` (`loadInvasionModule`); chaves no fixture do `test/config.roundtrip.js`; passo no `test/ui.smoke.js`.
 

@@ -1347,6 +1347,7 @@ function loadInvasionModule(cfg, init) {
         setTimeout: (fn, ms) => { const id = nextId++; state.timers.push({ fn, ms, id }); return id; },
         clearTimeout: (id) => { state.timers = state.timers.filter(t => t.id !== id); },
         Date: FakeDate,
+        document: init.dom,   // v3.51.2: janela "Resultado da Invasão Rocket" (`querySelector('.irw-window')` → `button.irw-ok`); sem ela o módulo não procura
         // bloqueios e vizinhos (lidos pelo módulo com typeof)
         holdReason: () => (state.env.hold ? 'esperando na cidade pelo botão do painel' : null),
         holdActive: () => Boolean(state.env.hold),
@@ -1371,7 +1372,7 @@ function loadInvasionModule(cfg, init) {
             run: () => invRun, last: () => invLast, energy: () => invEnergy, jenny: () => invJenny, tried: () => invTried,
             hunt: () => huntSlug, setHunt: (s) => { huntSlug = s; invOnHuntChange(s); }, leaveHunt: () => { huntSlug = null; },
             outgoingBlocked: invOutgoingBlocked,
-            INV_SLUG, INV_TICK_MS, INV_ENTER_DELAY_MS, INV_CITY_WAIT_MS, INV_LEAVE_WAIT_MS, INV_HEAL_WAIT_MS, INV_END_WAIT_MS, INV_TELA_WAIT_MS, INV_CONFIRM_MS, INV_REFUSE_GRACE_MS, INV_BLOCK_AFTER_MS, INV_RESULT_GRACE_MS, INV_GONE_MS, INV_JENNY_CITY_WAIT_MS, INV_JENNY_BETWEEN_MS, INV_PLANS_ITEM_ID,
+            INV_SLUG, INV_TICK_MS, INV_ENTER_DELAY_MS, INV_CITY_WAIT_MS, INV_LEAVE_WAIT_MS, INV_HEAL_WAIT_MS, INV_END_WAIT_MS, INV_TELA_WAIT_MS, INV_CONFIRM_MS, INV_REFUSE_GRACE_MS, INV_BLOCK_AFTER_MS, INV_RESULT_GRACE_MS, INV_GONE_MS, INV_JENNY_CITY_WAIT_MS, INV_JENNY_BETWEEN_MS, INV_PLANS_ITEM_ID, INV_MODAL_POLL_MS, INV_MODAL_WAIT_MS, INV_MODAL_HOLD_MS, INV_JENNY_AFTER_END_MS,
         };`);
     const api = factory(...names.map(k => ctx[k]), () => state.env.tripRunning);
     apiRef = api;

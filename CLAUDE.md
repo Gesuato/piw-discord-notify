@@ -488,7 +488,12 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `enter-hunt rocket_cerulean` depois do primeiro da rodada (`sentAt`), durante a volta e por 20 s depois do fim (`INV_BLOCK_AFTER_MS`; log
   `invasao-enter-hunt-barrado`); o nosso enter-hunt direto sai com `sentAt` zerado e passa. "Já participou" antes do 1º frame espera 15 s
   (`INV_REFUSE_GRACE_MS`, `r.refusedAt`) por um frame antes de abortar (`invasao-recusa-ignorada` se ele vier); outras recusas abortam na hora.
-  Harness: `api.telaEnter(resume)` simula a tela mandando/reenviando o enter-hunt pelo filtro (`state.blocked`). Entrada feita NA MÃO pelo botão da tela também é
+  v3.51.2 (pedido do usuário em 28/10/2026, "apertar no botão Continuar" da janela de resultado): no bundle o "Continuar" da janela "Resultado
+  da Invasão Rocket" é SÓ `onClose` — nada vai ao servidor e a recompensa já vem no `invasion-end`; mesmo assim `invCloseResultModal` aperta
+  `button.irw-ok` 3 s depois de ela aparecer (`INV_MODAL_HOLD_MS`; senão Esc; log `invasao-resultado { fechada, como }`) para a janela não
+  ficar cobrindo a tela, e o saldo da Jenny é relido 6 s depois de TODA rodada (`INV_JENNY_AFTER_END_MS`, mesmo sem a troca ligada; log
+  `jenny { motivo:'fim da rodada', saldo }`, status "N Rocket Plans na Jenny"). Não existe passo de "coletar": não inventar um.
+  Harness: `api.telaEnter(resume)` simula a tela mandando/reenviando o enter-hunt pelo filtro (`state.blocked`); `init.dom` é o `document` falso da janela de resultado. Entrada feita NA MÃO pelo botão da tela também é
   acompanhada (`invOnHuntChange`, origem `tela`) e volta para `idleTarget()`. `invBusy()`/`invBusyReason()` entram nos mesmos gates do
   `bossBusy` (viagem, parada na cidade, recarga, rotas, troca de líder, cura — a queda do time ENCERRA a rodada, quem cura é a volta).
   Rocket Plans = item 240 (`invKeepsItem`: fora da venda e do guardar). Officer Jenny (Shopping): `invJennyRead` a cada 2 h e após

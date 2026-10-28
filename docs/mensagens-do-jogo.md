@@ -435,6 +435,12 @@ chunk compartilhado (módulo `tD`: `ROCKET_SLUG:"rocket_cerulean"`, `INVASION_EV
   frames `field` trazem `wave` (✔ chaves: `seq, serverNow, heroLooktype, heroName, bossTeam, bossActiveIdx, hero, trainer, mobs, corpses,
   targetSlot, fighting, heroHp, heroMaxHp, fainted, reviveInMs, allMobsDead, waveRespawnAt, wave, hits`); cada Rocket derrubado é um
   `field-kill` normal. `invasion-state`/`invasion-announce` chegam juntos na abertura (01:00:04Z para a janela das 22h BRT).
+- **Janela "Resultado da Invasão Rocket" (`tW` do bundle; pedido do usuário em 28/10/2026: "após terminar as waves, precisamos confirmar e
+  coletar o recurso… apertar no botão Continuar"):** o botão "Continuar" (`button.irw-ok`), o clique fora e o Esc são só o `onClose` da janela
+  (`aI(null)`) — NÃO mandam nada ao servidor (nem socket nem REST: o único envio da invasão no bundle é `invasion-energy-get`, e não existe
+  `/api/game/invasion*`); a recompensa já vem concedida no próprio `invasion-end` (`reward`), a janela só anima os números. v3.51.2: o script
+  aperta o "Continuar" 3 s depois de a janela aparecer (`invCloseResultModal`; log `invasao-resultado { fechada, como, depoisDeS, wave, plans }`)
+  e relê a Officer Jenny 6 s depois de todo `invasion-end`, com a troca ligada ou não (log `jenny { motivo:'fim da rodada', saldo }`).
 - Officer Jenny (NPC `officer_jenny` do `shopping`, ação `openJenny` "Trade Rocket Plans"): `GET /api/game/officer-jenny` → `{ balance,
   token{ name, icon }, offers[{ key, name, qty, cost, icon, description, owned, looktype, kind }] }`; `POST /api/game/officer-jenny/exchange
   { offer: key }` → `{ prize{ kind, name, qty, icon, looktype } }`; a tela manda `inv-get` depois. Erros: "Not enough Plans"/"Already owned"

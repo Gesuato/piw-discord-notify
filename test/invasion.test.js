@@ -5,6 +5,8 @@
 // = "Você já participou dessa invasão" + invasion-end left (rodada perdida com a energia gasta). v3.51.1 (28/10/2026 03:00Z, conta1): o
 // servidor demorou ~20 s à meia-noite, a tela reenviou o enter-hunt sozinha e a 2ª foi recusada enquanto a 1ª valeu — agora o reenvio é
 // barrado no socket (`invOutgoingBlocked`, caso 14), a confirmação espera 60 s e "já participou" antes do 1º frame espera 15 s por um frame.
+// v3.51.2: a janela "Resultado da Invasão Rocket" é fechada pelo script (o "Continuar" é só `onClose`; a recompensa vem no `invasion-end`) e o
+// saldo da Jenny é relido 6 s depois de toda rodada (caso 15).
 // Rodar: node test/invasion.test.js
 const { loadInvasionModule, assert } = require('./harness');
 
@@ -450,6 +452,52 @@ process.on('exit', () => { if (!done) { console.error('invasion.test.js: termino
         assert(t3.state.sent.filter(m => m.type === 'enter-hunt').length === 1 && t3.state.blocked.length === 0 && t3.api.run().fase === 'dentro', 'enter-hunt nosso passou pelo filtro');
         assert(!t3.api.telaEnter(true) && t3.state.blocked.length === 1, 'o da tela depois dele: barrado');
         console.log('ok 14: servidor lento à meia-noite (reenvio barrado, recusa com espera)');
+    }
+
+    // 15) v3.51.2: janela "Resultado da Invasão Rocket" — o "Continuar" é só fechar (nada vai ao servidor); o script a fecha 3 s depois de
+    // aparecer e relê o saldo da Jenny 6 s depois do fim, com a troca desligada, para o log provar que os Plans entraram
+    {
+        const dom = { win: null, clicks: 0, querySelector(sel) { return sel === '.irw-window' ? this.win : null; } };
+        const abrir = () => { dom.win = { querySelector: (s) => (s === 'button.irw-ok' ? { click: () => { dom.clicks++; dom.win = null; } } : null) }; };
+        const srv = jennyApi({ balance: 286 });
+        const { api, state, clock } = loadInvasionModule({ invEnabled: true }, { huntSlug: 'taillow', dom, api: srv.api });
+        clock.now = T14 + 20 * MIN;
+        api.onMessage({ type: 'invasion-end', wave: 11, bestWave: 11, reason: 'wipe', kills: 210, xp: 5e6, tier: 'Outland+', level: 300, levelBefore: 280, reward: { itemId: 240, qty: 286, name: 'Rocket Plans' }, milestones: [250] });
+        assert(state.sent.length === 0 && state.calls.length === 0, 'invasion-end: nada mandado ao servidor na hora (a recompensa já veio no frame)');
+        await state.fire(api.INV_MODAL_POLL_MS);   // ainda sem janela
+        abrir();
+        await state.fire(api.INV_MODAL_POLL_MS);
+        assert(dom.clicks === 0 && dom.win, 'janela apareceu: espera 3 s antes de fechar');
+        for (let i = 0; i < 6; i++) await state.fire(api.INV_MODAL_POLL_MS);
+        assert(dom.clicks === 1 && !dom.win, 'apertou o Continuar 3 s depois de a janela aparecer');
+        await state.fire(api.INV_MODAL_POLL_MS);
+        const r1 = logsOf(state, 'invasao-resultado')[0];
+        assert(r1 && r1.fechada === true && r1.como === 'botão Continuar' && r1.plans === 286 && r1.wave === 11, 'log invasao-resultado { fechada, como, plans }');
+        assert(state.timers.filter(t => t.ms === api.INV_MODAL_POLL_MS).length === 0, 'fechada: parou de procurar');
+        await state.fire(api.INV_JENNY_AFTER_END_MS);
+        const j = logsOf(state, 'jenny')[0];
+        assert(state.calls.some(c => /officer-jenny$/.test(c.url) && c.method === 'GET') && j && j.motivo === 'fim da rodada' && j.saldo === 286, 'saldo da Jenny relido 6 s depois do fim, com a troca desligada');
+        assert(state.trips.length === 0 && api.status().includes('286 Rocket Plans na Jenny'), 'sem troca ligada: nenhuma viagem; o status mostra o saldo');
+        // janela que não aparece: desiste em 20 s com motivo e para de procurar
+        const t2 = loadInvasionModule({}, { dom: { querySelector: () => null } });
+        t2.api.onMessage({ type: 'invasion-end', wave: 1, reason: 'left', kills: 0, reward: { qty: 0 } });
+        for (let i = 0; i < 41; i++) await t2.state.fire(t2.api.INV_MODAL_POLL_MS);
+        const r2 = logsOf(t2.state, 'invasao-resultado')[0];
+        assert(r2 && r2.fechada === false && /não apareceu/.test(r2.motivo) && t2.state.timers.filter(t => t.ms === t2.api.INV_MODAL_POLL_MS).length === 0, 'sem janela em 20 s: desiste com motivo e para de procurar');
+        // jogador fechou antes dos 3 s: registra e não clica em nada
+        const dom3 = { win: { querySelector: () => null }, querySelector(sel) { return sel === '.irw-window' ? this.win : null; } };
+        const t3 = loadInvasionModule({}, { dom: dom3 });
+        t3.api.onMessage({ type: 'invasion-end', wave: 2, reason: 'time', kills: 20, reward: { qty: 5 } });
+        await t3.state.fire(t3.api.INV_MODAL_POLL_MS);
+        dom3.win = null;
+        await t3.state.fire(t3.api.INV_MODAL_POLL_MS);
+        const r3 = logsOf(t3.state, 'invasao-resultado')[0];
+        assert(r3 && r3.fechada === true && /por fora/.test(r3.como) && r3.plans === 5, 'jogador fechou antes: registra e não clica em nada');
+        // sem `document` (harness dos outros casos) o módulo não procura janela nenhuma
+        const t4 = loadInvasionModule({}, {});
+        t4.api.onMessage({ type: 'invasion-end', wave: 3, reason: 'time', kills: 40, reward: { qty: 9 } });
+        assert(t4.state.timers.filter(t => t.ms === t4.api.INV_MODAL_POLL_MS).length === 0 && logsOf(t4.state, 'invasao-resultado').length === 0, 'sem document: nada a fechar');
+        console.log('ok 15: janela de resultado fechada sozinha + saldo da Jenny relido');
     }
 
     done = true;
