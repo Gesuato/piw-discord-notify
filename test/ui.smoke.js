@@ -66,6 +66,10 @@ setTimeout(() => {
         panel.querySelector('.dn-tab[data-tab=profissao]').click();
         log('profissao=' + $('#pg-dn-catch-status').textContent + ' | areas=' + [...panel.querySelectorAll('.pg-dn-catch-area:checked')].map(c => c.value) + ' | prof=' + $('#pg-dn-prof-status').textContent);
         $('#pg-dn-catch').checked = true; fire($('#pg-dn-catch'), 'change');
+        // Profissão (v3.52.0): rank up + rota dos tipos (6ª rota excludente)
+        $('#pg-dn-prof-rankup').checked = true; fire($('#pg-dn-prof-rankup'), 'change'); $('#pg-dn-prof-route').checked = true; fire($('#pg-dn-prof-route'), 'change');
+        log('prof rascunho=' + $('#pg-dn-prof-status').textContent + ' | reqs=' + $('#pg-dn-prof-reqs').children.length + ' | ' + $('#pg-dn-prof-plan').textContent);
+        $('#pg-dn-prof-route').checked = false; fire($('#pg-dn-prof-route'), 'change');
         panel.querySelector('.pg-dn-catch-area[value=orre]').checked = true; fire(panel.querySelector('.pg-dn-catch-area[value=orre]'), 'change');
         $('#pg-dn-catch-max').value = 30; fire($('#pg-dn-catch-max'), 'input');
         log('profissao rascunho badge=' + panel.querySelector('.dn-tab[data-tab=profissao] .b').dataset.state + ' treinoRotaOn=' + $('#pg-dn-route-on').checked);

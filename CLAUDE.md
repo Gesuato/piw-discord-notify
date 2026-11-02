@@ -537,6 +537,23 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   alvo 8 s depois de qualquer entrada em outra hunt, exceto a da Daily. O script joga bola com `{ type:'catch', pendingId, ballId }` só com `catchRouteAuto`;
   respeita `catch-cooldown { leftMs }` e `catch-result.cooldownMs`. `field-init { slug }` define a hunt atual se o
   script não viu o `enter-hunt`. Rota de captura e rota de treino são excludentes (Salvar desliga a outra).
+- Profissão: subir de rank sozinho (v3.52.0, aba Profissão → bloco "Profissão", `cfg.profRankupEnabled`/`profFromDepot`/`profFromFamily`/
+  `profRoute`; módulo `// ---- Profissão: subir de rank` entre o Clã e o Guardar na cidade; bundle de 02/11/2026, `docs/mensagens-do-jogo.md`
+  → "Pokédex e mapa"; formatos de `pictures`/`kills`/`berries` ainda NÃO vistos no log — `profissao-campos` registra as chaves): pedido do
+  usuário em 02/11/2026 ("auto subir o rank; pegar as Rare Pokémon Picture no depot da família se necessário"). `nextStep` do
+  `GET /api/game/professions` traz `species`/`pictures`/`berries?`/`kills[{ type, have, need }]` e `ok`; quem conta os abates por tipo é o
+  SERVIDOR (o script só estima no `field-kill`, `noteProfKill`). `profTick` (60 s) lê a cada 2 min (1 min com a rota) e pede viagem urgente
+  com `ok` (3 por rank, 5 min; `profReadyAsk`) ou quando SÓ faltam pictures e a família (último frame) cobre; carona (`profWantsCity`) quando
+  só faltam pictures (confere o Depot na cidade; sem nada, 1x/30 min). Na cidade (`profCityWork`, tarefa `profissao`): Rare Pokémon Picture
+  (item 59195) buscada no Depot comum (pilha inteira) e na família (quantidade exata) SÓ quando as duas juntas completam a conta, relê e
+  `POST /professions/rankup {}` com `ok`; conta parada na cidade pelo botão "Esperar na cidade" faz na hora. `profKeepsItem` tira a picture
+  da venda e do guardar. `profRoute` ("Caçar o que falta") = 6ª rota excludente do Salvar: hunt cuja espécie tem o tipo que mais falta
+  (nota 1/falta, até o nível do time, 80% para não trocar à toa), origem em `localStorage.pgDiscordNotifyProf` (24 h; plano vazio com origem
+  lembrada também volta — lição da guild v3.46.0) e `cityIdleHunt` como último recurso. Botão "⬆ Subir agora" (`profNow`: na cidade faz na
+  hora, na hunt pede a viagem; vale com o módulo desligado). Nunca escolhe/troca a profissão nem gasta talento. `refreshProfession` da rota de
+  captura delega para `profRefresh`. Logs `profissao-campos`, `profissao`, `profissao-pictures`, `profissao-cidade`, `profissao-rank`,
+  `profissao-espera`, `profissao-alvo`, `profissao-volta`, `profissao-hunt-falhou`, `profissao-origem-lembrada`, `profissao-erro`.
+  Teste: `node test/prof.test.js` (`loadProfModule`; `state.env` liga hold/daily/inHunt, `init.family` o depósito da família).
 - Guarda de venda do PokeGrid (v3.13.4): o `index.html` do PokeGrid injeta `SELLGUARD`, que embrulha o `fetch` do
   painel e abre `window.confirm` ("PokeGrid: voce esta vendendo coisas valiosas") em `POST /api/game/pokemon/sell` com
   shiny ou qualidade ≥ 1.7 e em `POST /api/game/shop/sell` com item travado (Strange Pheromone, Rare Pokémon Picture e

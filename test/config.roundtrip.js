@@ -25,6 +25,8 @@ const rica = {
   reloadEnabled: true, reloadEveryMin: 45, reloadEveryMaxMin: 90, mentionUserId: '123', cooldownSeconds: 7, cfgVersion: 2, debug: true,
   // v3.16+ (daily sozinha, clã, guardar na cidade)
   dailyAuto: true, dailyAreas: ['kanto', 'outland', 'nightmare'], clanEnabled: true, clanKey: 'naturia', clanRankup: false, clanRoute: false,
+  // v3.52.0 (profissão: rank up e rota dos tipos)
+  profRankupEnabled: true, profFromDepot: false, profFromFamily: true, profRoute: false,   // profRoute true seria desligado pelo Salvar (routeEnabled manda na hunt)
   depositItems: 'depot', depositPokes: 'family', depositPokesRare: true,
   depositFamilyList: [{ id: 13115, name: 'Devoted Token', keep: 0 }, { id: 44417, name: 'Strange Pheromone', keep: 2 }],
   // v3.21.0 (refil de poções e revives)

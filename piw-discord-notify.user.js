@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.51.2
+// @version      3.52.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.51.2';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.52.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -123,6 +123,10 @@
         clanKey: 'orebound',    // clã em que o script entra sozinho se a conta não tiver nenhum (1ª entrada é grátis)
         clanRankup: true,       // ...subir de rank sozinho quando a tarefa fechar (na viagem à cidade)
         clanRoute: false,       // ...ir sozinho para a hunt que mais adianta a tarefa (e jogar bola na espécie pedida)
+        profRankupEnabled: false, // v3.52.0 Profissão (aba Profissão): subir de rank sozinho na viagem à cidade quando os requisitos fecharem
+        profFromDepot: true,    // ...buscar no Depot comum as Rare Pokémon Picture que faltarem (na viagem)
+        profFromFamily: true,   // ...buscar no depósito da família as Rare Pokémon Picture que faltarem (na viagem)
+        profRoute: false,       // ...ir sozinho para a hunt do tipo que falta derrotar (6ª rota excludente)
         depositItems: '',       // v3.18.0 Guardar na cidade: drops que sobraram -> '' (mochila) | 'depot' | 'family'
         depositPokes: '',       // ...Pokémon fora do time que a venda não vende -> '' (box) | 'family'
         depositPokesRare: false, // ...incluir shiny no depósito da família (🔒 nunca: o jogo recusa)
@@ -781,6 +785,7 @@
         if (origem === 'captura') catchHuntFailed(slug);
         if (origem === 'daily-ida') dailyGoFailed(slug);
         if (origem === 'cla') clanHuntFailed(slug);
+        if (origem === 'profissao') profHuntFailed(slug);   // v3.52.0
         if (origem === 'guild') guildHuntFailed(slug);
         if (origem === 'farm') farmHuntFailed(slug);
         if (origem === 'invasao-volta') invHuntFailed(slug, origem);
@@ -1290,6 +1295,7 @@
                 const item = catalog.get(id) || inv;
                 if (protectedReason(item)) continue;
                 if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) continue;   // item base/de clã que a tarefa ainda pede
+                if (typeof profKeepsItem === 'function' && profKeepsItem(id)) continue;   // v3.52.0: Rare Pokémon Picture da profissão
                 if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) continue;  // v3.31.0: item do Tributo do Dia da guild
                 if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) continue;    // v3.33.0: item da lista de farm
                 if (typeof bossKeepsItem === 'function' && bossKeepsItem(id)) continue;    // v3.43.1: token do Auto Boss pendente
@@ -1829,16 +1835,21 @@
     }
 
     async function refreshProfession() {
-        try {
-            const d = await gameApi(PROFESSIONS_URL);
-            const ns = d?.nextStep || null;
-            profession = {
-                key: d?.profession || null,
-                rank: d?.rankKey || null,
-                speciesCount: Number(d?.speciesCount) || 0,
-                next: ns ? { rank: ns.toRankKey || null, have: Number(ns.species?.have) || 0, need: Number(ns.species?.need) || 0 } : null,
-            };
-        } catch (err) { logEvent('profissao-erro', { erro: String(err?.message || err) }); }
+        if (typeof profRefresh === 'function') {   // v3.52.0: o módulo da profissão lê tudo (rank up); aqui fica só o resumo antigo
+            const s = await profRefresh(true);
+            if (s) profession = { key: s.key, rank: s.rank, speciesCount: s.speciesCount, next: s.next ? { rank: s.next.rank, have: s.next.species.have, need: s.next.species.need } : null };
+        } else {
+            try {
+                const d = await gameApi(PROFESSIONS_URL);
+                const ns = d?.nextStep || null;
+                profession = {
+                    key: d?.profession || null,
+                    rank: d?.rankKey || null,
+                    speciesCount: Number(d?.speciesCount) || 0,
+                    next: ns ? { rank: ns.toRankKey || null, have: Number(ns.species?.have) || 0, need: Number(ns.species?.need) || 0 } : null,
+                };
+            } catch (err) { logEvent('profissao-erro', { erro: String(err?.message || err) }); }
+        }
         if (onCatchChange) { try { onCatchChange(); } catch { /* painel fechado */ } }
         return profession;
     }
@@ -1977,6 +1988,7 @@
             }],
         }, { evento: 'captura-feita', slug: hit.slug });
         refreshPokedex(true).catch(() => {});
+        if (typeof profRefresh === 'function') setTimeout(() => profRefresh(true), 5000);   // v3.52.0: espécies diferentes contam para o rank
         if (eraAlvo) catchNext('capturou');
         else if (onCatchChange) { try { onCatchChange(); } catch { /* painel fechado */ } }
     }
@@ -2212,6 +2224,7 @@
         if (run?.from) return run.from;                              // daily sozinha: a hunt de onde ela saiu
         if (catchRouteActive() && catchTarget) return catchTarget.slug;
         if (typeof clanRouteOn === 'function' && clanRouteOn() && clanTarget) return clanTarget.slug;
+        if (typeof profRouteOn === 'function' && profRouteOn() && profTarget) return profTarget.slug;   // v3.52.0
         const st = routeStep();
         if (st?.slug) return st.slug;
         return prevHuntSlug || null;
@@ -5371,6 +5384,444 @@
         return { head: `${clanName(c.clan)} rank ${c.rank}${nomeRank ? ` (${nomeRank})` : ''} → ${t.rank}${t.name ? ` ${t.name}` : ''} · ${nivel} · +${fmtNum(t.rewardXp)} XP${pronto}`, reqs, dicas, rota };
     }
 
+    // ---- Profissão: subir de rank sozinho (v3.52.0) ---------------------------------------
+    // Pedido do usuário em 02/11/2026: "auto subir o rank da profissão de captura; pegar as Rare Pokémon Picture no depot da
+    // família se necessário". Levantado no bundle em 02/11/2026 (janela "Profissões", componente oL; i18n window.professions.*):
+    //   GET  /api/game/professions -> { profession:'prestige'|'botanist'|…, professions[{ key, enabled, color, talentTree }],
+    //        rankKey ('E'..'S'), speciesCount, pictures, herbs, talents, swap{…}, nextStep } ; nextStep (null = rank S) =
+    //        { toRankKey, species:{ have, need }, pictures:{ have, need }, berries?:{ have, need }, kills?:[{ type, have, need }], ok }
+    //        ("Espécies diferentes capturadas", "Entregar Rare Pokémon Picture", "Berries craftadas", "Derrotar Pokémon de cada
+    //        tipagem (N por tipo)"); o botão "Subir de Rank" da tela só liga com `nextStep.ok`.
+    //   POST /api/game/professions/rankup {} -> estado novo (mesmo formato do GET).
+    //   Rare Pokémon Picture = item 59195 (mecânica da Prestige: 1 foto a cada shiny que aparece na hunt); "Entregar" = consumida
+    //   no rank up, contada pela mochila. Fora da mochila ela é buscada como as pedras da evolução (v3.39.0): Depot comum
+    //   (`GET /api/game/depot` → `depot[]`; `POST /api/game/depot/move { itemId, dir:'withdraw' }` traz a pilha inteira) e depósito
+    //   da família (`familyItemWithdraw`, quantidade exata), só quando as duas fontes JUNTAS completam a conta. Tudo NA VIAGEM À
+    //   CIDADE (tarefa 'profissao'): a retirada da família não funciona na hunt.
+    // Fluxo: `profTick` (60 s) lê a profissão (2 min; 1 min com a rota), soma os abates por tipo localmente (`noteProfKill`; a
+    // leitura corrige) e, com `profRankupEnabled`, pede a viagem urgente quando `ok` (até 3 pedidos por rank, 5 min entre eles) ou
+    // quando SÓ faltam pictures e a família (último frame) tem o que falta; carona em toda viagem quando só faltam pictures (confere
+    // o Depot lá, 1x a cada 30 min se não havia nada). Na cidade (`profCityWork`): busca as pictures, relê e sobe se `ok`.
+    // A picture nunca é vendida nem guardada (`profKeepsItem`). Com `profRoute` ("Caçar o que falta"), vai para a hunt cuja espécie
+    // tem o tipo que mais falta derrotar (até o nível do time; 6ª rota excludente do Salvar); acabou = volta para a hunt de antes
+    // (`profFrom`, em localStorage.pgDiscordNotifyProf, 24 h) ou a hunt padrão da aba Compras. Nunca escolhe nem troca a profissão
+    // (`/choose`) e nunca gasta talento (`/talent`). Formatos de `pictures`/`kills`/`berries` ainda não vistos no log: `profissao-campos`.
+
+    const PROF_URL = '/api/game/professions';
+    const PROF_RANKUP_URL = '/api/game/professions/rankup';
+    const PROF_DEPOT_URL = '/api/game/depot';
+    const PROF_DEPOT_MOVE_URL = '/api/game/depot/move';
+    const PROF_PICTURE_ID = 59195;
+    const PROF_PICTURE_NAME = 'Rare Pokémon Picture';
+    const PROF_TICK_MS = 60 * 1000;
+    const PROF_POLL_MS = 2 * 60 * 1000;
+    const PROF_POLL_ROUTE_MS = 60 * 1000;
+    const PROF_KEEP_RATIO = 0.8;                // a hunt atual segue alvo enquanto render >= 80% da melhor
+    const PROF_READY_RETRY_MS = 5 * 60 * 1000;
+    const PROF_READY_MAX_ASKS = 3;              // viagens urgentes por rank; depois só na carona
+    const PROF_PICS_RECHECK_MS = 30 * 60 * 1000; // carona para conferir o Depot de novo quando não havia nada
+    const PROF_FAMILY_FRESH_MS = 60 * 1000;
+    const PROF_FAMILY_WAIT_MS = 6000;
+    const PROF_AFTER_MOVE_MS = 1200;
+    const PROF_FROM_KEY = 'pgDiscordNotifyProf';
+    const PROF_FROM_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+    const PROF_RANK_NAMES = { D: 'Aventureiro', C: 'Especialista', B: 'Elite', A: 'Campeão', S: 'Mestre Pokémon' };
+
+    let profState = null;           // ver parseProf
+    let profFetchedAt = 0;
+    let profBusy = null;            // Promise da leitura em andamento
+    let profSig = '';
+    let profFieldsLogged = false;
+    let profReadyAsk = { rank: '', n: 0, at: 0 };
+    let profPicsSeen = { at: 0, depot: 0, familia: 0 };   // última conferência do Depot/família (na viagem)
+    let profTarget = null;          // { slug, name, level, motivo } hunt escolhida pela rota
+    let profFrom = null;            // hunt de antes da rota (para onde voltar)
+    let profFromLoaded = false;
+    let profWait = '';
+    let profLast = null;            // última passada na cidade: { at, subiu, pictures, motivo }
+    const profFailed = new Set();   // slugs cuja entrada falhou nesta sessão
+    let onProfChange = null;        // callback do painel
+
+    function profOn(d) { d = d || cfg; return Boolean(d.profRankupEnabled || d.profRoute); }
+    function profRouteOn(d) { d = d || cfg; return Boolean(d.profRoute); }
+    function profNotify() { if (onProfChange) { try { onProfChange(); } catch { /* painel fechado */ } } }
+    function profRankName(r) { return PROF_RANK_NAMES[String(r || '').toUpperCase()] || ''; }
+
+    function parseProf(s) {
+        const n = (v) => Math.max(0, Number(v) || 0);
+        const pair = (p) => ({ have: n(p?.have), need: n(p?.need) });
+        const ns = s?.nextStep || null;
+        return {
+            key: s?.profession ? String(s.profession) : null,
+            rank: s?.rankKey ? String(s.rankKey) : null,
+            speciesCount: n(s?.speciesCount), pictures: n(s?.pictures),
+            next: ns ? {
+                rank: ns.toRankKey ? String(ns.toRankKey) : null,
+                species: pair(ns.species), pictures: pair(ns.pictures),
+                berries: ns.berries ? pair(ns.berries) : null,
+                kills: (Array.isArray(ns.kills) ? ns.kills : []).map(k => ({ type: String(k?.type || '').toUpperCase(), have: n(k?.have), need: n(k?.need) })),
+                ok: Boolean(ns.ok),
+            } : null,
+        };
+    }
+    // O que falta para o próximo rank (null = rank máximo ou profissão não lida).
+    function profMissing() {
+        const t = profState?.next;
+        if (!t) return null;
+        const species = Math.max(0, t.species.need - t.species.have);
+        const pictures = Math.max(0, t.pictures.need - t.pictures.have);
+        const berries = t.berries ? Math.max(0, t.berries.need - t.berries.have) : 0;
+        const kills = t.kills.filter(k => k.have < k.need).map(k => ({ type: k.type, falta: k.need - k.have }));
+        return { species, pictures, berries, kills, nada: !species && !pictures && !berries && !kills.length, soPictures: pictures > 0 && !species && !berries && !kills.length };
+    }
+    // O que o jogo ainda diz que falta (log e aviso): ['espécies 120/150', 'Rare Pokémon Picture 2/5', 'GRASS 120/200'].
+    function profReqsLeft() {
+        const t = profState?.next;
+        if (!t) return [];
+        const out = [];
+        if (t.species.have < t.species.need) out.push(`espécies ${t.species.have}/${t.species.need}`);
+        if (t.pictures.have < t.pictures.need) out.push(`${PROF_PICTURE_NAME} ${t.pictures.have}/${t.pictures.need}`);
+        if (t.berries && t.berries.have < t.berries.need) out.push(`berries ${t.berries.have}/${t.berries.need}`);
+        for (const k of t.kills) if (k.have < k.need) out.push(`${k.type} ${k.have}/${k.need}`);
+        return out;
+    }
+    // Não vender nem guardar a Rare Pokémon Picture enquanto o módulo estiver ligado.
+    function profKeepsItem(id) { return profOn() && Number(id) === PROF_PICTURE_ID; }
+    function profPicturesInFamily() {
+        if (typeof familyDepotItems !== 'function') return 0;
+        const it = familyDepotItems().find(i => Number(i?.itemId ?? i?.id) === PROF_PICTURE_ID);
+        return Number(it?.quantity) || 0;
+    }
+    // Viagem à cidade tem o que fazer pela profissão (carona): subir, ou só faltam pictures (confere Depot/família lá).
+    function profWantsCity(d) {
+        d = d || cfg;
+        if (!d.profRankupEnabled || !profState?.next) return false;
+        if (profState.next.ok) return true;
+        const m = profMissing();
+        if (!m || !m.soPictures || !(d.profFromDepot || d.profFromFamily)) return false;
+        if (profPicsSeen.at && Date.now() - profPicsSeen.at < PROF_PICS_RECHECK_MS && profPicsSeen.depot + profPicsSeen.familia < m.pictures) return profPicturesInFamily() >= m.pictures;
+        return true;
+    }
+    // Vale uma viagem urgente: pronto, ou só faltam pictures e a família (último frame) cobre.
+    function profReadyForCity() {
+        const t = profState?.next;
+        if (!t || !cfg.profRankupEnabled) return false;
+        if (t.ok) return true;
+        const m = profMissing();
+        return Boolean(m && m.soPictures && cfg.profFromFamily && profPicturesInFamily() >= m.pictures);
+    }
+
+    // Leitura em andamento: espera por ela (com `force`, lê de novo depois, para a viagem não decidir com estado velho).
+    async function profRefresh(force) {
+        if (profBusy) { await profBusy; if (!force) return profState; if (profBusy) return profBusy; }
+        const gap = profRouteOn() ? PROF_POLL_ROUTE_MS : PROF_POLL_MS;
+        if (!force && profFetchedAt && Date.now() - profFetchedAt < gap) return profState;
+        profBusy = profFetch();
+        return profBusy;
+    }
+    async function profFetch() {
+        try {
+            const raw = await gameApi(PROF_URL);
+            if (!profFieldsLogged && raw && typeof raw === 'object') {
+                profFieldsLogged = true;
+                const ns = raw.nextStep && typeof raw.nextStep === 'object' ? raw.nextStep : null;
+                logEvent('profissao-campos', { raiz: Object.keys(raw), nextStep: ns ? Object.keys(ns) : null, pictures: ns?.pictures && typeof ns.pictures === 'object' ? Object.keys(ns.pictures) : null, kills: Array.isArray(ns?.kills) && ns.kills[0] ? Object.keys(ns.kills[0]) : null });
+            }
+            profState = parseProf(raw);
+            const t = profState.next;
+            const sig = JSON.stringify([profState.key, profState.rank, t && [t.rank, t.ok, t.species.have, t.pictures.have, t.berries?.have, t.kills.map(k => k.have)]]);
+            if (sig !== profSig) {
+                profSig = sig;
+                logEvent('profissao', { profissao: profState.key, rank: profState.rank, especies: profState.speciesCount, pictures: profState.pictures, proximo: t ? { rank: t.rank, ok: t.ok, especies: `${t.species.have}/${t.species.need}`, pictures: `${t.pictures.have}/${t.pictures.need}`, berries: t.berries ? `${t.berries.have}/${t.berries.need}` : undefined, abates: t.kills.map(k => `${k.type} ${k.have}/${k.need}`) } : null });
+            }
+        } catch (err) {
+            logEvent('profissao-erro', { erro: String(err?.message || err) });
+        } finally {
+            profFetchedAt = Date.now();
+            profBusy = null;
+            profNotify();
+        }
+        return profState;
+    }
+
+    // field-kill: soma o abate no tipo que falta (só para o status; a leitura do jogo corrige).
+    function noteProfKill(message) {
+        if (!profOn() || !profState?.next?.kills?.length) return;
+        const sid = typeof creatureIdByName !== 'undefined' ? creatureIdByName.get(normalize(message?.speciesName || '')) : null;
+        const tipos = sid && typeof creatureTypes !== 'undefined' ? (creatureTypes.get(sid) || []) : [];
+        let mudou = false;
+        for (const k of profState.next.kills) if (k.have < k.need && tipos.includes(k.type)) { k.have++; mudou = true; }
+        if (mudou) profNotify();
+    }
+
+    const profSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    // Quanto há de Rare Pokémon Picture fora da mochila: Depot comum (GET) e família (frame `family`, relido se velho).
+    async function profPictureSources() {
+        const src = { depot: 0, familia: 0, depotErro: null, familiaErro: null };
+        if (cfg.profFromDepot) {
+            try {
+                const r = await gameApi(PROF_DEPOT_URL);
+                const it = (Array.isArray(r?.depot) ? r.depot : []).find(i => Number(i?.id ?? i?.itemId) === PROF_PICTURE_ID);
+                src.depot = Number(it?.quantity) || 0;
+            } catch (err) { src.depotErro = String(err?.message || err); }
+        }
+        if (cfg.profFromFamily) {
+            if (typeof familyDepotItems !== 'function' || typeof familyItemWithdraw !== 'function') src.familiaErro = 'módulo da família indisponível';
+            else {
+                if (Date.now() - familyDepotAt() > PROF_FAMILY_FRESH_MS) {
+                    const t0 = familyDepotAt();
+                    if (sendGame({ type: 'family-get' })) {
+                        const ini = Date.now();
+                        while (familyDepotAt() === t0 && Date.now() - ini < PROF_FAMILY_WAIT_MS) await profSleep(250);
+                        if (familyDepotAt() === t0) src.familiaErro = 'a família não respondeu';
+                    } else src.familiaErro = 'socket do jogo não rastreado';
+                }
+                src.familia = profPicturesInFamily();
+            }
+        }
+        profPicsSeen = { at: Date.now(), depot: src.depot, familia: src.familia };
+        return src;
+    }
+    // Traz para a mochila as pictures que faltam: Depot primeiro (pilha inteira), depois família (quantidade exata).
+    // Devolve null quando buscou tudo; senão o motivo.
+    async function profFetchPictures(falta, src) {
+        let resta = falta;
+        const log = { item: PROF_PICTURE_NAME, itemId: PROF_PICTURE_ID, falta, depot: src.depot, familia: src.familia, doDepot: 0, daFamilia: 0, ok: false, motivo: null };
+        try {
+            if (src.depot > 0) {
+                await gameApi(PROF_DEPOT_MOVE_URL, { method: 'POST', body: JSON.stringify({ itemId: PROF_PICTURE_ID, dir: 'withdraw' }) });
+                log.doDepot = src.depot; resta -= src.depot; src.depot = 0;
+                await profSleep(PROF_AFTER_MOVE_MS);
+            }
+            if (resta > 0) {
+                const tirar = Math.min(resta, src.familia);
+                if (tirar > 0) {
+                    const r = await familyItemWithdraw(PROF_PICTURE_ID, tirar, PROF_PICTURE_NAME);
+                    if (!r.ok) throw new Error(`família: ${r.motivo}`);
+                    log.daFamilia = tirar; resta -= tirar; src.familia -= tirar;
+                    await profSleep(PROF_AFTER_MOVE_MS);
+                }
+            }
+            if (resta > 0) throw new Error(`faltam ${resta} fora da mochila`);
+            log.ok = true;
+        } catch (err) { log.motivo = String(err?.message || err); }
+        logEvent('profissao-pictures', log);
+        return log.ok ? null : log.motivo;
+    }
+
+    // Tarefa 'profissao' da viagem (na cidade): busca as pictures que faltam e sobe de rank quando o jogo diz `ok`.
+    // `manual` = botão "Subir agora" (vale mesmo com o módulo desligado).
+    async function profCityWork(manual) {
+        if (!cfg.profRankupEnabled && !manual) return { ok: false, motivo: 'desligado' };
+        await profRefresh(true);
+        if (!profState?.key) return { ok: false, motivo: 'sem profissão escolhida no jogo (o script nunca escolhe)' };
+        if (!profState.next) return { ok: true, motivo: 'rank máximo' };
+        let pictures = null;
+        let m = profMissing();
+        if (m.pictures > 0 && (cfg.profFromDepot || cfg.profFromFamily)) {
+            const src = await profPictureSources();
+            if (src.depot + src.familia >= m.pictures) {
+                const erro = await profFetchPictures(m.pictures, src);
+                pictures = erro ? `busca falhou (${erro})` : `${m.pictures} buscadas (Depot ${src.depot ? 'sim' : 'não'}, família ${src.familia ? 'sim' : 'não'})`;
+                if (!erro) { await profSleep(1500); await profRefresh(true); m = profMissing(); }
+            } else {
+                const extra = [src.depotErro ? `Depot: ${src.depotErro}` : null, src.familiaErro ? `família: ${src.familiaErro}` : null].filter(Boolean);
+                pictures = `faltam ${m.pictures} e só há ${src.depot} no Depot e ${src.familia} na família${extra.length ? ` (${extra.join('; ')})` : ''}`;
+                logEvent('profissao-pictures', { item: PROF_PICTURE_NAME, itemId: PROF_PICTURE_ID, falta: m.pictures, depot: src.depot, familia: src.familia, ok: false, motivo: 'não completam a conta', depotErro: src.depotErro, familiaErro: src.familiaErro });
+            }
+        }
+        const t = profState.next;
+        logEvent('profissao-cidade', { ok: Boolean(t?.ok), manual: Boolean(manual) || undefined, pictures, falta: profReqsLeft() });
+        let subiu = null, motivo = null;
+        if (t && t.ok) {
+            try {
+                const r = await gameApi(PROF_RANKUP_URL, { method: 'POST', body: '{}' });
+                const novo = parseProf(r);
+                subiu = { de: profState.rank, para: novo.rank || t.rank, profissao: profState.key };
+                logEvent('profissao-rank', subiu);
+                if (novo.key) { profState = novo; profSig = ''; }
+                const who = playerName();
+                const mention = cfg.mentionUserId ? `<@${cfg.mentionUserId}> ` : '';
+                const nome = profRankName(subiu.para);
+                postWebhook('alert', {
+                    content: `${mention}🎓 ${who ? `**${who}**` : 'Sua conta'} subiu para o rank **${subiu.para}${nome ? ` (${nome})` : ''}** da profissão ${subiu.profissao}`,
+                    username: 'Poke Idle World',
+                    embeds: [{
+                        title: `Profissão ${subiu.profissao}: rank ${subiu.para}`,
+                        description: (who ? `Conta: ${who}\n` : '') + `De ${subiu.de} para ${subiu.para}${nome ? ` (${nome})` : ''}${pictures ? `\n${PROF_PICTURE_NAME}: ${pictures}` : ''}\n${profState.next ? `Próximo rank ${profState.next.rank}: ${profReqsLeft().join(' · ') || 'requisitos fechados'}` : 'Rank máximo!'}\nEm ${new Date().toLocaleString('pt-BR')}`,
+                        color: 0x57f287,
+                    }],
+                }, { evento: 'profissao-rank', rank: subiu.para });
+                profTarget = null;   // a rota recomeça pelo que o rank novo pedir
+                await profRefresh(true);
+            } catch (err) { motivo = `rank up falhou: ${err?.message || err}`; logEvent('profissao-erro', { acao: 'rankup', erro: String(err?.message || err) }); }
+        } else motivo = `ainda faltam: ${profReqsLeft().join(', ') || '?'}`;
+        profLast = { at: Date.now(), subiu, pictures, motivo };
+        profNotify();
+        return { ok: Boolean(subiu), motivo, subiu, pictures };
+    }
+
+    // Pronto (ou só faltam pictures que a família tem): pede viagem urgente, até PROF_READY_MAX_ASKS por rank, a cada
+    // PROF_READY_RETRY_MS. Conta já parada na cidade (botão "Esperar na cidade"): faz na hora, sem viagem.
+    async function profAskTrip() {
+        if (typeof tripRequest !== 'function' || !profReadyForCity()) return;
+        if (tripRunning || (typeof tripNeeds !== 'undefined' && tripNeeds.has('profissao'))) return;
+        const rank = profState.next.rank || '?';
+        if (profReadyAsk.rank !== rank) profReadyAsk = { rank, n: 0, at: 0 };
+        if (profReadyAsk.n >= PROF_READY_MAX_ASKS || (profReadyAsk.at && Date.now() - profReadyAsk.at < PROF_READY_RETRY_MS)) return;
+        if (Date.now() - profFetchedAt > 5000) { await profRefresh(true); if (!profReadyForCity() || (profState.next?.rank || '?') !== rank) return; }
+        profReadyAsk.n++; profReadyAsk.at = Date.now();
+        const motivo = profState.next.ok ? `profissão pronta: subir para o rank ${rank}` : `só faltam ${profMissing().pictures} ${PROF_PICTURE_NAME} e a família tem: buscar e subir para o rank ${rank}`;
+        if (typeof tripInHunt === 'function' && !tripInHunt() && typeof holdActive === 'function' && holdActive()) {
+            logEvent('profissao-cidade', { direto: true, motivo });
+            await profCityWork();
+            return;
+        }
+        tripRequest('profissao', null, motivo);
+        if (profReadyAsk.n === PROF_READY_MAX_ASKS) logEvent('profissao-espera', { motivo: `pedi ${PROF_READY_MAX_ASKS} viagens para o rank ${rank} e não subiu; agora só na carona da viagem do relógio`, falta: profReqsLeft() });
+    }
+    // Botão "Subir agora": na cidade faz na hora; na hunt pede a viagem.
+    async function profNow() {
+        if (!profState) await profRefresh(true);
+        if (!profState?.key) return { ok: false, motivo: 'profissão não lida ou não escolhida no jogo' };
+        if (!profState.next) return { ok: false, motivo: 'rank máximo' };
+        if (tripRunning) return { ok: false, motivo: 'viagem em andamento' };
+        if (typeof tripInHunt === 'function' && !tripInHunt()) return profCityWork(true);
+        tripRequest('profissao', null, 'botão "Subir agora" do painel');
+        return { ok: true, motivo: 'viagem à cidade pedida' };
+    }
+
+    // ---- rota da profissão: derrotar os tipos que faltam ----
+    function profSaveFrom() {
+        try { if (profFrom) localStorage.setItem(PROF_FROM_KEY, JSON.stringify({ from: profFrom, at: Date.now() })); else localStorage.removeItem(PROF_FROM_KEY); } catch { /* sem localStorage */ }
+    }
+    function profLoadFrom() {
+        if (profFromLoaded) return;
+        profFromLoaded = true;
+        try {
+            const r = JSON.parse(localStorage.getItem(PROF_FROM_KEY) || 'null');
+            if (r?.from && Date.now() - (Number(r.at) || 0) < PROF_FROM_MAX_AGE_MS) { profFrom = String(r.from); logEvent('profissao-origem-lembrada', { from: profFrom }); }
+        } catch { /* registro inválido */ }
+    }
+    function profLevelCap() {
+        const time = team.length ? Math.max(...team.map(p => Number(p.level) || 0)) : 0;
+        return time || 9999;
+    }
+    // Hunts ordenadas pelo quanto adiantam os abates: fração do que falta por abate (tipo quase fechado primeiro; hunt com os
+    // dois tipos vale dobrado), depois a de menor nível.
+    function profPlan() {
+        const m = profMissing();
+        if (!m || !m.kills.length || !Array.isArray(huntCatalog)) return [];
+        const cap = profLevelCap();
+        const out = [];
+        for (const h of huntCatalog) {
+            if (!h.speciesId || h.level > cap || profFailed.has(h.slug)) continue;
+            const tipos = typeof creatureTypes !== 'undefined' ? (creatureTypes.get(h.speciesId) || []) : [];
+            let nota = 0;
+            const por = [];
+            for (const k of m.kills) if (tipos.includes(k.type)) { nota += 1 / k.falta; por.push(`derrotar ${k.type}`); }
+            if (nota > 0) out.push({ hunt: h, nota, motivo: por.join(', ') });
+        }
+        out.sort((a, b) => b.nota - a.nota || a.hunt.level - b.hunt.level);
+        return out;
+    }
+    function profHuntFailed(slug) {
+        profFailed.add(slug);
+        if (profTarget?.slug === slug) profTarget = null;
+        logEvent('profissao-hunt-falhou', { slug });
+    }
+    function profReturnTarget() { return profFrom || (typeof idleDefaultSlug === 'function' ? idleDefaultSlug() : null) || null; }
+    function profReturn(motivo) {
+        const volta = profReturnTarget();
+        const atual = normalize(huntSlug || '');
+        profTarget = null; profFrom = null; profSaveFrom();
+        logEvent('profissao-volta', { motivo, volta });
+        if (volta && volta !== atual) switchHunt(volta, 1, 'profissao');
+        profNotify();
+    }
+    function profNoPlanReason() {
+        const m = profMissing();
+        if (!m) return profState?.key ? 'rank máximo' : 'sem profissão';
+        if (!m.kills.length) return m.nada ? 'requisitos fechados' : `nada a caçar (faltam ${profReqsLeft().join(', ')})`;
+        return `nenhuma hunt até lv ${profLevelCap()} com os tipos ${m.kills.map(k => k.type).join(', ')}`;
+    }
+    function profSetWait(motivo) {
+        if (motivo === profWait) return;
+        profWait = motivo;
+        if (motivo) logEvent('profissao-espera', { motivo, hunt: huntSlug || null });
+        profNotify();
+    }
+
+    // Tique (60 s): lê a profissão, pede a viagem se o rank estiver pronto e (com a rota) escolhe a hunt.
+    async function profTick() {
+        if (!profOn()) return;
+        profLoadFrom();
+        await profRefresh(false);
+        if (!profState) return;
+        await profAskTrip();
+        if (!profRouteOn()) { profSetWait(''); if (profTarget) profReturn('rota da profissão desligada'); else if (profFrom) { profFrom = null; profSaveFrom(); } return; }
+        if (!Array.isArray(huntCatalog)) {
+            try { await loadHuntCatalog(); } catch (err) { profSetWait(`não consegui baixar o mapa de hunts (${String(err?.message || err)})`); return; }
+        }
+        if (tripRunning) { profSetWait('esperando a viagem à cidade acabar'); return; }
+        if (typeof healBusy === 'function' && healBusy()) { profSetWait('esperando a cura na Nurse Joy acabar'); return; }
+        if (typeof bossBusy === 'function' && bossBusy()) { profSetWait('esperando o Auto Boss do jogo acabar'); return; }
+        if (typeof invBusy === 'function' && invBusy()) { profSetWait('esperando a Invasão Rocket acabar'); return; }
+        if (typeof holdActive === 'function' && holdActive()) { profSetWait('esperando na cidade (botão do painel)'); return; }
+        if (huntSwitch) { profSetWait(`esperando a troca para ${huntSwitch.slug} confirmar`); return; }
+        if (swapPending) { profSetWait('esperando a troca de líder confirmar'); return; }
+        if (typeof dailyWantsHunt === 'function' && dailyWantsHunt()) { profSetWait('a Daily Kill está usando a hunt (a profissão segue quando ela acabar)'); return; }
+        const plano = profPlan();
+        const atual = normalize(huntSlug || '');
+        if (!plano.length) {
+            const motivo = profNoPlanReason();
+            profSetWait(motivo);
+            if (profTarget || profFrom) profReturn(motivo);   // origem lembrada da recarga também volta (lição da guild, v3.46.0)
+            return;
+        }
+        profSetWait('');
+        let alvo = plano[0];
+        const aqui = plano.find(x => x.hunt.slug === atual);
+        if (aqui && aqui.nota >= alvo.nota * PROF_KEEP_RATIO) alvo = aqui;   // não troca por pouco
+        if (!profTarget || profTarget.slug !== alvo.hunt.slug) {
+            profTarget = { slug: alvo.hunt.slug, name: alvo.hunt.name, level: alvo.hunt.level, motivo: alvo.motivo };
+            logEvent('profissao-alvo', profTarget);
+            profNotify();
+        }
+        if (atual === alvo.hunt.slug) return;
+        if (!profFrom && atual && !CITY_SLUGS.includes(atual) && !(typeof bossIsArena === 'function' && bossIsArena(atual)) && !(typeof invIsRaid === 'function' && invIsRaid(atual))) { profFrom = atual; profSaveFrom(); }
+        switchHunt(alvo.hunt.slug, 1, 'profissao');
+    }
+
+    // Texto do painel: { head, reqs:[linha], rota }.
+    function profStatus(d) {
+        d = d || cfg;
+        const s = profState;
+        if (!s) return { head: profFetchedAt ? 'não consegui ler a profissão (veja o log)' : 'ainda não lida (Atualizar)', reqs: [], rota: '' };
+        if (!s.key) return { head: 'sem profissão escolhida no jogo (o script nunca escolhe)', reqs: [], rota: '' };
+        const nome = profRankName(s.rank);
+        const t = s.next;
+        const base = `${s.key} · rank ${s.rank}${nome ? ` (${nome})` : ''} · ${fmtNum(s.speciesCount)} espécies · ${fmtNum(s.pictures)} ${PROF_PICTURE_NAME}`;
+        if (!t) return { head: `${base} · rank máximo ⭐`, reqs: [], rota: '' };
+        const reqs = [];
+        if (t.species.need > 0) reqs.push(`${t.species.have >= t.species.need ? '✔' : '•'} Espécies diferentes capturadas ${fmtNum(Math.min(t.species.have, t.species.need))}/${fmtNum(t.species.need)}`);
+        if (t.pictures.need > 0) {
+            const fam = profPicturesInFamily();
+            const hora = profPicsSeen.at ? new Date(profPicsSeen.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '';
+            const extra = t.pictures.have < t.pictures.need ? [fam ? `família ${fmtNum(fam)}` : '', hora ? `Depot ${fmtNum(profPicsSeen.depot)} (${hora})` : '', d.profRankupEnabled && (d.profFromDepot || d.profFromFamily) ? 'busca na viagem' : ''].filter(Boolean).join(' · ') : '';
+            reqs.push(`${t.pictures.have >= t.pictures.need ? '✔' : '•'} Entregar ${PROF_PICTURE_NAME} ${fmtNum(Math.min(t.pictures.have, t.pictures.need))}/${fmtNum(t.pictures.need)}${extra ? ` · ${extra}` : ''}`);
+        }
+        if (t.berries) reqs.push(`${t.berries.have >= t.berries.need ? '✔' : '•'} Berries craftadas ${fmtNum(Math.min(t.berries.have, t.berries.need))}/${fmtNum(t.berries.need)}`);
+        for (const k of t.kills) reqs.push(`${k.have >= k.need ? '✔' : '•'} Derrotar ${k.type} ${fmtNum(Math.min(k.have, k.need))}/${fmtNum(k.need)}`);
+        const pronto = t.ok ? ' · pronto para subir' + (d.profRankupEnabled ? ' (na próxima viagem)' : ' (suba no jogo ou ligue abaixo)') : '';
+        const m = profMissing();
+        const volta = profReturnTarget();
+        const rota = !d.profRoute ? '' : profTarget ? `▶ ${profTarget.slug} lv${profTarget.level} (${profTarget.motivo})${volta ? ` · volta para ${volta}` : ''}` : (!m.kills.length ? 'Nada a caçar' : profWait ? `parado: ${profWait}` : profRouteOn() ? 'escolhendo a hunt… (confere a cada 1 min)' : 'salve para ligar');
+        const ultima = profLast ? ` · última viagem ${new Date(profLast.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}: ${profLast.subiu ? `subiu para ${profLast.subiu.para}` : profLast.motivo}` : '';
+        const nomeProx = profRankName(t.rank);
+        return { head: `${base} → ${t.rank}${nomeProx ? ` (${nomeProx})` : ''}${pronto}${ultima}`, reqs, rota };
+    }
+
     // ---- Guardar na cidade: o que sobrou da venda vai para o Depot comum ou para a família ---------
     // Levantado no bundle em 27/09/2026 (janelas Depot e Família):
     //   GET  /api/game/depot -> { inventory:[{ id, name, quantity, npcPrice, category }] (mochila), depot:[...] }
@@ -5435,6 +5886,7 @@
         if (DEPOSIT_SKIP_CATS.includes(String(item?.category || inv?.category || ''))) return 'consumível';
         if (cfg.sellEnabled && cfg.sellItems && cfg.sellItems[id]) return 'marcado para venda';
         if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) return 'tarefa do clã';
+        if (typeof profKeepsItem === 'function' && profKeepsItem(id)) return 'picture da profissão';   // v3.52.0
         if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) return 'tributo da guild';
         if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) return 'lista de farm';
         if (typeof bossKeepsItem === 'function' && bossKeepsItem(id)) return 'token do Auto Boss';
@@ -5518,6 +5970,7 @@
                     feitos.add(id);
                     if (DEPOSIT_SKIP_CATS.includes(String(item?.category || inv?.category || ''))) continue;   // consumível nunca sai
                     if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) continue;
+                    if (typeof profKeepsItem === 'function' && profKeepsItem(id)) continue;   // v3.52.0: Rare Pokémon Picture da profissão
                     if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) continue;
                     if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) continue;
                     if (typeof bossKeepsItem === 'function' && bossKeepsItem(id)) continue;   // v3.43.1: token do Auto Boss pendente
@@ -5675,7 +6128,8 @@
         const time = (typeof pokeSellListUnread === 'function' && pokeSellListUnread()) || (typeof pokesListWanted === 'function' && pokesListWanted());
         const breeding = typeof breedWanted === 'function' && breedWanted();
         const ginasio = typeof gymWanted === 'function' && gymWanted(d);
-        return { drops, pokes, bolas, cla, suprimentos, slot, time, breeding, ginasio, nada: !drops && !pokes && !bolas && !cla && !suprimentos && !slot && !time && !breeding && !ginasio };
+        const profissao = typeof profWantsCity === 'function' && profWantsCity(d);   // v3.52.0
+        return { drops, pokes, bolas, cla, suprimentos, slot, time, breeding, ginasio, profissao, nada: !drops && !pokes && !bolas && !cla && !suprimentos && !slot && !time && !breeding && !ginasio && !profissao };
     }
     function tripLoadText(l) {
         const p = [];
@@ -5684,6 +6138,7 @@
         if (l.bolas) p.push(`comprar ${Number(cfg.autoBuyQty) || 100} ${ballName(l.bolas.id)}`);
         if (l.suprimentos) p.push(l.suprimentos.map(s => `comprar ${s.qty} ${s.name}`).join(', '));
         if (l.cla) p.push('clã (converter/subir de rank)');
+        if (l.profissao) p.push('profissão (pictures/subir de rank)');
         if (l.slot) p.push('slot machine (roll grátis)');
         if (l.ginasio) p.push('ginásios (desafiar/bônus)');
         if (l.time) p.push('ler o time (a lista nunca veio; o jogo só responde na cidade)');
@@ -5711,7 +6166,7 @@
     const TRIP_PHASE_PCT = { 'indo para a cidade': 15, 'na cidade': 50, 'voltando': 90 };
     function tripLastText() {
         if (!lastTripInfo) return '';
-        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time', breeding: 'breeding', ginasio: 'ginásios', jenny: 'Officer Jenny' };
+        const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time', breeding: 'breeding', ginasio: 'ginásios', jenny: 'Officer Jenny', profissao: 'profissão' };
         return `Última ${new Date(lastTripInfo.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}: ${lastTripInfo.tarefas.map(t => `${nome[t.key] || t.key} ${t.ok ? '✔' : '✖'}`).join(' · ')}`;
     }
     // Estado para a faixa do painel: { busy, pct, title, sub }.
@@ -5750,6 +6205,7 @@
             else if (key === 'bolas' && n.dados) tarefas.push({ key, run: () => autoBuyBalls(n.dados.id, n.dados.qty, n.dados.min) });
             else if (key === 'suprimentos') tarefas.push({ key, run: () => supplyCityWork() });
             else if (key === 'cla') tarefas.push({ key, run: () => clanCityWork() });
+            else if (key === 'profissao') tarefas.push({ key, run: () => profCityWork() });   // v3.52.0: rank da profissão (pictures + rank up)
             else if (key === 'evoluir') tarefas.push({ key, run: () => evolveCityWork() });
             else if (key === 'slot') tarefas.push({ key, run: () => slotCityWork() });
             else if (key === 'ginasio') tarefas.push({ key, run: () => gymCityWork() });
@@ -5835,6 +6291,7 @@
         }
         if (!has('suprimentos') && typeof supplyLow === 'function' && supplyLow().length) needs.push(['suprimentos', { dados: null, motivo: 'carona' }]);
         if (!has('cla') && typeof clanWantsCity === 'function' && clanWantsCity()) needs.push(['cla', { dados: null, motivo: 'carona' }]);
+        if (!has('profissao') && typeof profWantsCity === 'function' && profWantsCity()) needs.push(['profissao', { dados: null, motivo: 'carona' }]);   // v3.52.0
         if (!has('evoluir') && typeof evolveWanted === 'function' && evolveWanted()) needs.push(['evoluir', { dados: null, motivo: 'carona' }]);
         if (!has('slot') && typeof slotWanted === 'function' && slotWanted()) needs.push(['slot', { dados: null, motivo: 'carona' }]);
         if (!has('ginasio') && typeof gymWanted === 'function' && gymWanted()) needs.push(['ginasio', { dados: null, motivo: 'carona' }]);
@@ -8149,6 +8606,7 @@
     function idleTarget() {
         let slug = null;
         if (clanRouteOn() && clanTarget) slug = clanTarget.slug;
+        else if (typeof profRouteOn === 'function' && profRouteOn() && profTarget) slug = profTarget.slug;   // v3.52.0 (typeof: harness da parada não tem o módulo)
         else if (routeStep()?.slug) slug = normalize(routeStep().slug);
         else if (idleIsHunt(lastRealHunt)) slug = normalize(lastRealHunt);
         else if (idleDefaultSlug()) slug = idleDefaultSlug();
@@ -8282,7 +8740,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         if (message.type === 'auto-boss') { bossOnFrame(message); return; }   // v3.43.0: Auto Boss do jogo (estado/encerramento)
         if (message.type === 'gym-global') { gymOnGlobal(message); return; }   // v3.45.0: anúncio global do ginásio (só log)
         if (message.type === 'field-teleport-city') { healOnTeleport(); return; }   // o sintético da viagem já saiu acima
-        if (message.type === 'field-kill') { idleOnAlive(); invOnKill(message); noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteDepositDrop(message); guildOnKill(message); fishOnKill(message); farmOnKill(message); return; }
+        if (message.type === 'field-kill') { idleOnAlive(); invOnKill(message); noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteProfKill(message); noteDepositDrop(message); guildOnKill(message); fishOnKill(message); farmOnKill(message); return; }
         if (message.type === 'inventory' && Array.isArray(message.items)) { clanOnInventory(message.items); supplyOnInventory(message.items); bossOnInventory(message.items); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
         if (message.type === 'pokes' && Array.isArray(message.list)) { logEvent('pokes-frame', { total: message.list.length, time: message.list.filter(p => p && p.team).map(p => `${p.name} lv${p.level}`), hunt: huntSlug || null }); updateTeam(message.list); healOnPokes(message.list); idleOnPokes(message.list);handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); evolveOnPokes(message.list); breedOnPokes(message.list); return; }
@@ -8733,7 +9191,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
                 return 'on';
             }
             case 'profissao':
-                if (!d.catchRouteEnabled && !d.clanEnabled) return 'off';
+                if (!d.catchRouteEnabled && !d.clanEnabled && !profOn(d)) return 'off';
                 return temAlertas ? 'on' : 'warn';
             case 'breeding': {
                 if (!d.breedEnabled) return 'off';
@@ -8774,7 +9232,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             `Bolas: ${!((Number(d.ballsMin) || 0) > 0 || d.autoBuy) ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}${supplyOn(d) ? ` · refil: ${supplySlots(d).map(s => `${s.name} < ${s.min}`).join(', ')}` : ''}${d.healJoyEnabled ? ' · Joy' : ''}${d.cityIdleEnabled ? ` · volta da cidade ${Number(d.cityIdleMin) || IDLE_MIN_DEFAULT} min${idleDefaultSlug(d) ? ` (padrão ${idleDefaultSlug(d)})` : ''}` : ''}`,
             `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades${pokeSellKeepQ(d) ? `, guarda ≥ ${pokeSellKeepQ(d)}` : ''})` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
             `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? `daily sozinha (${dailyAreas(d).join('+')})` : 'daily') : '', d.giftEnabled ? 'gift' : '', d.evolveEnabled ? 'evolução' : '', d.slotEnabled ? 'slot machine' : '', bossOn(d) ? `auto boss${d.bossResumeOnLoss ? ' (até após derrota)' : ''}` : ''].filter(Boolean).join(' + ') || 'desligado'}`,
-            `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
+            `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : '', profOn(d) ? `profissão ${[d.profRankupEnabled ? 'rank up' : '', d.profRoute ? 'caça' : ''].filter(Boolean).join(' + ')}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Breeding: ${d.breedEnabled ? `${breedActiveLines(d).length} ${breedActiveLines(d).length === 1 ? 'linhagem' : 'linhagens'}${d.breedDouble ? ' + dobrar' : ''}${d.breedFoodBreed ? ' + cria comida' : ''}` : 'desligado'}`,
             `Guild: ${[guildDonateWanted(d) > 0 ? `doa ${guildN(guildDonateWanted(d))}/dia` : '', d.guildTributeEnabled ? 'tributo' : '', d.guildFarmTribute ? 'farma tributo' : '', d.guildHuntEnabled ? 'caça' : '', d.guildFishEnabled ? 'pesca' : '', guildRouteOn(d) ? `ordem ${guildOrderText(d)}` : '', d.guildAlerts ? 'avisos' : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Farm: ${d.farmEnabled && farmList(d).length ? `${farmList(d).filter(farmEntryDone).length}/${farmList(d).length} itens` : 'desligado'}`,
@@ -9047,8 +9505,15 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                     </div>
                     <div class="dn-section">
                         <h3>Profissão</h3>
-                        <div class="dn-status"><span>🎓</span><span id="pg-dn-prof-status"></span></div>
-                        <p class="dn-help">"Espécies diferentes capturadas" é requisito de rank no jogo; a rota acima serve para isso. Os dados vêm de Profissões e da Pokédex do jogo.</p>
+                        <label class="dn-toggle"><input id="pg-dn-prof-rankup" type="checkbox"><span class="sw"></span>Subir de rank sozinho quando os requisitos fecharem <span class="dn-hint">(na viagem à cidade)</span></label>
+                        <div class="dn-inline">Buscar as Rare Pokémon Picture que faltarem: <label class="dn-toggle dn-toggle--sm"><input id="pg-dn-prof-depot" type="checkbox"><span class="sw"></span>no Depot comum</label> <label class="dn-toggle dn-toggle--sm"><input id="pg-dn-prof-family" type="checkbox"><span class="sw"></span>no depósito da família</label></div>
+                        <label class="dn-toggle"><input id="pg-dn-prof-route" type="checkbox"><span class="sw"></span>Caçar o que falta <span class="dn-hint">(vai para a hunt do tipo que falta derrotar, até o nível do time)</span></label>
+                        <p class="dn-help">Requisitos do jogo: espécies diferentes capturadas (a rota acima serve para isso), entregar Rare Pokémon Picture (1 foto a cada shiny que aparece na hunt; o script não vende nem guarda a picture) e derrotar N Pokémon de cada tipagem. A picture só é buscada quando Depot + família completam a conta. Nunca escolhe nem troca a profissão. "Caçar o que falta" desliga as outras rotas; a Daily tem prioridade.</p>
+                        <div class="dn-status col"><div id="pg-dn-prof-status"></div><ul id="pg-dn-prof-reqs" class="dn-help"></ul><div id="pg-dn-prof-plan" class="dn-help"></div></div>
+                        <div class="dn-actions">
+                            <button type="button" class="dn-btn dn-btn--sm" id="pg-dn-prof-now" title="Na cidade: busca as pictures e sobe de rank agora. Na hunt: pede a viagem à cidade.">⬆ Subir agora</button>
+                            <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-prof-refresh" title="Relê a profissão no jogo.">Atualizar profissão</button>
+                        </div>
                     </div>
                 </section>
                 <section class="dn-pane" data-pane="breeding" hidden>
@@ -9327,6 +9792,10 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 catchRouteMaxLevel: Math.max(0, parseInt($('#pg-dn-catch-max').value, 10) || 0),
                 catchRouteAuto: $('#pg-dn-catch-auto').checked,
                 catchRouteBall: $('#pg-dn-catch-ball').value || 'auto',
+                profRankupEnabled: $('#pg-dn-prof-rankup').checked,
+                profFromDepot: $('#pg-dn-prof-depot').checked,
+                profFromFamily: $('#pg-dn-prof-family').checked,
+                profRoute: $('#pg-dn-prof-route').checked,
                 dailyEnabled: $('#pg-dn-daily').checked,
                 dailyClaim: $('#pg-dn-daily-claim').checked,
                 dailyAuto: $('#pg-dn-daily-auto').checked,
@@ -10097,12 +10566,17 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-catch-unskip').hidden = !puladas;
             $('#pg-dn-catch-unskip').textContent = `Limpar puladas (${puladas})`;
             $('#pg-dn-catch-skip').disabled = !catchTarget;
-            const pr = profession;
-            $('#pg-dn-prof-status').innerHTML = pr
-                ? `<span class="k">${escHtml(pr.key || 'sem profissão')}${pr.rank ? ` · rank ${escHtml(pr.rank)}` : ''} ·</span> ${fmtNum(pr.speciesCount)} espécies capturadas${pr.next && pr.next.need ? ` · próximo rank ${escHtml(pr.next.rank || '')}: ${fmtNum(pr.next.have)}/${fmtNum(pr.next.need)}` : ''}`
-                : '<span class="k">Profissão ainda não lida (Atualizar Pokédex).</span>';
+            renderProf();
         }
         onCatchChange = () => { if (!panel.hidden) renderCatch(); };
+        // ---- Profissão: rank up (v3.52.0) ----
+        function renderProf() {
+            const st = profStatus(current());
+            $('#pg-dn-prof-status').innerHTML = `<span class="k">Profissão ·</span> ${escHtml(st.head)}`;
+            $('#pg-dn-prof-reqs').innerHTML = st.reqs.map(r => `<li>${escHtml(r)}</li>`).join('');
+            $('#pg-dn-prof-plan').textContent = st.rota ? `Rota: ${st.rota}` : '';
+        }
+        onProfChange = () => { if (!panel.hidden) renderProf(); };
         function renderClan() {
             const st = clanStatus(current());
             $('#pg-dn-clan-status').innerHTML = `<span class="k">Clã ·</span> ${escHtml(st.head)}`;
@@ -10165,6 +10639,16 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 .then(() => refreshClan(true)).then(() => { requestBag(); renderClan(); });
         };
         ['#pg-dn-clan', '#pg-dn-clan-route', '#pg-dn-clan-rankup', '#pg-dn-clan-key'].forEach(sel => $(sel).addEventListener('change', renderClan));
+        ['#pg-dn-prof-rankup', '#pg-dn-prof-depot', '#pg-dn-prof-family', '#pg-dn-prof-route'].forEach(sel => $(sel).addEventListener('change', renderProf));
+        $('#pg-dn-prof-refresh').onclick = () => {
+            flash('📥 Lendo a profissão…', 'info', 3000);
+            Promise.all([loadHuntCatalog().catch(() => null), profRefresh(true)]).then(() => { renderProf(); flash(`✔ ${profStatus(current()).head}`, 'ok', 8000); });
+        };
+        $('#pg-dn-prof-now').onclick = () => {
+            if (dirty) $('#pg-dn-save').click();
+            flash('🎓 Conferindo a profissão…', 'info', 3000);
+            profNow().then(r => { renderProf(); flash(r.ok ? `✔ ${r.subiu ? `Subiu para o rank ${r.subiu.para}` : r.motivo}` : `⚠ ${r.motivo}`, r.ok ? 'ok' : 'warn', 8000); });
+        };
         $('#pg-dn-catch-skip').onclick = () => {
             const slug = skipCatchTarget();
             renderCatch();
@@ -10198,7 +10682,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             if (dirty) $('#pg-dn-save').click();
             const needs = tripAugment([]);
             if (!needs.length) { flash('⚠ Nada para levar: nenhum drop marcado nesta hunt, nenhum Pokémon nas regras e bolas, poções e revives acima do limite.', 'warn'); return; }
-            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time', breeding: 'breeding', ginasio: 'ginásios', jenny: 'Officer Jenny' };
+            const nome = { itens: 'drops', pokes: 'Pokémon', bolas: 'bolas', suprimentos: 'poções/revives', cla: 'clã', guardar: 'guardar', evoluir: 'evolução', slot: 'slot machine', time: 'ler o time', breeding: 'breeding', ginasio: 'ginásios', jenny: 'Officer Jenny', profissao: 'profissão' };
             flash(`🏙 Indo à cidade: ${needs.map(n => nome[n[0]]).join(', ')}…`, 'info', 90000);
             tripNeeds.clear();
             cityTrip('manual: ' + needs.map(n => n[0]).join('+'), tripTasksFor(needs)).then(r => {
@@ -10367,6 +10851,10 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-clan-key').value = CLAN_INFO[cfg.clanKey] ? cfg.clanKey : 'orebound';
             $('#pg-dn-clan-rankup').checked = cfg.clanRankup !== false;
             $('#pg-dn-clan-route').checked = Boolean(cfg.clanRoute);
+            $('#pg-dn-prof-rankup').checked = Boolean(cfg.profRankupEnabled);
+            $('#pg-dn-prof-depot').checked = cfg.profFromDepot !== false;
+            $('#pg-dn-prof-family').checked = cfg.profFromFamily !== false;
+            $('#pg-dn-prof-route').checked = Boolean(cfg.profRoute);
             $('#pg-dn-daily-return').value = cfg.dailyReturnSlug || '';
             $('#pg-dn-trip-city').value = ['cerulean', 'pewter', 'viridian', 'goldenrod'].includes(cfg.tripCity) ? cfg.tripCity : 'cerulean';
             $('#pg-dn-reload').checked = Boolean(cfg.reloadEnabled);
@@ -10463,6 +10951,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const ligouFarm = draft.farmEnabled && !cfg.farmEnabled;
             const farmAntes = JSON.stringify([cfg.farmEnabled, farmList(cfg).map(e => [e.item, farmQty(e), e.hunt])]);
             const clanAntes = JSON.stringify([cfg.clanEnabled, cfg.clanRoute, cfg.clanKey]);
+            const profAntes = JSON.stringify([cfg.profRankupEnabled, cfg.profRoute, cfg.profFromDepot, cfg.profFromFamily]);   // v3.52.0
+            const ligouProf = draft.profRoute && !cfg.profRoute;
             Object.assign(cfg, draft);
             sellDrafts = {};                                  // listas de venda das outras hunts já foram para cfg.sellProfiles
             const exclusivo = [];
@@ -10473,6 +10963,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 { on: () => cfg.clanEnabled && cfg.clanRoute, off: () => { cfg.clanRoute = false; }, ligou: ligouCla, nome: '"Caçar o que falta" (clã)' },
                 { on: () => guildRouteOn(cfg), off: () => { cfg.guildHuntEnabled = false; cfg.guildFishEnabled = false; cfg.guildFarmTribute = false; }, ligou: ligouGuild, nome: 'Caçar/pescar para a guild' },
                 { on: () => farmOn(cfg), off: () => { cfg.farmEnabled = false; }, ligou: ligouFarm, nome: 'Farm por lista' },
+                { on: () => Boolean(cfg.profRoute), off: () => { cfg.profRoute = false; }, ligou: ligouProf, nome: '"Caçar o que falta" (profissão)' },   // v3.52.0
             ];
             const ligadas = rotas.filter(r => r.on());
             if (ligadas.length > 1) {
@@ -10525,6 +11016,11 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             if (JSON.stringify([cfg.clanEnabled, cfg.clanRoute, cfg.clanKey]) !== clanAntes) {
                 if (!(cfg.clanEnabled && cfg.clanRoute) && clanTarget) clanReturn('rota do clã desligada');
                 if (cfg.clanEnabled) setTimeout(() => clanTick(), 500);
+            }
+            if (JSON.stringify([cfg.profRankupEnabled, cfg.profRoute, cfg.profFromDepot, cfg.profFromFamily]) !== profAntes) {   // v3.52.0
+                if (!cfg.profRoute && profTarget) profReturn('rota da profissão desligada');
+                profReadyAsk = { rank: '', n: 0, at: 0 };
+                if (profOn()) setTimeout(() => profTick(), 500);
             }
             if (JSON.stringify([cfg.catchRouteEnabled, cfg.catchRouteAreas, cfg.catchRouteMaxLevel]) !== capturaAntes) {
                 if (!cfg.catchRouteEnabled) catchTarget = null;
@@ -10778,10 +11274,12 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
     setInterval(catchTick, CATCH_TICK_MS);
     setInterval(tripTick, TRIP_TICK_MS);
     setInterval(clanTick, CLAN_TICK_MS);
+    setInterval(profTick, PROF_TICK_MS);   // v3.52.0: profissão (rank up, pictures, rota dos tipos)
     setInterval(idleTick, IDLE_TICK_MS);
     if (!lastTripAt) restartTripCycle(); // 1ª viagem só depois de um intervalo inteiro (a recarga restaura o relógio)
     if (cfg.catchRouteEnabled) setTimeout(() => startCatchRoute('carga'), 8000); // depois do socket/retomada da recarga
     if (cfg.clanEnabled) setTimeout(clanTick, 8000);   // lê o clã logo na carga (REST) e pede a mochila
+    if (profOn()) setTimeout(profTick, 9000);   // v3.52.0: lê a profissão logo na carga (REST)
     if (cfg.dailyEnabled) scheduleDailyCheck(5000); // lê a missão do dia logo na carga (REST, não depende do socket)
     if (cfg.giftEnabled) scheduleGiftCheck(10000);  // Daily Gift: lê o calendário e resgata logo na carga (REST)
 

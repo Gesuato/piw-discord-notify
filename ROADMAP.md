@@ -993,6 +993,34 @@ acompanha os `plans` dos `invasao-fim`. ~~Ver uma rodada inteira~~ visto em 28/1
 
 ---
 
+
+## ✅ 39. Profissão: subir de rank sozinho, Rare Pokémon Picture do Depot/família e caçar os tipos que faltam (v3.52.0)
+
+**O que faz (pedido do usuário em 02/11/2026: "auto subir o rank da profissão de captura; pegar as Rare Pokémon Picture no depot
+da família se necessário"):** bloco "Profissão" da aba 📖. `profRankupEnabled`: lê a profissão a cada 2 min, mostra os requisitos do
+próximo rank (espécies diferentes, entregar Rare Pokémon Picture, berries, derrotar N de cada tipo — quem conta é o servidor) e, quando o
+jogo diz `ok`, pede a viagem à cidade (urgente, 3 por rank com 5 min entre elas; depois carona) e sobe com `POST /api/game/professions/rankup`.
+`profFromDepot`/`profFromFamily`: quando SÓ faltam pictures, a viagem busca no Depot comum (pilha inteira) e no depósito da família
+(quantidade exata), só se as duas juntas completam a conta; família com o suficiente = viagem urgente; senão carona (confere o Depot lá,
+1x/30 min quando não havia nada). A picture (item 59195) fica fora da venda e do guardar (`profKeepsItem`). `profRoute` ("Caçar o que
+falta"): 6ª rota excludente — vai para a hunt cuja espécie tem o tipo que mais falta derrotar (nota 1/falta; até o nível do time; 80%
+para não trocar à toa), estima os abates no `field-kill` e volta para a hunt de antes (origem em `localStorage.pgDiscordNotifyProf`, 24 h)
+ou a hunt padrão. Botão "⬆ Subir agora" (na cidade faz na hora; na hunt pede a viagem). Conta parada pelo "Esperar na cidade" sobe sem
+viagem. Avisa em Alertas (🎓 subiu para o rank X). Nunca escolhe/troca a profissão nem gasta talento.
+
+**Como o jogo faz (bundle de 02/11/2026, janela "Profissões"):** `GET /api/game/professions` → `nextStep { toRankKey, species, pictures,
+berries?, kills?[{ type, have, need }], ok }` (null = rank S); `POST /api/game/professions/rankup {}` → estado novo. Ranks E..S
+(D Aventureiro, C Especialista, B Elite, A Campeão, S Mestre Pokémon). Picture = 1 foto a cada shiny que aparece na hunt (Prestige).
+Formatos de `pictures`/`kills`/`berries` ainda não vistos no log (`profissao-campos` registra as chaves do 1º frame).
+
+**Config/UI:** `profRankupEnabled`, `profFromDepot`, `profFromFamily`, `profRoute`; status com cabeçalho (profissão, rank, próximo rank,
+pronto/última viagem), lista de requisitos (✔/•, com família/Depot para a picture) e linha da rota. Módulo `// ---- Profissão: subir de
+rank`, tarefa `profissao` da viagem. Teste: `node test/prof.test.js` (8 casos: leitura, pictures Depot+família, não completa, 3 pedidos
+por rank, cidade parada/botão, rota por tipo, origem lembrada/hunt padrão/Daily, rank máximo/sem profissão).
+
+**Pendências:** confirmar no log o formato real de `pictures`/`kills`, se `pictures.have` é a mochila (a retirada da família só faz
+sentido se for) e se o `rankup` é aceito na cidade sem a janela aberta.
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

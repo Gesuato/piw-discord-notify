@@ -110,9 +110,15 @@ e `error { message }` (resposta de ação recusada; o script os trata em `handle
   evolvesToId, evolveLevel, priceNpc, loot:[...], attacks:[...] }] }` (647; pokeId < 10000 são as 410 espécies da
   Pokédex; ≥ 10000 = Brave/Furious/Nightmare/Outland); `GET /api/game/pokedex` → `{ unlockKills, species:[{ id, kills,
   unlocked, claimed, caught, canClaim, captureBonus }] }` e `POST /api/game/pokedex/claim { speciesId }` (bônus +25% XP);
-  `GET /api/game/professions` → `{ profession:'prestige'|'botanist'|..., professions:[{ key, ... }], rankKey,
-  speciesCount, pictures, herbs, nextStep:{ toRankKey, species:{ have, need }, pictures:{...}, ... } }`;
-  `POST /api/game/professions/choose { profession }`, `/rankup`, `/craft`, `/talent`. `GET /api/game/capture-log`
+  `GET /api/game/professions` → `{ profession:'prestige'|'botanist'|..., professions:[{ key, enabled, color, talentTree }], rankKey
+  ('E'..'S'), speciesCount, pictures, herbs, talents, swap{ price, free, credits, diamonds, eventUntil, savedRanks }, nextStep }`;
+  `nextStep` (null = rank S; v3.52.0, janela "Profissões" do bundle de 02/11/2026) = `{ toRankKey, species:{ have, need },
+  pictures:{ have, need }, berries?:{ have, need }, kills?:[{ type, have, need }], ok }` — "Espécies diferentes capturadas",
+  "Entregar Rare Pokémon Picture" (item 59195; a Prestige ganha 1 a cada shiny que aparece na hunt; consumida no rank up),
+  "Berries craftadas", "Derrotar Pokémon de cada tipagem (N por tipo)"; o botão "Subir de Rank" só liga com `ok`. Ranks:
+  D Aventureiro, C Especialista, B Elite, A Campeão, S Mestre Pokémon. `POST /api/game/professions/rankup {}` → estado novo (mesmo
+  formato do GET; o script sobe na viagem à cidade). `POST /api/game/professions/choose { profession }`, `/craft`, `/talent { nodeId }`
+  (o script NUNCA usa). `GET /api/game/capture-log`
   é o histórico de capturas do perfil (não usado). Handlers vistos: `field-init { slug, ... }`, `field-none { slug }`,
   `catch-cooldown { leftMs }`, `catch-result` também traz `pendingId`, `cooldownMs`, `row`, `col`, `ballId`;
   `hunt-cooldown { ms }` (o cliente reenvia `enter-hunt` depois de `ms`).

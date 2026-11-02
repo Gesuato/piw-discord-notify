@@ -1387,4 +1387,74 @@ function loadInvasionModule(cfg, init) {
     return { api, state, clock, cfg: ctx.cfg };
 }
 
-module.exports = { loadInvasionModule, loadGymModule, loadHoldModule, loadBossModule, loadHumanModule, loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+// Extrai o módulo "Profissão: subir de rank" (v3.52.0). `init.api(url, opts)` responde GET professions, POST rankup, GET depot e
+// POST depot/move; `init.family` = itens do depósito da família (frame `family`, respondido ao `family-get`; `init.familyReply: false`
+// = jogo mudo); `init.familyResp(itemId, qty)` decide a retirada (padrão ok e desconta); `state.env` liga os bloqueios (hold, daily,
+// inHunt); `init.store` é o localStorage (origem da rota); `init.defaultSlug` é a hunt padrão da parada na cidade.
+const PR_START = '    // ---- Profissão: subir de rank';
+const PR_END = '    // ---- Guardar na cidade';
+
+function loadProfModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(PR_START), b = src.indexOf(PR_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo da profissão não encontrados no script');
+    const mod = src.slice(a, b);
+    const clock = { now: Date.now() };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const state = {
+        calls: [], sent: [], switches: [], hooks: [], logs: [], trips: [], family: [],
+        familyItems: (init.family || []).map(i => Object.assign({}, i)), familyAt: 0,
+        store: Object.assign({}, init.store || {}),
+        env: Object.assign({ hold: false, daily: false, inHunt: true }, init.env || {}),
+    };
+    const normalize = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+    const cr = init.creatures || [];
+    const ctx = {
+        cfg,
+        gameApi: (url, opts) => { state.calls.push({ url, opts }); return Promise.resolve().then(() => init.api(url, opts)); },
+        sendGame: (m) => { state.sent.push(m); if (m.type === 'family-get' && init.familyReply !== false) state.familyAt = clock.now; return true; },
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        normalize,
+        fmtNum: (n) => String(n),
+        switchHunt: (slug, tentativa, origem) => state.switches.push({ slug, tentativa, origem }),
+        huntSlug: init.huntSlug != null ? init.huntSlug : null,
+        CITY_SLUGS: ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'],
+        team: init.team || [],
+        huntCatalog: init.huntCatalog || null,
+        loadHuntCatalog: () => Promise.resolve(init.huntCatalog || null),
+        creatureTypes: new Map(cr.map(c => [c.pokeId, [c.type1 || '', c.type2 || '']])),
+        creatureIdByName: new Map(cr.map(c => [normalize(c.name), c.pokeId])),
+        tripRunning: false, huntSwitch: null, swapPending: null,
+        dailyWantsHunt: () => Boolean(state.env.daily),
+        holdActive: () => Boolean(state.env.hold),
+        tripInHunt: () => Boolean(state.env.inHunt),
+        tripRequest: (k, d, m) => state.trips.push({ k, m }),
+        tripNeeds: new Map(),
+        familyDepotItems: () => state.familyItems,
+        familyDepotAt: () => state.familyAt,
+        familyItemWithdraw: (itemId, quantity, name) => {
+            state.family.push({ itemId, quantity, name });
+            const r = init.familyResp ? init.familyResp(itemId, quantity) : { ok: true };
+            if (r.ok) { const it = state.familyItems.find(i => Number(i.itemId) === itemId); if (it) it.quantity -= quantity; }
+            return Promise.resolve(r);
+        },
+        localStorage: { getItem: (k) => (k in state.store ? state.store[k] : null), setItem: (k, v) => { state.store[k] = String(v); }, removeItem: (k) => { delete state.store[k]; } },
+        idleDefaultSlug: () => init.defaultSlug || null,
+        setTimeout: (fn, ms) => { clock.now += ms; fn(); return 1; },
+        Date: FakeDate,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            profTick, profCityWork, profNow, profPlan, profMissing, profKeepsItem, profWantsCity, profReadyForCity, profStatus, noteProfKill, profRefresh, profReqsLeft,
+            setHunt(slug) { huntSlug = slug; },
+            set tripRunning(v) { tripRunning = v; },
+            get profTarget() { return profTarget; }, get profFrom() { return profFrom; }, get profState() { return profState; }, get profWait() { return profWait; }, get profLast() { return profLast; },
+        };`);
+    const api = factory(...Object.values(ctx));
+    return { api, state, cfg, clock };
+}
+
+module.exports = { loadProfModule, loadInvasionModule, loadGymModule, loadHoldModule, loadBossModule, loadHumanModule, loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

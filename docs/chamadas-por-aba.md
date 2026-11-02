@@ -68,7 +68,9 @@ sem ter vencido o próprio intervalo. Intervalo mínimo entre viagens: 3 min (co
 |---|---|---|
 | Hunts e espécies | `GET /api/game/map-markers` + `GET /game/creatures.json` (públicos) | uma vez por carga |
 | Pokédex (capturadas) | `GET /api/game/pokedex` (REST) | ao ligar e após cada captura (mín. 30 s) |
-| Profissão (rank) | `GET /api/game/professions` (REST) | ao ligar e no "Atualizar Pokédex" |
+| Profissão (rank) | `GET /api/game/professions` (REST) | ao ligar, no "Atualizar Pokédex"/"Atualizar profissão" e, com o rank up ou a rota ligados, a cada 2 min (1 min com a rota) e 5 s após cada captura da rota (v3.52.0) |
+| Rank up da profissão (v3.52.0) | `GET /api/game/depot` + `POST /api/game/depot/move { itemId: 59195, dir:'withdraw' }` + `family-get`/`family-action item withdraw` (socket) + `POST /api/game/professions/rankup {}` | só na viagem à cidade (tarefa `profissao`): urgente com `ok` (3 por rank, 5 min) ou só faltando pictures que a família tem; carona quando só faltam pictures |
+| Rota da profissão (v3.52.0) | `leave-hunt` + `enter-hunt` + `pending-get` (socket) | a cada troca de tipo que falta derrotar (tique de 1 min) e na volta |
 | Troca de hunt | `leave-hunt` + `enter-hunt` + `pending-get` (socket) | a cada espécie capturada |
 | Bola automática | `catch` (socket) | quando a espécie da vez entra na fila, se ligada |
 
