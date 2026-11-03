@@ -107,8 +107,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `{ listings[{ id, kind:'item'|'ball'|'diamonds'|'pokemon', refId, name, price (por unidade), currency:'GOLD'|'DIAMONDS', quantity (pilha),
   ids?[] (anúncios agrupados), sellers? }], mine[{ id, quantity }], requests, myRequests, history, catalog }`; compra =
   `POST /api/game/market/action { action:'buy-stack', kind, refId, price, currency, quantity, ids }` (o que a janela manda para item/bola;
-  resposta não vista: `ok:false` = nada, `bought` vale, senão conta o pedido). Linha do painel "quantidade item até preço"
-  (`parseMarketLine`, 5.000/5k/1,5m; terminada em "diamantes" = pedido em diamonds, v3.53.1), nome resolvido no `items.json` ou em
+  resposta não vista: `ok:false` = nada, `bought` vale, senão conta o pedido). Linha do painel "quantidade item preço moeda"
+  (`parseMarketLine`; ex. "1 poke ball 300 gold", 5.000/5k/1,5m; a MOEDA é obrigatória no fim — `gold` ou `diamantes` — e NÃO há
+  "até": formato pedido pelo usuário na v3.53.2 ("o texto 1 Poke Ball até 300 é ruim"); "até"/"<=" antes do preço ainda são aceitos
+  para listas antigas; sem moeda a linha é inválida), nome resolvido no `items.json` ou em
   `BALL_NAMES` (`marketResolve`). `marketScan` num intervalo sorteado em `marketEveryMin`–`marketEveryMaxMin` (padrão 3, fixo; 429 =
   espera 10 min): mais barato primeiro, na MOEDA do pedido, nunca o próprio anúncio (`mine`), reserva por moeda (`marketGold` vem do
   frame `balls`, que traz `gold`, e da resposta; `marketDiamonds` de `GET /api/game/diamonds` antes de toda leitura com pedido em

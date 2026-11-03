@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.53.1
+// @version      3.53.2
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.53.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.53.2';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -1164,8 +1164,8 @@
     //   429     : o servidor limita as leituras (a janela mostra a mensagem do erro); o script espera MARKET_BACKOFF_MS.
     //   O mercado é só para VIP (texto `vipGate` da janela) e o jogo DEIXA comprar durante a hunt (usuário, 03/11/2026):
     //   não passa pela viagem à cidade.
-    // Painel: aba 🌐 Mercado (v3.53.1), uma linha por pedido "quantidade item até preço" (preço por unidade, em gold; 5.000 / 5k /
-    // 1,5m valem) ou "... até 50 diamantes" (pedido em diamonds; saldo em GET /api/game/diamonds → { diamonds }). Lê o mercado num
+    // Painel: aba 🌐 Mercado (v3.53.1), uma linha por pedido "quantidade item preço gold" (preço por unidade; 5.000 / 5k / 1,5m
+    // valem) ou "quantidade item preço diamantes" (pedido em diamonds; saldo em GET /api/game/diamonds → { diamonds }). Lê o mercado num
     // intervalo sorteado entre `marketEveryMin` e `marketEveryMaxMin`, compra o anúncio mais barato dentro do preço — na moeda do
     // pedido, nunca o próprio anúncio — até fechar a quantidade, respeitando as reservas `marketKeepGold`/`marketKeepDiamonds`; o
     // comprado (`got`) fica no cfg, como no Farm.
@@ -1198,15 +1198,16 @@
         if (!Number.isFinite(v) || v <= 0) return 0;
         return Math.floor(v * (m[2] === 'k' ? 1000 : m[2] === 'm' ? 1000000 : 1));
     }
-    // "100 Rare Candy até 5000" / "50x Ultra Ball <= 1.200" / "10 Fire Stone ate 50k gold" / "5 Rare Candy até 40 diamantes"
-    // -> { item, qty, max, cur:'GOLD'|'DIAMONDS' } ou null.
+    // "1 poke ball 300 gold" / "100 Rare Candy 5.000 gold" / "10 Fire Stone 50k gold" / "5 Rare Candy 40 diamantes"
+    // -> { item, qty, max, cur:'GOLD'|'DIAMONDS' } ou null. Formato pedido pelo usuário (v3.53.2): "quantidade item preço moeda",
+    // sem "até" ("1 poke ball 300 gold somente"); a MOEDA é obrigatória no fim (sem ela a linha é inválida e o painel diz o formato).
+    // "até"/"<="/"@" antes do preço ainda são aceitos (listas salvas antes da v3.53.2), mas o texto salvo sai sem eles.
     function parseMarketLine(line) {
-        const m = String(line || '').trim().match(/^(\d+)\s*[x×]?\s+(.+?)\s+(?:até|ate|<=|<|por|@)\s*([\d.,]+\s*[km]?)\s*(gold|g|diamonds|diamantes|diamante|dia|d|💎)?\s*$/i);
+        const m = String(line || '').trim().match(/^(\d+)\s*[x×]?\s+(.+?)\s+(?:(?:até|ate|<=|<|por|@)\s*)?([\d.,]+\s*[km]?)\s+(gold|diamonds|diamantes|diamante|💎)\s*$/i);
         if (!m) return null;
         const qty = parseInt(m[1], 10), max = marketParsePrice(m[3]);
         if (!(qty > 0) || !(max > 0)) return null;
-        const cur = m[4] && /^(diamonds|diamantes|diamante|dia|d|💎)$/i.test(m[4]) ? 'DIAMONDS' : 'GOLD';
-        return { item: m[2].trim(), qty, max, cur };
+        return { item: m[2].trim(), qty, max, cur: /^gold$/i.test(m[4]) ? 'GOLD' : 'DIAMONDS' };
     }
     function marketCur(e) { return String(e?.cur || 'GOLD').toUpperCase() === 'DIAMONDS' ? 'DIAMONDS' : 'GOLD'; }
     function marketCurName(cur) { return cur === 'DIAMONDS' ? 'diamonds' : 'gold'; }
@@ -1215,7 +1216,7 @@
     function marketGot(e) { return Math.max(0, Math.floor(Number(e?.got) || 0)); }
     function marketKey(e) { return `${normalize(e?.item)}|${marketCur(e)}|${marketMax(e)}`; }
     function marketEntryDone(e) { return marketGot(e) >= marketQty(e); }
-    function marketLineText(e) { return `${marketQty(e)} ${e.item} até ${marketMax(e)}${marketCur(e) === 'DIAMONDS' ? ' diamantes' : ''}`; }
+    function marketLineText(e) { return `${marketQty(e)} ${e.item} ${marketMax(e)} ${marketCur(e) === 'DIAMONDS' ? 'diamantes' : 'gold'}`; }
     // Texto do painel -> lista no formato do cfg, conservando o comprado (`got`) dos pedidos que já existiam (mesmo item e preço).
     function parseMarketText(text, antes) {
         const prev = new Map((Array.isArray(antes) ? antes : []).map(e => [marketKey(e), marketGot(e)]));
@@ -1394,7 +1395,7 @@
     }
     // Botão "Conferir agora": lê e compra na hora (vale com o módulo desligado, para testar a lista salva).
     function marketNow() {
-        if (!marketList().length) return Promise.resolve({ ok: false, msg: 'lista vazia: salve pelo menos uma linha "quantidade item até preço"' });
+        if (!marketList().length) return Promise.resolve({ ok: false, msg: 'lista vazia: salve pelo menos uma linha "quantidade item preço gold"' });
         if (!marketPending().length) return Promise.resolve({ ok: false, msg: 'todos os pedidos já foram comprados (Zerar contagem para comprar de novo)' });
         marketNextAt = 0;
         return marketScan('botão');
@@ -9938,7 +9939,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 <section class="dn-pane" data-pane="mercado" hidden>
                     <div class="dn-section">
                         <h3>🌐 Mercado Global <span class="spacer"></span><label class="dn-toggle"><input id="pg-dn-market" type="checkbox"><span class="sw"></span>Comprar sozinho</label></h3>
-                        <textarea id="pg-dn-market-list" class="dn-textarea" rows="4" placeholder="100 Rare Candy até 5.000&#10;50 Ultra Ball até 1.200&#10;10 Fire Stone até 50k&#10;5 Rare Candy até 40 diamantes" spellcheck="false"></textarea>
+                        <textarea id="pg-dn-market-list" class="dn-textarea" rows="4" placeholder="1 Poke Ball 300 gold&#10;100 Rare Candy 5.000 gold&#10;10 Fire Stone 50k gold&#10;5 Rare Candy 40 diamantes" spellcheck="false"></textarea>
                         <div class="dn-inline">Conferir a cada <input id="pg-dn-market-min" class="dn-input dn-input--sm" type="number" min="1" step="1" placeholder="3" aria-label="mínimo"> a <input id="pg-dn-market-max" class="dn-input dn-input--sm" type="number" min="0" step="1" placeholder="0" aria-label="máximo"> min (sorteado)</div>
                         <div class="dn-inline">Deixar na conta <input id="pg-dn-market-keep" class="dn-input dn-input--sm" type="number" min="0" step="1000" placeholder="0"> gold e <input id="pg-dn-market-keep-dia" class="dn-input dn-input--sm" type="number" min="0" step="1" placeholder="0"> diamonds</div>
                         <div class="dn-status col"><div id="pg-dn-market-status"></div><ol class="dn-route" id="pg-dn-market-items"></ol></div>
@@ -9946,7 +9947,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                             <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-market-now" title="Lê o mercado agora e compra o que estiver dentro do preço (vale com o módulo desligado).">Conferir agora</button>
                             <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-market-reset" title="Zera o comprado de todos os pedidos: compra tudo de novo.">Zerar contagem</button>
                         </div>
-                        <p class="dn-help">Uma linha por pedido: <b>quantidade item até preço</b> (preço por unidade, em gold; <b>5.000</b>, <b>5k</b> e <b>1,5m</b> valem; o nome é o do jogo, ex.: Rare Candy, Ultra Ball). Para pagar em diamonds, termine a linha com <b>diamantes</b> (ex.: <b>5 Rare Candy até 40 diamantes</b>). O intervalo é sorteado entre os dois valores a cada leitura (máximo 0 = fixo). A cada leitura o script compra o anúncio mais barato dentro do preço, na moeda do pedido (nunca o próprio anúncio), até fechar a quantidade; o comprado fica salvo e sobrevive à recarga. Não precisa de viagem: o jogo deixa comprar no Mercado Global durante a hunt (só VIP). Os itens da lista ficam fora da venda de drops e do guardar na cidade. Avisos no canal de Alertas.</p>
+                        <p class="dn-help">Uma linha por pedido: <b>quantidade item preço gold</b> ou <b>quantidade item preço diamantes</b> (ex.: <b>1 Poke Ball 300 gold</b>, <b>5 Rare Candy 40 diamantes</b>). A moeda no fim é obrigatória; o preço é por unidade (<b>5.000</b>, <b>5k</b> e <b>1,5m</b> valem) e o nome é o do jogo (ex.: Rare Candy, Ultra Ball). O intervalo é sorteado entre os dois valores a cada leitura (máximo 0 = fixo). A cada leitura o script compra o anúncio mais barato dentro do preço, na moeda do pedido (nunca o próprio anúncio), até fechar a quantidade; o comprado fica salvo e sobrevive à recarga. Não precisa de viagem: o jogo deixa comprar no Mercado Global durante a hunt (só VIP). Os itens da lista ficam fora da venda de drops e do guardar na cidade. Avisos no canal de Alertas.</p>
                     </div>
                 </section>
                 <section class="dn-pane" data-pane="farm" hidden>
@@ -10361,7 +10362,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             let vi = 0;
             $('#pg-dn-market-items').innerHTML = lines.map(l => {
                 const e = parseMarketLine(l);
-                if (!e) return `<li class="bad"><span class="m">✖</span><span>${escHtml(l)}</span><span class="hint">use "quantidade item até preço"</span></li>`;
+                if (!e) return `<li class="bad"><span class="m">✖</span><span>${escHtml(l)}</span><span class="hint">use "quantidade item preço gold" ou "... diamantes"</span></li>`;
                 const it = list[vi++];
                 const feito = marketEntryDone(it), r = marketResolve(it), of = marketLast?.ofertas?.[marketKey(it)];
                 const hint = !r ? (typeof itemsCatalog !== 'undefined' && itemsCatalog ? 'item não está no catálogo do jogo (confira o nome)' : 'catálogo ainda não carregado')
@@ -10369,7 +10370,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                     : !of ? `${r.name} · mercado ainda não lido`
                     : of.erro ? of.erro
                     : of.total ? `mais barato ${fmtNum(of.menor)} ${of.moeda || 'gold'} · ${fmtNum(of.dentro)} un. dentro do preço${of.semGold ? ` · sem ${of.moeda || 'gold'} (reserva)` : ''}` : `nenhum anúncio em ${marketCurName(marketCur(it))}`;
-                return `<li class="${feito ? 'done' : r ? 'cur' : 'bad'}"><span class="m">${feito ? '✔' : r ? '▶' : '✖'}</span><span>${fmtNum(marketGot(it))}/${fmtNum(marketQty(it))} ${escHtml(it.item)} até ${fmtNum(marketMax(it))} ${marketCurName(marketCur(it))}</span><span class="hint">${escHtml(hint)}</span></li>`;
+                return `<li class="${feito ? 'done' : r ? 'cur' : 'bad'}"><span class="m">${feito ? '✔' : r ? '▶' : '✖'}</span><span>${fmtNum(marketGot(it))}/${fmtNum(marketQty(it))} ${escHtml(it.item)} · ${fmtNum(marketMax(it))} ${marketCurName(marketCur(it))}</span><span class="hint">${escHtml(hint)}</span></li>`;
             }).join('');
             const salvo = JSON.stringify(list.map(e => [e.item, marketQty(e), marketMax(e), marketCur(e)])) === JSON.stringify(marketList().map(e => [e.item, marketQty(e), marketMax(e), marketCur(e)]));
             $('#pg-dn-market-status').textContent = `${marketStatus(d)}${!salvo ? ' · (lista alterada: salve)' : ''}${ruins.length ? ` · ${ruins.length} linha(s) inválida(s)` : ''}`;

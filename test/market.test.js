@@ -12,17 +12,19 @@ const base = () => ({ marketEnabled: true, marketEveryMin: 3, marketKeepGold: 0,
     // 1) linhas do painel: quantidade item até preço (5.000 / 5k / 1,5m / <= / x); inválidas; got conservado por item+preço
     {
         const { api } = loadMarketModule(base(), { items: ITEMS });
-        assert(JSON.stringify(api.parseMarketLine('100 Rare Candy até 5000')) === JSON.stringify({ item: 'Rare Candy', qty: 100, max: 5000, cur: 'GOLD' }), 'linha simples');
-        assert(api.parseMarketLine('5 Rare Candy até 40 diamantes').cur === 'DIAMONDS' && api.parseMarketLine('5 Rare Candy até 40 diamantes').max === 40 && api.parseMarketLine('5 Rare Candy até 40d').cur === 'DIAMONDS' && api.parseMarketLine('5 Rare Candy até 40 💎').cur === 'DIAMONDS' && api.parseMarketLine('5 Rare Candy até 40 gold').cur === 'GOLD', 'moeda pela terminação');
-        assert(api.marketLineText(api.parseMarketLine('5 Rare Candy até 40 diamantes')) === '5 Rare Candy até 40 diamantes' && api.marketLineText(api.parseMarketLine('5 Rare Candy até 40')) === '5 Rare Candy até 40', 'texto de volta com a moeda');
-        assert(api.parseMarketLine('50x Ultra Ball <= 1.200').max === 1200 && api.parseMarketLine('50x Ultra Ball <= 1.200').item === 'Ultra Ball', 'x e ponto de milhar');
-        assert(api.parseMarketLine('10 Fire Stone ate 50k gold').max === 50000, 'k + gold');
-        assert(api.parseMarketLine('3 Water Stone até 1,5m').max === 1500000 && api.parseMarketLine('2 Thunder Stone até 1.5k').max === 1500, 'vírgula/ponto decimal com sufixo');
-        assert(api.parseMarketLine('abc') === null && api.parseMarketLine('100 Rare Candy') === null && api.parseMarketLine('0 Rare Candy até 10') === null && api.parseMarketLine('5 Rare Candy até 0') === null, 'inválidas');
+        assert(JSON.stringify(api.parseMarketLine('1 poke ball 300 gold')) === JSON.stringify({ item: 'poke ball', qty: 1, max: 300, cur: 'GOLD' }), 'formato do usuário: quantidade item preço moeda');
+        assert(JSON.stringify(api.parseMarketLine('100 Rare Candy 5000 gold')) === JSON.stringify({ item: 'Rare Candy', qty: 100, max: 5000, cur: 'GOLD' }), 'linha simples');
+        assert(api.parseMarketLine('5 Rare Candy 40 diamantes').cur === 'DIAMONDS' && api.parseMarketLine('5 Rare Candy 40 diamantes').max === 40 && api.parseMarketLine('5 Rare Candy 40 DIAMONDS').cur === 'DIAMONDS' && api.parseMarketLine('5 Rare Candy 40 💎').cur === 'DIAMONDS' && api.parseMarketLine('5 Rare Candy 40 Gold').cur === 'GOLD', 'moeda pela terminação');
+        assert(api.parseMarketLine('1 TM 01 300 gold').item === 'TM 01' && api.parseMarketLine('1 TM 01 300 gold').max === 300, 'item com número no nome');
+        assert(api.marketLineText(api.parseMarketLine('5 Rare Candy 40 diamantes')) === '5 Rare Candy 40 diamantes' && api.marketLineText(api.parseMarketLine('5 Rare Candy 40 gold')) === '5 Rare Candy 40 gold', 'texto de volta com a moeda, sem "até"');
+        assert(api.parseMarketLine('50x Ultra Ball <= 1.200 gold').max === 1200 && api.parseMarketLine('100 Rare Candy até 5000 gold').max === 5000 && api.parseMarketLine('50x Ultra Ball 1.200 gold').item === 'Ultra Ball', 'x, ponto de milhar; "até"/"<=" antigos ainda passam');
+        assert(api.parseMarketLine('10 Fire Stone 50k gold').max === 50000, 'k + gold');
+        assert(api.parseMarketLine('3 Water Stone 1,5m gold').max === 1500000 && api.parseMarketLine('2 Thunder Stone 1.5k gold').max === 1500, 'vírgula/ponto decimal com sufixo');
+        assert(api.parseMarketLine('abc') === null && api.parseMarketLine('100 Rare Candy') === null && api.parseMarketLine('100 Rare Candy 5000') === null && api.parseMarketLine('1 Poke Ball até 300') === null && api.parseMarketLine('0 Rare Candy 10 gold') === null && api.parseMarketLine('5 Rare Candy 0 gold') === null, 'inválidas (sem moeda = inválida)');
         assert(api.marketParsePrice('5,000') === 5000 && api.marketParsePrice('5.000') === 5000, 'milhar');
-        const { list, ruins } = api.parseMarketText('100 Rare Candy até 5000\nabc\n\n5 Ultra Ball até 2k\n100 Rare Candy até 5000\n100 Rare Candy até 5000 diamantes', [{ item: 'rare candy', qty: 50, max: 5000, got: 30 }, { item: 'rare candy', qty: 50, max: 5000, cur: 'DIAMONDS', got: 7 }]);
+        const { list, ruins } = api.parseMarketText('100 Rare Candy 5000 gold\nabc\n\n5 Ultra Ball 2k gold\n100 Rare Candy 5000 gold\n100 Rare Candy 5000 diamantes', [{ item: 'rare candy', qty: 50, max: 5000, got: 30 }, { item: 'rare candy', qty: 50, max: 5000, cur: 'DIAMONDS', got: 7 }]);
         assert(list.length === 4 && ruins.length === 1 && list[0].got === 30 && list[2].got === 0 && list[3].got === 7 && list[1].item === 'Ultra Ball', 'parseMarketText: got pelo item+moeda+preço, repetida não herda: ' + JSON.stringify(list));
-        assert(api.marketLineText(list[1]) === '5 Ultra Ball até 2000', 'texto de volta');
+        assert(api.marketLineText(list[1]) === '5 Ultra Ball 2000 gold', 'texto de volta');
     }
 
     // 2) desligado ou sem pedido: o tique não lê nada; resolver nomes (item do catálogo e bola) e proteção da venda
