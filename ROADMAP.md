@@ -1040,7 +1040,8 @@ kind, refId, price, currency:'GOLD', quantity, ids }` (o mesmo que a janela do j
 anúncio (`mine`), nunca abaixo das reservas `marketKeepGold`/`marketKeepDiamonds` (gold pelo frame `balls`; diamonds por
 `GET /api/game/diamonds` antes de cada leitura com pedido em diamantes), até 6 compras por leitura. O comprado (`got`) fica no cfg e sobrevive à recarga; pedido fechado sai da fila. Não passa pela viagem: o jogo deixa usar o
 mercado durante a hunt (só VIP). Itens da lista ficam fora da venda de drops e do guardar na cidade. Avisos no canal de Alertas
-(compra, pedido concluído, falha). Botões "Conferir agora" (vale com o módulo desligado) e "Zerar contagem". 429 = espera 10 min.
+(compra, pedido concluído, falha). Botões "Conferir agora" (vale com o módulo desligado) e "Zerar contagem". 429 = espera 10 min. v3.53.3: "🧾 Últimas compras"
+na aba (30 por conta, em `localStorage.pgDiscordNotifyMarket`, com as falhas; botão "Limpar últimas compras").
 
 **Pendências:** confirmar no log `mercado-campos` as chaves da lista (`ids`, `sellers`) e em `mercado-compra { resposta }` o que o
 `buy-stack` devolve (hoje `ok:false` = nada, `bought` numérico vale, senão conta o pedido inteiro).

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.53.2
+// @version      3.53.3
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.53.2';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.53.3';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -1188,6 +1188,19 @@
     let marketLast = null;          // { at, anuncios, ofertas:{ chave -> { total, menor, dentro, semGold, erro } }, erro }
     let marketFieldsLogged = false;
     let marketCatLoading = false;
+    // v3.53.3: "Últimas compras" da aba (pedido do usuário: "algum log/visão na aba também"). Por conta, FORA do cfg (não entra no
+    // Exportar/Importar), sobrevive à recarga: [{ at, item, qtd, preco, moeda, total, erro? }], mais recente primeiro.
+    const MARKET_HIST_KEY = 'pgDiscordNotifyMarket';
+    const MARKET_HIST_MAX = 30;
+    let marketHist = marketHistLoad();
+    function marketHistLoad() {
+        try { const v = JSON.parse(localStorage.getItem(MARKET_HIST_KEY) || '[]'); return Array.isArray(v) ? v.filter(h => h && h.item).slice(0, MARKET_HIST_MAX) : []; }
+        catch { return []; }
+    }
+    function marketHistSave() { try { localStorage.setItem(MARKET_HIST_KEY, JSON.stringify(marketHist.slice(0, MARKET_HIST_MAX))); } catch { /* sem localStorage: vale só nesta carga */ } }
+    function marketHistAdd(h) { marketHist.unshift(Object.assign({ at: Date.now() }, h)); marketHist = marketHist.slice(0, MARKET_HIST_MAX); marketHistSave(); }
+    function marketHistClear() { marketHist = []; marketHistSave(); marketNotify(); }
+    function marketHistory() { return marketHist.slice(); }
     let onMarketChange = null;      // callback do painel
 
     // "5.000" -> 5000, "5k" -> 5000, "1,5m" -> 1500000, "1.5k" -> 1500. Sem sufixo, ponto e vírgula são separador de milhar.
@@ -1344,6 +1357,7 @@
                         const msg = String(err?.message || err);
                         logEvent('mercado-erro', { fase: 'compra', item: r.name, moeda: marketCurName(cur), preco: c.price, qtd: want, anuncios: c.ids.length, erro: msg });
                         compras.push({ item: r.name, qtd: 0, preco: c.price, moeda: marketCurName(cur), erro: msg });
+                        marketHistAdd({ item: r.name, qtd: 0, pedido: want, preco: c.price, moeda: marketCurName(cur), total: 0, erro: msg });
                         if (marketIsLimit(msg)) marketNextAt = Date.now() + MARKET_BACKOFF_MS;
                         break;   // erro neste item: o resto dele fica para a próxima leitura
                     }
@@ -1354,6 +1368,7 @@
                     e.got = marketGot(e) + got;
                     logEvent('mercado-compra', { item: r.name, kind: r.kind, refId: r.refId, moeda: marketCurName(cur), preco: c.price, pedido: want, comprado: got, total: `${marketGot(e)}/${marketQty(e)}`, anuncios: c.ids.length, gold: marketGold, diamonds: marketDiamonds, motivo, resposta: marketRespSummary(resp) });
                     compras.push({ item: r.name, qtd: got, preco: c.price, moeda: marketCurName(cur), feito: marketEntryDone(e), resposta: got === want ? undefined : marketRespSummary(resp) });
+                    marketHistAdd({ item: r.name, qtd: got, pedido: want, preco: c.price, moeda: marketCurName(cur), total: got * c.price, erro: got > 0 ? undefined : 'o jogo não confirmou a compra' });
                     if (got < want) break;   // o jogo não confirmou tudo (alguém comprou antes?): a próxima leitura vê o que sobrou
                 }
             }
@@ -9947,6 +9962,10 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                             <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-market-now" title="Lê o mercado agora e compra o que estiver dentro do preço (vale com o módulo desligado).">Conferir agora</button>
                             <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-market-reset" title="Zera o comprado de todos os pedidos: compra tudo de novo.">Zerar contagem</button>
                         </div>
+                        <div class="dn-status col"><div>🧾 <span class="k">Últimas compras</span> <span id="pg-dn-market-hist-sum"></span></div><ol class="dn-route" id="pg-dn-market-hist"></ol></div>
+                        <div class="dn-actions">
+                            <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-market-hist-clear" title="Apaga a lista de últimas compras deste painel (o log do script continua).">Limpar últimas compras</button>
+                        </div>
                         <p class="dn-help">Uma linha por pedido: <b>quantidade item preço gold</b> ou <b>quantidade item preço diamantes</b> (ex.: <b>1 Poke Ball 300 gold</b>, <b>5 Rare Candy 40 diamantes</b>). A moeda no fim é obrigatória; o preço é por unidade (<b>5.000</b>, <b>5k</b> e <b>1,5m</b> valem) e o nome é o do jogo (ex.: Rare Candy, Ultra Ball). O intervalo é sorteado entre os dois valores a cada leitura (máximo 0 = fixo). A cada leitura o script compra o anúncio mais barato dentro do preço, na moeda do pedido (nunca o próprio anúncio), até fechar a quantidade; o comprado fica salvo e sobrevive à recarga. Não precisa de viagem: o jogo deixa comprar no Mercado Global durante a hunt (só VIP). Os itens da lista ficam fora da venda de drops e do guardar na cidade. Avisos no canal de Alertas.</p>
                     </div>
                 </section>
@@ -10372,6 +10391,13 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                     : of.total ? `mais barato ${fmtNum(of.menor)} ${of.moeda || 'gold'} · ${fmtNum(of.dentro)} un. dentro do preço${of.semGold ? ` · sem ${of.moeda || 'gold'} (reserva)` : ''}` : `nenhum anúncio em ${marketCurName(marketCur(it))}`;
                 return `<li class="${feito ? 'done' : r ? 'cur' : 'bad'}"><span class="m">${feito ? '✔' : r ? '▶' : '✖'}</span><span>${fmtNum(marketGot(it))}/${fmtNum(marketQty(it))} ${escHtml(it.item)} · ${fmtNum(marketMax(it))} ${marketCurName(marketCur(it))}</span><span class="hint">${escHtml(hint)}</span></li>`;
             }).join('');
+            const hist = marketHistory();
+            const quando = (ts) => new Date(ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+            $('#pg-dn-market-hist').innerHTML = hist.length ? hist.map(h => h.qtd > 0
+                ? `<li class="done"><span class="m">✔</span><span>${escHtml(quando(h.at))} · ${fmtNum(h.qtd)} ${escHtml(h.item)} × ${fmtNum(h.preco)} ${escHtml(h.moeda)} = ${fmtNum(h.total)}</span>${h.pedido > h.qtd ? `<span class="hint">${escHtml(`pedi ${fmtNum(h.pedido)}, o jogo confirmou ${fmtNum(h.qtd)}`)}</span>` : ''}</li>`
+                : `<li class="bad"><span class="m">✖</span><span>${escHtml(quando(h.at))} · ${fmtNum(h.pedido || 0)} ${escHtml(h.item)} a ${fmtNum(h.preco)} ${escHtml(h.moeda)}</span><span class="hint">${escHtml(h.erro || 'falhou')}</span></li>`).join('')
+                : '<li class="done"><span class="m">·</span><span>nenhuma compra ainda neste painel</span></li>';
+            $('#pg-dn-market-hist-sum').textContent = hist.length ? `(${hist.filter(h => h.qtd > 0).length} feita(s), ${hist.filter(h => !(h.qtd > 0)).length} falha(s); últimas ${MARKET_HIST_MAX})` : '';
             const salvo = JSON.stringify(list.map(e => [e.item, marketQty(e), marketMax(e), marketCur(e)])) === JSON.stringify(marketList().map(e => [e.item, marketQty(e), marketMax(e), marketCur(e)]));
             $('#pg-dn-market-status').textContent = `${marketStatus(d)}${!salvo ? ' · (lista alterada: salve)' : ''}${ruins.length ? ` · ${ruins.length} linha(s) inválida(s)` : ''}`;
         }
@@ -10381,6 +10407,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             marketNow().then(r => { flash(`${r.ok ? '✔' : '⚠'} ${r.msg}`, r.ok ? 'ok' : 'warn', 15000); renderMarket(); }).catch(e => flash(`⚠ Mercado: ${e?.message || e}`, 'error'));
         };
         $('#pg-dn-market-reset').onclick = () => { marketReset(); renderMarket(); flash('✔ Comprado zerado: os pedidos do mercado começam do zero.', 'ok', 4000); };
+        $('#pg-dn-market-hist-clear').onclick = () => { marketHistClear(); renderMarket(); flash('✔ Últimas compras apagadas.', 'ok', 3000); };
 
         // ---- Venda ----
         // Hunt vista na lista de venda ('' = a atual). Outra hunt = edita o perfil dela (cfg.sellProfiles[slug]); marcações

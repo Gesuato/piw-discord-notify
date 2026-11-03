@@ -1491,6 +1491,7 @@ function loadMarketModule(cfg, init) {
         itemsCatalog,
         loadItemsCatalog: () => Promise.resolve(itemsCatalog),
         BALL_NAMES: init.balls || { 1: 'Poke Ball', 2: 'Great Ball', 3: 'Super Ball', 4: 'Ultra Ball', 6: 'Idle Ball' },
+        localStorage: { getItem: (k) => (k in (state.store = state.store || (init.store || {})) ? state.store[k] : null), setItem: (k, v) => { (state.store = state.store || {})[k] = String(v); }, removeItem: (k) => { delete state.store[k]; } },
         setTimeout: (fn, ms) => { state.timers.push({ fn, ms }); return state.timers.length; },
         Date: FakeDate,
         console,
@@ -1498,7 +1499,7 @@ function loadMarketModule(cfg, init) {
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
             parseMarketLine, parseMarketText, marketParsePrice, marketList, marketOn, marketPending, marketResolve, marketKeepsItem, marketScan, marketTick,
-            marketNow, marketReset, marketRearm, marketStatus, marketOnBalls, marketNoteGold, marketNoteDiamonds, marketEntryDone, marketLineText, marketCur, marketEveryRange, marketEveryMs,
+            marketNow, marketReset, marketRearm, marketStatus, marketOnBalls, marketNoteGold, marketNoteDiamonds, marketEntryDone, marketLineText, marketCur, marketEveryRange, marketEveryMs, marketHistory, marketHistClear,
             get marketDiamonds() { return marketDiamonds; }, get marketGold() { return marketGold; }, get marketNextAt() { return marketNextAt; }, get marketLast() { return marketLast; }, get marketRunning() { return marketRunning; },
         };`);
     const api = factory(...Object.values(ctx));

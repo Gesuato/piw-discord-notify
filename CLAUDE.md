@@ -115,7 +115,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   espera 10 min): mais barato primeiro, na MOEDA do pedido, nunca o próprio anúncio (`mine`), reserva por moeda (`marketGold` vem do
   frame `balls`, que traz `gold`, e da resposta; `marketDiamonds` de `GET /api/game/diamonds` antes de toda leitura com pedido em
   diamantes), até 6 compras por leitura; `got` fica no cfg (`saveCfg`).
-  `marketKeepsItem` tira os itens da lista da venda e do guardar. Botões "Conferir agora" (vale desligado) e "Zerar contagem". Logs
+  `marketKeepsItem` tira os itens da lista da venda e do guardar. Botões "Conferir agora" (vale desligado) e "Zerar contagem". v3.53.3:
+  "🧾 Últimas compras" na aba (compras e falhas, 30 por conta, em `localStorage.pgDiscordNotifyMarket` — FORA do cfg, não entra no
+  Exportar/Importar; `marketHistAdd`/`marketHistory`; botão "Limpar últimas compras"). Logs
   `mercado-campos`, `mercado`, `mercado-compra`, `mercado-erro`, `mercado-zerado`. Teste: `node test/market.test.js` (`loadMarketModule`).
 - Cura na Joy (v3.22.0, aba Compras → 💊 Nurse Joy, `cfg.healJoyEnabled`, módulo `// ---- Cura na Joy` antes da Lógica
   principal; bundle em 29/09/2026, campos ainda não vistos no log): `field` traz `fainted`, `reviveInMs`, `noRevive` (time

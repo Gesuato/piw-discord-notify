@@ -194,5 +194,26 @@ const base = () => ({ marketEnabled: true, marketEveryMin: 3, marketKeepGold: 0,
         assert(!state.calls.some(c => c.url === '/api/game/diamonds'), 'pedido em gold não lê diamonds');
     }
 
+    // 10) "Últimas compras": compras e falhas entram (mais recente primeiro), ficam no localStorage e sobrevivem a uma carga nova; limpar apaga
+    {
+        const cfg = base();
+        let fase = 'ok';
+        const listings = [{ id: 'H1', kind: 'item', refId: 300, name: 'Rare Candy', price: 1000, currency: 'GOLD', quantity: 10 }];
+        const { api, state } = loadMarketModule(cfg, { items: ITEMS, api: (url) => { if (url.startsWith('/api/game/market?')) return { listings, mine: [] }; if (fase === 'erro') throw new Error('Anúncio já vendido'); return { ok: true }; } });
+        assert(api.marketHistory().length === 0, 'começa vazio');
+        await api.marketScan('teste');
+        fase = 'erro';
+        cfg.marketList[0].got = 0;
+        await api.marketScan('teste');
+        const h = api.marketHistory();
+        assert(h.length === 2 && h[0].qtd === 0 && /já vendido/.test(h[0].erro) && h[1].qtd === 10 && h[1].preco === 1000 && h[1].total === 10000 && h[1].moeda === 'gold' && h[1].at > 0, 'falha mais recente primeiro, compra depois: ' + JSON.stringify(h));
+        const saved = JSON.parse(state.store.pgDiscordNotifyMarket);
+        assert(saved.length === 2 && saved[1].item === 'Rare Candy', 'gravado no localStorage');
+        const again = loadMarketModule(base(), { items: ITEMS, store: { pgDiscordNotifyMarket: state.store.pgDiscordNotifyMarket } });
+        assert(again.api.marketHistory().length === 2, 'carga nova lê o histórico');
+        again.api.marketHistClear();
+        assert(again.api.marketHistory().length === 0 && JSON.parse(again.state.store.pgDiscordNotifyMarket).length === 0, 'limpar apaga e grava');
+    }
+
     console.log('market.test.js OK');
 })().catch(e => { console.error(e); process.exit(1); });

@@ -238,7 +238,9 @@ setTimeout(() => {
         $('#pg-dn-save').click();
         const cfgM = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
         if (!(cfgM.marketEnabled && cfgM.marketList.length === 3 /* a 4ª linha, sem moeda, é inválida */ && cfgM.marketList[0].item === 'Rare Candy' && cfgM.marketList[0].qty === 100 && cfgM.marketList[0].max === 5000 && cfgM.marketList[0].cur === 'GOLD' && cfgM.marketList[1].item === 'Ultra Ball' && cfgM.marketList[1].max === 2000 && cfgM.marketList[2].cur === 'DIAMONDS' && cfgM.marketList[2].max === 40 && cfgM.marketEveryMin === 2 && cfgM.marketEveryMaxMin === 6 && cfgM.marketKeepDiamonds === 10)) throw new Error('mercado não salvou: ' + JSON.stringify([cfgM.marketList, cfgM.marketEveryMin, cfgM.marketEveryMaxMin, cfgM.marketKeepDiamonds]));
-        log('mercado salvo=' + $('#pg-dn-market-status').textContent + ' badge=' + panel.querySelector('.dn-tab[data-tab=mercado] .b').dataset.state);
+        log('mercado salvo=' + $('#pg-dn-market-status').textContent + ' badge=' + panel.querySelector('.dn-tab[data-tab=mercado] .b').dataset.state + ' | hist=' + $('#pg-dn-market-hist').textContent.trim().slice(0, 60));
+        if (!/nenhuma compra ainda/.test($('#pg-dn-market-hist').textContent)) throw new Error('últimas compras devia estar vazio');
+        $('#pg-dn-market-hist-clear').click();
         if (panel.querySelector('.dn-tab[data-tab=mercado] .b').dataset.state !== 'warn') throw new Error('badge do Mercado sem canal de Alertas devia ser warn');
         $('#pg-dn-market').checked = false; fire($('#pg-dn-market'), 'change'); $('#pg-dn-save').click();
         if (panel.querySelector('.dn-tab[data-tab=mercado] .b').dataset.state !== 'off') throw new Error('badge do Mercado desligado devia ser off');
