@@ -100,17 +100,19 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   (tarefa `suprimentos`, `supplyCityWork`) com `POST /api/game/shop/buy { itemId, qty }` via `buyFromShop('item', ...)`
   (confirmado no bundle em 29/09/2026; bolas usam `buyFromShop('ball', ...)` com `{ ballId }`). Ids: poções 200–204,
   Revive 205, Max Revive 206. Limite 0 = compra quando acabar. Uma viagem pedida por episódio (`supplyAttempted`).
-- Mercado Global (v3.53.0, aba Compras → 🌐 Mercado Global, `cfg.marketEnabled`/`marketList [{ item, qty, max, got }]`/`marketEveryMin`/
-  `marketKeepGold`; módulo `// ---- Mercado Global` entre o Refil e a Venda de drops; bundle de 03/11/2026, formatos ainda NÃO vistos
+- Mercado Global (v3.53.0, aba própria 🌐 Mercado desde a v3.53.1 (`TABS` id `mercado`, badge e linha do resumo próprios), `cfg.marketEnabled`/`marketList [{ item, qty, max, cur:'GOLD'|'DIAMONDS', got }]`/`marketEveryMin`–`marketEveryMaxMin` (sorteado,
+  v3.53.1)/`marketKeepGold`/`marketKeepDiamonds`; módulo `// ---- Mercado Global` entre o Refil e a Venda de drops; bundle de 03/11/2026, formatos ainda NÃO vistos
   no log — `mercado-campos` registra as chaves): pedido do usuário em 03/11/2026 ("comprar um certo item caso o preço seja x"; o jogo
   DEIXA usar o Mercado Global durante a hunt, então NÃO passa pela viagem; só VIP). `GET /api/game/market?category=Items` →
   `{ listings[{ id, kind:'item'|'ball'|'diamonds'|'pokemon', refId, name, price (por unidade), currency:'GOLD'|'DIAMONDS', quantity (pilha),
   ids?[] (anúncios agrupados), sellers? }], mine[{ id, quantity }], requests, myRequests, history, catalog }`; compra =
   `POST /api/game/market/action { action:'buy-stack', kind, refId, price, currency, quantity, ids }` (o que a janela manda para item/bola;
   resposta não vista: `ok:false` = nada, `bought` vale, senão conta o pedido). Linha do painel "quantidade item até preço"
-  (`parseMarketLine`, 5.000/5k/1,5m), nome resolvido no `items.json` ou em `BALL_NAMES` (`marketResolve`). `marketScan` a cada
-  `marketEveryMin` (padrão 3; 429 = espera 10 min): mais barato primeiro, só GOLD, nunca o próprio anúncio (`mine`), reserva de gold
-  (`marketGold` vem do frame `balls`, que traz `gold`, e da resposta), até 6 compras por leitura; `got` fica no cfg (`saveCfg`).
+  (`parseMarketLine`, 5.000/5k/1,5m; terminada em "diamantes" = pedido em diamonds, v3.53.1), nome resolvido no `items.json` ou em
+  `BALL_NAMES` (`marketResolve`). `marketScan` num intervalo sorteado em `marketEveryMin`–`marketEveryMaxMin` (padrão 3, fixo; 429 =
+  espera 10 min): mais barato primeiro, na MOEDA do pedido, nunca o próprio anúncio (`mine`), reserva por moeda (`marketGold` vem do
+  frame `balls`, que traz `gold`, e da resposta; `marketDiamonds` de `GET /api/game/diamonds` antes de toda leitura com pedido em
+  diamantes), até 6 compras por leitura; `got` fica no cfg (`saveCfg`).
   `marketKeepsItem` tira os itens da lista da venda e do guardar. Botões "Conferir agora" (vale desligado) e "Zerar contagem". Logs
   `mercado-campos`, `mercado`, `mercado-compra`, `mercado-erro`, `mercado-zerado`. Teste: `node test/market.test.js` (`loadMarketModule`).
 - Cura na Joy (v3.22.0, aba Compras → 💊 Nurse Joy, `cfg.healJoyEnabled`, módulo `// ---- Cura na Joy` antes da Lógica

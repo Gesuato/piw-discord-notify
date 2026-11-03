@@ -1498,8 +1498,8 @@ function loadMarketModule(cfg, init) {
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
             parseMarketLine, parseMarketText, marketParsePrice, marketList, marketOn, marketPending, marketResolve, marketKeepsItem, marketScan, marketTick,
-            marketNow, marketReset, marketRearm, marketStatus, marketOnBalls, marketNoteGold, marketEntryDone, marketLineText,
-            get marketGold() { return marketGold; }, get marketNextAt() { return marketNextAt; }, get marketLast() { return marketLast; }, get marketRunning() { return marketRunning; },
+            marketNow, marketReset, marketRearm, marketStatus, marketOnBalls, marketNoteGold, marketNoteDiamonds, marketEntryDone, marketLineText, marketCur, marketEveryRange, marketEveryMs,
+            get marketDiamonds() { return marketDiamonds; }, get marketGold() { return marketGold; }, get marketNextAt() { return marketNextAt; }, get marketLast() { return marketLast; }, get marketRunning() { return marketRunning; },
         };`);
     const api = factory(...Object.values(ctx));
     return { api, state, cfg, clock };

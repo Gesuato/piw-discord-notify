@@ -1031,12 +1031,13 @@ janela aberta); conferir se `speciesCount` da profissão bate com a Pokédex (pa
 ## ✅ 40. Mercado Global: comprar um item quando o preço estiver até X (v3.53.0)
 
 **O que faz (pedido do usuário em 03/11/2026: "dentro da hunt podemos comprar no Mercado Global; comprar um certo item caso o preço
-seja x"):** bloco "🌐 Mercado Global" da aba Compras. Uma linha por pedido, `quantidade item até preço` (preço por unidade em gold;
-`5.000`, `5k`, `1,5m` valem). A cada `marketEveryMin` (padrão 3 min) o script lê `GET /api/game/market?category=Items` e, para cada
+seja x"):** aba própria 🌐 Mercado (v3.53.1; nasceu como bloco da aba Compras). Uma linha por pedido, `quantidade item até preço` (preço por unidade em gold;
+`5.000`, `5k`, `1,5m` valem; terminada em `diamantes` = pedido pago em diamonds, v3.53.1). Num intervalo sorteado entre
+`marketEveryMin` e `marketEveryMaxMin` (padrão 3 min fixo; v3.53.1) o script lê `GET /api/game/market?category=Items` e, para cada
 pedido pendente, compra os anúncios dentro do preço, mais baratos primeiro, com `POST /api/game/market/action { action:'buy-stack',
-kind, refId, price, currency:'GOLD', quantity, ids }` (o mesmo que a janela do jogo manda). Só gold (anúncio em diamonds é ignorado),
-nunca o próprio anúncio (`mine`), nunca abaixo da reserva `marketKeepGold` (gold conhecido pelo frame `balls`), até 6 compras por
-leitura. O comprado (`got`) fica no cfg e sobrevive à recarga; pedido fechado sai da fila. Não passa pela viagem: o jogo deixa usar o
+kind, refId, price, currency:'GOLD', quantity, ids }` (o mesmo que a janela do jogo manda). Só anúncios na moeda do pedido, nunca o próprio
+anúncio (`mine`), nunca abaixo das reservas `marketKeepGold`/`marketKeepDiamonds` (gold pelo frame `balls`; diamonds por
+`GET /api/game/diamonds` antes de cada leitura com pedido em diamantes), até 6 compras por leitura. O comprado (`got`) fica no cfg e sobrevive à recarga; pedido fechado sai da fila. Não passa pela viagem: o jogo deixa usar o
 mercado durante a hunt (só VIP). Itens da lista ficam fora da venda de drops e do guardar na cidade. Avisos no canal de Alertas
 (compra, pedido concluído, falha). Botões "Conferir agora" (vale com o módulo desligado) e "Zerar contagem". 429 = espera 10 min.
 

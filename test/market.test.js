@@ -12,14 +12,16 @@ const base = () => ({ marketEnabled: true, marketEveryMin: 3, marketKeepGold: 0,
     // 1) linhas do painel: quantidade item até preço (5.000 / 5k / 1,5m / <= / x); inválidas; got conservado por item+preço
     {
         const { api } = loadMarketModule(base(), { items: ITEMS });
-        assert(JSON.stringify(api.parseMarketLine('100 Rare Candy até 5000')) === JSON.stringify({ item: 'Rare Candy', qty: 100, max: 5000 }), 'linha simples');
+        assert(JSON.stringify(api.parseMarketLine('100 Rare Candy até 5000')) === JSON.stringify({ item: 'Rare Candy', qty: 100, max: 5000, cur: 'GOLD' }), 'linha simples');
+        assert(api.parseMarketLine('5 Rare Candy até 40 diamantes').cur === 'DIAMONDS' && api.parseMarketLine('5 Rare Candy até 40 diamantes').max === 40 && api.parseMarketLine('5 Rare Candy até 40d').cur === 'DIAMONDS' && api.parseMarketLine('5 Rare Candy até 40 💎').cur === 'DIAMONDS' && api.parseMarketLine('5 Rare Candy até 40 gold').cur === 'GOLD', 'moeda pela terminação');
+        assert(api.marketLineText(api.parseMarketLine('5 Rare Candy até 40 diamantes')) === '5 Rare Candy até 40 diamantes' && api.marketLineText(api.parseMarketLine('5 Rare Candy até 40')) === '5 Rare Candy até 40', 'texto de volta com a moeda');
         assert(api.parseMarketLine('50x Ultra Ball <= 1.200').max === 1200 && api.parseMarketLine('50x Ultra Ball <= 1.200').item === 'Ultra Ball', 'x e ponto de milhar');
         assert(api.parseMarketLine('10 Fire Stone ate 50k gold').max === 50000, 'k + gold');
         assert(api.parseMarketLine('3 Water Stone até 1,5m').max === 1500000 && api.parseMarketLine('2 Thunder Stone até 1.5k').max === 1500, 'vírgula/ponto decimal com sufixo');
         assert(api.parseMarketLine('abc') === null && api.parseMarketLine('100 Rare Candy') === null && api.parseMarketLine('0 Rare Candy até 10') === null && api.parseMarketLine('5 Rare Candy até 0') === null, 'inválidas');
         assert(api.marketParsePrice('5,000') === 5000 && api.marketParsePrice('5.000') === 5000, 'milhar');
-        const { list, ruins } = api.parseMarketText('100 Rare Candy até 5000\nabc\n\n5 Ultra Ball até 2k\n100 Rare Candy até 5000', [{ item: 'rare candy', qty: 50, max: 5000, got: 30 }]);
-        assert(list.length === 3 && ruins.length === 1 && list[0].got === 30 && list[2].got === 0 && list[1].item === 'Ultra Ball', 'parseMarketText: got pelo item+preço, repetida não herda: ' + JSON.stringify(list));
+        const { list, ruins } = api.parseMarketText('100 Rare Candy até 5000\nabc\n\n5 Ultra Ball até 2k\n100 Rare Candy até 5000\n100 Rare Candy até 5000 diamantes', [{ item: 'rare candy', qty: 50, max: 5000, got: 30 }, { item: 'rare candy', qty: 50, max: 5000, cur: 'DIAMONDS', got: 7 }]);
+        assert(list.length === 4 && ruins.length === 1 && list[0].got === 30 && list[2].got === 0 && list[3].got === 7 && list[1].item === 'Ultra Ball', 'parseMarketText: got pelo item+moeda+preço, repetida não herda: ' + JSON.stringify(list));
         assert(api.marketLineText(list[1]) === '5 Ultra Ball até 2000', 'texto de volta');
     }
 
@@ -62,7 +64,7 @@ const base = () => ({ marketEnabled: true, marketEveryMin: 3, marketKeepGold: 0,
         assert(cfg.marketList[0].got === 100 && api.marketEntryDone(cfg.marketList[0]) && state.saves === 1, 'got 100 salvo');
         assert(api.marketGold === 1000000 - 30 * 4000 - 70 * 4500, 'gold estimado descontado: ' + api.marketGold);
         assert(state.hooks.length === 1 && state.hooks[0].kind === 'alert' && /comprou no Mercado Global \*\*30 Rare Candy\*\* e \*\*70 Rare Candy\*\*/.test(state.hooks[0].content) && /pedido concluído/.test(state.hooks[0].desc), 'aviso: ' + state.hooks[0].content + ' | ' + state.hooks[0].desc);
-        assert(state.logs.some(([k]) => k === 'mercado-campos') && state.logs.filter(([k]) => k === 'mercado-compra').length === 2 && state.logs.some(([k, d]) => k === 'mercado' && d.ofertas['rare candy|5000'].menor === 4000 && d.ofertas['rare candy|5000'].dentro === 130), 'logs: ' + JSON.stringify(state.logs.map(l => l[0])));
+        assert(state.logs.some(([k]) => k === 'mercado-campos') && state.logs.filter(([k]) => k === 'mercado-compra').length === 2 && state.logs.some(([k, d]) => k === 'mercado' && d.ofertas['rare candy|GOLD|5000'].menor === 4000 && d.ofertas['rare candy|GOLD|5000'].dentro === 130), 'logs: ' + JSON.stringify(state.logs.map(l => l[0])));
         assert(api.marketNextAt > Date.now() && api.marketNextAt <= Date.now() + 3 * 60 * 1000 + 50, 'próxima leitura no intervalo');
         state.calls.length = 0;
         api.marketTick();
@@ -86,12 +88,12 @@ const base = () => ({ marketEnabled: true, marketEveryMin: 3, marketKeepGold: 0,
         // 80.000 − reserva 50.000 = 30.000 para gastar: 5 × 3.500 (o que não é meu do M2) = 17.500; sobram 12.500 = 3 × 4.000 do M3
         assert(posts.length === 2 && posts[0].body.price === 3500 && posts[0].body.quantity === 5 && posts[1].body.price === 4000 && posts[1].body.quantity === 3, 'pula o meu (M1), compra só o que não é meu do M2 (5) e do M3 só o que cabe na reserva (3): ' + JSON.stringify(posts.map(p => p.body)));
         assert(cfg.marketList[0].got === 8 && api.marketGold === 80000 - 5 * 3500 - 3 * 4000, 'got 8, gold 50.500: ' + api.marketGold);
-        const of = api.marketLast.ofertas['rare candy|5000'];
+        const of = api.marketLast.ofertas['rare candy|GOLD|5000'];
         assert(of.total === 2 && of.menor === 3500 && of.dentro === 15, 'ofertas sem o meu anúncio: ' + JSON.stringify(of));
         // próxima leitura: gold 50.500 − reserva = 500 < 4.000 → nada cabe: marca "sem gold"
         state.calls.length = 0;
         await api.marketScan('teste');
-        assert(state.calls.filter(c => c.url === '/api/game/market/action').length === 0 && api.marketLast.ofertas['rare candy|5000'].semGold === true && cfg.marketList[0].got === 8, 'na reserva: não compra e marca sem gold');
+        assert(state.calls.filter(c => c.url === '/api/game/market/action').length === 0 && api.marketLast.ofertas['rare candy|GOLD|5000'].semGold === true && cfg.marketList[0].got === 8, 'na reserva: não compra e marca sem gold');
         assert(/reserva 50\.000/.test(api.marketStatus(cfg)), 'status mostra a reserva: ' + api.marketStatus(cfg));
     }
 
@@ -139,7 +141,7 @@ const base = () => ({ marketEnabled: true, marketEveryMin: 3, marketKeepGold: 0,
         assert(r.ok && /comprou 10 Ultra Ball a 800/.test(r.msg), 'botão lê mesmo desligado: ' + r.msg);
         const posts = state.calls.filter(c => c.url === '/api/game/market/action');
         assert(posts.length === 1 && posts[0].body.kind === 'ball' && posts[0].body.refId === 4 && posts[0].body.quantity === 10, 'bola comprada como ball (não confunde com item refId 4): ' + JSON.stringify(posts.map(p => p.body)));
-        assert(/catálogo/.test(api.marketLast.ofertas['coisa inexistente|100'].erro), 'motivo do item desconhecido');
+        assert(/catálogo/.test(api.marketLast.ofertas['coisa inexistente|GOLD|100'].erro), 'motivo do item desconhecido');
         const r2 = await api.marketNow();
         assert(r2.ok && /nada a comprar/.test(r2.msg), 'segunda vez: só o desconhecido pendente, nada a comprar: ' + r2.msg);
         api.marketReset();
@@ -154,6 +156,40 @@ const base = () => ({ marketEnabled: true, marketEveryMin: 3, marketKeepGold: 0,
         await api.marketScan('teste');
         const posts = state.calls.filter(c => c.url === '/api/game/market/action');
         assert(posts.length === 1 && posts[0].body.refId === 2 && posts[0].body.quantity === 2 && cfg.marketList[1].got === 2, 'comprou a bola: ' + JSON.stringify(posts.map(p => p.body)));
+    }
+
+    // 8) intervalo sorteado entre mínimo e máximo (máximo 0 ou <= mínimo = fixo)
+    {
+        const { api } = loadMarketModule(Object.assign(base(), { marketEveryMin: 2, marketEveryMaxMin: 6 }), { items: ITEMS });
+        assert(JSON.stringify(api.marketEveryRange()) === '{"min":2,"max":6}' && JSON.stringify(api.marketEveryRange({ marketEveryMin: 5, marketEveryMaxMin: 3 })) === '{"min":5,"max":5}' && JSON.stringify(api.marketEveryRange({ marketEveryMin: 0 })) === '{"min":3,"max":3}', 'faixa');
+        for (let i = 0; i < 50; i++) { const ms = api.marketEveryMs(); assert(ms >= 2 * 60000 && ms <= 6 * 60000, 'sorteio dentro da faixa: ' + ms); }
+        assert(api.marketEveryMs({ marketEveryMin: 4, marketEveryMaxMin: 0 }) === 4 * 60000, 'máximo 0 = fixo');
+    }
+
+    // 9) pedido em diamantes: saldo lido antes (GET /api/game/diamonds), só anúncios em DIAMONDS, reserva de diamonds, moeda no POST
+    {
+        const cfg = Object.assign(base(), { marketKeepDiamonds: 30, marketList: [{ item: 'Rare Candy', qty: 50, max: 12, cur: 'DIAMONDS', got: 0 }] });
+        const listings = [
+            { id: 'D1', kind: 'item', refId: 300, name: 'Rare Candy', price: 1, currency: 'GOLD', quantity: 500 },
+            { id: 'D2', kind: 'item', refId: 300, name: 'Rare Candy', price: 10, currency: 'DIAMONDS', quantity: 20 },
+            { id: 'D3', kind: 'item', refId: 300, name: 'Rare Candy', price: 15, currency: 'DIAMONDS', quantity: 20 },
+        ];
+        const { api, state } = loadMarketModule(cfg, { items: ITEMS, api: (url) => (url === '/api/game/diamonds' ? { diamonds: 100 } : url.startsWith('/api/game/market?') ? { listings, mine: [] } : { ok: true }) });
+        api.marketOnBalls({ type: 'balls', counts: {}, gold: 999999 });
+        await api.marketScan('teste');
+        assert(state.calls[0].url === '/api/game/diamonds' && api.marketDiamonds === 100 - 70, 'leu o saldo antes e descontou: ' + api.marketDiamonds);
+        const posts = state.calls.filter(c => c.url === '/api/game/market/action');
+        assert(posts.length === 1 && posts[0].body.currency === 'DIAMONDS' && posts[0].body.price === 10 && posts[0].body.quantity === 7, 'ignora o anúncio em gold e o acima do preço; (100 − 30) / 10 = 7: ' + JSON.stringify(posts.map(p => p.body)));
+        assert(cfg.marketList[0].got === 7 && api.marketGold === 999999, 'got 7; gold intacto');
+        const of = api.marketLast.ofertas['rare candy|DIAMONDS|12'];
+        assert(of.moeda === 'diamonds' && of.total === 2 && of.menor === 10 && of.dentro === 20, 'ofertas em diamonds: ' + JSON.stringify(of));
+        assert(/\*\*7 Rare Candy\*\*/.test(state.hooks[0].content) && /7 × 10 diamonds = 70/.test(state.hooks[0].desc) && /Diamonds agora: 30/.test(state.hooks[0].desc), 'aviso em diamonds: ' + state.hooks[0].desc);
+        assert(/diamonds 30 \(reserva 30\)/.test(api.marketStatus(cfg)), 'status com diamonds: ' + api.marketStatus(cfg));
+        // sem pedido em diamantes não lê o saldo
+        state.calls.length = 0;
+        cfg.marketList = [{ item: 'Rare Candy', qty: 1, max: 5, cur: 'GOLD', got: 0 }];
+        await api.marketScan('teste');
+        assert(!state.calls.some(c => c.url === '/api/game/diamonds'), 'pedido em gold não lê diamonds');
     }
 
     console.log('market.test.js OK');

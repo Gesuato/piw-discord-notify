@@ -48,7 +48,7 @@ const rica = {
   // v3.33.0 (Farm por lista; desligado porque é excludente com a rota de treino do fixture; got round-trip pelo item+monstro)
   farmEnabled: false, farmList: [{ item: 'Magikarp Fin', qty: 1000, hunt: 'magikarp', got: 10 }, { item: 'Feather', qty: 200, hunt: '', got: 0 }],
   // v3.53.0 (Mercado Global; got round-trip pelo item+preço)
-  marketEnabled: true, marketList: [{ item: 'Rare Candy', qty: 100, max: 5000, got: 10 }, { item: 'Ultra Ball', qty: 50, max: 1200, got: 0 }], marketEveryMin: 4, marketKeepGold: 250000,
+  marketEnabled: true, marketList: [{ item: 'Rare Candy', qty: 100, max: 5000, cur: 'GOLD', got: 10 }, { item: 'Ultra Ball', qty: 50, max: 1200, cur: 'DIAMONDS', got: 0 }], marketEveryMin: 4, marketEveryMaxMin: 9, marketKeepGold: 250000, marketKeepDiamonds: 30,
   breedEnabled: true, breedLines: [{ id: 'tronco1', name: 'Donphan', speciesId: 232, gen: 2, q0: 1.466, iv0: 126, lastQ: 1.48, lastIv: 126, food: { id: 'comida1', name: 'Donphan', speciesId: 232, gen: 1, q0: 1.3, iv0: 100, familia: false } }, null], breedFoodIvMax: 140, breedKeepMax: 25, breedFamily: false, breedDouble: false, breedFoodBreed: true, breedFoodMinQ: 1.7,
 };
 setTimeout(() => {

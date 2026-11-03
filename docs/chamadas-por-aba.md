@@ -31,7 +31,12 @@ Pokémon, usar o Mercado Global nem o Depot **durante a hunt**. Por isso toda ve
 | Compra de bolas | viagem à cidade → `GET /api/game/shop` + `POST /api/game/shop/buy` (REST) | uma vez por episódio de estoque abaixo do limite (bola zerada some do frame `balls`; vale 0) |
 | Mochila (poções/revives) | `inv-get` (socket) | a cada 5 min, 4 s após o socket e no Salvar (só com refil ligado) |
 | Refil de poção/revive (v3.21.0) | viagem à cidade → `GET /api/game/depot` + `GET /api/game/shop` + `POST /api/game/shop/buy { itemId, qty }` (REST) | uma vez por episódio abaixo do limite; carona em toda viagem enquanto estiver abaixo |
-| Mercado Global (v3.53.0) | `GET /api/game/market?category=Items` + `POST /api/game/market/action { action:'buy-stack', ... }` (REST, SEM viagem: o jogo deixa comprar na hunt) | a cada `marketEveryMin` (padrão 3 min) enquanto houver pedido pendente; 8 s após a carga; no Salvar; botão "Conferir agora"; 429 = espera 10 min |
+
+## 🌐 Mercado (v3.53.1)
+
+| O quê | Como | Quando |
+|---|---|---|
+| Mercado Global (v3.53.0) | `GET /api/game/market?category=Items` + `POST /api/game/market/action { action:'buy-stack', ... }` (REST, SEM viagem: o jogo deixa comprar na hunt); `GET /api/game/diamonds` antes de cada leitura com pedido em diamantes | intervalo sorteado em `marketEveryMin`–`marketEveryMaxMin` (padrão 3 min fixo) enquanto houver pedido pendente; 8 s após a carga; no Salvar; botão "Conferir agora"; 429 = espera 10 min |
 
 ## 💰 Venda
 
