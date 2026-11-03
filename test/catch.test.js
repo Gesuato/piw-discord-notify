@@ -165,5 +165,37 @@ const flush = () => new Promise(r => setTimeout(r, 5));
         assert(api.catchTarget === null && state.logs.some(l => l[0] === 'captura-erro'), 'erro logado, sem alvo');
     }
 
+    // 10) v3.52.1: pedida pela rota da profissão (toggle desligado): roda com as áreas do painel, só a Pokédex conta como feita,
+    //     concluir não mexe no toggle nem avisa; catchEnsure/catchStop
+    {
+        let quer = true;
+        const cfg = { catchRouteEnabled: false, catchRouteAreas: ['kanto'] };
+        const { api, state, clock } = loadCatchModule(cfg, ambiente([19, 63], { profWantsSpecies: () => quer }));
+        assert(api.catchForProf() && api.catchRouteActive() && api.catchEnsure('profissão') === 'carregando', 'pela profissão: ativa e carregando');
+        await flush();
+        assert(api.catchTarget?.slug === 'pidgey' && api.catchTargetSlug() === 'pidgey' && api.catchEnsure('profissão') === 'alvo', 'alvo escolhido: ' + JSON.stringify(api.catchTarget));
+        assert(/^pela profissão · alvo Pidgey/.test(api.catchStatus()), 'status marca a origem: ' + api.catchStatus());
+        api.catchOnPokes([{ id: 'x1', speciesId: 16, name: 'Pidgey', team: false }]);
+        api.catchOnFamily([{ id: 'f1', name: 'Nidoran Female' }]);
+        assert(!api.speciesDone(16) && !api.speciesDone(29) && api.speciesDone(19) && api.catchTarget?.slug === 'pidgey', 'conta e família NÃO contam para a profissão; Pokédex sim');
+        api.catchOnResult({ name: 'pidgey' }, { success: true, speciesName: 'Pidgey', auto: true });
+        assert(api.catchTarget?.slug === 'nidoranfe', 'capturou: próximo alvo nidoranfe');
+        api.catchOnResult({ name: 'nidoranfe' }, { success: true, speciesName: 'Nidoran Female' });
+        assert(api.catchTarget === null && cfg.catchRouteEnabled === false && state.hooks.every(h => !/🏁/.test(h.content)), 'acabou: sem toggle para desligar e sem aviso de conclusão');
+        assert(state.logs.some(l => l[0] === 'captura-concluida' && l[1].pelaProfissao === true), 'log da conclusão pela profissão');
+        assert(api.catchEnsure('profissão') === 'esgotada', 'esgotada por 30 min');
+        clock.now += 31 * 60 * 1000;
+        assert(api.catchEnsure('profissão') === 'carregando', 'depois relê a Pokédex');
+        await flush();
+        assert(api.catchTarget === null && api.catchEnsure('profissão') === 'esgotada', 'nada novo: esgotada de novo');
+        quer = false;
+        assert(!api.catchRouteActive() && api.catchStatus() === 'desligada', 'profissão não quer mais: desligada');
+        quer = true; cfg.catchRouteSkipped = []; cfg.catchRouteDone = (cfg.catchRouteDone || []).filter(id => id !== 29); api.dexCaught.delete(29);
+        clock.now += 31 * 60 * 1000; api.catchEnsure('profissão'); await flush();
+        assert(api.catchTarget?.slug === 'nidoranfe', 'alvo de novo');
+        api.catchStop('teste');
+        assert(api.catchTarget === null && state.logs.some(l => l[0] === 'captura-solta' && l[1].slug === 'nidoranfe'), 'catchStop solta o alvo');
+    }
+
     console.log('OK catch.test — catálogo, plano por nível/área, bola automática, avanço, pulos e conclusão');
 })().catch(e => { console.error(e); process.exit(1); });

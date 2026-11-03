@@ -113,7 +113,9 @@ e `error { message }` (resposta de ação recusada; o script os trata em `handle
   `GET /api/game/professions` → `{ profession:'prestige'|'botanist'|..., professions:[{ key, enabled, color, talentTree }], rankKey
   ('E'..'S'), speciesCount, pictures, herbs, talents, swap{ price, free, credits, diamonds, eventUntil, savedRanks }, nextStep }`;
   `nextStep` (null = rank S; v3.52.0, janela "Profissões" do bundle de 02/11/2026) = `{ toRankKey, species:{ have, need },
-  pictures:{ have, need }, berries?:{ have, need }, kills?:[{ type, have, need }], ok }` — "Espécies diferentes capturadas",
+  pictures:{ have, need }, berries?:{ have, need }, kills?:[{ type, have, need }], ok }` (CONFIRMADO no log da conta2 em 03/11/2026:
+  rank D→C pede `species 100`, `pictures 50`, `kills` com os 18 tipos × 200; `pictures.have` é a mochila — subiu 0→1 com o shiny da
+  hunt; `berries` ausente na Prestige) — "Espécies diferentes capturadas",
   "Entregar Rare Pokémon Picture" (item 59195; a Prestige ganha 1 a cada shiny que aparece na hunt; consumida no rank up),
   "Berries craftadas", "Derrotar Pokémon de cada tipagem (N por tipo)"; o botão "Subir de Rank" só liga com `ok`. Ranks:
   D Aventureiro, C Especialista, B Elite, A Campeão, S Mestre Pokémon. `POST /api/game/professions/rankup {}` → estado novo (mesmo

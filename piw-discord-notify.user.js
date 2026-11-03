@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.52.0
+// @version      3.52.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.52.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.52.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -577,7 +577,7 @@
 
     // Algum módulo usa a lista `pokes`? (nível/rota, venda de Pokémon, rota de captura, daily sozinha, clã, Joy, evolução)
     function pokesListUsed() {
-        return levelEnabled() || Boolean(cfg.pokeSellEnabled) || Boolean(cfg.catchRouteEnabled) || Boolean(cfg.dailyEnabled && cfg.dailyAuto)
+        return levelEnabled() || Boolean(cfg.pokeSellEnabled) || Boolean(cfg.catchRouteEnabled) || Boolean(cfg.profRoute) || Boolean(cfg.dailyEnabled && cfg.dailyAuto)
             || Boolean(cfg.clanEnabled && cfg.clanRoute) || Boolean(cfg.healJoyEnabled) || Boolean(cfg.evolveEnabled) || Boolean(cfg.breedEnabled);
     }
     function requestPokes(delayMs) {
@@ -1736,8 +1736,15 @@
     const catchFailed = new Set();  // slugs cuja entrada falhou nesta sessão (não persiste)
     let onCatchChange = null;       // callback do painel
     let catchReenterTimer = null;
+    let catchFinishedAt = 0;        // v3.52.1: quando a rota acabou sem o toggle ligado (pedida pela profissão); tenta de novo depois
+    const CATCH_FINISHED_RETRY_MS = 30 * 60 * 1000;
 
-    function catchRouteActive() { return Boolean(cfg.catchRouteEnabled); }
+    function catchRouteActive() { return Boolean(cfg.catchRouteEnabled) || catchForProf(); }
+    // v3.52.1: a rota da profissão ("Caçar o que falta") precisa de espécies novas e usa ESTA rota com o toggle dela desligado
+    // (áreas, nível máximo e bola do painel valem). Nesse modo só a Pokédex conta como "feita": a profissão conta as capturas
+    // deste personagem, não o que está na conta ou no depósito da família (conta2, 02/11/2026: 85/100 espécies parada em
+    // igglybuff porque a rota de captura tinha sido desligada pela exclusividade do Salvar).
+    function catchForProf() { return !cfg.catchRouteEnabled && typeof profWantsSpecies === 'function' && profWantsSpecies(); }
     function catchAreas() {
         const a = Array.isArray(cfg.catchRouteAreas) ? cfg.catchRouteAreas.filter(x => CATCH_AREAS.includes(x)) : [];
         return a.length ? a : ['kanto'];
@@ -1808,7 +1815,9 @@
     }
     // Espécie já feita por qualquer fonte (ver comentário do módulo).
     function speciesDone(id) {
-        if (dexCaught.has(id) || ownedSpecies.has(id)) return true;
+        if (dexCaught.has(id)) return true;
+        if (catchForProf()) return false;   // v3.52.1: para a profissão só vale a Pokédex
+        if (ownedSpecies.has(id)) return true;
         if (!familyNames.size) return false;
         for (const n of familyNames) if (creatureIdByName.get(n) === id) return true;
         return false;
@@ -1884,11 +1893,12 @@
     }
     function catchStatus() {
         if (!catchRouteActive()) return 'desligada';
-        if (!huntCatalog) return catchBusy ? 'carregando hunts e Pokédex…' : 'ainda não carregada';
+        const pre = catchForProf() ? 'pela profissão · ' : '';
+        if (!huntCatalog) return pre + (catchBusy ? 'carregando hunts e Pokédex…' : 'ainda não carregada');
         const p = catchProgress();
-        if (!catchTarget) return p.faltam ? `${p.faltam} espécies faltando · aguardando` : `concluída: ${p.feitas}/${p.total} espécies das áreas marcadas`;
+        if (!catchTarget) return pre + (p.faltam ? `${p.faltam} espécies faltando · aguardando` : `concluída: ${p.feitas}/${p.total} espécies das áreas marcadas`);
         const onde = normalize(huntSlug || '') === catchTarget.slug ? 'na hunt' : (huntSwitch?.origem === 'captura' ? 'entrando…' : `você está em ${huntSlug || 'cidade'}`);
-        return `alvo ${catchTarget.name} (lv ${catchTarget.level}, ${catchTarget.area}) · ${onde} · ${p.feitas}/${p.total} feitas, faltam ${p.faltam} · Pokédex ${p.dex}/${p.dexTotal}${p.naConta ? ` · ${p.naConta} espécies na conta` : ''}`;
+        return `${pre}alvo ${catchTarget.name} (lv ${catchTarget.level}, ${catchTarget.area}) · ${onde} · ${p.feitas}/${p.total} feitas, faltam ${p.faltam} · Pokédex ${p.dex}/${p.dexTotal}${p.naConta ? ` · ${p.naConta} espécies na conta` : ''}`;
     }
 
     // Carrega catálogo + Pokédex e vai para o 1º alvo. `motivo` só para o log.
@@ -1996,6 +2006,12 @@
     function finishCatchRoute() {
         const p = catchProgress();
         catchTarget = null;
+        catchFinishedAt = Date.now();
+        if (!cfg.catchRouteEnabled) {   // v3.52.1: rodando pela profissão: sem toggle para desligar nem aviso de rota concluída
+            logEvent('captura-concluida', { feitas: p.feitas, total: p.total, puladas: (cfg.catchRouteSkipped || []).length, falhas: catchFailed.size, pelaProfissao: true });
+            if (onCatchChange) { try { onCatchChange(); } catch { /* painel fechado */ } }
+            return;
+        }
         cfg.catchRouteEnabled = false;
         saveCfg(cfg);
         logEvent('captura-concluida', { feitas: p.feitas, total: p.total, puladas: (cfg.catchRouteSkipped || []).length, falhas: catchFailed.size });
@@ -2040,6 +2056,25 @@
         if (!emHunt && Date.now() - lastFieldAt < CATCH_IDLE_REENTER_MS) return;   // fora de hunt há pouco: espera
         logEvent('captura-reentrada', { de: h || null, slug: catchTarget.slug, motivo: emHunt ? 'em outra hunt' : 'parado fora de hunt' });
         switchHunt(catchTarget.slug, 1, 'captura');
+    }
+    // v3.52.1: chamado pela rota da profissão a cada tique enquanto faltam espécies. Garante catálogo/Pokédex e um alvo; devolve
+    // 'alvo' | 'carregando' | 'esgotada' (nada novo nas áreas marcadas; relê a Pokédex em CATCH_FINISHED_RETRY_MS).
+    function catchEnsure(motivo) {
+        if (catchBusy) return 'carregando';
+        if (!huntCatalog) { startCatchRoute(motivo); return 'carregando'; }
+        if (catchTarget) return 'alvo';
+        if (catchFinishedAt && Date.now() - catchFinishedAt < CATCH_FINISHED_RETRY_MS) return 'esgotada';
+        startCatchRoute(motivo);   // relê a Pokédex e escolhe o alvo (ou conclui de novo)
+        return 'carregando';
+    }
+    function catchTargetSlug() { return catchTarget ? catchTarget.slug : null; }
+    // A profissão não precisa mais de espécies (ou a rota dela foi desligada): solta o alvo sem mexer no toggle desta rota.
+    function catchStop(motivo) {
+        if (!catchTarget && !catchReenterTimer) return;
+        clearTimeout(catchReenterTimer); catchReenterTimer = null;
+        if (catchTarget) logEvent('captura-solta', { slug: catchTarget.slug, motivo });
+        catchTarget = null; catchFinishedAt = 0;
+        if (onCatchChange) { try { onCatchChange(); } catch { /* painel fechado */ } }
     }
 
     // ---- Daily Kill: voltar para a hunt quando a missão do dia terminar ----------
@@ -5492,13 +5527,14 @@
         const it = familyDepotItems().find(i => Number(i?.itemId ?? i?.id) === PROF_PICTURE_ID);
         return Number(it?.quantity) || 0;
     }
-    // Viagem à cidade tem o que fazer pela profissão (carona): subir, ou só faltam pictures (confere Depot/família lá).
+    // Viagem à cidade tem o que fazer pela profissão (carona): subir, ou faltam pictures (confere Depot/família lá e traz quando
+    // as duas juntas completam a conta). v3.52.1: vale mesmo faltando espécies/abates — a picture fica na mochila, protegida.
     function profWantsCity(d) {
         d = d || cfg;
         if (!d.profRankupEnabled || !profState?.next) return false;
         if (profState.next.ok) return true;
         const m = profMissing();
-        if (!m || !m.soPictures || !(d.profFromDepot || d.profFromFamily)) return false;
+        if (!m || !(m.pictures > 0) || !(d.profFromDepot || d.profFromFamily)) return false;
         if (profPicsSeen.at && Date.now() - profPicsSeen.at < PROF_PICS_RECHECK_MS && profPicsSeen.depot + profPicsSeen.familia < m.pictures) return profPicturesInFamily() >= m.pictures;
         return true;
     }
@@ -5739,10 +5775,21 @@
         if (volta && volta !== atual) switchHunt(volta, 1, 'profissao');
         profNotify();
     }
+    // v3.52.1: faltam espécies e nenhuma hunt de abate está na vez → a rota de captura (mesma aba) caça as espécies que faltam com
+    // as áreas/nível/bola dela, mesmo com o toggle dela desligado (ver catchForProf no módulo de captura). Abates primeiro.
+    function profWantsSpecies() {
+        if (!profRouteOn()) return false;
+        const m = profMissing();
+        return Boolean(m && m.species > 0 && !profPlan().length);
+    }
     function profNoPlanReason() {
         const m = profMissing();
         if (!m) return profState?.key ? 'rank máximo' : 'sem profissão';
-        if (!m.kills.length) return m.nada ? 'requisitos fechados' : `nada a caçar (faltam ${profReqsLeft().join(', ')})`;
+        if (!m.kills.length) {
+            if (m.nada) return 'requisitos fechados';
+            const dica = m.species > 0 && typeof catchEnsure === 'function' ? ' — a rota de captura não achou espécie nova nas áreas marcadas (amplie as áreas ou o nível na Rota de captura)' : '';
+            return `nada a caçar (faltam ${profReqsLeft().join(', ')})${dica}`;
+        }
         return `nenhuma hunt até lv ${profLevelCap()} com os tipos ${m.kills.map(k => k.type).join(', ')}`;
     }
     function profSetWait(motivo) {
@@ -5759,6 +5806,7 @@
         await profRefresh(false);
         if (!profState) return;
         await profAskTrip();
+        if (typeof catchStop === 'function' && !cfg.catchRouteEnabled && !profWantsSpecies()) catchStop(profRouteOn() ? 'a profissão não precisa mais de espécies' : 'rota da profissão desligada');   // v3.52.1
         if (!profRouteOn()) { profSetWait(''); if (profTarget) profReturn('rota da profissão desligada'); else if (profFrom) { profFrom = null; profSaveFrom(); } return; }
         if (!Array.isArray(huntCatalog)) {
             try { await loadHuntCatalog(); } catch (err) { profSetWait(`não consegui baixar o mapa de hunts (${String(err?.message || err)})`); return; }
@@ -5774,6 +5822,17 @@
         const plano = profPlan();
         const atual = normalize(huntSlug || '');
         if (!plano.length) {
+            const m = profMissing();
+            if (m && m.species > 0 && typeof catchEnsure === 'function') {   // v3.52.1: espécies pela rota de captura
+                const st = catchEnsure('profissão');
+                if (st !== 'esgotada') {
+                    if (profTarget) { profTarget = null; profNotify(); }
+                    const alvo = catchTargetSlug();
+                    if (!profFrom && atual && atual !== alvo && !CITY_SLUGS.includes(atual) && !(typeof bossIsArena === 'function' && bossIsArena(atual)) && !(typeof invIsRaid === 'function' && invIsRaid(atual))) { profFrom = atual; profSaveFrom(); }
+                    profSetWait(st === 'alvo' ? `espécies pela rota de captura (alvo ${alvo})` : 'espécies pela rota de captura (carregando Pokédex e mapa)');
+                    return;
+                }
+            }
             const motivo = profNoPlanReason();
             profSetWait(motivo);
             if (profTarget || profFrom) profReturn(motivo);   // origem lembrada da recarga também volta (lição da guild, v3.46.0)
@@ -5816,7 +5875,7 @@
         const pronto = t.ok ? ' · pronto para subir' + (d.profRankupEnabled ? ' (na próxima viagem)' : ' (suba no jogo ou ligue abaixo)') : '';
         const m = profMissing();
         const volta = profReturnTarget();
-        const rota = !d.profRoute ? '' : profTarget ? `▶ ${profTarget.slug} lv${profTarget.level} (${profTarget.motivo})${volta ? ` · volta para ${volta}` : ''}` : (!m.kills.length ? 'Nada a caçar' : profWait ? `parado: ${profWait}` : profRouteOn() ? 'escolhendo a hunt… (confere a cada 1 min)' : 'salve para ligar');
+        const rota = !d.profRoute ? '' : profTarget ? `▶ ${profTarget.slug} lv${profTarget.level} (${profTarget.motivo})${volta ? ` · volta para ${volta}` : ''}` : (!m.kills.length ? (m.species > 0 && profWait ? `${profWait}${volta ? ` · no fim volta para ${volta}` : ''}` : 'Nada a caçar') : profWait ? `parado: ${profWait}` : profRouteOn() ? 'escolhendo a hunt… (confere a cada 1 min)' : 'salve para ligar');
         const ultima = profLast ? ` · última viagem ${new Date(profLast.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}: ${profLast.subiu ? `subiu para ${profLast.subiu.para}` : profLast.motivo}` : '';
         const nomeProx = profRankName(t.rank);
         return { head: `${base} → ${t.rank}${nomeProx ? ` (${nomeProx})` : ''}${pronto}${ultima}`, reqs, rota };
@@ -9507,8 +9566,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <h3>Profissão</h3>
                         <label class="dn-toggle"><input id="pg-dn-prof-rankup" type="checkbox"><span class="sw"></span>Subir de rank sozinho quando os requisitos fecharem <span class="dn-hint">(na viagem à cidade)</span></label>
                         <div class="dn-inline">Buscar as Rare Pokémon Picture que faltarem: <label class="dn-toggle dn-toggle--sm"><input id="pg-dn-prof-depot" type="checkbox"><span class="sw"></span>no Depot comum</label> <label class="dn-toggle dn-toggle--sm"><input id="pg-dn-prof-family" type="checkbox"><span class="sw"></span>no depósito da família</label></div>
-                        <label class="dn-toggle"><input id="pg-dn-prof-route" type="checkbox"><span class="sw"></span>Caçar o que falta <span class="dn-hint">(vai para a hunt do tipo que falta derrotar, até o nível do time)</span></label>
-                        <p class="dn-help">Requisitos do jogo: espécies diferentes capturadas (a rota acima serve para isso), entregar Rare Pokémon Picture (1 foto a cada shiny que aparece na hunt; o script não vende nem guarda a picture) e derrotar N Pokémon de cada tipagem. A picture só é buscada quando Depot + família completam a conta. Nunca escolhe nem troca a profissão. "Caçar o que falta" desliga as outras rotas; a Daily tem prioridade.</p>
+                        <label class="dn-toggle"><input id="pg-dn-prof-route" type="checkbox"><span class="sw"></span>Caçar o que falta <span class="dn-hint">(vai para a hunt do tipo que falta derrotar, até o nível do time; faltando espécies, usa a rota de captura acima — áreas, nível e bola dela — mesmo desligada)</span></label>
+                        <p class="dn-help">Requisitos do jogo: espécies diferentes capturadas (só a Pokédex conta: "Caçar o que falta" roda a rota de captura acima para elas), entregar Rare Pokémon Picture (1 foto a cada shiny que aparece na hunt; o script não vende nem guarda a picture) e derrotar N Pokémon de cada tipagem. A picture é buscada em qualquer viagem à cidade, só quando Depot + família completam a conta. Nunca escolhe nem troca a profissão. "Caçar o que falta" desliga as outras rotas; a Daily tem prioridade.</p>
                         <div class="dn-status col"><div id="pg-dn-prof-status"></div><ul id="pg-dn-prof-reqs" class="dn-help"></ul><div id="pg-dn-prof-plan" class="dn-help"></div></div>
                         <div class="dn-actions">
                             <button type="button" class="dn-btn dn-btn--sm" id="pg-dn-prof-now" title="Na cidade: busca as pictures e sobe de rank agora. Na hunt: pede a viagem à cidade.">⬆ Subir agora</button>
@@ -10551,11 +10610,12 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
         // ---- Profissão: rota de captura ----
         function renderCatch() {
             const d = current();
-            $('#pg-dn-catch-status').innerHTML = d.catchRouteEnabled
+            const ativa = d.catchRouteEnabled || catchForProf();   // v3.52.1: a rota da profissão também usa esta rota
+            $('#pg-dn-catch-status').innerHTML = ativa
                 ? `<span class="k">Rota ·</span> ${escHtml(catchStatus())}`
                 : '<span class="k">Rota de captura desligada.</span>';
-            const prox = (cfg.catchRouteEnabled && huntCatalog) ? catchPlan().slice(0, 8) : [];
-            const feitas = (cfg.catchRouteEnabled && huntCatalog) ? catchScope().filter(h => speciesDone(h.speciesId)) : [];
+            const prox = (catchRouteActive() && huntCatalog) ? catchPlan().slice(0, 8) : [];
+            const feitas = (catchRouteActive() && huntCatalog) ? catchScope().filter(h => speciesDone(h.speciesId)) : [];
             const fontes = feitas.reduce((m, h) => { const f = speciesSource(h.speciesId) || '?'; m[f] = (m[f] || 0) + 1; return m; }, {});
             const fontesTxt = feitas.length ? ` Feitas: ${Object.entries(fontes).map(([f, n]) => `${n} ${f}`).join(', ')}.` : '';
             $('#pg-dn-catch-next').textContent = prox.length
@@ -11019,6 +11079,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             }
             if (JSON.stringify([cfg.profRankupEnabled, cfg.profRoute, cfg.profFromDepot, cfg.profFromFamily]) !== profAntes) {   // v3.52.0
                 if (!cfg.profRoute && profTarget) profReturn('rota da profissão desligada');
+                if (!cfg.profRoute && !cfg.catchRouteEnabled) catchStop('rota da profissão desligada');   // v3.52.1
                 profReadyAsk = { rank: '', n: 0, at: 0 };
                 if (profOn()) setTimeout(() => profTick(), 500);
             }

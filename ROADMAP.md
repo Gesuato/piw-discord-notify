@@ -1011,15 +1011,22 @@ viagem. Avisa em Alertas (🎓 subiu para o rank X). Nunca escolhe/troca a profi
 **Como o jogo faz (bundle de 02/11/2026, janela "Profissões"):** `GET /api/game/professions` → `nextStep { toRankKey, species, pictures,
 berries?, kills?[{ type, have, need }], ok }` (null = rank S); `POST /api/game/professions/rankup {}` → estado novo. Ranks E..S
 (D Aventureiro, C Especialista, B Elite, A Campeão, S Mestre Pokémon). Picture = 1 foto a cada shiny que aparece na hunt (Prestige).
-Formatos de `pictures`/`kills`/`berries` ainda não vistos no log (`profissao-campos` registra as chaves do 1º frame).
+`pictures{ have, need }` e `kills[{ type, have, need }]` CONFIRMADOS no log da conta2 em 03/11/2026 (`pictures.have` = mochila: subiu
+0→1 com o shiny da hunt); `berries` não aparece na Prestige.
 
 **Config/UI:** `profRankupEnabled`, `profFromDepot`, `profFromFamily`, `profRoute`; status com cabeçalho (profissão, rank, próximo rank,
 pronto/última viagem), lista de requisitos (✔/•, com família/Depot para a picture) e linha da rota. Módulo `// ---- Profissão: subir de
 rank`, tarefa `profissao` da viagem. Teste: `node test/prof.test.js` (8 casos: leitura, pictures Depot+família, não completa, 3 pedidos
 por rank, cidade parada/botão, rota por tipo, origem lembrada/hunt padrão/Daily, rank máximo/sem profissão).
 
-**Pendências:** confirmar no log o formato real de `pictures`/`kills`, se `pictures.have` é a mochila (a retirada da família só faz
-sentido se for) e se o `rankup` é aceito na cidade sem a janela aberta.
+**v3.52.1 (03/11/2026, conta2 CabralJ):** abates fechados (a rota foi a dratini pelo DRAGON e voltou), mas "espécies 85/100" e
+"pictures 1/50" ficaram paradas: a Rota de captura tinha sido desligada pela exclusividade do Salvar e a carona das pictures exigia
+"só faltam pictures". Agora "Caçar o que falta" roda a rota de captura para as espécies (toggle dela desligado; só a Pokédex conta;
+`catchEnsure`/`catchStop`; esgotada = volta com a dica de ampliar áreas/nível) e as pictures são buscadas em qualquer viagem quando
+Depot + família completam a conta.
+
+**Pendências:** confirmar no log `profissao-pictures` (retirada da família) e `profissao-rank` (se o `rankup` é aceito na cidade sem a
+janela aberta); conferir se `speciesCount` da profissão bate com a Pokédex (painel: "N espécies" no cabeçalho vs "Pokédex N/M" da rota).
 
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 

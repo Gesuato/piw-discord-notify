@@ -232,12 +232,13 @@ function loadCatchModule(cfg, init) {
         tripRunning: false,
         setTimeout: (fn, ms) => { if (ms >= 5000) { state.longTimers.push(fn); return 99; } fn(); return 1; },
         clearTimeout: () => {},
+        profWantsSpecies: init.profWantsSpecies,   // v3.52.1: a rota da profissão pedindo espécies (undefined = módulo ausente)
         Date: FakeDate,
     };
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
             startCatchRoute, catchNext, catchTick, catchOnPending, catchOnResult, catchOnCooldown, catchHuntFailed, skipCatchTarget, catchOnPokes, catchOnFamily, speciesDone, speciesSource, catchOnHuntChange,
-            catchPlan, catchScope, catchProgress, catchStatus, refreshPokedex, refreshProfession,
+            catchPlan, catchScope, catchProgress, catchStatus, refreshPokedex, refreshProfession, catchEnsure, catchStop, catchTargetSlug, catchForProf, catchRouteActive,
             loadHuntCatalog, huntLootTable,
             setHunt(slug) { huntSlug = slug; catchOnHuntChange(slug); },
             get catchTarget() { return catchTarget; },
@@ -1443,12 +1444,17 @@ function loadProfModule(cfg, init) {
         },
         localStorage: { getItem: (k) => (k in state.store ? state.store[k] : null), setItem: (k, v) => { state.store[k] = String(v); }, removeItem: (k) => { delete state.store[k]; } },
         idleDefaultSlug: () => init.defaultSlug || null,
+        // v3.52.1: rota de captura falsa (`init.catch = { status }`): `catchEnsure` devolve `state.catch.status`, `catchStop` anota.
+        catchEnsure: init.catch ? (motivo) => { state.catch.ensures.push(motivo); return state.catch.status; } : undefined,
+        catchStop: init.catch ? (motivo) => { state.catch.stops.push(motivo); state.catch.target = null; } : undefined,
+        catchTargetSlug: init.catch ? () => state.catch.target : undefined,
         setTimeout: (fn, ms) => { clock.now += ms; fn(); return 1; },
         Date: FakeDate,
     };
+    state.catch = Object.assign({ status: 'alvo', target: null, ensures: [], stops: [] }, init.catch || {});
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
-            profTick, profCityWork, profNow, profPlan, profMissing, profKeepsItem, profWantsCity, profReadyForCity, profStatus, noteProfKill, profRefresh, profReqsLeft,
+            profTick, profCityWork, profNow, profPlan, profMissing, profKeepsItem, profWantsCity, profReadyForCity, profStatus, noteProfKill, profRefresh, profReqsLeft, profWantsSpecies,
             setHunt(slug) { huntSlug = slug; },
             set tripRunning(v) { tripRunning = v; },
             get profTarget() { return profTarget; }, get profFrom() { return profFrom; }, get profState() { return profState; }, get profWait() { return profWait; }, get profLast() { return profLast; },

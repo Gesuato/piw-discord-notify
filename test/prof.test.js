@@ -58,7 +58,7 @@ const base = (s, extra) => Object.assign({ api: fakeApi(s), creatures: CREATURES
         const st = api.profStatus();
         assert(/prestige · rank D \(Aventureiro\)/.test(st.head) && /→ C \(Especialista\)/.test(st.head), 'cabeçalho: ' + st.head);
         assert(st.reqs.length === 3 && /• Espécies diferentes capturadas 120\/150/.test(st.reqs[0]) && /• Entregar Rare Pokémon Picture 2\/5/.test(st.reqs[1]) && /✔ Derrotar GRASS 200\/200/.test(st.reqs[2]), 'requisitos: ' + JSON.stringify(st.reqs));
-        assert(!state.trips.length && !api.profWantsCity() && !api.profReadyForCity(), 'faltando espécies: sem viagem');
+        assert(!state.trips.length && api.profWantsCity() && !api.profReadyForCity(), 'faltando espécies: sem viagem urgente, mas pega carona para conferir as pictures (v3.52.1)');
         assert(api.profKeepsItem(PIC) && !api.profKeepsItem(1), 'picture fora da venda/guardar');
         assert(api.profReqsLeft().join(',') === 'espécies 120/150,Rare Pokémon Picture 2/5', 'o que falta: ' + api.profReqsLeft());
     }
@@ -195,6 +195,41 @@ const base = (s, extra) => Object.assign({ api: fakeApi(s), creatures: CREATURES
         assert(/sem profissão escolhida/.test(m2.api.profStatus().head) && !m2.state.trips.length, 'sem profissão: ' + m2.api.profStatus().head);
         const r = await m2.api.profNow();
         assert(!r.ok && /não escolhida/.test(r.motivo), 'botão sem profissão: ' + JSON.stringify(r));
+    }
+
+    // 9) v3.52.1: faltam espécies (abates fechados) → a rota de captura caça as espécies (catchEnsure), origem guardada; espécies
+    //    fechadas → solta a rota de captura e volta; rota de captura esgotada → volta com o motivo e a dica
+    {
+        const s = estado({ especies: 85, especiesNeed: 100, bag: 1, picNeed: 50, kills: [{ type: 'DRAGON', have: 200, need: 200 }] });
+        const { api, state, clock } = loadProfModule(cfgBase({ profRoute: true }), base(s, { huntSlug: 'igglybuff', catch: { status: 'carregando' } }));
+        await api.profTick(); await flush();
+        assert(api.profWantsSpecies(), 'quer espécies');
+        assert(state.catch.ensures.length === 1 && !state.switches.length && api.profTarget === null, 'pediu a rota de captura e não trocou de hunt sozinho: ' + JSON.stringify(state.switches));
+        assert(api.profFrom === 'igglybuff' && JSON.parse(state.store.pgDiscordNotifyProf).from === 'igglybuff', 'origem guardada antes de entregar a hunt à rota de captura');
+        assert(/carregando/.test(api.profWait) && /espécies pela rota de captura/.test(api.profStatus().rota) && /no fim volta para igglybuff/.test(api.profStatus().rota), 'status: ' + api.profStatus().rota);
+        state.catch.status = 'alvo'; state.catch.target = 'pidgey';
+        clock.now += 61 * 1000; await api.profTick(); await flush();
+        assert(/alvo pidgey/.test(api.profWait) && !state.catch.stops.length, 'segue com o alvo da rota de captura: ' + api.profWait);
+        api.setHunt('pidgey');
+        s.especies = 100; clock.now += 61 * 1000;   // espécies fechadas (faltam só as pictures)
+        await api.profTick(); await flush();
+        assert(!api.profWantsSpecies() && state.catch.stops.length === 1 && state.catch.target === null, 'espécies fechadas: solta a rota de captura: ' + JSON.stringify(state.catch.stops));
+        assert(state.switches[0]?.slug === 'igglybuff' && api.profFrom === null && state.logs.some(([k, d]) => k === 'profissao-volta' && d.volta === 'igglybuff'), 'volta para a origem: ' + JSON.stringify(state.switches));
+        assert(api.profWantsCity() && !api.profReadyForCity() && !state.trips.length, 'só pictures (família sem nada): carona, sem viagem urgente');
+        // abates faltando têm prioridade: enquanto há hunt de abate, a rota de captura não é chamada
+        const s2 = estado({ especies: 85, especiesNeed: 100, kills: [{ type: 'FIRE', have: 10, need: 200 }] });
+        const m2 = loadProfModule(cfgBase({ profRoute: true }), base(s2, { huntSlug: 'larvitar', catch: { status: 'alvo', target: 'pidgey' } }));
+        await m2.api.profTick(); await flush();
+        assert(!m2.api.profWantsSpecies() && !m2.state.catch.ensures.length && m2.state.catch.stops.length === 1 && m2.state.switches[0]?.slug === 'charmander', 'abates primeiro: solta a captura e vai para o FIRE: ' + JSON.stringify(m2.state.switches));
+        // rota de captura esgotada (nada novo nas áreas marcadas): volta para a origem com a dica no motivo
+        const s3 = estado({ especies: 85, especiesNeed: 100, kills: [] });
+        const m3 = loadProfModule(cfgBase({ profRoute: true }), base(s3, { huntSlug: 'pidgey', store: { pgDiscordNotifyProf: JSON.stringify({ from: 'igglybuff', at: Date.now() }) }, catch: { status: 'esgotada' } }));
+        await m3.api.profTick(); await flush();
+        assert(m3.state.switches[0]?.slug === 'igglybuff' && /amplie as áreas/.test(m3.api.profWait) && /faltam espécies 85\/100/.test(m3.api.profWait), 'esgotada: volta e explica: ' + m3.api.profWait);
+        // rota da profissão desligada no painel: solta a rota de captura
+        const m4 = loadProfModule(cfgBase({ profRoute: false }), base(estado({ especies: 85, especiesNeed: 100 }), { huntSlug: 'pidgey', catch: { status: 'alvo', target: 'pidgey' } }));
+        await m4.api.profTick(); await flush();
+        assert(m4.state.catch.stops[0] === 'rota da profissão desligada' && !m4.state.catch.ensures.length, 'desligada: solta: ' + JSON.stringify(m4.state.catch));
     }
 
     console.log('prof.test.js: ok');

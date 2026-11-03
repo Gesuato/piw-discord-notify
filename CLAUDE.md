@@ -554,6 +554,20 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   captura delega para `profRefresh`. Logs `profissao-campos`, `profissao`, `profissao-pictures`, `profissao-cidade`, `profissao-rank`,
   `profissao-espera`, `profissao-alvo`, `profissao-volta`, `profissao-hunt-falhou`, `profissao-origem-lembrada`, `profissao-erro`.
   Teste: `node test/prof.test.js` (`loadProfModule`; `state.env` liga hold/daily/inHunt, `init.family` o depósito da família).
+  v3.52.1 (conta2 CabralJ, 03/11/2026 00:03–01:22Z, 1º log real: `nextStep.kills[{ type, have, need }]` e `pictures{ have, need }`
+  CONFIRMADOS; `pictures.have` subiu 0→1 com o shiny da hunt = mochila; a rota foi a dratini pelo DRAGON, fechou e voltou): com os
+  abates fechados sobraram "espécies 85/100" e "pictures 1/50" e a conta ficou parada em igglybuff ("nada a caçar") — a Rota de captura
+  tinha sido DESLIGADA pela exclusividade do Salvar e ninguém caçava as espécies; e as pictures da família nunca eram buscadas porque
+  a carona exigia "só faltam pictures". Agora (1) **espécies pela rota de captura**: `profWantsSpecies()` (rota ligada, faltam espécies
+  e `profPlan()` vazio — abates primeiro) faz `catchRouteActive()` valer com o toggle da captura desligado (`catchForProf()`; áreas,
+  nível máximo e bola do painel valem); nesse modo `speciesDone` só aceita a Pokédex (conta/família NÃO contam: a profissão conta as
+  capturas do personagem); `profTick` chama `catchEnsure('profissão')` ('alvo' | 'carregando' | 'esgotada' = nada novo nas áreas, relê
+  em 30 min), guarda `profFrom` antes de entregar a hunt e espera com "espécies pela rota de captura (alvo …)"; espécies fechadas ou
+  rota desligada → `catchStop` (log `captura-solta`) e volta para a origem; `finishCatchRoute` pela profissão não mexe no toggle nem
+  avisa (`captura-concluida { pelaProfissao }`); esgotada → volta com a dica "amplie as áreas ou o nível na Rota de captura".
+  (2) **carona das pictures em qualquer viagem** (`profWantsCity` com `pictures > 0`, não mais `soPictures`): traz do Depot/família
+  quando as duas completam a conta, mesmo faltando espécies — a picture fica na mochila protegida. Caso 9 do `test/prof.test.js`
+  (`init.catch = { status, target }` simula a rota de captura) e caso 10 do `test/catch.test.js` (`init.profWantsSpecies`).
 - Guarda de venda do PokeGrid (v3.13.4): o `index.html` do PokeGrid injeta `SELLGUARD`, que embrulha o `fetch` do
   painel e abre `window.confirm` ("PokeGrid: voce esta vendendo coisas valiosas") em `POST /api/game/pokemon/sell` com
   shiny ou qualidade ≥ 1.7 e em `POST /api/game/shop/sell` com item travado (Strange Pheromone, Rare Pokémon Picture e
