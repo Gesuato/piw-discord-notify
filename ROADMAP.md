@@ -1028,6 +1028,21 @@ Depot + família completam a conta.
 **Pendências:** confirmar no log `profissao-pictures` (retirada da família) e `profissao-rank` (se o `rankup` é aceito na cidade sem a
 janela aberta); conferir se `speciesCount` da profissão bate com a Pokédex (painel: "N espécies" no cabeçalho vs "Pokédex N/M" da rota).
 
+## ✅ 40. Mercado Global: comprar um item quando o preço estiver até X (v3.53.0)
+
+**O que faz (pedido do usuário em 03/11/2026: "dentro da hunt podemos comprar no Mercado Global; comprar um certo item caso o preço
+seja x"):** bloco "🌐 Mercado Global" da aba Compras. Uma linha por pedido, `quantidade item até preço` (preço por unidade em gold;
+`5.000`, `5k`, `1,5m` valem). A cada `marketEveryMin` (padrão 3 min) o script lê `GET /api/game/market?category=Items` e, para cada
+pedido pendente, compra os anúncios dentro do preço, mais baratos primeiro, com `POST /api/game/market/action { action:'buy-stack',
+kind, refId, price, currency:'GOLD', quantity, ids }` (o mesmo que a janela do jogo manda). Só gold (anúncio em diamonds é ignorado),
+nunca o próprio anúncio (`mine`), nunca abaixo da reserva `marketKeepGold` (gold conhecido pelo frame `balls`), até 6 compras por
+leitura. O comprado (`got`) fica no cfg e sobrevive à recarga; pedido fechado sai da fila. Não passa pela viagem: o jogo deixa usar o
+mercado durante a hunt (só VIP). Itens da lista ficam fora da venda de drops e do guardar na cidade. Avisos no canal de Alertas
+(compra, pedido concluído, falha). Botões "Conferir agora" (vale com o módulo desligado) e "Zerar contagem". 429 = espera 10 min.
+
+**Pendências:** confirmar no log `mercado-campos` as chaves da lista (`ids`, `sellers`) e em `mercado-compra { resposta }` o que o
+`buy-stack` devolve (hoje `ok:false` = nada, `bought` numérico vale, senão conta o pedido inteiro).
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

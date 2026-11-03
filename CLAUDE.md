@@ -100,6 +100,19 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   (tarefa `suprimentos`, `supplyCityWork`) com `POST /api/game/shop/buy { itemId, qty }` via `buyFromShop('item', ...)`
   (confirmado no bundle em 29/09/2026; bolas usam `buyFromShop('ball', ...)` com `{ ballId }`). Ids: poções 200–204,
   Revive 205, Max Revive 206. Limite 0 = compra quando acabar. Uma viagem pedida por episódio (`supplyAttempted`).
+- Mercado Global (v3.53.0, aba Compras → 🌐 Mercado Global, `cfg.marketEnabled`/`marketList [{ item, qty, max, got }]`/`marketEveryMin`/
+  `marketKeepGold`; módulo `// ---- Mercado Global` entre o Refil e a Venda de drops; bundle de 03/11/2026, formatos ainda NÃO vistos
+  no log — `mercado-campos` registra as chaves): pedido do usuário em 03/11/2026 ("comprar um certo item caso o preço seja x"; o jogo
+  DEIXA usar o Mercado Global durante a hunt, então NÃO passa pela viagem; só VIP). `GET /api/game/market?category=Items` →
+  `{ listings[{ id, kind:'item'|'ball'|'diamonds'|'pokemon', refId, name, price (por unidade), currency:'GOLD'|'DIAMONDS', quantity (pilha),
+  ids?[] (anúncios agrupados), sellers? }], mine[{ id, quantity }], requests, myRequests, history, catalog }`; compra =
+  `POST /api/game/market/action { action:'buy-stack', kind, refId, price, currency, quantity, ids }` (o que a janela manda para item/bola;
+  resposta não vista: `ok:false` = nada, `bought` vale, senão conta o pedido). Linha do painel "quantidade item até preço"
+  (`parseMarketLine`, 5.000/5k/1,5m), nome resolvido no `items.json` ou em `BALL_NAMES` (`marketResolve`). `marketScan` a cada
+  `marketEveryMin` (padrão 3; 429 = espera 10 min): mais barato primeiro, só GOLD, nunca o próprio anúncio (`mine`), reserva de gold
+  (`marketGold` vem do frame `balls`, que traz `gold`, e da resposta), até 6 compras por leitura; `got` fica no cfg (`saveCfg`).
+  `marketKeepsItem` tira os itens da lista da venda e do guardar. Botões "Conferir agora" (vale desligado) e "Zerar contagem". Logs
+  `mercado-campos`, `mercado`, `mercado-compra`, `mercado-erro`, `mercado-zerado`. Teste: `node test/market.test.js` (`loadMarketModule`).
 - Cura na Joy (v3.22.0, aba Compras → 💊 Nurse Joy, `cfg.healJoyEnabled`, módulo `// ---- Cura na Joy` antes da Lógica
   principal; bundle em 29/09/2026, campos ainda não vistos no log): `field` traz `fainted`, `reviveInMs`, `noRevive` (time
   inteiro), `heroHp`; sem Revive o servidor manda `field-teleport-city` (a tela vai a Cerulean e envia `set-city`, mas NÃO
@@ -676,7 +689,8 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
   `node test/clan.test.js` (`loadClanModule`: `// ---- Clã: subir de rank` até `// ---- Viagem à cidade`),
   `node test/dailyauto.test.js` (daily sozinha, mesmo `loadDailyModule` com `init.team`/`init.huntCatalog`/`init.store`) e
   `node test/balls.test.js` (`loadBallsModule`: módulo de bolas + `checkBallStock`), `node test/supply.test.js`
-  (`loadSupplyModule`: `// ---- Refil de poções e revives` até `// ---- Venda automática de drops`), `node test/heal.test.js`
+  (`loadSupplyModule`: `// ---- Refil de poções e revives` até `// ---- Mercado Global`), `node test/market.test.js` (`loadMarketModule`:
+  `// ---- Mercado Global` até `// ---- Venda automática de drops`; `init.api` responde GET lista/POST compra, `init.items` catálogo), `node test/heal.test.js`
   (`loadHealModule`: `// ---- Cura na Joy` até `// ---- Volta da cidade`), `node test/gift.test.js` (`loadGiftModule`:
   `// ---- Daily Gift` até `// ---- Clã: subir de rank`), `node test/idle.test.js` (`loadIdleModule`:
   `// ---- Volta da cidade` até `// ---- Lógica principal`; estado dos outros módulos em `init.env`), `node test/trip.test.js`

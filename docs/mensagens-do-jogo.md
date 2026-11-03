@@ -465,6 +465,28 @@ chunk compartilhado (módulo `tD`: `ROCKET_SLUG:"rocket_cerulean"`, `INVASION_EV
   `invasao-entrada { fase }`, `invasao-wave`, `invasao-abate`, `invasao-recusada`, `invasao-fim`, `invasao-volta`, `invasao-lembrada`,
   `jenny-campos`, `jenny`, `jenny-cidade`, `jenny-troca`, `jenny-erro`. Teste: `node test/invasion.test.js`.
 
+### Mercado Global (bundle em 03/11/2026; formatos ainda NÃO vistos no log — `mercado-campos` registra as chaves)
+
+Janela "Mercado Global" (`window.market`), só para VIP (`vipGate`); o jogo deixa usar durante a hunt (usuário, 03/11/2026). Tudo por REST
+(`apiGet`/`apiPostAuth`, mesmo Bearer):
+
+- `GET /api/game/market?category=All|Items|Pokemon` → `{ listings[{ id, kind:'item'|'ball'|'diamonds'|'pokemon', refId, name, price
+  (POR UNIDADE), currency:'GOLD'|'DIAMONDS', quantity (pilha), ids?[ids dos anúncios agrupados], sellers?, shiny?, level?, ivTotal?,
+  quality?, type1?, type2?, power? }], mine[{ id, quantity, name, currency, category, ... }], requests[], myRequests[], history[{ name,
+  currency, bought, ... }], catalog{ items[], balls[], diamonds }, emailGate? }`. A janela relê a cada ação; 429 = mensagem de limite.
+  `?browse=species[&fresh=1]` → `{ species[] }` e `?browse=pokemon&page&sort&speciesId|q&type&gradesOff&shiny&currency&ivMin..priceMax`
+  → `{ listings, total, pages }` são a aba de Pokémon.
+- `POST /api/game/market/action` com `action`:
+  - `buy-stack { kind, refId, price, currency, quantity, ids }` — comprar item/bola (quantidade da pilha menos o que é meu;
+    `ids = listing.ids ?? [listing.id]`). **Usado pelo script (v3.53.0).**
+  - `buy { id, quantity:1, price, currency }` — comprar um Pokémon.
+  - `sell { kind:'item'|'ball'|'diamonds', refId, quantity, price, currency }` (taxa 2–3 %, mín. preço do NPC para item em gold),
+    `sell-pokemon`, `cancel { id }` (taxa não devolvida), `request-create { kind, refId, amount, price }` (pedido de compra com gold em
+    custódia), `request-sell { id, quantity }`, `request-cancel`, `blacklist-add`/`blacklist-remove`.
+  Resposta: a janela só relê a lista — o script loga as chaves em `mercado-compra { resposta }`.
+- A janela também ouve o frame `balls` (`catalog`, `counts`, `gold`), `inventory`, `pokes` e `autohelper { isVip }`, e lê
+  `GET /api/game/diamonds` → `{ diamonds }`.
+
 ## Ideias que esses nomes destravam
 
 - `field-none` / `hunt-cooldown` / `hunt-resume`: detectar hunt parada e religar (auto-reconnect).

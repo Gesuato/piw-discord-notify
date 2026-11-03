@@ -530,7 +530,7 @@ function loadDepositModule(cfg, init) {
 // Extrai o módulo "Refil de poções e revives" (v3.21.0). `init.api(url, opts)` responde a mochila (GET /api/game/depot);
 // `init.buy(kind, id, qty)` faz o papel de buyFromShop (padrão: compra tudo). Timers rodam na hora.
 const S_START = '    // ---- Refil de poções e revives';
-const S_END = '    // ---- Venda automática de drops';
+const S_END = '    // ---- Mercado Global';
 
 function loadSupplyModule(cfg, init) {
     init = init || {};
@@ -1463,4 +1463,46 @@ function loadProfModule(cfg, init) {
     return { api, state, cfg, clock };
 }
 
-module.exports = { loadProfModule, loadInvasionModule, loadGymModule, loadHoldModule, loadBossModule, loadHumanModule, loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+
+// Extrai o módulo "Mercado Global" (v3.53.0) e o executa com stubs: `init.api(url, opts)` responde ao GET da lista e ao POST da
+// compra (`state.calls` guarda tudo), `init.items` é o catálogo público, `init.balls` os nomes de bola; `clock.now` é o relógio.
+const MK_START = '    // ---- Mercado Global';
+const MK_END = '    // ---- Venda automática de drops';
+
+function loadMarketModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(MK_START), b = src.indexOf(MK_END);
+    if (a < 0 || b < 0) throw new Error('marcadores do módulo do mercado não encontrados no script');
+    const mod = src.slice(a, b);
+    const clock = { now: Date.now() };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const state = { calls: [], hooks: [], logs: [], saves: 0, timers: [] };
+    const normalize = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+    const itemsCatalog = init.items === null ? null : new Map((init.items || []).map(i => [Number(i.id), i]));
+    const ctx = {
+        cfg,
+        gameApi: (url, opts) => { state.calls.push({ url, opts, body: opts && opts.body ? JSON.parse(opts.body) : null }); return Promise.resolve().then(() => (init.api ? init.api(url, opts) : {})); },
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        saveCfg: () => { state.saves++; },
+        normalize,
+        itemsCatalog,
+        loadItemsCatalog: () => Promise.resolve(itemsCatalog),
+        BALL_NAMES: init.balls || { 1: 'Poke Ball', 2: 'Great Ball', 3: 'Super Ball', 4: 'Ultra Ball', 6: 'Idle Ball' },
+        setTimeout: (fn, ms) => { state.timers.push({ fn, ms }); return state.timers.length; },
+        Date: FakeDate,
+        console,
+    };
+    const factory = new Function(...Object.keys(ctx), mod + `
+        return {
+            parseMarketLine, parseMarketText, marketParsePrice, marketList, marketOn, marketPending, marketResolve, marketKeepsItem, marketScan, marketTick,
+            marketNow, marketReset, marketRearm, marketStatus, marketOnBalls, marketNoteGold, marketEntryDone, marketLineText,
+            get marketGold() { return marketGold; }, get marketNextAt() { return marketNextAt; }, get marketLast() { return marketLast; }, get marketRunning() { return marketRunning; },
+        };`);
+    const api = factory(...Object.values(ctx));
+    return { api, state, cfg, clock };
+}
+
+module.exports = { loadMarketModule, loadProfModule, loadInvasionModule, loadGymModule, loadHoldModule, loadBossModule, loadHumanModule, loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

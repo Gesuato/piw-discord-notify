@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.52.1
+// @version      3.53.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.52.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.53.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -49,6 +49,10 @@
         cityIdleEnabled: true,  // v3.23.0 conta parada fora de hunt há cityIdleMin minutos (bugada): cura na Joy e volta para a hunt
         cityIdleMin: 10,
         cityIdleHunt: '',       // v3.36.0 hunt padrão: destino de último recurso da volta (sem rota, clã nem última hunt conhecida)
+        marketEnabled: false,   // v3.53.0 Mercado Global: comprar os pedidos abaixo quando alguém anunciar por até o preço (sem sair da hunt)
+        marketList: [],         // [{ item, qty, max, got }] — "quantidade item até preço" por linha; `got` = comprado até agora
+        marketEveryMin: 3,      // intervalo entre leituras do mercado (minutos)
+        marketKeepGold: 0,      // gold que fica sempre na conta (não gasta abaixo disto)
         sellEnabled: false,     // vender drops marcados da hunt atual periodicamente
         sellEveryMin: 10,       // intervalo mínimo da venda automática (minutos)
         sellEveryMaxMin: 0,     // intervalo máximo; 0 ou <= mínimo = intervalo fixo. Entre os dois é sorteado
@@ -855,6 +859,7 @@
         }
         ballCounts = counts;
         ballsReceived = true;
+        if (typeof marketOnBalls === 'function') marketOnBalls(message);   // v3.53.0: o frame traz `gold`
         const id = watchedBallId();
         if (Date.now() - lastBallsLogAt > 60 * 1000) { lastBallsLogAt = Date.now(); logEvent('balls', { counts, monitorando: id, limite: effectiveBallsMin(), autoBuy: Boolean(cfg.autoBuy) }); } // 1x/min: o log tem 80 linhas
         checkBallStock();
@@ -1146,6 +1151,252 @@
         return { ok: tudo, motivo: tudo ? null : compras.filter(c => !c.ok).map(c => `${c.name}: ${c.motivo}`).join('; '), compras };
     }
 
+    // ---- Mercado Global (v3.53.0): comprar um item quando alguém anuncia por até X gold, sem sair da hunt --------------
+    //   lista   : GET /api/game/market?category=Items -> { listings:[{ id, kind:'item'|'ball'|'diamonds'|'pokemon', refId, name,
+    //             price (POR UNIDADE), currency:'GOLD'|'DIAMONDS', quantity (da pilha inteira), ids?:[ids dos anúncios agrupados],
+    //             sellers? }], mine:[{ id, quantity, ... }] (meus anúncios), requests, myRequests, history, catalog }
+    //             (bundle do cliente, 03/11/2026; `?browse=pokemon&...` é a aba de Pokémon, que o script não usa)
+    //   compra  : POST /api/game/market/action { action:'buy-stack', kind, refId, price, currency, quantity, ids } — é o que a
+    //             janela manda para item/bola (`buy { id, quantity:1 }` só para Pokémon). Resposta ainda NÃO vista: a tela só relê
+    //             a lista; o script loga as chaves (`mercado-compra { resposta }`) e, sem `ok:false`/`bought`, conta o pedido.
+    //   429     : o servidor limita as leituras (a janela mostra a mensagem do erro); o script espera MARKET_BACKOFF_MS.
+    //   O mercado é só para VIP (texto `vipGate` da janela) e o jogo DEIXA comprar durante a hunt (usuário, 03/11/2026):
+    //   não passa pela viagem à cidade.
+    // Painel: aba Compras → "🌐 Mercado Global", uma linha por pedido "quantidade item até preço" (preço por unidade, em gold;
+    // 5.000 / 5k / 1,5m valem). Lê o mercado no intervalo, compra o anúncio mais barato dentro do preço — só GOLD, nunca o próprio
+    // anúncio — até fechar a quantidade, respeitando a reserva `marketKeepGold`; o comprado (`got`) fica no cfg, como no Farm.
+    // Os itens da lista ficam fora da venda de drops e do guardar na cidade (`marketKeepsItem`). Avisos no canal de Alertas.
+
+    const MARKET_URL = '/api/game/market?category=Items';
+    const MARKET_ACTION_URL = '/api/game/market/action';
+    const MARKET_TICK_MS = 30 * 1000;
+    const MARKET_EVERY_MIN_DEFAULT = 3;
+    const MARKET_BACKOFF_MS = 10 * 60 * 1000;
+    const MARKET_MAX_BUYS_PER_SCAN = 6;       // compras por leitura (anúncios diferentes); o resto fica para a próxima
+
+    let marketNextAt = 0;           // próxima leitura (0 = já)
+    let marketRunning = false;
+    let marketGold = null;          // último gold conhecido (frame `balls` traz `gold`; resposta da compra também pode trazer)
+    let marketGoldAt = 0;
+    let marketLast = null;          // { at, anuncios, ofertas:{ chave -> { total, menor, dentro, semGold, erro } }, erro }
+    let marketFieldsLogged = false;
+    let marketCatLoading = false;
+    let onMarketChange = null;      // callback do painel
+
+    // "5.000" -> 5000, "5k" -> 5000, "1,5m" -> 1500000, "1.5k" -> 1500. Sem sufixo, ponto e vírgula são separador de milhar.
+    function marketParsePrice(txt) {
+        const m = String(txt || '').trim().toLowerCase().match(/^([\d.,]+)\s*([km])?$/);
+        if (!m) return 0;
+        const v = m[2] ? Number(m[1].replace(',', '.')) : Number(m[1].replace(/[.,]/g, ''));
+        if (!Number.isFinite(v) || v <= 0) return 0;
+        return Math.floor(v * (m[2] === 'k' ? 1000 : m[2] === 'm' ? 1000000 : 1));
+    }
+    // "100 Rare Candy até 5000" / "50x Ultra Ball <= 1.200" / "10 Fire Stone ate 50k gold" -> { item, qty, max } ou null.
+    function parseMarketLine(line) {
+        const m = String(line || '').trim().match(/^(\d+)\s*[x×]?\s+(.+?)\s+(?:até|ate|<=|<|por|@)\s*([\d.,]+\s*[km]?)\s*(?:gold|g)?\s*$/i);
+        if (!m) return null;
+        const qty = parseInt(m[1], 10), max = marketParsePrice(m[3]);
+        if (!(qty > 0) || !(max > 0)) return null;
+        return { item: m[2].trim(), qty, max };
+    }
+    function marketQty(e) { return Math.max(0, Math.floor(Number(e?.qty) || 0)); }
+    function marketMax(e) { return Math.max(0, Math.floor(Number(e?.max) || 0)); }
+    function marketGot(e) { return Math.max(0, Math.floor(Number(e?.got) || 0)); }
+    function marketKey(e) { return `${normalize(e?.item)}|${marketMax(e)}`; }
+    function marketEntryDone(e) { return marketGot(e) >= marketQty(e); }
+    function marketLineText(e) { return `${marketQty(e)} ${e.item} até ${marketMax(e)}`; }
+    // Texto do painel -> lista no formato do cfg, conservando o comprado (`got`) dos pedidos que já existiam (mesmo item e preço).
+    function parseMarketText(text, antes) {
+        const prev = new Map((Array.isArray(antes) ? antes : []).map(e => [marketKey(e), marketGot(e)]));
+        const list = [], ruins = [];
+        for (const raw of String(text || '').split(/\r?\n/)) {
+            const l = raw.trim();
+            if (!l) continue;
+            const e = parseMarketLine(l);
+            if (!e) { ruins.push(l); continue; }
+            e.got = prev.get(marketKey(e)) || 0;
+            prev.delete(marketKey(e));   // linha repetida não herda o comprado da primeira
+            list.push(e);
+        }
+        return { list, ruins };
+    }
+    function marketList(d) { d = d || cfg; return Array.isArray(d.marketList) ? d.marketList.filter(e => e && e.item && marketQty(e) > 0 && marketMax(e) > 0) : []; }
+    function marketOn(d) { d = d || cfg; return Boolean(d.marketEnabled) && marketList(d).length > 0; }
+    function marketPending(d) { return marketList(d).filter(e => !marketEntryDone(e)); }
+    function marketEveryMs(d) { d = d || cfg; return Math.max(1, Math.floor(Number(d.marketEveryMin) || 0) || MARKET_EVERY_MIN_DEFAULT) * 60 * 1000; }
+    function marketKeepGold(d) { d = d || cfg; return Math.max(0, Math.floor(Number(d.marketKeepGold) || 0)); }
+    function marketNotify() { if (onMarketChange) { try { onMarketChange(); } catch { /* painel fechado */ } } }
+    function marketNoteGold(g) { if (g != null && Number.isFinite(Number(g))) { marketGold = Math.max(0, Math.floor(Number(g))); marketGoldAt = Date.now(); } }
+    function marketOnBalls(message) { if (message && message.gold != null) marketNoteGold(message.gold); }   // chamado por handleBalls
+
+    // Nome do pedido -> { kind:'item'|'ball', refId, name } pelo catálogo público (itens) ou pelos nomes de bola; null = não achei.
+    function marketResolve(e) {
+        const n = normalize(e?.item);
+        if (!n) return null;
+        if (typeof itemsCatalog !== 'undefined' && itemsCatalog) for (const [id, it] of itemsCatalog) if (normalize(it?.name) === n) return { kind: 'item', refId: Number(id), name: it.name };
+        if (typeof BALL_NAMES !== 'undefined' && BALL_NAMES) for (const [id, name] of Object.entries(BALL_NAMES)) if (normalize(name) === n) return { kind: 'ball', refId: Number(id), name };
+        return null;
+    }
+    // Ids dos itens da lista: fora da venda de drops e do guardar na cidade enquanto o mercado está ligado.
+    function marketItemIds() {
+        const ids = new Set();
+        for (const e of marketList()) { const r = marketResolve(e); if (r && r.kind === 'item') ids.add(r.refId); }
+        return ids;
+    }
+    function marketKeepsItem(id) { return marketOn() && marketItemIds().has(Number(id)); }
+    function marketIsLimit(msg) { return /429|too many|rate|muitas|limite|aguarde/i.test(String(msg || '')); }
+    // Quantas unidades a resposta da compra confirma. Formato não visto: `ok:false` = nada; `bought` numérico vale; senão o pedido.
+    function marketBoughtFrom(resp, want) {
+        if (resp && resp.ok === false) return 0;
+        const n = Number(resp?.bought);
+        return Number.isFinite(n) && n >= 0 ? Math.min(want, Math.floor(n)) : want;
+    }
+    function marketRespSummary(resp) {
+        if (!resp || typeof resp !== 'object') return resp == null ? null : String(resp);
+        const out = { chaves: Object.keys(resp) };
+        for (const [k, v] of Object.entries(resp)) if (v == null || typeof v !== 'object') out[k] = v;
+        return out;
+    }
+
+    // Uma leitura do mercado: para cada pedido pendente, compra os anúncios dentro do preço (mais baratos primeiro).
+    function marketScan(motivo) {
+        if (marketRunning) return Promise.resolve({ ok: false, msg: 'já estou lendo o mercado' });
+        marketRunning = true;
+        return (async () => {
+            if (typeof loadItemsCatalog === 'function' && (typeof itemsCatalog === 'undefined' || !itemsCatalog)) { try { await loadItemsCatalog(); } catch { /* sem catálogo: só bolas resolvem */ } }
+            const pend = marketPending();
+            let data;
+            try { data = await gameApi(MARKET_URL); }
+            catch (err) {
+                const msg = String(err?.message || err), limite = marketIsLimit(msg);
+                marketNextAt = Date.now() + (limite ? MARKET_BACKOFF_MS : marketEveryMs());
+                marketLast = { at: Date.now(), erro: msg, ofertas: {}, anuncios: 0 };
+                logEvent('mercado-erro', { fase: 'lista', erro: msg, limite, motivo });
+                marketNotify();
+                return { ok: false, msg: `erro ao ler o mercado: ${msg}` };
+            }
+            const listings = Array.isArray(data?.listings) ? data.listings : [];
+            if (!marketFieldsLogged) {
+                marketFieldsLogged = true;
+                const ex = listings.find(l => l && l.kind !== 'pokemon') || listings[0] || null;
+                logEvent('mercado-campos', { raiz: Object.keys(data || {}), anuncio: ex ? Object.keys(ex) : [], exemplo: ex ? marketRespSummary(ex) : null, meus: Array.isArray(data?.mine) ? data.mine.length : null });
+            }
+            marketNoteGold(data?.gold);
+            const mine = new Map((Array.isArray(data?.mine) ? data.mine : []).map(l => [String(l?.id), Math.max(0, Math.floor(Number(l?.quantity) || 0))]));
+            const ofertas = {}, compras = [];
+            let buys = 0;
+            for (const e of pend) {
+                const r = marketResolve(e), key = marketKey(e);
+                if (!r) { ofertas[key] = { erro: 'item não está no catálogo do jogo' }; continue; }
+                const cands = listings
+                    .filter(l => l && l.kind === r.kind && Number(l.refId) === r.refId && String(l.currency || 'GOLD').toUpperCase() === 'GOLD' && Number(l.price) > 0)
+                    .map(l => {
+                        const ids = Array.isArray(l.ids) && l.ids.length ? l.ids : [l.id];
+                        const minha = ids.reduce((a, id) => a + (mine.get(String(id)) || 0), 0);
+                        return { ids, price: Math.floor(Number(l.price)), buyable: Math.max(0, Math.floor(Number(l.quantity) || 0) - minha) };
+                    })
+                    .filter(c => c.buyable > 0)
+                    .sort((a, b) => a.price - b.price);
+                const dentro = cands.filter(c => c.price <= marketMax(e));
+                ofertas[key] = { total: cands.length, menor: cands.length ? cands[0].price : null, dentro: dentro.reduce((a, c) => a + c.buyable, 0) };
+                for (const c of dentro) {
+                    if (buys >= MARKET_MAX_BUYS_PER_SCAN) break;
+                    const falta = marketQty(e) - marketGot(e);
+                    if (falta <= 0) break;
+                    let want = Math.min(falta, c.buyable);
+                    if (marketGold != null) want = Math.min(want, Math.max(0, Math.floor((marketGold - marketKeepGold()) / c.price)));
+                    if (want <= 0) { ofertas[key].semGold = true; break; }
+                    buys++;
+                    const body = { action: 'buy-stack', kind: r.kind, refId: r.refId, price: c.price, currency: 'GOLD', quantity: want, ids: c.ids };
+                    let resp;
+                    try { resp = await gameApi(MARKET_ACTION_URL, { method: 'POST', body: JSON.stringify(body) }); }
+                    catch (err) {
+                        const msg = String(err?.message || err);
+                        logEvent('mercado-erro', { fase: 'compra', item: r.name, preco: c.price, qtd: want, anuncios: c.ids.length, erro: msg });
+                        compras.push({ item: r.name, qtd: 0, preco: c.price, erro: msg });
+                        if (marketIsLimit(msg)) marketNextAt = Date.now() + MARKET_BACKOFF_MS;
+                        break;   // erro neste item: o resto dele fica para a próxima leitura
+                    }
+                    const got = marketBoughtFrom(resp, want);
+                    if (resp && resp.gold != null) marketNoteGold(resp.gold);
+                    else if (marketGold != null && got > 0) marketGold = Math.max(0, marketGold - got * c.price);
+                    e.got = marketGot(e) + got;
+                    logEvent('mercado-compra', { item: r.name, kind: r.kind, refId: r.refId, preco: c.price, pedido: want, comprado: got, total: `${marketGot(e)}/${marketQty(e)}`, anuncios: c.ids.length, gold: marketGold, motivo, resposta: marketRespSummary(resp) });
+                    compras.push({ item: r.name, qtd: got, preco: c.price, feito: marketEntryDone(e), resposta: got === want ? undefined : marketRespSummary(resp) });
+                    if (got < want) break;   // o jogo não confirmou tudo (alguém comprou antes?): a próxima leitura vê o que sobrou
+                }
+            }
+            if (compras.some(c => c.qtd > 0)) saveCfg(cfg);
+            marketLast = { at: Date.now(), erro: null, ofertas, anuncios: listings.length };
+            if (!(marketNextAt > Date.now())) marketNextAt = Date.now() + marketEveryMs();
+            logEvent('mercado', { motivo, anuncios: listings.length, pendentes: pend.length, ofertas, compras: compras.length ? compras.map(c => `${c.item}: ${c.qtd} a ${c.preco}${c.erro ? ` (${c.erro})` : ''}`) : undefined, gold: marketGold });
+            if (compras.length) marketAlert(compras);
+            marketNotify();
+            const feitas = compras.filter(c => c.qtd > 0);
+            return { ok: true, msg: feitas.length ? `comprou ${feitas.map(c => `${c.qtd} ${c.item} a ${fmtNumBR(c.preco)}`).join(', ')}` : `nada a comprar (${listings.length} anúncios lidos)` };
+        })().finally(() => { marketRunning = false; });
+    }
+    function fmtNumBR(n) { return Number(n).toLocaleString('pt-BR'); }
+
+    function marketAlert(compras) {
+        const who = playerName();
+        const mention = cfg.mentionUserId ? `<@${cfg.mentionUserId}> ` : '';
+        const ok = compras.filter(c => c.qtd > 0), ruins = compras.filter(c => !(c.qtd > 0));
+        const linhas = compras.map(c => c.qtd > 0
+            ? `${c.item}: ${fmtNumBR(c.qtd)} × ${fmtNumBR(c.preco)} gold = ${fmtNumBR(c.qtd * c.preco)}${c.feito ? ' · pedido concluído ✔' : ''}`
+            : `${c.item}: falhou a ${fmtNumBR(c.preco)} gold · ${c.erro || 'o jogo não confirmou'}`);
+        postWebhook('alert', {
+            content: `${mention}${ok.length ? '🌐' : '⚠️'} ${who ? `**${who}**` : 'Sua conta'} ${ok.length ? `comprou no Mercado Global ${ok.map(c => `**${fmtNumBR(c.qtd)} ${c.item}**`).join(' e ')}` : `não conseguiu comprar no Mercado Global ${ruins.map(c => `**${c.item}**`).join(' e ')}`}`,
+            username: 'Poke Idle World',
+            embeds: [{
+                title: ok.length ? 'Mercado Global: compra' : 'Mercado Global: compra falhou',
+                description: (who ? `Conta: ${who}\n` : '') + linhas.join('\n') + (marketGold != null ? `\nGold agora: ${fmtNumBR(marketGold)}` : '') + `\nEm ${new Date().toLocaleString('pt-BR')}`,
+                color: ok.length ? 0x57f287 : 0xed4245,
+            }],
+        }, { evento: ok.length ? 'mercado-compra' : 'mercado-falhou', itens: compras.map(c => c.item) });
+    }
+
+    function marketTick() {
+        if (!marketOn() || marketRunning) return;
+        if (!marketPending().length) return;
+        if (Date.now() < marketNextAt) return;
+        marketScan('relógio');
+    }
+    // Botão "Conferir agora": lê e compra na hora (vale com o módulo desligado, para testar a lista salva).
+    function marketNow() {
+        if (!marketList().length) return Promise.resolve({ ok: false, msg: 'lista vazia: salve pelo menos uma linha "quantidade item até preço"' });
+        if (!marketPending().length) return Promise.resolve({ ok: false, msg: 'todos os pedidos já foram comprados (Zerar contagem para comprar de novo)' });
+        marketNextAt = 0;
+        return marketScan('botão');
+    }
+    function marketReset() {
+        for (const e of marketList()) e.got = 0;
+        marketNextAt = 0;
+        saveCfg(cfg);
+        logEvent('mercado-zerado', { pedidos: marketList().length });
+        marketNotify();
+    }
+    function marketRearm() { marketNextAt = 0; marketLast = null; }
+    function marketHora(ts) { return new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }); }
+    // Linha de status do painel (d = rascunho ou cfg).
+    function marketStatus(d) {
+        d = d || cfg;
+        const list = marketList(d);
+        if (!d.marketEnabled && !list.length) return 'desligado';
+        const feitos = list.filter(marketEntryDone).length;
+        const partes = [];
+        if (!d.marketEnabled) partes.push('desligado (o botão "Conferir agora" ainda funciona)');
+        else if (!cfg.marketEnabled) partes.push('liga ao salvar');
+        else if (!list.length) partes.push('lista vazia');
+        else partes.push(feitos >= list.length ? `${list.length} pedido(s) concluído(s)` : `${feitos}/${list.length} pedidos concluídos`);
+        if (marketRunning) partes.push('lendo o mercado…');
+        else if (marketLast) partes.push(marketLast.erro ? `erro às ${marketHora(marketLast.at)}: ${marketLast.erro}` : `lido às ${marketHora(marketLast.at)} (${marketLast.anuncios} anúncios)`);
+        else partes.push('mercado ainda não lido');
+        if (cfg.marketEnabled && list.length && feitos < list.length && !marketRunning) partes.push(marketNextAt > Date.now() ? `próxima em ${Math.max(1, Math.round((marketNextAt - Date.now()) / 60000))} min` : 'próxima leitura já');
+        if (marketGold != null) partes.push(`gold ${fmtNumBR(marketGold)}${marketKeepGold(d) ? ` (reserva ${fmtNumBR(marketKeepGold(d))})` : ''}`);
+        return partes.join(' · ');
+    }
+
     // ---- Venda automática de drops da hunt atual ------------------------
     //   catálogo : GET /game/items.json (público) -> { items:[{ id, name, category, npcPrice, rare }] }
     //   mochila  : GET /api/game/depot            -> { inventory:[{ id, name, quantity, npcPrice, category }] }
@@ -1298,6 +1549,7 @@
                 if (typeof profKeepsItem === 'function' && profKeepsItem(id)) continue;   // v3.52.0: Rare Pokémon Picture da profissão
                 if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) continue;  // v3.31.0: item do Tributo do Dia da guild
                 if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) continue;    // v3.33.0: item da lista de farm
+                if (typeof marketKeepsItem === 'function' && marketKeepsItem(id)) continue;  // v3.53.0: item comprado no Mercado Global
                 if (typeof bossKeepsItem === 'function' && bossKeepsItem(id)) continue;    // v3.43.1: token do Auto Boss pendente
                 if (typeof invKeepsItem === 'function' && invKeepsItem(id)) continue;     // v3.50.0: Rocket Plans (não vendem nem vão para a família)
                 const keep = Math.max(0, Number(cfg.sellItems[id]?.keep) || 0);
@@ -5948,6 +6200,7 @@
         if (typeof profKeepsItem === 'function' && profKeepsItem(id)) return 'picture da profissão';   // v3.52.0
         if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) return 'tributo da guild';
         if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) return 'lista de farm';
+        if (typeof marketKeepsItem === 'function' && marketKeepsItem(id)) return 'pedido do Mercado Global';   // v3.53.0
         if (typeof bossKeepsItem === 'function' && bossKeepsItem(id)) return 'token do Auto Boss';
         if (typeof invKeepsItem === 'function' && invKeepsItem(id)) return 'Rocket Plans (o jogo não deixa guardar)';   // v3.50.0
         return null;
@@ -6032,6 +6285,7 @@
                     if (typeof profKeepsItem === 'function' && profKeepsItem(id)) continue;   // v3.52.0: Rare Pokémon Picture da profissão
                     if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) continue;
                     if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) continue;
+                    if (typeof marketKeepsItem === 'function' && marketKeepsItem(id)) continue;   // v3.53.0: item comprado no Mercado Global
                     if (typeof bossKeepsItem === 'function' && bossKeepsItem(id)) continue;   // v3.43.1: token do Auto Boss pendente
                     if (typeof invKeepsItem === 'function' && invKeepsItem(id)) continue;     // v3.50.0: Rocket Plans (não vendem nem vão para a família)
                     const qty = Math.floor(Number(inv.quantity) || 0) - e.keep;
@@ -6569,7 +6823,7 @@
     // o que importa para diagnóstico (import, viagem, clã...). Agora cada tipo barulhento tem cota própria e o resto dura horas.
     const LOG_KEY = 'pgDiscordNotifyLog';
     const LOG_MAX = 200;
-    const LOG_NOISY = { 'socket-fechado': 10, 'humano-desafio': 10, 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10, 'poke-delta': 15, 'pokes-frame': 10, 'pokes-get': 10, guild: 10, 'guild-get': 10, 'auto-boss': 15, ginasio: 10, 'ginasio-global': 10, 'invasao-wave': 10, 'invasao-energia-pedida': 5, 'invasao-espera': 10, 'invasao-janela': 5 };
+    const LOG_NOISY = { 'socket-fechado': 10, 'humano-desafio': 10, 'catch-result': 25, decisao: 25, 'webhook-ok': 25, balls: 10, 'poke-xp': 5, 'captura-conta': 10, 'poke-delta': 15, 'pokes-frame': 10, 'pokes-get': 10, guild: 10, 'guild-get': 10, 'auto-boss': 15, ginasio: 10, 'ginasio-global': 10, 'invasao-wave': 10, 'invasao-energia-pedida': 5, 'invasao-espera': 10, 'invasao-janela': 5, mercado: 12, 'mercado-erro': 10 };
 
     function logEvent(kind, data) {
         if (cfg.debug) console.log(TAG, kind, data);
@@ -9229,8 +9483,9 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             case 'avisos': return (d.webhookUrl || '').trim() ? 'on' : 'danger';
             case 'bolas': {
                 const min = Number(d.ballsMin) || 0;
-                if (!(min > 0 || d.autoBuy) && !supplyOn(d) && !d.healJoyEnabled && !d.cityIdleEnabled) return 'off';
+                if (!(min > 0 || d.autoBuy) && !supplyOn(d) && !d.healJoyEnabled && !d.cityIdleEnabled && !d.marketEnabled) return 'off';
                 if ((d.autoBuy && !min) || !temAlertas) return 'warn';
+                if (d.marketEnabled && !marketList(d).length) return 'warn';   // v3.53.0: mercado ligado sem pedido
                 return 'on';
             }
             case 'venda': {
@@ -9288,7 +9543,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         const st = Number(cfg.routeStage) || 0;
         return [
             `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
-            `Bolas: ${!((Number(d.ballsMin) || 0) > 0 || d.autoBuy) ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}${supplyOn(d) ? ` · refil: ${supplySlots(d).map(s => `${s.name} < ${s.min}`).join(', ')}` : ''}${d.healJoyEnabled ? ' · Joy' : ''}${d.cityIdleEnabled ? ` · volta da cidade ${Number(d.cityIdleMin) || IDLE_MIN_DEFAULT} min${idleDefaultSlug(d) ? ` (padrão ${idleDefaultSlug(d)})` : ''}` : ''}`,
+            `Bolas: ${!((Number(d.ballsMin) || 0) > 0 || d.autoBuy) ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}${supplyOn(d) ? ` · refil: ${supplySlots(d).map(s => `${s.name} < ${s.min}`).join(', ')}` : ''}${d.healJoyEnabled ? ' · Joy' : ''}${d.marketEnabled ? ` · mercado ${marketList(d).filter(marketEntryDone).length}/${marketList(d).length}` : ''}${d.cityIdleEnabled ? ` · volta da cidade ${Number(d.cityIdleMin) || IDLE_MIN_DEFAULT} min${idleDefaultSlug(d) ? ` (padrão ${idleDefaultSlug(d)})` : ''}` : ''}`,
             `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades${pokeSellKeepQ(d) ? `, guarda ≥ ${pokeSellKeepQ(d)}` : ''})` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
             `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? `daily sozinha (${dailyAreas(d).join('+')})` : 'daily') : '', d.giftEnabled ? 'gift' : '', d.evolveEnabled ? 'evolução' : '', d.slotEnabled ? 'slot machine' : '', bossOn(d) ? `auto boss${d.bossResumeOnLoss ? ' (até após derrota)' : ''}` : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : '', profOn(d) ? `profissão ${[d.profRankupEnabled ? 'rank up' : '', d.profRoute ? 'caça' : ''].filter(Boolean).join(' + ')}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
@@ -9408,6 +9663,17 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <label class="dn-field"><span>Hunt padrão</span><input id="pg-dn-cityidle-hunt" class="dn-input" type="text" placeholder="ex.: rhyhorn — usada quando não sei de que hunt a conta veio" spellcheck="false"></label>
                         <div class="dn-status" id="pg-dn-cityidle-status"></div>
                         <p class="dn-help">Se a conta ficar esse tempo na cidade sem farmar (a volta da viagem ou da recarga não pegou, o jogo mandou para a cidade, você saiu e esqueceu), a conta está bugada: o script cura o time na Nurse Joy e volta para a hunt: a da rota do clã, a etapa da rota de treino, a última em que esteve ou, sem nenhuma delas, a hunt padrão (também vale para a volta da viagem e da cura). Não mexe durante viagem, cura, troca de hunt ou de líder; a rota de captura já tem a própria volta. Não volta se a Joy não curar. Voltou 3 vezes em 1 h sem a hunt pegar: para e avisa. Avisos no canal de Alertas.</p>
+                    </div>
+                    <div class="dn-section">
+                        <h3>🌐 Mercado Global <span class="spacer"></span><label class="dn-toggle"><input id="pg-dn-market" type="checkbox"><span class="sw"></span>Comprar sozinho</label></h3>
+                        <textarea id="pg-dn-market-list" class="dn-textarea" rows="4" placeholder="100 Rare Candy até 5.000&#10;50 Ultra Ball até 1.200&#10;10 Fire Stone até 50k" spellcheck="false"></textarea>
+                        <div class="dn-inline">Conferir a cada <input id="pg-dn-market-min" class="dn-input dn-input--sm" type="number" min="1" step="1" placeholder="3"> min · deixar na conta <input id="pg-dn-market-keep" class="dn-input dn-input--sm" type="number" min="0" step="1000" placeholder="0"> gold</div>
+                        <div class="dn-status col"><div id="pg-dn-market-status"></div><ol class="dn-route" id="pg-dn-market-items"></ol></div>
+                        <div class="dn-actions">
+                            <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-market-now" title="Lê o mercado agora e compra o que estiver dentro do preço (vale com o módulo desligado).">Conferir agora</button>
+                            <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-market-reset" title="Zera o comprado de todos os pedidos: compra tudo de novo.">Zerar contagem</button>
+                        </div>
+                        <p class="dn-help">Uma linha por pedido: <b>quantidade item até preço</b> (preço por unidade, em gold; <b>5.000</b>, <b>5k</b> e <b>1,5m</b> valem; o nome é o do jogo, ex.: Rare Candy, Ultra Ball). No intervalo o script lê o mercado e compra o anúncio mais barato dentro do preço (só gold, nunca diamonds nem o próprio anúncio) até fechar a quantidade; o comprado fica salvo e sobrevive à recarga. Não precisa de viagem: o jogo deixa comprar no Mercado Global durante a hunt (só VIP). Os itens da lista ficam fora da venda de drops e do guardar na cidade. Avisos no canal de Alertas.</p>
                     </div>
                 </section>
                 <section class="dn-pane" data-pane="venda" hidden>
@@ -9928,6 +10194,10 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 cityIdleEnabled: $('#pg-dn-cityidle').checked,
                 cityIdleMin: Math.max(1, parseInt($('#pg-dn-cityidle-min').value, 10) || IDLE_MIN_DEFAULT),
                 cityIdleHunt: huntSlugFromName($('#pg-dn-cityidle-hunt').value),
+                marketEnabled: $('#pg-dn-market').checked,
+                marketList: parseMarketText($('#pg-dn-market-list').value, cfg.marketList).list,
+                marketEveryMin: Math.max(1, parseInt($('#pg-dn-market-min').value, 10) || MARKET_EVERY_MIN_DEFAULT),
+                marketKeepGold: Math.max(0, parseInt($('#pg-dn-market-keep').value, 10) || 0),
                 mentionUserId: $('#pg-dn-mention').value.trim(),
                 cooldownSeconds: Math.max(0, parseInt($('#pg-dn-cooldown').value, 10) || 0),
                 debug: $('#pg-dn-debug').checked,
@@ -10039,6 +10309,35 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-cityidle-status').innerHTML = `<span>🏙️</span><span><span class="k">Volta:</span> ${escHtml(idleStatus(current()))}</span>`;
         }
         onIdleChange = () => { if (!panel.hidden) renderIdle(); };
+
+        // ---- Mercado Global (v3.53.0) ----
+        function renderMarket() {
+            const d = current();
+            const { list, ruins } = parseMarketText($('#pg-dn-market-list').value, cfg.marketList);
+            if ((typeof itemsCatalog === 'undefined' || !itemsCatalog) && !marketCatLoading && list.length) { marketCatLoading = true; loadItemsCatalog().then(() => marketNotify()).catch(() => {}); }
+            const lines = $('#pg-dn-market-list').value.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+            let vi = 0;
+            $('#pg-dn-market-items').innerHTML = lines.map(l => {
+                const e = parseMarketLine(l);
+                if (!e) return `<li class="bad"><span class="m">✖</span><span>${escHtml(l)}</span><span class="hint">use "quantidade item até preço"</span></li>`;
+                const it = list[vi++];
+                const feito = marketEntryDone(it), r = marketResolve(it), of = marketLast?.ofertas?.[marketKey(it)];
+                const hint = !r ? (typeof itemsCatalog !== 'undefined' && itemsCatalog ? 'item não está no catálogo do jogo (confira o nome)' : 'catálogo ainda não carregado')
+                    : feito ? `${r.name} · comprado`
+                    : !of ? `${r.name} · mercado ainda não lido`
+                    : of.erro ? of.erro
+                    : of.total ? `mais barato ${fmtNum(of.menor)} · ${fmtNum(of.dentro)} un. dentro do preço${of.semGold ? ' · sem gold (reserva)' : ''}` : 'nenhum anúncio em gold';
+                return `<li class="${feito ? 'done' : r ? 'cur' : 'bad'}"><span class="m">${feito ? '✔' : r ? '▶' : '✖'}</span><span>${fmtNum(marketGot(it))}/${fmtNum(marketQty(it))} ${escHtml(it.item)} até ${fmtNum(marketMax(it))}</span><span class="hint">${escHtml(hint)}</span></li>`;
+            }).join('');
+            const salvo = JSON.stringify(list.map(e => [e.item, marketQty(e), marketMax(e)])) === JSON.stringify(marketList().map(e => [e.item, marketQty(e), marketMax(e)]));
+            $('#pg-dn-market-status').textContent = `${marketStatus(d)}${!salvo ? ' · (lista alterada: salve)' : ''}${ruins.length ? ` · ${ruins.length} linha(s) inválida(s)` : ''}`;
+        }
+        onMarketChange = () => { if (!panel.hidden) renderMarket(); };
+        $('#pg-dn-market-now').onclick = () => {
+            flash('🌐 Lendo o Mercado Global…', 'info', 60000);
+            marketNow().then(r => { flash(`${r.ok ? '✔' : '⚠'} ${r.msg}`, r.ok ? 'ok' : 'warn', 15000); renderMarket(); }).catch(e => flash(`⚠ Mercado: ${e?.message || e}`, 'error'));
+        };
+        $('#pg-dn-market-reset').onclick = () => { marketReset(); renderMarket(); flash('✔ Comprado zerado: os pedidos do mercado começam do zero.', 'ok', 4000); };
 
         // ---- Venda ----
         // Hunt vista na lista de venda ('' = a atual). Outra hunt = edita o perfil dela (cfg.sellProfiles[slug]); marcações
@@ -10801,7 +11100,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
 
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderHold(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderEvolve(); renderSlot(); renderBoss(); renderInv(); renderBreed(); renderGuild(); renderFarm(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderMarket(); renderHold(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderEvolve(); renderSlot(); renderBoss(); renderInv(); renderBreed(); renderGuild(); renderFarm(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -10834,6 +11133,10 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-cityidle').checked = Boolean(cfg.cityIdleEnabled);
             $('#pg-dn-cityidle-min').value = Number(cfg.cityIdleMin) || IDLE_MIN_DEFAULT;
             $('#pg-dn-cityidle-hunt').value = cfg.cityIdleHunt || '';
+            $('#pg-dn-market').checked = Boolean(cfg.marketEnabled);
+            $('#pg-dn-market-list').value = marketList(cfg).map(marketLineText).join('\n');
+            $('#pg-dn-market-min').value = Number(cfg.marketEveryMin) || MARKET_EVERY_MIN_DEFAULT;
+            $('#pg-dn-market-keep').value = Number(cfg.marketKeepGold) || 0;
             $('#pg-dn-sell').checked = Boolean(cfg.sellEnabled);
 
             $('#pg-dn-psell').checked = Boolean(cfg.pokeSellEnabled);
@@ -11010,6 +11313,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const ligouGuild = guildRouteOn(draft) && !guildRouteOn(cfg);
             const ligouFarm = draft.farmEnabled && !cfg.farmEnabled;
             const farmAntes = JSON.stringify([cfg.farmEnabled, farmList(cfg).map(e => [e.item, farmQty(e), e.hunt])]);
+            const marketAntes = JSON.stringify([cfg.marketEnabled, cfg.marketEveryMin, cfg.marketKeepGold, marketList(cfg).map(e => [e.item, marketQty(e), marketMax(e)])]);   // v3.53.0
             const clanAntes = JSON.stringify([cfg.clanEnabled, cfg.clanRoute, cfg.clanKey]);
             const profAntes = JSON.stringify([cfg.profRankupEnabled, cfg.profRoute, cfg.profFromDepot, cfg.profFromFamily]);   // v3.52.0
             const ligouProf = draft.profRoute && !cfg.profRoute;
@@ -11068,6 +11372,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 if (!guildRouteOn() && guildTarget) guildReturn('rota da guild desligada');
                 if (guildOn()) setTimeout(() => guildRequest('salvar'), 500);
             }
+            if (JSON.stringify([cfg.marketEnabled, cfg.marketEveryMin, cfg.marketKeepGold, marketList(cfg).map(e => [e.item, marketQty(e), marketMax(e)])]) !== marketAntes) { marketRearm(); if (marketOn()) setTimeout(() => marketTick(), 500); }   // v3.53.0: mercado mudou: lê já
             if (JSON.stringify([cfg.farmEnabled, farmList(cfg).map(e => [e.item, farmQty(e), e.hunt])]) !== farmAntes) { // farm mudou: esquece pulos e replaneja já
                 farmReset();
                 if (!farmOn() && (farmTarget || farmFrom)) farmReturn('farm desligado');
@@ -11324,6 +11629,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
     setInterval(guildTick, GUILD_TICK_MS);
     setInterval(farmTick, FARM_TICK_MS);
     if (cfg.farmEnabled) setTimeout(farmTick, 9000);   // v3.33.0: farm por lista logo após a carga (depois do socket/retomada da recarga)
+    setInterval(marketTick, MARKET_TICK_MS);   // v3.53.0: Mercado Global (leitura no intervalo do painel)
+    if (marketOn()) setTimeout(marketTick, 8000);
     setTimeout(fishSniff, 12000);   // v3.31.1: lê a janela de pesca uma vez (REST) para confirmar o formato no log
     setTimeout(humanSniff, 15000);  // v3.40.0: lê o prazo da verificação humana uma vez (REST) para confirmar o formato no log
     setInterval(humanWatchTick, HUMAN_WATCH_MS);   // v3.40.0: janela "Confirme que você é humano" / widget do Turnstile aberto
