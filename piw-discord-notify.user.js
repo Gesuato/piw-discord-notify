@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.53.3
+// @version      3.53.4
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.53.3';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.53.4';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -1154,10 +1154,15 @@
     }
 
     // ---- Mercado Global (v3.53.0): comprar um item quando alguém anuncia por até X gold, sem sair da hunt --------------
-    //   lista   : GET /api/game/market?category=Items -> { listings:[{ id, kind:'item'|'ball'|'diamonds'|'pokemon', refId, name,
+    //   lista   : GET /api/game/market?category=All -> { listings:[{ id, kind:'item'|'ball'|'diamonds'|'pokemon', refId, name,
     //             price (POR UNIDADE), currency:'GOLD'|'DIAMONDS', quantity (da pilha inteira), ids?:[ids dos anúncios agrupados],
-    //             sellers? }], mine:[{ id, quantity, ... }] (meus anúncios), requests, myRequests, history, catalog }
-    //             (bundle do cliente, 03/11/2026; `?browse=pokemon&...` é a aba de Pokémon, que o script não usa)
+    //             sellers? }], mine:[{ id, quantity, ... }] (meus anúncios), requests, myRequests, history, catalog{ items[], balls[],
+    //             diamonds } (cada entrada { kind, refId, name }) }. CONFIRMADO no log em 03/11/2026 16:50Z (conta1): id da pilha
+    //             "st:item:59195:5000:GOLD", `ids`, `sellers`, `category`, `desc`, `icon`, `offerOnly`, `at`, `belowNpc`.
+    //             v3.53.4: as categorias da janela são All | Items | Stones | TMs | Poke Balls | Diamonds | Pokemon — com
+    //             `category=Items` as BOLAS (Poke Balls), as pedras (Stones) e as TMs ficavam de fora e "1 ultra ball 300 gold"
+    //             dava "nenhum anúncio" com 4.295 anúncios lidos (teste do usuário, Gesuato). Agora lê tudo (All) e filtra por
+    //             kind/refId. (`?browse=pokemon&...` é a aba de Pokémon, que o script não usa)
     //   compra  : POST /api/game/market/action { action:'buy-stack', kind, refId, price, currency, quantity, ids } — é o que a
     //             janela manda para item/bola (`buy { id, quantity:1 }` só para Pokémon). Resposta ainda NÃO vista: a tela só relê
     //             a lista; o script loga as chaves (`mercado-compra { resposta }`) e, sem `ok:false`/`bought`, conta o pedido.
@@ -1171,7 +1176,7 @@
     // comprado (`got`) fica no cfg, como no Farm.
     // Os itens da lista ficam fora da venda de drops e do guardar na cidade (`marketKeepsItem`). Avisos no canal de Alertas.
 
-    const MARKET_URL = '/api/game/market?category=Items';
+    const MARKET_URL = '/api/game/market?category=All';
     const MARKET_ACTION_URL = '/api/game/market/action';
     const MARKET_DIAMONDS_URL = '/api/game/diamonds';
     const MARKET_TICK_MS = 30 * 1000;
@@ -1188,6 +1193,7 @@
     let marketLast = null;          // { at, anuncios, ofertas:{ chave -> { total, menor, dentro, semGold, erro } }, erro }
     let marketFieldsLogged = false;
     let marketCatLoading = false;
+    let marketCatalog = null;      // v3.53.4: `catalog` da última leitura do mercado ([{ kind, refId, name }]) — resolve nomes que o items.json não tem
     // v3.53.3: "Últimas compras" da aba (pedido do usuário: "algum log/visão na aba também"). Por conta, FORA do cfg (não entra no
     // Exportar/Importar), sobrevive à recarga: [{ at, item, qtd, preco, moeda, total, erro? }], mais recente primeiro.
     const MARKET_HIST_KEY = 'pgDiscordNotifyMarket';
@@ -1267,12 +1273,22 @@
     function marketSpend(cur, valor) { if (cur === 'DIAMONDS') { if (marketDiamonds != null) marketDiamonds = Math.max(0, marketDiamonds - valor); } else if (marketGold != null) marketGold = Math.max(0, marketGold - valor); }
 
     // Nome do pedido -> { kind:'item'|'ball', refId, name } pelo catálogo público (itens) ou pelos nomes de bola; null = não achei.
+    // v3.53.4: "_" e "-" valem como espaço (o usuário escreve "bronze_boss_token" como nos outros campos do painel), e o nome
+    // também é procurado no `catalog` que o mercado devolve: o items.json público NÃO tem, por exemplo, o Bronze Boss Token (70000).
+    function marketNameKey(name) { return normalize(String(name || '').replace(/[_-]+/g, ' ')).replace(/\s+/g, ' ').trim(); }
     function marketResolve(e) {
-        const n = normalize(e?.item);
+        const n = marketNameKey(e?.item);
         if (!n) return null;
-        if (typeof itemsCatalog !== 'undefined' && itemsCatalog) for (const [id, it] of itemsCatalog) if (normalize(it?.name) === n) return { kind: 'item', refId: Number(id), name: it.name };
-        if (typeof BALL_NAMES !== 'undefined' && BALL_NAMES) for (const [id, name] of Object.entries(BALL_NAMES)) if (normalize(name) === n) return { kind: 'ball', refId: Number(id), name };
+        if (typeof itemsCatalog !== 'undefined' && itemsCatalog) for (const [id, it] of itemsCatalog) if (marketNameKey(it?.name) === n) return { kind: 'item', refId: Number(id), name: it.name };
+        if (typeof BALL_NAMES !== 'undefined' && BALL_NAMES) for (const [id, name] of Object.entries(BALL_NAMES)) if (marketNameKey(name) === n) return { kind: 'ball', refId: Number(id), name };
+        if (marketCatalog) for (const c of marketCatalog) if (marketNameKey(c?.name) === n) return { kind: c.kind, refId: Number(c.refId), name: c.name };
         return null;
+    }
+    function marketNoteCatalog(cat) {
+        if (!cat || typeof cat !== 'object') return;
+        const all = [...(Array.isArray(cat.items) ? cat.items : []), ...(Array.isArray(cat.balls) ? cat.balls : [])]
+            .filter(c => c && (c.kind === 'item' || c.kind === 'ball') && c.name && Number(c.refId) > 0);
+        if (all.length) marketCatalog = all;
     }
     // Ids dos itens da lista: fora da venda de drops e do guardar na cidade enquanto o mercado está ligado.
     function marketItemIds() {
@@ -1320,8 +1336,11 @@
             if (!marketFieldsLogged) {
                 marketFieldsLogged = true;
                 const ex = listings.find(l => l && l.kind !== 'pokemon') || listings[0] || null;
-                logEvent('mercado-campos', { raiz: Object.keys(data || {}), anuncio: ex ? Object.keys(ex) : [], exemplo: ex ? marketRespSummary(ex) : null, meus: Array.isArray(data?.mine) ? data.mine.length : null });
+                const porTipo = {};
+                for (const l of listings) { const k = String(l?.kind || '?'); porTipo[k] = (porTipo[k] || 0) + 1; }
+                logEvent('mercado-campos', { raiz: Object.keys(data || {}), anuncio: ex ? Object.keys(ex) : [], exemplo: ex ? marketRespSummary(ex) : null, meus: Array.isArray(data?.mine) ? data.mine.length : null, porTipo, catalogo: data?.catalog ? Object.keys(data.catalog) : null });
             }
+            marketNoteCatalog(data?.catalog);
             marketNoteGold(data?.gold);
             marketNoteDiamonds(data?.diamonds);
             const mine = new Map((Array.isArray(data?.mine) ? data.mine : []).map(l => [String(l?.id), Math.max(0, Math.floor(Number(l?.quantity) || 0))]));
@@ -1329,7 +1348,7 @@
             let buys = 0;
             for (const e of pend) {
                 const r = marketResolve(e), key = marketKey(e), cur = marketCur(e);
-                if (!r) { ofertas[key] = { erro: 'item não está no catálogo do jogo' }; continue; }
+                if (!r) { ofertas[key] = { erro: 'nome não existe no catálogo do jogo nem no do mercado (confira o nome)' }; continue; }
                 const cands = listings
                     .filter(l => l && l.kind === r.kind && Number(l.refId) === r.refId && String(l.currency || 'GOLD').toUpperCase() === cur && Number(l.price) > 0)
                     .map(l => {
@@ -10384,12 +10403,13 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 if (!e) return `<li class="bad"><span class="m">✖</span><span>${escHtml(l)}</span><span class="hint">use "quantidade item preço gold" ou "... diamantes"</span></li>`;
                 const it = list[vi++];
                 const feito = marketEntryDone(it), r = marketResolve(it), of = marketLast?.ofertas?.[marketKey(it)];
-                const hint = !r ? (typeof itemsCatalog !== 'undefined' && itemsCatalog ? 'item não está no catálogo do jogo (confira o nome)' : 'catálogo ainda não carregado')
+                const hint = !r ? (marketCatalog ? 'nome não existe no catálogo do jogo nem no do mercado (confira o nome)' : typeof itemsCatalog !== 'undefined' && itemsCatalog ? 'nome fora do catálogo público; confiro no catálogo do mercado na próxima leitura' : 'catálogo ainda não carregado')
                     : feito ? `${r.name} · comprado`
                     : !of ? `${r.name} · mercado ainda não lido`
                     : of.erro ? of.erro
                     : of.total ? `mais barato ${fmtNum(of.menor)} ${of.moeda || 'gold'} · ${fmtNum(of.dentro)} un. dentro do preço${of.semGold ? ` · sem ${of.moeda || 'gold'} (reserva)` : ''}` : `nenhum anúncio em ${marketCurName(marketCur(it))}`;
-                return `<li class="${feito ? 'done' : r ? 'cur' : 'bad'}"><span class="m">${feito ? '✔' : r ? '▶' : '✖'}</span><span>${fmtNum(marketGot(it))}/${fmtNum(marketQty(it))} ${escHtml(it.item)} · ${fmtNum(marketMax(it))} ${marketCurName(marketCur(it))}</span><span class="hint">${escHtml(hint)}</span></li>`;
+                const ruim = !r && !!marketCatalog;   // só é ✖ depois de o mercado também não conhecer o nome
+                return `<li class="${feito ? 'done' : r || !ruim ? 'cur' : 'bad'}"><span class="m">${feito ? '✔' : r ? '▶' : ruim ? '✖' : '…'}</span><span>${fmtNum(marketGot(it))}/${fmtNum(marketQty(it))} ${escHtml(it.item)} · ${fmtNum(marketMax(it))} ${marketCurName(marketCur(it))}</span><span class="hint">${escHtml(hint)}</span></li>`;
             }).join('');
             const hist = marketHistory();
             const quando = (ts) => new Date(ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });

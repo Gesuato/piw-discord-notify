@@ -215,5 +215,31 @@ const base = () => ({ marketEnabled: true, marketEveryMin: 3, marketKeepGold: 0,
         assert(again.api.marketHistory().length === 0 && JSON.parse(again.state.store.pgDiscordNotifyMarket).length === 0, 'limpar apaga e grava');
     }
 
+    // 11) v3.53.4: lê category=All (bolas/pedras/TMs têm categoria própria na janela) e resolve nomes pelo `catalog` que o mercado
+    //     devolve quando o items.json/BALL_NAMES não conhecem o nome (ex.: "Dusk Ball")
+    {
+        const cfg = base();
+        cfg.marketList = [{ item: 'dusk ball', qty: 5, max: 400, cur: 'GOLD', got: 0 }];
+        const listings = [{ id: 'st:ball:9:350:GOLD', ids: ['L1', 'L2'], sellers: 2, kind: 'ball', refId: 9, name: 'Dusk Ball', price: 350, currency: 'GOLD', quantity: 8, category: 'Poke Balls' }];
+        const catalog = { items: [{ kind: 'item', refId: 300, name: 'Rare Candy' }], balls: [{ kind: 'ball', refId: 9, name: 'Dusk Ball' }], diamonds: { kind: 'diamonds', refId: 0, name: 'Diamonds' } };
+        const { api, state } = loadMarketModule(cfg, { items: ITEMS, api: (url) => url.startsWith('/api/game/market?') ? { listings, mine: [], catalog } : { ok: true } });
+        assert(api.marketResolve({ item: 'dusk ball' }) === null, 'antes da 1ª leitura o nome é desconhecido');
+        await api.marketScan('teste');
+        assert(state.calls[0].url === '/api/game/market?category=All', 'lê a categoria All: ' + state.calls[0].url);
+        const r = api.marketResolve({ item: 'Dusk Ball' });
+        assert(r && r.kind === 'ball' && r.refId === 9, 'o catálogo da leitura resolve o nome: ' + JSON.stringify(r));
+        const of = api.marketLast.ofertas['dusk ball|GOLD|400'];
+        assert(of && of.total === 1 && of.menor === 350 && of.dentro === 8, 'oferta vista na mesma leitura: ' + JSON.stringify(of));
+        const posts = state.calls.filter(c => c.url === '/api/game/market/action');
+        assert(posts.length === 1 && posts[0].body.kind === 'ball' && posts[0].body.refId === 9 && posts[0].body.quantity === 5 && JSON.stringify(posts[0].body.ids) === '["L1","L2"]', 'compra a bola pela pilha agrupada já na 1ª leitura: ' + JSON.stringify(posts.map(p => p.body)));
+        assert(cfg.marketList[0].got === 5, 'got 5');
+        const campos = state.logs.find(([k]) => k === 'mercado-campos');
+        assert(campos && campos[1].porTipo.ball === 1 && JSON.stringify(campos[1].catalogo) === '["items","balls","diamonds"]', 'mercado-campos com porTipo e catalogo: ' + JSON.stringify(campos && campos[1]));
+        // "_" vale como espaço e o token do boss (fora do items.json) resolve pelo catálogo do mercado
+        api.marketNoteCatalog({ items: [{ kind: 'item', refId: 70000, name: 'Bronze Boss Token' }], balls: [] });
+        const t = api.marketResolve({ item: 'bronze_boss_token' });
+        assert(t && t.kind === 'item' && t.refId === 70000 && api.marketResolve({ item: 'Bronze Boss Token' }).refId === 70000 && api.marketResolve({ item: 'rare-candy' }).refId === 300, 'bronze_boss_token / rare-candy: ' + JSON.stringify(t));
+    }
+
     console.log('market.test.js OK');
 })().catch(e => { console.error(e); process.exit(1); });

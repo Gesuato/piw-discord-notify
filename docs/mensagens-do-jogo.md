@@ -470,10 +470,15 @@ chunk compartilhado (módulo `tD`: `ROCKET_SLUG:"rocket_cerulean"`, `INVASION_EV
 Janela "Mercado Global" (`window.market`), só para VIP (`vipGate`); o jogo deixa usar durante a hunt (usuário, 03/11/2026). Tudo por REST
 (`apiGet`/`apiPostAuth`, mesmo Bearer):
 
-- `GET /api/game/market?category=All|Items|Pokemon` → `{ listings[{ id, kind:'item'|'ball'|'diamonds'|'pokemon', refId, name, price
+- `GET /api/game/market?category=All|Items|Stones|TMs|Poke Balls|Diamonds|Pokemon` (lista `aK` do bundle; o script lê `All`, v3.53.4) →
+  `{ listings[{ id, kind:'item'|'ball'|'diamonds'|'pokemon', refId, name, price
   (POR UNIDADE), currency:'GOLD'|'DIAMONDS', quantity (pilha), ids?[ids dos anúncios agrupados], sellers?, shiny?, level?, ivTotal?,
   quality?, type1?, type2?, power? }], mine[{ id, quantity, name, currency, category, ... }], requests[], myRequests[], history[{ name,
   currency, bought, ... }], catalog{ items[], balls[], diamonds }, emailGate? }`. A janela relê a cada ação; 429 = mensagem de limite.
+  CONFIRMADO no log em 03/11/2026 16:50Z (conta1, `mercado-campos`): raiz `charId, listings, pkWindow, mine, requests, myRequests,
+  offersIn, myOffers, history, blacklist, catalog`; anúncio `{ id:'st:item:59195:5000:GOLD' (pilha = kind:refId:preço:moeda), ids[],
+  sellers:15, category:'Items', kind:'item', refId:59195, name, desc, icon, quantity:581, price:5000, currency:'GOLD', offerOnly:false,
+  at, belowNpc:false }`; 4.295 anúncios só em `Items`.
   `?browse=species[&fresh=1]` → `{ species[] }` e `?browse=pokemon&page&sort&speciesId|q&type&gradesOff&shiny&currency&ivMin..priceMax`
   → `{ listings, total, pages }` são a aba de Pokémon.
 - `POST /api/game/market/action` com `action`:

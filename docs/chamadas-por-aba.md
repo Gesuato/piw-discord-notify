@@ -36,7 +36,7 @@ Pokémon, usar o Mercado Global nem o Depot **durante a hunt**. Por isso toda ve
 
 | O quê | Como | Quando |
 |---|---|---|
-| Mercado Global (v3.53.0) | `GET /api/game/market?category=Items` + `POST /api/game/market/action { action:'buy-stack', ... }` (REST, SEM viagem: o jogo deixa comprar na hunt); `GET /api/game/diamonds` antes de cada leitura com pedido em diamantes | intervalo sorteado em `marketEveryMin`–`marketEveryMaxMin` (padrão 3 min fixo) enquanto houver pedido pendente; 8 s após a carga; no Salvar; botão "Conferir agora"; 429 = espera 10 min |
+| Mercado Global (v3.53.0) | `GET /api/game/market?category=All` (v3.53.4; `Items` deixava bolas, pedras e TMs de fora) + `POST /api/game/market/action { action:'buy-stack', ... }` (REST, SEM viagem: o jogo deixa comprar na hunt); `GET /api/game/diamonds` antes de cada leitura com pedido em diamantes | intervalo sorteado em `marketEveryMin`–`marketEveryMaxMin` (padrão 3 min fixo) enquanto houver pedido pendente; 8 s após a carga; no Salvar; botão "Conferir agora"; 429 = espera 10 min |
 
 ## 💰 Venda
 

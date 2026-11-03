@@ -101,9 +101,13 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   (confirmado no bundle em 29/09/2026; bolas usam `buyFromShop('ball', ...)` com `{ ballId }`). Ids: poções 200–204,
   Revive 205, Max Revive 206. Limite 0 = compra quando acabar. Uma viagem pedida por episódio (`supplyAttempted`).
 - Mercado Global (v3.53.0, aba própria 🌐 Mercado desde a v3.53.1 (`TABS` id `mercado`, badge e linha do resumo próprios), `cfg.marketEnabled`/`marketList [{ item, qty, max, cur:'GOLD'|'DIAMONDS', got }]`/`marketEveryMin`–`marketEveryMaxMin` (sorteado,
-  v3.53.1)/`marketKeepGold`/`marketKeepDiamonds`; módulo `// ---- Mercado Global` entre o Refil e a Venda de drops; bundle de 03/11/2026, formatos ainda NÃO vistos
-  no log — `mercado-campos` registra as chaves): pedido do usuário em 03/11/2026 ("comprar um certo item caso o preço seja x"; o jogo
-  DEIXA usar o Mercado Global durante a hunt, então NÃO passa pela viagem; só VIP). `GET /api/game/market?category=Items` →
+  v3.53.1)/`marketKeepGold`/`marketKeepDiamonds`; módulo `// ---- Mercado Global` entre o Refil e a Venda de drops; bundle de 03/11/2026; LISTA confirmada no log em 03/11/2026 16:50Z (conta1: id da pilha
+  `st:item:59195:5000:GOLD`, `ids`, `sellers`, `category`, `belowNpc`), resposta do buy-stack ainda NÃO vista): pedido do usuário em 03/11/2026 ("comprar um certo item caso o preço seja x"; o jogo
+  DEIXA usar o Mercado Global durante a hunt, então NÃO passa pela viagem; só VIP). `GET /api/game/market?category=All` (v3.53.4: as categorias
+  da janela são All | Items | Stones | TMs | Poke Balls | Diamonds | Pokemon — com `Items` as bolas/pedras/TMs ficavam de fora e "1 ultra ball
+  300 gold" dava 0 anúncios em 4.295 lidos, teste do usuário em 03/11/2026 16:52Z; `catalog{ items[], balls[] }` [{ kind, refId, name }] também
+  resolve nomes, `marketNoteCatalog` — o items.json público NÃO tem o Bronze Boss Token 70000, que o usuário quis comprar em diamantes; `_`/`-`
+  no nome valem como espaço, `marketNameKey`) →
   `{ listings[{ id, kind:'item'|'ball'|'diamonds'|'pokemon', refId, name, price (por unidade), currency:'GOLD'|'DIAMONDS', quantity (pilha),
   ids?[] (anúncios agrupados), sellers? }], mine[{ id, quantity }], requests, myRequests, history, catalog }`; compra =
   `POST /api/game/market/action { action:'buy-stack', kind, refId, price, currency, quantity, ids }` (o que a janela manda para item/bola;

@@ -1034,7 +1034,7 @@ janela aberta); conferir se `speciesCount` da profissão bate com a Pokédex (pa
 seja x"):** aba própria 🌐 Mercado (v3.53.1; nasceu como bloco da aba Compras). Uma linha por pedido, `quantidade item preço moeda` (ex.: `1 poke ball 300 gold`; preço por
 unidade, `5.000`, `5k`, `1,5m` valem; a moeda no fim é OBRIGATÓRIA — `gold` ou `diamantes` — e não há "até": formato pedido pelo
 usuário na v3.53.2). Num intervalo sorteado entre
-`marketEveryMin` e `marketEveryMaxMin` (padrão 3 min fixo; v3.53.1) o script lê `GET /api/game/market?category=Items` e, para cada
+`marketEveryMin` e `marketEveryMaxMin` (padrão 3 min fixo; v3.53.1) o script lê `GET /api/game/market?category=All` (v3.53.4; `Items` deixava bolas, pedras e TMs de fora) e, para cada
 pedido pendente, compra os anúncios dentro do preço, mais baratos primeiro, com `POST /api/game/market/action { action:'buy-stack',
 kind, refId, price, currency:'GOLD', quantity, ids }` (o mesmo que a janela do jogo manda). Só anúncios na moeda do pedido, nunca o próprio
 anúncio (`mine`), nunca abaixo das reservas `marketKeepGold`/`marketKeepDiamonds` (gold pelo frame `balls`; diamonds por
