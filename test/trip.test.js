@@ -87,7 +87,7 @@ const MIN = 60 * 1000;
         const { api, state } = loadTripModule({ sellEnabled: true, pokeSellEnabled: true, autoBuy: true }, { huntSlug: 'pidgey', wantedNow: [39], ballId: 4, ballQty: 0, ballsMin: 1 });
         api.tripRequest('pokes'); await api.tripTick();
         assert(state.tasks.map(t => t[0]).sort().join(',') === 'bolas,itens,pokes', 'carona levou itens e bolas: ' + state.tasks.map(t => t[0]));
-        assert(state.tasks.find(t => t[0] === 'itens')[1].wanted.join(',') === '39', 'itens com a lista atual');
+        assert(state.tasks.find(t => t[0] === 'itens')[1].wanted == null && state.tasks.find(t => t[0] === 'itens')[1].hunt === 'pidgey', 'itens sem lista congelada: a cidade decide pela mochila real (v3.55.0)');
     }
 
     // 8) relógio único: sem nada a fazer no horário, só sorteia o próximo; com drops marcados, viaja; bola zerada é urgente
@@ -105,7 +105,7 @@ const MIN = 60 * 1000;
         await api.tripTick();
         assert(state.switches.length === 0 && api.lastTripAt > t1 && state.logs.some(l => l[0] === 'viagem-vazia'), 'na hora sem nada: só sorteia o próximo, não sai da hunt');
         init.wantedNow = [39, 120];
-        cfg.sellItems = { 39: { keep: 0 }, 120: { keep: 0 } }; state.huntLoot.set(39, { name: 'a', qty: 1 }); state.huntLoot.set(120, { name: 'b', qty: 1 });
+        cfg.sellItems = { 39: { keep: 0 }, 120: { keep: 0 } };   // v3.55.0: a carga vem de sellCandidates (stub pelo init.wantedNow), não da hunt
         assert(/Vai levar: 2 drops/.test(api.tripStatus().sub), 'faixa mostra o que vai levar: ' + api.tripStatus().sub);
         clock.now += 16 * MIN;
         await api.tripTick();

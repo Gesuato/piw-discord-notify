@@ -1046,6 +1046,25 @@ na aba (30 por conta, em `localStorage.pgDiscordNotifyMarket`, com as falhas; bo
 **Pendências:** confirmar no log `mercado-campos` as chaves da lista (`ids`, `sellers`) e em `mercado-compra { resposta }` o que o
 `buy-stack` devolve (hoje `ok:false` = nada, `bought` numérico vale, senão conta o pedido inteiro).
 
+## ✅ 41. Venda de drops pela mochila inteira: regra "todo drop comum" + marcados + exceções (v3.55.0)
+
+**O que faz (pedido do usuário em 04/11/2026: "o drop hunts parece não estar funcionando… muito item ficando acumulado no inventário
+pois as dailys etc. trocam de hunt"):** a lista de venda deixa de ser por hunt. O bloco "Mochila" da aba Venda mostra a mochila real da
+conta (frame `inventory`, lido na hunt) com busca, ordem, filtros (Tudo / Loot / ⚠ Atenção / Novos), "Marcar visíveis"/"Desmarcar" e dois
+grupos ("✔ Vende" com o gold estimado, "Fica na mochila" recolhido). Uma regra por baixo — "Vender todo drop comum com preço até N gold"
+(loot, não raro, sem feromônio; padrão 500) — marca sozinha o grosso; o usuário só abre exceções (desmarcar item da regra) ou marca na mão
+raros, pedras e itens acima do teto. Mock: `docs/mockup-venda-mochila.html` (variante 2 escolhida).
+
+**Causa do "não funciona":** a viagem só levava os itens marcados que tinham CAÍDO na hunt atual desde a entrada (`huntLoot`, zerado a
+cada troca de hunt e recarga) e a lista ativa era o perfil da hunt — na hunt da daily sem perfil nada era vendido (contas 3 e 4,
+04/11/2026).
+
+**Config:** `sellItems` (marcados na mão, uma lista por conta), `sellRule`, `sellRuleMaxPrice`, `sellNever`; `sellProfiles` migra para a
+união (maior reserva) e some. **Lógica:** `sellDecision` única (painel, carga da viagem, venda na cidade, guardar, clã); família e
+módulos que seguram item vencem a marcação. **Mensagens:** `inv-get`/`inventory` na hunt; na cidade `GET /depot` + `GET /item/lock` +
+`POST /shop/sell` (+ Stone Researcher para pedras marcadas). **Testes:** `node test/sell.test.js`, `test/ui.smoke.js`, `config.roundtrip`,
+`config.live`.
+
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
 Tentada na v3.0.0 e revertida na v3.0.1 a pedido do usuário: como o PokeGrid isola cada painel

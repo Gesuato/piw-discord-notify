@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.54.0
+// @version      3.55.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.54.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.55.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -58,8 +58,10 @@
         sellEnabled: false,     // vender drops marcados da hunt atual periodicamente
         sellEveryMin: 10,       // intervalo mínimo da venda automática (minutos)
         sellEveryMaxMin: 0,     // intervalo máximo; 0 ou <= mínimo = intervalo fixo. Entre os dois é sorteado
-        sellItems: {},          // lista BRANCA: itemId -> { keep: N } (manter pelo menos N)
-        sellProfiles: {},       // por hunt: slug -> { items, everyMin, everyMaxMin } (carregado ao entrar)
+        sellItems: {},          // marcados NA MÃO: itemId -> { keep: N } (manter pelo menos N). v3.55.0: UMA lista por conta (a mochila inteira)
+        sellRule: true,         // v3.55.0: vender todo drop comum (categoria loot, não raro, sem feromônio, preço do NPC até sellRuleMaxPrice)
+        sellRuleMaxPrice: 500,  // teto de preço da regra (gold por unidade no NPC); 0 = sem teto
+        sellNever: [],          // v3.55.0: exceções — ids que a regra cobriria mas o usuário desmarcou
         pokeSellEnabled: false, // vender Pokémon fora do time pelas regras abaixo (v3.11.0)
         pokeSellLimits: {},     // v3.12.0: raridade (chave: weak..divine) -> vende se poder (ivTotal) < limite; ausente/0 = não vende
         pokeSellKeepQuality: 0, // v3.34.0: qualidade (multiplicador) a partir da qual NUNCA vende, ex.: 1.8; 0 = só as regras por raridade
@@ -179,6 +181,22 @@
             }
             delete cfg.pokeSellTier; delete cfg.pokeSellIvLow; delete cfg.pokeSellIvHigh;
         }
+        // v3.55.0: a venda de drops deixou de ser por hunt. Os perfis (`sellProfiles[slug].items`) viram UMA lista por conta:
+        // união de todos (a maior reserva de cada item vence). A regra "todo drop comum" nasce ligada (DEFAULTS).
+        if (cfg.sellProfiles && typeof cfg.sellProfiles === 'object') {
+            const uni = Object.assign({}, cfg.sellItems && typeof cfg.sellItems === 'object' && !Array.isArray(cfg.sellItems) ? cfg.sellItems : {});
+            for (const prof of Object.values(cfg.sellProfiles)) {
+                for (const [id, v] of Object.entries(prof?.items || {})) {
+                    const keep = Math.max(0, Number(v?.keep) || 0);
+                    if (!uni[id] || (Number(uni[id].keep) || 0) < keep) uni[id] = { keep };
+                }
+            }
+            cfg.sellItems = uni;
+            delete cfg.sellProfiles;
+        }
+        if (!cfg.sellItems || typeof cfg.sellItems !== 'object' || Array.isArray(cfg.sellItems)) cfg.sellItems = {};
+        if (cfg.sellRule == null) cfg.sellRule = true;
+        if (!Array.isArray(cfg.sellNever)) cfg.sellNever = [];
         if (!cfg.routes || typeof cfg.routes !== 'object' || Array.isArray(cfg.routes)) cfg.routes = {};
         const ativa = Array.isArray(cfg.route) ? cfg.route : [];
         if (!cfg.routeName && ativa.length) {
@@ -1463,9 +1481,10 @@
         return partes.join(' · ');
     }
 
-    // ---- Venda automática de drops da hunt atual ------------------------
+    // ---- Venda automática de drops (v3.55.0: a MOCHILA inteira, não a hunt) ------------------------
     //   catálogo : GET /game/items.json (público) -> { items:[{ id, name, category, npcPrice, rare }] }
-    //   mochila  : GET /api/game/depot            -> { inventory:[{ id, name, quantity, npcPrice, category }] }
+    //   mochila  : frame `inventory { items:[{ itemId, quantity }] }` (resposta a `inv-get`, funciona NA hunt) alimenta o painel e a
+    //              carga da viagem (`sellBag`); na cidade a venda lê GET /api/game/depot -> { inventory:[{ id, name, quantity, npcPrice, category }] }
     //   cadeados : GET /api/game/item/lock        -> { locked:[itemId, ...] }  (o jogo recusa o lote inteiro
     //                                                 se um item travado entrar nele)
     //   venda    : POST /api/game/shop/sell { items:[{ itemId, qty }] } -> { ok, soldCount, goldGained, gold }
@@ -1475,12 +1494,19 @@
     //              GET  /api/game/flint -> { gold, gemQty, stones:[{ id, name, icon, quantity, unitPrice }], catalog:[{ id, name, icon }] }
     //              POST /api/game/flint/sell { itemId, qty } -> { sold, item, goldGained }   (um POST por pedra; a tela manda
     //              `inv-get` depois). Bundle de 03/11/2026; formatos ainda não vistos no log — `venda-pedras-campos` registra as chaves.
-    //   hunt     : `enter-hunt { slug }` / `leave-hunt` enviados pelo cliente; `field-kill` traz
-    //              loot:[{ itemId, name, qty }] — é daí que sai a lista "o que cai nesta hunt".
-    // Regras fixas (não configuráveis): nunca preço 0 (o NPC não compra) e nunca item com cadeado
-    // do jogo (o lote inteiro seria recusado). Todo o resto é lista BRANCA por item + reserva: o
-    // usuário escolhe; itens de outra categoria, raros ou com nome sensível só ganham um aviso ⚠️
-    // na lista (a pedido do usuário, v3.1.0 — antes ficavam com 🔒 e não podiam ser marcados).
+    // v3.55.0 (pedido do usuário em 04/11/2026: "muito item ficando acumulado no inventário, as dailys etc. trocam de hunt"): até a
+    //   v3.54.0 a lista era por hunt (`sellProfiles[slug]`) e a viagem só levava o que tinha CAÍDO na hunt atual desde a entrada
+    //   (`huntLoot`, zerado a cada troca de hunt e recarga) — hunt da daily sem perfil = viagem sem a tarefa de itens (contas 3 e 4,
+    //   04/11/2026). Agora: UMA lista por conta (`cfg.sellItems`, marcados na mão) + a REGRA `cfg.sellRule` ("vender todo drop comum":
+    //   categoria `loot`, não raro, sem feromônio, preço do NPC até `cfg.sellRuleMaxPrice`, padrão 500; 0 = sem teto) + as exceções
+    //   `cfg.sellNever` (a regra cobriria, o usuário desmarcou). `sellDecision(id, item, d)` é a ÚNICA fonte: { sells, why, tag, keep }.
+    //   Nunca vende: preço 0, cadeado do jogo, item da lista da família (aba Venda → Guardar) e item que outro módulo segura
+    //   (clã, profissão, guild, farm, Mercado Global, Auto Boss, Invasão). Raros, pedras e outras categorias só com marcação.
+    //   Os perfis antigos viram a lista única no `migrateCfg` (união, maior reserva). Strange Pheromone é `loot` NÃO raro a
+    //   1.000.000 de gold: a regra nunca cobre feromônio (`PHEROMONE_NAME`) — por isso também existe o teto de preço.
+    // Regras fixas (não configuráveis): nunca preço 0 (o NPC não compra) e nunca item com cadeado do jogo (o lote inteiro seria
+    // recusado). Itens de outra categoria, raros ou com nome sensível só ganham um aviso ⚠️ na lista, mas podem ser marcados
+    // (a pedido do usuário, v3.1.0 — antes ficavam com 🔒 e não podiam ser marcados).
 
     const ITEMS_CATALOG_URL = '/game/items.json';
     const DEPOT_URL = '/api/game/depot';
@@ -1491,16 +1517,25 @@
     const FLINT_CITY = 'shopping';                       // `GET /api/game/city-npcs?slug=shopping` traz `flint`; Cerulean não tem
     const FLINT_CITY_WAIT_MS = 2000;
     const FLINT_BETWEEN_MS = [1200, 2500];               // entre uma pedra e outra ("humano")
-    const SELL_CHECK_MS = 60 * 1000;
+    const SELL_BAG_POLL_MS = 5 * 60 * 1000;              // v3.55.0: relê a mochila (inv-get) para a carga da viagem e o painel
+    const SELL_BAG_TICK_MS = 60 * 1000;
+    const SELL_BAG_MIN_GAP_MS = 20 * 1000;               // entre dois pedidos de mochila (botão + relógio)
+    const SELL_BAG_SEEN_KEY = 'pgDiscordNotifyBagSeen';  // ids já vistos na mochila deste painel ("novo" = apareceu depois)
+    const SELL_RULE_MAX_PRICE_DEFAULT = 500;
     const PROTECTED_NAME = /pherom|feromon|stone|pedra/i;
+    const PHEROMONE_NAME = /pherom|feromon/i;
 
     let huntSlug = null;
-    const huntLoot = new Map();     // itemId -> { name, qty } (acumulado na hunt atual)
     let itemsCatalog = null;        // Map id -> item do catálogo
     let sellRunning = false;
     let lastSellAt = 0;
     // Desde a v3.15.0 a venda de itens não tem relógio próprio: vai na viagem à cidade (relógio único, módulo "Viagem").
-    let onHuntLootChange = null;    // callback do painel para redesenhar a lista
+    const sellBag = new Map();      // itemId -> quantidade (último frame `inventory`, somando os drops até o próximo frame)
+    let sellBagAt = 0;              // quando o último frame chegou (0 = nunca)
+    let sellBagReqAt = 0;
+    const sellBagSeen = loadBagSeen();   // ids já vistos na mochila (persistido)
+    const sellBagNew = new Set();        // ids que apareceram nesta sessão (etiqueta "novo" no painel até o Salvar)
+    let onSellBagChange = null;     // callback do painel para redesenhar a lista
 
     function loadItemsCatalog() {
         if (itemsCatalog) return Promise.resolve(itemsCatalog);
@@ -1530,30 +1565,73 @@
         return null;
     }
 
-    // Perfil por hunt: ao entrar numa hunt com perfil salvo, os itens marcados e a faixa de
-    // tempo daquela hunt viram os ativos. Salvar/Vender agora gravam o perfil da hunt atual.
-    function hasHuntProfile() { return Boolean(huntSlug && cfg.sellProfiles && cfg.sellProfiles[huntSlug]); }
-
-    function loadHuntProfile() {
-        if (!huntSlug) return;
-        const prof = cfg.sellProfiles?.[huntSlug];
-        if (!prof) { logEvent('perfil', { slug: huntSlug, salvo: false }); return; }
-        cfg.sellItems = Object.assign({}, prof.items || {});   // (everyMin/everyMaxMin dos perfis antigos são ignorados desde a v3.15.0)
-        saveCfg(cfg);
-        logEvent('perfil', { slug: huntSlug, salvo: true, itens: Object.keys(cfg.sellItems).length });
+    function loadBagSeen() {
+        try { const a = JSON.parse(localStorage.getItem(SELL_BAG_SEEN_KEY) || '[]'); return new Set(Array.isArray(a) ? a.map(Number).filter(n => n > 0) : []); }
+        catch { return new Set(); }
     }
+    function saveBagSeen() { try { localStorage.setItem(SELL_BAG_SEEN_KEY, JSON.stringify([...sellBagSeen].slice(-2000))); } catch { /* sem localStorage */ } }
 
-    function saveHuntProfile() {
-        if (!huntSlug) return;
-        if (!cfg.sellProfiles || typeof cfg.sellProfiles !== 'object') cfg.sellProfiles = {};
-        cfg.sellProfiles[huntSlug] = { items: Object.assign({}, cfg.sellItems || {}) };
+    // Teto de preço da regra (gold por unidade no NPC); 0 = sem teto. `d` = cfg ou rascunho do painel.
+    function sellRuleMaxPrice(d) {
+        d = d || cfg;
+        const v = Number(d.sellRuleMaxPrice);
+        return Number.isFinite(v) && v >= 0 ? Math.floor(v) : SELL_RULE_MAX_PRICE_DEFAULT;
+    }
+    // "Drop comum" = o que a regra "vender todo drop comum" cobre: categoria loot, não raro, preço > 0, sem feromônio e até o teto.
+    // Item fora do catálogo (null) nunca entra pela regra: só marcado na mão.
+    function sellRuleCovers(item, d) {
+        if (!item) return false;
+        if (String(item.category || '').toLowerCase() !== 'loot') return false;
+        if (item.rare === true) return false;
+        const price = Number(item.npcPrice) || 0;
+        if (!(price > 0)) return false;
+        if (PHEROMONE_NAME.test(String(item.name || ''))) return false;
+        const max = sellRuleMaxPrice(d);
+        return !max || price <= max;
+    }
+    // Motivo pelo qual NEM a lista NEM a regra podem vender o item (null = pode). A lista da família e os módulos que seguram o
+    // item vencem qualquer marcação (`typeof`: os harness recortam o script e nem todo módulo está presente).
+    function sellHoldReason(id, item, d) {
+        d = d || cfg;
+        id = Number(id);
+        const motivo = protectedReason(item);
+        if (motivo) return motivo;
+        if (typeof familyListEntry === 'function' && familyListEntry(id, item?.name, d)) return 'lista da família';
+        if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) return 'tarefa do clã';            // item base/de clã que a tarefa ainda pede
+        if (typeof profKeepsItem === 'function' && profKeepsItem(id)) return 'picture da profissão';    // v3.52.0
+        if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) return 'tributo da guild';      // v3.31.0
+        if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) return 'lista de farm';           // v3.33.0
+        if (typeof marketKeepsItem === 'function' && marketKeepsItem(id)) return 'pedido do Mercado Global';   // v3.53.0
+        if (typeof bossKeepsItem === 'function' && bossKeepsItem(id)) return 'token do Auto Boss';      // v3.43.1
+        if (typeof invKeepsItem === 'function' && invKeepsItem(id)) return 'Rocket Plans (invasão)';    // v3.50.0
+        return null;
+    }
+    function sellNeverSet(d) { d = d || cfg; return new Set((Array.isArray(d.sellNever) ? d.sellNever : []).map(Number)); }
+    // Decisão de UM item: { sells, why, tag:'marcado'|'regra'|'exceção'|null, keep, locked }. `item` = catálogo (ou a linha da mochila).
+    function sellDecision(id, item, d) {
+        d = d || cfg;
+        id = Number(id);
+        const why = sellHoldReason(id, item, d);
+        if (why) return { sells: false, why, tag: null, keep: 0, locked: true };
+        const m = d.sellItems && typeof d.sellItems === 'object' ? d.sellItems[id] : null;
+        if (m) return { sells: true, why: null, tag: 'marcado', keep: Math.max(0, Number(m.keep) || 0), locked: false };
+        if (d.sellRule && sellRuleCovers(item, d)) {
+            if (sellNeverSet(d).has(id)) return { sells: false, why: null, tag: 'exceção', keep: 0, locked: false };
+            return { sells: true, why: null, tag: 'regra', keep: 0, locked: false };
+        }
+        return { sells: false, why: null, tag: null, keep: 0, locked: false };
+    }
+    // Para quem só quer saber se o item sai da mochila na viagem (guardar na cidade, painel do clã): venda ligada + decisão.
+    function sellWouldSell(id, d, item) {
+        d = d || cfg;
+        if (!d.sellEnabled) return false;
+        return sellDecision(id, item || itemsCatalog?.get(Number(id)) || null, d).sells;
     }
 
     function setHunt(slug) {
         const novo = slug ? String(slug) : null;
         if (novo === huntSlug) return;
         huntSlug = novo;
-        huntLoot.clear();
         noteHuntChange(novo);
         invOnHuntChange(novo);    // v3.50.0: a hunt virou a Invasão Rocket (nossa entrada confirmando ou botão INVASÃO da tela) — ANTES das rotas, para `invBusy()` já segurar a reentrada delas
         catchOnHuntChange(novo);
@@ -1561,9 +1639,7 @@
         farmOnHuntChange(novo);
         idleOnHuntChange(novo);
         holdOnHuntChange(novo);   // v3.44.0: espera na cidade ligada e a tela religou a hunt: sai de novo
-        loadHuntProfile();
         logEvent('hunt', { slug: huntSlug });
-        if (onHuntLootChange) onHuntLootChange();
     }
 
     function handleOutgoing(data) {
@@ -1583,17 +1659,17 @@
         else if (m?.type === 'breedbox-move') logEvent('breedbox-envio', { dir: m.dir ?? null, n: Array.isArray(m.pokeIds) ? m.pokeIds.length : null, campos: Object.keys(m).filter(k => k !== 'type') });   // v3.49.0: Breeding Box (pela tela ou pelo script)
     }
 
+    // `field-kill`: soma o loot na mochila lida (estimativa até o próximo frame `inventory`). Item nunca visto = "novo" no painel.
     function handleFieldKill(message) {
-        if (!Array.isArray(message.loot)) return;
+        if (!Array.isArray(message.loot) || !sellBagAt) return;
         let novo = false;
         for (const l of message.loot) {
-            const id = Number(l?.itemId);
-            if (!Number.isInteger(id) || id <= 0) continue;
-            const cur = huntLoot.get(id);
-            if (cur) cur.qty += Number(l.qty) || 0;
-            else { huntLoot.set(id, { name: String(l.name || `Item ${id}`), qty: Number(l.qty) || 0 }); novo = true; }
+            const id = Number(l?.itemId), qty = Number(l?.qty) || 0;
+            if (!Number.isInteger(id) || id <= 0 || qty <= 0) continue;
+            sellBag.set(id, (sellBag.get(id) || 0) + qty);
+            if (!sellBagSeen.has(id)) { sellBagSeen.add(id); sellBagNew.add(id); novo = true; }
         }
-        if (novo) { loadItemsCatalog(); if (onHuntLootChange) onHuntLootChange(); }
+        if (novo) { saveBagSeen(); loadItemsCatalog(); sellNotify(); }
     }
 
     // v3.54.0: pedra de evolução = categoria `stone` (items.json ou a própria mochila). O Mark ignora; o Stone Researcher compra.
@@ -1628,6 +1704,7 @@
             ganho += g;
             if (Number.isFinite(Number(r?.gold))) gold = Number(r.gold);
             vendidos.push({ itemId: p.itemId, qty: sold, name: String(r?.item || s.name || p.name), ganho: g });
+            sellBagSold(p.itemId, sold);
             await sellWait(sellRnd(FLINT_BETWEEN_MS));
         }
         if (vendidos.length) sendGame({ type: 'inv-get' });
@@ -1635,15 +1712,17 @@
         return { ok: faltou.length === 0, motivo: faltou.length ? `o Stone Researcher não comprou: ${faltou.join(', ')}` : null, vendidos, ganho, gold, faltou };
     }
 
-    // Vende o excedente dos itens marcados que caem na hunt atual. `manual` ignora sellEnabled.
-    // `wantedIds`/`huntName` (v3.14.0): a viagem congela a lista na hunt, porque na cidade `huntSlug` é null e `huntLoot` zera.
+    // Vende, na cidade, o excedente da mochila que `sellDecision` manda vender. `manual` ignora sellEnabled.
+    // v3.55.0: `wantedIds` null = tudo que a decisão mandar, pela mochila REAL (GET /depot) — a viagem não congela mais lista
+    // nenhuma; uma lista de ids só RESTRINGE (harness/compatibilidade). `huntName` é só para o log e o aviso.
     // v3.54.0: pedras de evolução saem do lote do Mark e vão para o Stone Researcher (`sellStonesAtResearcher`), depois do Mark.
     async function runSellCycle(manual, wantedIds, huntName) {
         if (sellRunning) return { ok: false, motivo: 'venda já em andamento' };
         if (!manual && !cfg.sellEnabled) return { ok: false, motivo: 'desligada' };
         const huntSlug = huntName || huntSlugAtual();
-        const wanted = Array.isArray(wantedIds) ? wantedIds.map(Number) : sellWantedNow();
-        if (!wanted.length) return { ok: false, motivo: huntSlug ? 'nenhum item marcado caiu nesta hunt' : 'fora de hunt' };
+        const wanted = Array.isArray(wantedIds) ? new Set(wantedIds.map(Number)) : null;
+        if (wanted && !wanted.size) return { ok: false, motivo: 'nenhum item para vender' };
+        if (!wanted && !cfg.sellRule && !Object.keys(cfg.sellItems || {}).length) return { ok: false, motivo: 'nenhum item marcado e a regra está desligada' };
         sellRunning = true;
         lastSellAt = Date.now();
         const who = playerName();
@@ -1659,24 +1738,17 @@
             const lote = [], pedras = [];
             for (const inv of inventory) {
                 const id = Number(inv?.id);
-                if (!wanted.includes(id)) continue;
+                if (wanted && !wanted.has(id)) continue;
                 if (locked.has(id)) continue;
                 const item = catalog.get(id) || inv;
-                if (protectedReason(item)) continue;
-                if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) continue;   // item base/de clã que a tarefa ainda pede
-                if (typeof profKeepsItem === 'function' && profKeepsItem(id)) continue;   // v3.52.0: Rare Pokémon Picture da profissão
-                if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) continue;  // v3.31.0: item do Tributo do Dia da guild
-                if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) continue;    // v3.33.0: item da lista de farm
-                if (typeof marketKeepsItem === 'function' && marketKeepsItem(id)) continue;  // v3.53.0: item comprado no Mercado Global
-                if (typeof bossKeepsItem === 'function' && bossKeepsItem(id)) continue;    // v3.43.1: token do Auto Boss pendente
-                if (typeof invKeepsItem === 'function' && invKeepsItem(id)) continue;     // v3.50.0: Rocket Plans (não vendem nem vão para a família)
-                const keep = Math.max(0, Number(cfg.sellItems[id]?.keep) || 0);
-                const qty = Math.floor(Number(inv.quantity) || 0) - keep;
+                const dec = sellDecision(id, item, cfg);   // v3.55.0: marcado, regra (menos exceções) ou nada; família/módulos seguram
+                if (!dec.sells) continue;
+                const qty = Math.floor(Number(inv.quantity) || 0) - dec.keep;
                 if (qty <= 0) continue;
                 const entrada = { itemId: id, qty, name: inv.name || item.name || `Item ${id}`, price: Number(inv.npcPrice ?? item.npcPrice) || 0 };
                 if (isStoneItem(item) || isStoneItem(inv)) pedras.push(entrada); else lote.push(entrada);   // v3.54.0: pedra = Stone Researcher
             }
-            if (!lote.length && !pedras.length) { logEvent('venda-nada', { hunt: huntSlug, marcados: wanted }); return { ok: false, motivo: 'nada acima da reserva para vender' }; }
+            if (!lote.length && !pedras.length) { logEvent('venda-nada', { hunt: huntSlug, marcados: Object.keys(cfg.sellItems || {}).length, regra: Boolean(cfg.sellRule), restrito: wanted ? [...wanted] : null }); return { ok: false, motivo: 'nada acima da reserva para vender' }; }
 
             let ok = true, ganho = 0, gold = null, total = 0;
             const partes = [], falhas = [];
@@ -1686,6 +1758,7 @@
                 const ganhoMark = Number.isFinite(Number(r?.goldGained)) ? Number(r.goldGained) : lote.reduce((a, i) => a + i.qty * i.price, 0);
                 if (Number.isFinite(Number(r?.gold))) gold = Number(r.gold);
                 logEvent('venda', { hunt: huntSlug, itens: lote.map(i => ({ id: i.itemId, qty: i.qty })), ok: okMark, ganho: ganhoMark, gold });
+                if (okMark) { for (const i of lote) sellBagSold(i.itemId, i.qty); sellRequestBag(true); }   // v3.55.0: painel/carga sem esperar o próximo frame
                 ok = ok && okMark;
                 ganho += ganhoMark;
                 total += lote.reduce((a, i) => a + i.qty, 0);
@@ -1733,7 +1806,53 @@
     }
 
     function huntSlugAtual() { return huntSlug; }
-    function sellWantedNow() { return Object.keys(cfg.sellItems || {}).map(Number).filter(id => huntLoot.has(id)); }
+
+    // Frame `inventory` (resposta a `inv-get`, do refil/clã/boss ou nosso): a mochila que o painel e a carga da viagem usam.
+    // Item que nunca apareceu neste painel vira "novo" (etiqueta na lista até o Salvar).
+    function sellOnInventory(items) {
+        sellBag.clear();
+        let novos = false;
+        for (const it of items) {
+            const id = Number(it?.itemId ?? it?.id);
+            const qty = Math.max(0, Math.floor(Number(it?.quantity) || 0));
+            if (!(id > 0) || !qty) continue;
+            sellBag.set(id, (sellBag.get(id) || 0) + qty);
+            if (!sellBagSeen.has(id)) { sellBagSeen.add(id); sellBagNew.add(id); novos = true; }
+        }
+        sellBagAt = Date.now();
+        if (novos) saveBagSeen();
+        if (!itemsCatalog) loadItemsCatalog().then(sellNotify);
+        sellNotify();
+    }
+    function sellBagSold(id, qty) {
+        if (!sellBag.has(id)) return;
+        const resto = sellBag.get(id) - qty;
+        if (resto > 0) sellBag.set(id, resto); else sellBag.delete(id);
+    }
+    function sellNotify() { if (onSellBagChange) { try { onSellBagChange(); } catch { /* painel fechado */ } } }
+    // Pede a mochila ao jogo. Sem `force` só com a venda ligada; sempre respeita o intervalo mínimo entre pedidos.
+    function sellRequestBag(force) {
+        if (!force && !cfg.sellEnabled) return false;
+        if (Date.now() - sellBagReqAt < SELL_BAG_MIN_GAP_MS) return false;
+        sellBagReqAt = Date.now();
+        return sendGame({ type: 'inv-get' }) !== false;
+    }
+    function sellBagTick() { if (cfg.sellEnabled && Date.now() - sellBagAt >= SELL_BAG_POLL_MS) sellRequestBag(); }
+    // O que a próxima viagem vende, pela última mochila lida: [{ itemId, qty, name, price }], já acima da reserva. `d` = cfg ou rascunho.
+    function sellCandidates(d) {
+        d = d || cfg;
+        const out = [];
+        for (const [id, have] of sellBag) {
+            const item = itemsCatalog?.get(id) || null;
+            const dec = sellDecision(id, item, d);
+            if (!dec.sells) continue;
+            const qty = have - dec.keep;
+            if (qty <= 0) continue;
+            out.push({ itemId: id, qty, name: item?.name || `Item ${id}`, price: Number(item?.npcPrice) || 0 });
+        }
+        return out;
+    }
+    function sellWantedNow() { return sellCandidates(cfg).map(c => c.itemId); }
 
     function checkBallStock() {
         if (!ballsEnabled()) return;
@@ -4561,7 +4680,6 @@
         const names = new Set(farmList().map(e => normalize(e.item)));
         const ids = new Set();
         if (typeof itemsCatalog !== 'undefined' && itemsCatalog) for (const [id, it] of itemsCatalog) if (names.has(normalize(it?.name))) ids.add(Number(id));
-        if (typeof huntLoot !== 'undefined' && huntLoot) for (const [id, l] of huntLoot) if (names.has(normalize(l?.name))) ids.add(Number(id));
         return ids;
     }
     function farmKeepsItem(id) { return farmOn() && farmItemIds().has(Number(id)); }
@@ -5801,7 +5919,7 @@
         const reqs = [];
         for (const i of t.items) {
             const mi = m.items.find(x => x.itemId === i.itemId);
-            const vendendo = mi?.base?.id && cfg.sellItems && cfg.sellItems[mi.base.id] ? ' · marcado para venda na aba Venda: o script NÃO vende enquanto a tarefa pedir' : '';
+            const vendendo = mi?.base?.id && typeof sellWouldSell === 'function' && sellWouldSell(mi.base.id, cfg) ? ' · a aba Venda venderia este item: o script NÃO vende enquanto a tarefa pedir' : '';
             reqs.push(`${i.have >= i.need ? '✔' : '•'} Entregar ${i.name} ${fmtNum(Math.min(i.have, i.need))}/${fmtNum(i.need)}${mi?.base && !mi.base.direto ? ` · ${mi.base.name} na mochila ${fmtNum(mi.base.have)}${mi.base.falta ? ` (faltam ${fmtNum(mi.base.falta)})` : ' ✔ (converte na viagem)'}${vendendo}` : ''}`);
         }
         for (const x of t.caught) reqs.push(`${x.have >= x.need ? '✔' : '•'} Capturar ${x.name} ${x.have}/${x.need}`);
@@ -6337,7 +6455,7 @@
         if (!(Math.floor(Number(inv?.quantity) || 0) > 0)) return 'vazio';
         if (!droppedIds.has(id)) return 'não é drop de hunt';
         if (DEPOSIT_SKIP_CATS.includes(String(item?.category || inv?.category || ''))) return 'consumível';
-        if (cfg.sellEnabled && cfg.sellItems && cfg.sellItems[id]) return 'marcado para venda';
+        if (typeof sellWouldSell === 'function' ? sellWouldSell(id, cfg, item) : (cfg.sellEnabled && cfg.sellItems && cfg.sellItems[id])) return 'marcado para venda';   // v3.55.0: regra ou marcação (a lista da família já venceu em sellHoldReason)
         if (typeof clanKeepsItem === 'function' && clanKeepsItem(id)) return 'tarefa do clã';
         if (typeof profKeepsItem === 'function' && profKeepsItem(id)) return 'picture da profissão';   // v3.52.0
         if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) return 'tributo da guild';
@@ -6527,7 +6645,7 @@
     //   ida   : `leave-hunt` + `field-teleport-city` sintético no socket (o cliente viaja para Cerulean e manda
     //           `set-city` sozinho, encerrando a hunt no servidor; se não vier em TRIP_CITY_WAIT_MS, mandamos o
     //           `set-city` nós mesmos); espera "andar até o NPC".
-    //   tarefas: venda de itens (lista congelada na hora do pedido, porque `huntLoot` zera ao sair da hunt), venda
+    //   tarefas: venda de itens (v3.55.0: decidida na cidade pela mochila real, sem lista congelada), venda
     //           de Pokémon e compra de bolas — as mesmas funções de antes, só que executadas na cidade.
     //   volta : switchHunt(slug, 1, 'viagem') → `enter-hunt` + `hunt-resume` sintético (a tela acompanha).
     // Quem PEDE viagem: sellTick, pokeSellOnPokes, checkBallStock, checkSupplyStock e os botões do painel. Os pedidos acumulam em
@@ -6572,7 +6690,7 @@
     // O que a próxima viagem levaria agora (d = cfg ou rascunho do painel): { drops, pokes, bolas:{id,qty,min}|null }.
     function tripLoad(d) {
         d = d || cfg;
-        const drops = d.sellEnabled ? Object.keys(d.sellItems || {}).map(Number).filter(id => huntLoot.has(id)).length : 0;
+        const drops = d.sellEnabled && typeof sellCandidates === 'function' ? sellCandidates(d).length : 0;   // v3.55.0: pela mochila lida (regra + marcados), não pela hunt
         const pokes = d.pokeSellEnabled ? pokeSellCandidates(d).length : 0;
         let bolas = null;
         if (d.autoBuy) { const id = watchedBallId(); const q = ballQty(id); const min = (Number(d.ballsMin) || 0) > 0 ? Number(d.ballsMin) : 1; if (id != null && q != null && q < min) bolas = { id, qty: q, min }; }
@@ -6736,7 +6854,7 @@
     // Aproveita a viagem: quem já tem o que fazer vai junto ("carona"), mesmo sem ter vencido o próprio intervalo.
     function tripAugment(needs) {
         const has = (k) => needs.some(([key]) => key === k);
-        if (!has('itens') && cfg.sellEnabled) { const wanted = sellWantedNow(); if (wanted.length) needs.push(['itens', { dados: { wanted, hunt: huntSlug }, motivo: 'carona' }]); }
+        if (!has('itens') && cfg.sellEnabled && sellWantedNow().length) needs.push(['itens', { dados: { hunt: huntSlug }, motivo: 'carona' }]);   // v3.55.0: sem lista congelada; a cidade decide pela mochila real
         if (!has('pokes') && cfg.pokeSellEnabled && pokeSellCandidates(cfg).length) needs.push(['pokes', { dados: null, motivo: 'carona' }]);
         else if (!has('pokes') && typeof pokeSellListUnread === 'function' && pokeSellListUnread()) needs.push(['pokes', { dados: null, motivo: 'lista de Pokémon nunca lida (o jogo só responde na cidade)' }]);
         else if (!has('time') && typeof pokesListWanted === 'function' && pokesListWanted()) needs.push(['time', { dados: null, motivo: 'ler o time na cidade (lista nunca lida)' }]);
@@ -9196,7 +9314,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         if (message.type === 'gym-global') { gymOnGlobal(message); return; }   // v3.45.0: anúncio global do ginásio (só log)
         if (message.type === 'field-teleport-city') { healOnTeleport(); return; }   // o sintético da viagem já saiu acima
         if (message.type === 'field-kill') { idleOnAlive(); invOnKill(message); noteLeaderLevel(Number(message.level), 'field-kill', Boolean(message.leveledUp)); handleFieldKill(message); noteDailyKill(message); noteClanKill(message); noteProfKill(message); noteDepositDrop(message); guildOnKill(message); fishOnKill(message); farmOnKill(message); return; }
-        if (message.type === 'inventory' && Array.isArray(message.items)) { clanOnInventory(message.items); supplyOnInventory(message.items); bossOnInventory(message.items); return; }
+        if (message.type === 'inventory' && Array.isArray(message.items)) { clanOnInventory(message.items); supplyOnInventory(message.items); bossOnInventory(message.items); sellOnInventory(message.items); return; }
         if (message.type === 'balls' && message.counts && typeof message.counts === 'object') { handleBalls(message); return; }
         if (message.type === 'pokes' && Array.isArray(message.list)) { logEvent('pokes-frame', { total: message.list.length, time: message.list.filter(p => p && p.team).map(p => `${p.name} lv${p.level}`), hunt: huntSlug || null }); updateTeam(message.list); healOnPokes(message.list); idleOnPokes(message.list);handlePokesList(message.list); pokeSellOnPokes(message.list); catchOnPokes(message.list); evolveOnPokes(message.list); breedOnPokes(message.list); return; }
 
@@ -9401,6 +9519,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         humanOnSocketTracked();
         requestBalls(BALLS_AFTER_SOCKET_MS);
         setTimeout(requestSupplies, SUPPLY_AFTER_SOCKET_MS);
+        setTimeout(() => sellRequestBag(), SUPPLY_AFTER_SOCKET_MS + 500);   // v3.55.0: mochila para a lista de venda (com a venda ligada)
         setTimeout(bossOnSocket, BOSS_AFTER_SOCKET_MS);   // v3.43.0: Auto Boss pedido? pergunta ao servidor se ainda roda
         setTimeout(invOnSocket, 4000);   // v3.50.0: Energia Vermelha (só com a invasão ligada ou rodada em andamento)
         requestPokes(POKES_AFTER_SOCKET_MS);
@@ -9567,6 +9686,29 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
 #pg-dn-panel .dn-item .keep input{width:52px;min-height:24px;padding:2px 6px}
 #pg-dn-panel .dn-item.locked{color:var(--dn-dim);cursor:default}
 #pg-dn-panel .dn-item.locked:hover{background:transparent}
+#pg-dn-panel .dn-item.locked .why{font-size:11px;color:var(--dn-dim);white-space:nowrap}
+#pg-dn-panel .dn-item .t{font-size:10px;font-weight:600;padding:0 5px;border-radius:8px;background:var(--dn-bg-3);color:var(--dn-muted);letter-spacing:.02em}
+#pg-dn-panel .dn-item .t.regra{color:var(--dn-ok-t);background:color-mix(in srgb,var(--dn-ok) 18%,var(--dn-bg-0))}
+#pg-dn-panel .dn-item .t.exc{color:var(--dn-danger-t);background:color-mix(in srgb,var(--dn-danger) 18%,var(--dn-bg-0))}
+#pg-dn-panel .dn-item .t.novo{color:var(--dn-shiny);background:color-mix(in srgb,var(--dn-shiny) 14%,var(--dn-bg-0))}
+#pg-dn-panel .dn-bagtools{display:flex;gap:6px;align-items:center}
+#pg-dn-panel .dn-bagtools .dn-input{flex:1;min-width:0}
+#pg-dn-panel .dn-bagtools .dn-select{width:120px;flex:none}
+#pg-dn-panel .dn-chips{display:flex;gap:4px;flex-wrap:wrap;align-items:center}
+#pg-dn-panel .dn-chips .sp{flex:1}
+#pg-dn-panel .dn-fchip{font:inherit;font-size:11px;font-weight:600;line-height:1.4;padding:2px 8px;border-radius:10px;background:var(--dn-bg-3);color:var(--dn-muted);border:1px solid transparent;cursor:pointer;min-height:0}
+#pg-dn-panel .dn-fchip[aria-pressed="true"]{color:var(--dn-text);border-color:var(--dn-accent);background:color-mix(in srgb,var(--dn-accent) 18%,var(--dn-bg-0))}
+#pg-dn-panel .dn-grp{border:1px solid var(--dn-border);border-radius:var(--dn-radius-sm);background:var(--dn-bg-1);margin-bottom:6px}
+#pg-dn-panel .dn-grp>h4{margin:0;font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px;padding:5px 8px;cursor:pointer;user-select:none}
+#pg-dn-panel .dn-grp>h4 .chev{color:var(--dn-muted);font-size:10px;transition:transform .15s}
+#pg-dn-panel .dn-grp.open>h4 .chev{transform:rotate(90deg)}
+#pg-dn-panel .dn-grp>h4 .n{color:var(--dn-muted);font-weight:400}
+#pg-dn-panel .dn-grp>h4 .g{margin-left:auto;color:var(--dn-ok-t);font-weight:400;font-variant-numeric:tabular-nums}
+#pg-dn-panel .dn-grp>.rows{display:none;flex-direction:column;padding:0 4px 4px}
+#pg-dn-panel .dn-grp.open>.rows{display:flex}
+#pg-dn-panel .dn-grp.sell>h4{color:var(--dn-ok-t)}
+#pg-dn-panel .dn-grp.keep>h4{color:var(--dn-muted)}
+#pg-dn-panel .dn-items-empty{color:var(--dn-muted);font-size:12px;padding:6px 8px}
 #pg-dn-panel .dn-route{list-style:none;margin:0;padding:0;font-size:12px;display:flex;flex-direction:column;gap:2px;font-variant-numeric:tabular-nums}
 #pg-dn-panel .dn-route li{display:flex;gap:8px;padding:2px 6px;border-radius:var(--dn-radius-sm)}
 #pg-dn-panel .dn-route li .m{width:14px;text-align:center;color:var(--dn-muted);flex:none}
@@ -9634,7 +9776,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
                 const itens = d.sellEnabled, pokes = d.pokeSellEnabled;
                 if (!itens && !pokes && !depositWanted(d)) return 'off';
                 if (!temAlertas) return 'warn';
-                if (itens && !Object.keys(d.sellItems || {}).length) return 'warn';
+                if (itens && !d.sellRule && !Object.keys(d.sellItems || {}).length) return 'warn';   // v3.55.0: sem regra e sem marcados = nada para vender
                 if (pokes && !pokeSellHasRules(d)) return 'warn';
                 return 'on';
             }
@@ -9691,7 +9833,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         return [
             `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
             `Bolas: ${!((Number(d.ballsMin) || 0) > 0 || d.autoBuy) ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}${supplyOn(d) ? ` · refil: ${supplySlots(d).map(s => `${s.name} < ${s.min}`).join(', ')}` : ''}${d.healJoyEnabled ? ' · Joy' : ''}${d.cityIdleEnabled ? ` · volta da cidade ${Number(d.cityIdleMin) || IDLE_MIN_DEFAULT} min${idleDefaultSlug(d) ? ` (padrão ${idleDefaultSlug(d)})` : ''}` : ''}`,
-            `Venda: ${[d.sellEnabled ? `${Object.keys(d.sellItems || {}).length} drops` : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades${pokeSellKeepQ(d) ? `, guarda ≥ ${pokeSellKeepQ(d)}` : ''})` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
+            `Venda: ${[d.sellEnabled ? (d.sellRule ? `drops comuns até ${sellRuleMaxPrice(d) ? `${fmtNum(sellRuleMaxPrice(d))} gold` : 'qualquer preço'}${Object.keys(d.sellItems || {}).length ? ` + ${Object.keys(d.sellItems || {}).length} marcados` : ''}` : `${Object.keys(d.sellItems || {}).length} drops marcados`) : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades${pokeSellKeepQ(d) ? `, guarda ≥ ${pokeSellKeepQ(d)}` : ''})` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
             `Mercado: ${d.marketEnabled ? (marketList(d).length ? `${marketList(d).filter(marketEntryDone).length}/${marketList(d).length} pedidos, a cada ${marketEveryRange(d).min}${marketEveryRange(d).max > marketEveryRange(d).min ? `–${marketEveryRange(d).max}` : ''} min${marketKeepGold(d) ? `, reserva ${marketKeepGold(d).toLocaleString('pt-BR')} gold` : ''}${marketKeepDiamonds(d) ? `, reserva ${marketKeepDiamonds(d)} diamonds` : ''}` : 'sem pedido') : 'desligado'}`,
             `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? `daily sozinha (${dailyAreas(d).join('+')})` : 'daily') : '', d.giftEnabled ? 'gift' : '', d.evolveEnabled ? 'evolução' : '', d.slotEnabled ? 'slot machine' : '', bossOn(d) ? `auto boss${d.bossResumeOnLoss ? ' (até após derrota)' : ''}` : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : '', profOn(d) ? `profissão ${[d.profRankupEnabled ? 'rank up' : '', d.profRoute ? 'caça' : ''].filter(Boolean).join(' + ')}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
@@ -9815,13 +9957,15 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 </section>
                 <section class="dn-pane" data-pane="venda" hidden>
                     <div class="dn-section dn-blk" id="pg-dn-blk-itens" data-blk="itens">
-                        <h3><span class="chev">▶</span>Drops da hunt <span class="sum" id="pg-dn-sum-itens"></span><span class="spacer"></span><label class="dn-toggle"><input id="pg-dn-sell" type="checkbox"><span class="sw"></span>Vender sozinho</label></h3>
-                        <div class="in">
-                            <div class="dn-inline"><span class="k">Hunt</span><input id="pg-dn-sell-view" class="dn-input" list="pg-dn-sell-view-dl" type="text" placeholder="a atual (ou escolha outra para configurar antes)" spellcheck="false"><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-sell-view-cur" title="Volta para a hunt em que a conta está.">Hunt atual</button></div>
-                            <datalist id="pg-dn-sell-view-dl"></datalist>
-                            <div class="dn-status" id="pg-dn-sell-hunt"></div>
+                        <h3><span class="chev">▶</span>Mochila <span class="sum" id="pg-dn-sum-itens"></span><span class="spacer"></span><label class="dn-toggle"><input id="pg-dn-sell" type="checkbox"><span class="sw"></span>Vender sozinho</label></h3>
+                            <div class="in">
+                            <div class="dn-inline"><label class="dn-toggle"><input id="pg-dn-sell-rule" type="checkbox"><span class="sw"></span>Vender todo drop comum</label><span class="k">com preço até</span><input id="pg-dn-sell-rule-max" class="dn-input dn-input--sm" type="number" min="0" step="1" placeholder="500"><span class="k">gold</span></div>
+                            <p class="dn-help">Drop comum = categoria loot, não raro, sem feromônio, até o teto (0 = sem teto). Com a regra ligada você só mexe nas exceções: desmarque o que NÃO quer vender; marque na mão o que é raro, pedra, de outra categoria ou mais caro que o teto. A lista é a mochila inteira, de onde quer que o item tenha caído: item novo de qualquer hunt já entra.</p>
+                            <div class="dn-status"><span id="pg-dn-sell-status"></span><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm r" id="pg-dn-sell-read" title="Pede a mochila ao jogo (inv-get). Funciona na hunt.">Ler mochila</button></div>
+                            <div class="dn-bagtools"><input id="pg-dn-sell-search" class="dn-input" type="search" placeholder="buscar item…" spellcheck="false" aria-label="Buscar item"><select id="pg-dn-sell-order" class="dn-select" aria-label="Ordenar por"><option value="valor">por valor</option><option value="qtd">por quantidade</option><option value="nome">por nome</option></select></div>
+                            <div class="dn-chips"><button type="button" class="dn-fchip pg-dn-sell-filter" data-f="tudo" aria-pressed="true">Tudo</button><button type="button" class="dn-fchip pg-dn-sell-filter" data-f="loot" aria-pressed="false" title="Só o que a regra cobre.">Loot</button><button type="button" class="dn-fchip pg-dn-sell-filter" data-f="atencao" aria-pressed="false" title="Raros, pedras e outras categorias.">⚠ Atenção</button><button type="button" class="dn-fchip pg-dn-sell-filter" data-f="novos" aria-pressed="false" title="Apareceu na mochila desde a última vez.">Novos</button><span class="sp"></span><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-sell-mark" title="Marca os itens visíveis (busca e filtro valem).">Marcar visíveis</button><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-sell-unmark" title="Desmarca os itens visíveis.">Desmarcar</button></div>
                             <div class="dn-items" id="pg-dn-sell-list"></div>
-                            <p class="dn-help">A lista traz todos os drops do monstro da hunt (tabela do jogo, com chance e quantidade por abate), mesmo os que ainda não caíram. Marcado = vendido na viagem. "Manter" = quantidade que fica na mochila. ⚠ = raro, pedra/feromônio ou outra categoria: confira. 🔒 = o jogo não deixa vender. Cada hunt guarda a sua lista: escolha outra hunt no campo acima para deixar a venda pronta antes de ir. <span class="dn-badge" id="pg-dn-sell-count"></span></p>
+                            <p class="dn-help">Marcado = vendido na próxima viagem. "Manter" = quantidade que fica na mochila. Etiquetas: regra = entra pela regra; marcado = você marcou; exceção = a regra venderia e você tirou; novo = apareceu desde a última vez. ⚠ = raro, pedra ou outra categoria: confira. 🔒 = o jogo ou outro módulo segura o item (família, clã, guild, farm, mercado, boss, invasão, profissão). Pedras vão ao Stone Researcher. <span class="dn-badge" id="pg-dn-sell-count"></span></p>
                         </div>
                     </div>
                     <div class="dn-section dn-blk" id="pg-dn-blk-pokes" data-blk="pokes">
@@ -10216,16 +10360,6 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
         }, true);
 
         // ---- leitura do formulário (rascunho no formato do cfg) ----
-        function readSellList(base) {
-            const out = Object.assign({}, base || cfg.sellItems || {});
-            for (const row of panel.querySelectorAll('[data-item-id]')) {
-                const id = Number(row.getAttribute('data-item-id'));
-                const checked = row.querySelector('.pg-dn-sell-chk')?.checked;
-                const keep = Math.max(0, parseInt(row.querySelector('.pg-dn-sell-keep')?.value, 10) || 0);
-                if (checked) out[id] = { keep }; else delete out[id];
-            }
-            return out;
-        }
         function readRoute() {
             const linhasRuins = [];
             const route = $('#pg-dn-route').value.split(/\r?\n/).map(l => l.trim()).filter(Boolean).map(l => {
@@ -10358,13 +10492,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 mentionUserId: $('#pg-dn-mention').value.trim(),
                 cooldownSeconds: Math.max(0, parseInt($('#pg-dn-cooldown').value, 10) || 0),
                 debug: $('#pg-dn-debug').checked,
-                sellEnabled: $('#pg-dn-sell').checked,
-                ...(() => {
-                    const sd = sellCollect(), cur = sellCurSlug();
-                    const perfis = Object.assign({}, cfg.sellProfiles || {});
-                    for (const [k, v] of Object.entries(sd)) if (k && k !== cur) perfis[k] = Object.assign({}, perfis[k] || {}, { items: v });
-                    return { sellItems: sd[cur] || Object.assign({}, cfg.sellItems || {}), sellProfiles: perfis };
-                })(),
+                ...sellFormCfg(),   // v3.55.0: sellEnabled, sellRule, sellRuleMaxPrice, sellItems (marcados) e sellNever (exceções) do rascunho da mochila
                 pokeSellEnabled: $('#pg-dn-psell').checked,
                 boxAlertAt: Math.max(0, parseInt($('#pg-dn-box-alert').value, 10) || 0),
                 tripEveryMin: Math.max(1, parseInt($('#pg-dn-trip-min').value, 10) || 10),
@@ -10505,102 +10633,123 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
         $('#pg-dn-market-reset').onclick = () => { marketReset(); renderMarket(); flash('✔ Comprado zerado: os pedidos do mercado começam do zero.', 'ok', 4000); };
         $('#pg-dn-market-hist-clear').onclick = () => { marketHistClear(); renderMarket(); flash('✔ Últimas compras apagadas.', 'ok', 3000); };
 
-        // ---- Venda ----
-        // Hunt vista na lista de venda ('' = a atual). Outra hunt = edita o perfil dela (cfg.sellProfiles[slug]); marcações
-        // não salvas de cada hunt ficam em sellDrafts até o Salvar, para trocar de hunt na lista sem perder nada.
-        let sellView = '';
-        let sellDrafts = {};
+        // ---- Venda: a mochila inteira (v3.55.0) ----
+        // Rascunho `sellDraft` = marcados (`items`) e exceções (`never`) enquanto o usuário mexe, independente do que está visível
+        // (a busca e os filtros só escondem linhas; o Salvar lê o rascunho, não as linhas). null = igual ao cfg.
+        let sellDraft = null;
+        const sellUi = { busca: '', ordem: 'valor', filtro: 'tudo', open: { sell: true, keep: false } };
         let sellCatLoading = false;
-        function sellCurSlug() { return huntSlug ? normalize(huntSlug) : ''; }
-        function sellViewSlug() { return sellView || sellCurSlug(); }
-        function sellIsCurrent(slug) { return !slug || slug === sellCurSlug(); }
-        function sellBase(slug) { return sellIsCurrent(slug) ? (cfg.sellItems || {}) : (cfg.sellProfiles?.[slug]?.items || {}); }
-        function sellCollect() {
-            const out = Object.assign({}, sellDrafts);
-            const v = sellViewSlug();
-            out[v] = readSellList(sellDrafts[v] || sellBase(v));
-            return out;
+        function sellDraftNow() {
+            if (!sellDraft) sellDraft = { items: JSON.parse(JSON.stringify(cfg.sellItems || {})), never: new Set((cfg.sellNever || []).map(Number)) };
+            return sellDraft;
         }
-        function rerenderSell() { renderSellList(dirty ? sellCollect()[sellViewSlug()] : null); }
-        function switchSellView(slug) {
-            if (dirty) { const v = sellViewSlug(); sellDrafts[v] = readSellList(sellDrafts[v] || sellBase(v)); }
-            sellView = slug && slug !== sellCurSlug() ? slug : '';
-            $('#pg-dn-sell-view').value = sellView;
-            renderSellList(sellDrafts[sellViewSlug()] || null);
+        // O cfg "da tela": liga/desliga, regra e teto dos campos + marcados/exceções do rascunho (formato do cfg).
+        function sellFormCfg() {
+            const d = sellDraftNow();
+            return { sellEnabled: $('#pg-dn-sell').checked, sellRule: $('#pg-dn-sell-rule').checked, sellRuleMaxPrice: Math.max(0, parseInt($('#pg-dn-sell-rule-max').value, 10) || 0), sellItems: JSON.parse(JSON.stringify(d.items)), sellNever: [...d.never] };
         }
-        function fillSellViewList() {
-            if (!Array.isArray(huntCatalog) || $('#pg-dn-sell-view-dl').childElementCount) return;
-            $('#pg-dn-sell-view-dl').innerHTML = huntCatalog.map(h => `<option value="${escHtml(h.slug)}">${escHtml(h.name)} · lv ${h.level}</option>`).join('');
+        function sellCfgNow() { return Object.assign({}, cfg, sellFormCfg()); }
+        function rerenderSell() { renderSellList(); }
+        // Marcar/desmarcar UM item: a caixinha sempre mostra o que vai acontecer. Com a regra cobrindo o item, desmarcar vira
+        // exceção e marcar só tira a exceção; fora da regra, marcar entra em `items` e desmarcar sai.
+        function sellSetChecked(id, item, on, d) {
+            const dr = sellDraftNow();
+            const cobre = Boolean(d.sellRule) && sellRuleCovers(item, d);
+            if (on) { dr.never.delete(id); if (!cobre && !dr.items[id]) dr.items[id] = { keep: 0 }; }
+            else { delete dr.items[id]; if (cobre) dr.never.add(id); }
         }
-        function renderSellList(sel) {
-            const box = $('#pg-dn-sell-list');
-            const info = $('#pg-dn-sell-hunt');
-            const slug = sellViewSlug();
-            const atual = sellIsCurrent(slug);
-            sel = sel || sellDrafts[slug] || sellBase(slug);
-            if ((!Array.isArray(huntCatalog) || !itemsCatalog) && !sellCatLoading) {
-                sellCatLoading = true;
-                Promise.all([loadHuntCatalog().catch(() => null), loadItemsCatalog()])
-                    .then(() => { sellCatLoading = false; fillSellViewList(); if (!panel.hidden) rerenderSell(); });
-            }
-            fillSellViewList();
-            const temPerfil = Boolean(slug && cfg.sellProfiles && cfg.sellProfiles[slug]);
-            info.innerHTML = slug
-                ? `<span>💰</span><span><span class="k">Hunt:</span> ${escHtml(slug)}${atual ? ' (a atual)' : ' · outra hunt: o Salvar grava a lista dela, que vale quando a conta entrar lá'} · ${temPerfil ? 'perfil salvo' : 'sem perfil (Salvar cria)'}</span>`
-                : '<span>💰</span><span class="k">Fora de hunt. Escolha uma hunt no campo acima para montar a lista, ou entre numa.</span>';
-            const tabela = slug && Array.isArray(huntCatalog) && itemsCatalog ? huntLootTable(slug, itemsCatalog) : [];
-            const porId = new Map(tabela.map(t => [t.id, t]));
-            const ids = atual ? [...huntLoot.keys()] : [];
-            for (const t of tabela) if (!ids.includes(t.id)) ids.push(t.id);
-            for (const k of Object.keys(sel)) { const id = Number(k); if (id > 0 && !ids.includes(id)) ids.push(id); } // marcado de antes, fora da tabela
-            if (!ids.length) {
-                box.innerHTML = `<p class="dn-help">${!slug ? 'Nenhuma hunt escolhida.' : sellCatLoading ? 'Carregando a tabela de drops do jogo…' : `Sem tabela de drops para ${escHtml(slug)} e nenhum drop visto ainda.`}</p>`;
-                renderSellCount();
-                return;
-            }
-            box.innerHTML = ids.map(id => {
-                const loot = atual ? huntLoot.get(id) : null;
-                const t = porId.get(id) || null;
+        function sellRows(d) {
+            const q = normalize(sellUi.busca.trim());
+            const ids = new Set(sellBag.keys());
+            for (const k of Object.keys(d.sellItems || {})) { const id = Number(k); if (id > 0) ids.add(id); }   // marcado que não está na mochila agora
+            const rows = [];
+            for (const id of ids) {
                 const item = itemsCatalog?.get(id) || null;
-                const nome = loot?.name || t?.name || item?.name || `Item ${id}`;
-                const motivo = protectedReason(item);
-                const aviso = sellWarning(item);
-                const s = sel[id];
-                const price = item ? Number(item.npcPrice) || 0 : null;
-                const qtd = loot ? `×${fmtNum(loot.qty)}` : (atual ? 'ainda não caiu' : '');
-                const chance = t ? (t.chance != null ? `${Math.round(t.chance * 1000) / 10}% · ${t.min}${t.max > t.min ? `–${t.max}` : ''}/abate` : 'drop raro') : '';
-                const extra = [qtd, chance, price != null ? `${fmtNum(price)} gold` : ''].filter(Boolean).join(' · ');
-                if (motivo) {
-                    return `<div class="dn-item locked" title="Protegido: ${escHtml(motivo)}"><span>🔒</span><span class="nm">${escHtml(nome)} <span class="q">${escHtml(extra)}</span></span><span class="q">${escHtml(motivo)}</span></div>`;
-                }
-                return `<label class="dn-item${s ? ' on' : ''}${loot || !atual ? '' : ' faltou'}" data-item-id="${id}">
-                    <input type="checkbox" class="pg-dn-sell-chk" ${s ? 'checked' : ''}>
-                    <span class="nm">${escHtml(nome)} <span class="q">${escHtml(extra)}</span>${aviso ? ` <span class="w" title="Atenção: ${escHtml(aviso)}">⚠ ${escHtml(aviso)}</span>` : ''}</span>
-                    <span class="keep" title="Quantidade que fica na mochila">manter <input type="number" class="dn-input pg-dn-sell-keep" min="0" step="1" value="${s ? (Number(s.keep) || 0) : 0}"></span>
-                </label>`;
-            }).join('');
-            for (const chk of box.querySelectorAll('.pg-dn-sell-chk')) chk.addEventListener('change', () => chk.closest('.dn-item').classList.toggle('on', chk.checked));
-            renderSellCount();
+                const nome = item?.name || `Item ${id}`;
+                if (q && !normalize(nome).includes(q)) continue;
+                const dec = sellDecision(id, item, d);
+                const aviso = dec.locked ? null : sellWarning(item);
+                if (sellUi.filtro === 'loot' && !sellRuleCovers(item, d)) continue;
+                if (sellUi.filtro === 'atencao' && !aviso) continue;
+                if (sellUi.filtro === 'novos' && !sellBagNew.has(id)) continue;
+                const qty = sellBag.get(id) || 0, price = Number(item?.npcPrice) || 0;
+                rows.push({ id, item, nome, qty, price, dec, aviso, novo: sellBagNew.has(id), naMochila: sellBag.has(id) });
+            }
+            const key = sellUi.ordem === 'nome' ? (a, b) => a.nome.localeCompare(b.nome)
+                : sellUi.ordem === 'qtd' ? (a, b) => b.qty - a.qty || a.nome.localeCompare(b.nome)
+                : (a, b) => b.qty * b.price - a.qty * a.price || b.qty - a.qty || a.nome.localeCompare(b.nome);
+            return rows.sort(key);
         }
-        $('#pg-dn-sell-view').addEventListener('change', () => {
-            const v = $('#pg-dn-sell-view').value.trim();
-            if (!v) { switchSellView(''); return; }
-            const slug = huntSlugFromName(v);
-            const existe = (Array.isArray(huntCatalog) && huntCatalog.some(h => h.slug === slug)) || Boolean(cfg.sellProfiles?.[slug]);
-            if (!existe) { flash(`⚠ Não achei a hunt "${v}". Use o nome ou o slug da lista.`, 'warn', 6000); $('#pg-dn-sell-view').value = sellView; return; }
-            switchSellView(slug);
-        });
-        $('#pg-dn-sell-view').addEventListener('focus', fillSellViewList);
-        $('#pg-dn-sell-view-cur').onclick = () => switchSellView('');
-        function renderSellCount() {
-            const n = panel.querySelectorAll('.pg-dn-sell-chk:checked').length;
+        function sellRowHtml(r) {
+            const extra = [r.naMochila ? `×${fmtNum(r.qty)}` : 'não está na mochila', r.price ? `${fmtNum(r.price)} gold` : ''].filter(Boolean).join(' · ');
+            if (r.dec.locked) return `<div class="dn-item locked" title="Protegido: ${escHtml(r.dec.why)}"><span>🔒</span><span class="nm">${escHtml(r.nome)} <span class="q">${escHtml(extra)}</span></span><span class="why">${escHtml(r.dec.why)}</span></div>`;
+            const tag = r.dec.tag ? `<span class="t ${r.dec.tag === 'regra' ? 'regra' : r.dec.tag === 'exceção' ? 'exc' : ''}">${r.dec.tag}</span>` : '';
+            const novo = r.novo ? '<span class="t novo">novo</span>' : '';
+            return `<label class="dn-item${r.dec.sells ? ' on' : ''}${r.naMochila ? '' : ' faltou'}" data-item-id="${r.id}">
+                <input type="checkbox" class="pg-dn-sell-chk" ${r.dec.sells ? 'checked' : ''}>
+                <span class="nm">${escHtml(r.nome)} <span class="q">${escHtml(extra)}</span>${r.aviso ? ` <span class="w" title="Atenção: ${escHtml(r.aviso)}">⚠ ${escHtml(r.aviso)}</span>` : ''}${tag}${novo}</span>
+                <span class="keep" title="Quantidade que fica na mochila">manter <input type="number" class="dn-input pg-dn-sell-keep" min="0" step="1" value="${r.dec.keep || 0}"></span>
+            </label>`;
+        }
+        function renderSellList() {
+            const box = $('#pg-dn-sell-list');
+            if (!itemsCatalog && !sellCatLoading) { sellCatLoading = true; loadItemsCatalog().then(() => { sellCatLoading = false; if (!panel.hidden) renderSellList(); }); }
+            const d = sellCfgNow();
+            const rows = sellRows(d);
+            const vende = rows.filter(r => r.dec.sells), fica = rows.filter(r => !r.dec.sells);
+            const cands = sellCandidates(d);
+            const gold = cands.reduce((s, c) => s + c.qty * c.price, 0), un = cands.reduce((s, c) => s + c.qty, 0);
+            const idade = sellBagAt ? Math.round((Date.now() - sellBagAt) / 60000) : null;
+            $('#pg-dn-sell-status').textContent = `${sellBagAt ? `Mochila lida ${idade < 1 ? 'agora' : `há ${idade} min`} (${sellBag.size} itens)` : 'Mochila ainda não lida'} · ${d.sellEnabled ? 'próxima viagem' : 'desligado; venderia'}: ${cands.length} ${cands.length === 1 ? 'item' : 'itens'}${un ? ` (${fmtNum(un)} un., ~${fmtNum(gold)} gold)` : ''}`;
+            const filtrando = Boolean(sellUi.busca.trim()) || sellUi.filtro !== 'tudo';
+            const grp = (cls, titulo, lista, open, vazio) => `<div class="dn-grp ${cls}${open ? ' open' : ''}" data-grp="${cls}"><h4><span class="chev">▶</span>${titulo} <span class="n">(${lista.length})</span>${cls === 'sell' && gold ? `<span class="g">~${fmtNum(gold)} gold</span>` : ''}</h4><div class="rows">${lista.length ? lista.map(sellRowHtml).join('') : `<div class="dn-items-empty">${vazio}</div>`}</div></div>`;
+            if (!rows.length) box.innerHTML = `<p class="dn-help">${!sellBagAt ? (sellCatLoading ? 'Carregando o catálogo de itens…' : 'Mochila ainda não lida: clique em "Ler mochila" (ou espere o próximo frame do jogo).') : filtrando ? 'Nenhum item com essa busca/filtro.' : 'Mochila vazia.'}</p>`;
+            else box.innerHTML = grp('sell', '✔ Vende', vende, sellUi.open.sell, 'Nada marcado com esse filtro.') + grp('keep', 'Fica na mochila', fica, sellUi.open.keep || filtrando, 'Tudo que está visível vai ser vendido.');
+            for (const h of box.querySelectorAll('.dn-grp > h4')) h.onclick = () => { const g = h.parentElement; const aberto = !g.classList.contains('open'); sellUi.open[g.dataset.grp] = aberto; g.classList.toggle('open', aberto); };
+            for (const lab of box.querySelectorAll('.dn-item[data-item-id]')) {
+                const id = Number(lab.dataset.itemId);
+                const item = itemsCatalog?.get(id) || null;
+                lab.querySelector('.pg-dn-sell-chk').addEventListener('change', (e) => { sellSetChecked(id, item, e.target.checked, sellCfgNow()); renderSellList(); });
+                const k = lab.querySelector('.pg-dn-sell-keep');
+                k.addEventListener('click', (e) => e.stopPropagation());
+                k.addEventListener('input', () => {
+                    const dr = sellDraftNow(), keep = Math.max(0, parseInt(k.value, 10) || 0), dd = sellCfgNow();
+                    dr.never.delete(id);
+                    if (!keep && dd.sellRule && sellRuleCovers(item, dd)) delete dr.items[id]; else dr.items[id] = { keep };   // reserva 0 em item da regra = segue pela regra
+                });
+                k.addEventListener('change', renderSellList);
+            }
+            renderSellCount(d);
+        }
+        function renderSellCount(d) {
+            d = d && d.sellItems ? d : sellCfgNow();
+            const marc = Object.keys(d.sellItems || {}).length, exc = (d.sellNever || []).length;
             const b = $('#pg-dn-sell-count');
-            b.textContent = n ? `${n} marcados` : 'nenhum marcado';
-            b.dataset.state = n ? 'on' : ($('#pg-dn-sell').checked ? 'warn' : '');
-            $('#pg-dn-sum-itens').textContent = `· ${n ? `${n} marcados` : 'nenhum marcado'}${sellViewSlug() ? ` · ${sellViewSlug()}` : ''}${$('#pg-dn-sell').checked ? '' : ' · desligado'}`;
+            b.textContent = `${marc} ${marc === 1 ? 'marcado' : 'marcados'}${exc ? ` · ${exc} ${exc === 1 ? 'exceção' : 'exceções'}` : ''}`;
+            b.dataset.state = (marc || d.sellRule) ? 'on' : ($('#pg-dn-sell').checked ? 'warn' : '');
+            $('#pg-dn-sum-itens').textContent = `· ${d.sellRule ? `regra até ${sellRuleMaxPrice(d) ? `${fmtNum(sellRuleMaxPrice(d))} gold` : 'qualquer preço'}` : 'sem regra'}${marc ? ` · ${marc} marcados` : ''}${d.sellEnabled ? '' : ' · desligado'}`;
         }
-        // Drop novo chega com o painel aberto: redesenha sem perder o que o usuário marcou e ainda não salvou.
-        onHuntLootChange = () => { if (!panel.hidden) rerenderSell(); };
+        $('#pg-dn-sell-search').addEventListener('input', () => { sellUi.busca = $('#pg-dn-sell-search').value; renderSellList(); });
+        $('#pg-dn-sell-search').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); } });   // Enter na busca não é Salvar
+        $('#pg-dn-sell-order').addEventListener('change', () => { sellUi.ordem = $('#pg-dn-sell-order').value; renderSellList(); });
+        for (const c of panel.querySelectorAll('.pg-dn-sell-filter')) c.addEventListener('click', () => { sellUi.filtro = c.dataset.f; for (const o of panel.querySelectorAll('.pg-dn-sell-filter')) o.setAttribute('aria-pressed', String(o === c)); renderSellList(); });
+        // Lote: age nos itens VISÍVEIS (busca e filtro valem), nunca nos protegidos.
+        function sellBulk(on) {
+            const d = sellCfgNow();
+            const rows = sellRows(d).filter(r => !r.dec.locked);
+            for (const r of rows) sellSetChecked(r.id, r.item, on, d);
+            if (rows.length) { dirty = true; renderDirty(); }
+            renderSellList(); renderLive();
+        }
+        $('#pg-dn-sell-mark').onclick = () => sellBulk(true);
+        $('#pg-dn-sell-unmark').onclick = () => sellBulk(false);
+        $('#pg-dn-sell-read').onclick = () => {
+            const ok = sellRequestBag(true);
+            flash(ok ? '📥 Pedi a mochila ao jogo…' : (lastSocket ? 'ℹ Já pedi a mochila há pouco; ela chega em instantes.' : '✖ Sem socket do jogo ainda. Recarregue o painel.'), ok ? 'info' : (lastSocket ? 'info' : 'error'), 3000);
+        };
+        for (const sel of ['#pg-dn-sell', '#pg-dn-sell-rule', '#pg-dn-sell-rule-max']) { $(sel).addEventListener('input', renderSellList); $(sel).addEventListener('change', renderSellList); }
+        // Mochila nova chega com o painel aberto: redesenha sem perder o rascunho (e sem roubar o foco de quem edita um "manter").
+        onSellBagChange = () => { if (!panel.hidden && !$('#pg-dn-sell-list').contains(document.activeElement)) renderSellList(); };
         // Pokémon fora do time: prévia com as regras da tela (o que seria vendido agora)
         function renderPokeSell() {
             const d = current();
@@ -11306,6 +11455,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-market-keep').value = Number(cfg.marketKeepGold) || 0;
             $('#pg-dn-market-keep-dia').value = Number(cfg.marketKeepDiamonds) || 0;
             $('#pg-dn-sell').checked = Boolean(cfg.sellEnabled);
+            $('#pg-dn-sell-rule').checked = Boolean(cfg.sellRule);
+            $('#pg-dn-sell-rule-max').value = sellRuleMaxPrice(cfg);
 
             $('#pg-dn-psell').checked = Boolean(cfg.pokeSellEnabled);
             $('#pg-dn-box-alert').value = Number(cfg.boxAlertAt) || 0;
@@ -11313,9 +11464,10 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-trip-max').value = cfg.tripEveryMaxMin || '';
             for (const i of panel.querySelectorAll('.pg-dn-psell-lim')) i.value = pokeSellLimit(cfg, i.dataset.tier) || '';
             $('#pg-dn-psell-keepq').value = pokeSellKeepQ(cfg) || '';
-            sellDrafts = {};
+            sellDraft = null;
             loadItemsCatalog().then(() => { if (!panel.hidden) rerenderSell(); });
             renderSellList();
+            sellRequestBag(true);   // v3.55.0: mochila fresca para a lista (respeita o intervalo mínimo entre pedidos)
             const lv = $('#pg-dn-level');
             lv.disabled = false; lv.value = cfg.levelAlertAt || 0; lv.dataset.own = String(cfg.levelAlertAt || 0);
             $('#pg-dn-level-swap').checked = Boolean(cfg.levelSwap);
@@ -11401,7 +11553,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
 
         // qualquer edição marca "não salvo" e recalcula resumos e badges
         const onEdit = (e) => {
-            if (e.target.closest('#pg-dn-import-box, #pg-dn-route-import-box, #pg-dn-route-share-box, #pg-dn-route-name-box') || e.target.id === 'pg-dn-route-sel' || e.target.id === 'pg-dn-sell-view') return;
+            if (e.target.closest('#pg-dn-import-box, #pg-dn-route-import-box, #pg-dn-route-share-box, #pg-dn-route-name-box') || e.target.id === 'pg-dn-route-sel' || e.target.id === 'pg-dn-sell-search' || e.target.id === 'pg-dn-sell-order') return;
             if (!e.target.matches('input, select, textarea')) return;
             dirty = true;
             renderDirty();
@@ -11442,7 +11594,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             // atalhos de edição num campo do painel são do campo: não deixa o jogo vê-los (o navegador cola/copia normalmente)
             if ((e.ctrlKey || e.metaKey) && ['v', 'c', 'x', 'a'].includes(String(e.key).toLowerCase()) && e.target.matches('input, textarea')) { e.stopPropagation(); return; }
             if (e.key === 'Escape') { e.stopPropagation(); togglePanel(false); return; }
-            if (e.key === 'Enter' && e.target.matches('input:not([type=checkbox])')) { e.preventDefault(); $('#pg-dn-save').click(); }
+            if (e.key === 'Enter' && e.target.matches('input:not([type=checkbox])') && e.target.id !== 'pg-dn-sell-search') { e.preventDefault(); $('#pg-dn-save').click(); }
         });
 
         function togglePanel(force) {
@@ -11486,7 +11638,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const profAntes = JSON.stringify([cfg.profRankupEnabled, cfg.profRoute, cfg.profFromDepot, cfg.profFromFamily]);   // v3.52.0
             const ligouProf = draft.profRoute && !cfg.profRoute;
             Object.assign(cfg, draft);
-            sellDrafts = {};                                  // listas de venda das outras hunts já foram para cfg.sellProfiles
+            sellDraft = null; sellBagNew.clear();              // v3.55.0: o rascunho da mochila já foi para cfg.sellItems/sellNever; "novo" zera no Salvar
             const exclusivo = [];
             // Rota de treino, de captura e do clã trocam de hunt: fica a que acabou de ser ligada.
             const rotas = [
@@ -11516,7 +11668,6 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             for (const k of Object.keys(evolveFailed)) delete evolveFailed[k];
             if (cfg.evolveEnabled) requestPokes(0);
             if (JSON.stringify([cfg.tripEveryMin, cfg.tripEveryMaxMin]) !== viagemAntes) restartTripCycle(); // faixa da viagem mudou: sorteia de novo
-            saveHuntProfile();
             if (JSON.stringify([cfg.reloadEnabled, cfg.reloadEveryMin, cfg.reloadEveryMaxMin]) !== recargaAntes) scheduleReload(); // faixa mudou: sorteia de novo
             if (JSON.stringify([cfg.dailyEnabled, cfg.dailyClaim, cfg.dailyReturnSlug, cfg.dailyAuto, cfg.dailyAreas]) !== dailyAntes) { dailyPickTried = 0; scheduleDailyCheck(500); } // daily mudou: lê a missão já (e pode escolher de novo)
             if (JSON.stringify([cfg.giftEnabled, cfg.giftCenterMode]) !== giftAntes) { giftFetchedAt = 0; scheduleGiftCheck(500); } // gift mudou: lê o calendário já
@@ -11687,8 +11838,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 st.textContent = data ? '✖ Isso não é uma config deste script.' : `✖ Texto incompleto (${fmtNum(bruto.length)} caracteres): exporte de novo e cole tudo.`;
                 return null;
             }
-            const n = Object.keys(data.sellProfiles || {}).length, fl = familyList(data).length;
-            st.textContent = `✔ Config de ${data._conta || 'outra conta'}${data._versao ? ` (v${data._versao})` : ''}: listas de venda de ${n} ${n === 1 ? 'hunt' : 'hunts'}, ${fl} ${fl === 1 ? 'item' : 'itens'} em "Sempre para a família". Clique em Aplicar para importar.`;
+            const n = Object.keys(data.sellItems || {}).length + Object.values(data.sellProfiles || {}).reduce((a, p) => a + Object.keys(p?.items || {}).length, 0), fl = familyList(data).length;   // v3.55.0: perfis antigos viram marcados
+            st.textContent = `✔ Config de ${data._conta || 'outra conta'}${data._versao ? ` (v${data._versao})` : ''}: ${n} ${n === 1 ? 'item marcado' : 'itens marcados'} para venda${data.sellRule ? ' + regra dos drops comuns' : ''}, ${fl} ${fl === 1 ? 'item' : 'itens'} em "Sempre para a família". Clique em Aplicar para importar.`;
             return data;
         }
         $('#pg-dn-import-text').addEventListener('input', importPreview);
@@ -11726,14 +11877,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             for (const k of Object.keys(data)) if (k.startsWith('_')) delete data[k];
             const keepHooks = $('#pg-dn-import-keephooks').checked;
             const mine = { webhookUrl: cfg.webhookUrl, webhookShiny: cfg.webhookShiny, webhookAlerts: cfg.webhookAlerts, webhookLevel: cfg.webhookLevel, webhookHuman: cfg.webhookHuman };
-            const perfisDaqui = Object.assign({}, cfg.sellProfiles || {});
-            cfg = migrateCfg(Object.assign({}, DEFAULTS, data));
+            cfg = migrateCfg(Object.assign({}, DEFAULTS, data));   // v3.55.0: perfis por hunt de um export antigo viram a lista única (migrateCfg)
             if (keepHooks) Object.assign(cfg, mine);
-            // v3.20.3: listas de venda por hunt SOMAM (a que veio ganha na mesma hunt); antes o import apagava as hunts
-            // que só este painel tinha configurado.
-            const perfisVindos = Object.keys(cfg.sellProfiles || {});
-            const soDaqui = Object.keys(perfisDaqui).filter(k => !perfisVindos.includes(k));
-            cfg.sellProfiles = Object.assign({}, perfisDaqui, cfg.sellProfiles || {});
             cfg.cfgVersion = 2;
             saveCfg(cfg);
             if (dropsVindos.length) { for (const id of dropsVindos) droppedIds.add(id); saveDropped(); }   // drops conhecidos do "Guardar na cidade"
@@ -11744,7 +11889,6 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             for (const k of Object.keys(evolveFailed)) delete evolveFailed[k];
             restartTripCycle();
             scheduleReload();
-            loadHuntProfile();
             dirty = false;
             fill();
             const canais = ['webhookUrl', 'webhookShiny', 'webhookAlerts', 'webhookLevel', 'webhookHuman'].filter(k => (cfg[k] || '').trim()).length;
@@ -11755,7 +11899,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 `refil ${supplyOn() ? supplySlots().map(s => `${s.name} < ${s.min}`).join(', ') : 'desligado'}`,
                 `Joy ${cfg.healJoyEnabled ? 'ligada' : 'desligada'}`,
                 `volta da cidade ${cfg.cityIdleEnabled ? `${cfg.cityIdleMin} min` : 'desligada'}`,
-                `drops ${cfg.sellEnabled ? 'ligado' : 'desligado'}, listas de ${Object.keys(cfg.sellProfiles || {}).length} hunts (${perfisVindos.length} vieram${soDaqui.length ? `, ${soDaqui.length} já eram daqui e ficaram` : ''})`,
+                `drops ${cfg.sellEnabled ? 'ligado' : 'desligado'}${cfg.sellRule ? ' (regra dos drops comuns)' : ''}, ${Object.keys(cfg.sellItems || {}).length} marcados${(cfg.sellNever || []).length ? `, ${cfg.sellNever.length} exceções` : ''}`,
                 `Pokémon ${cfg.pokeSellEnabled ? 'ligado' : 'desligado'}, ${Object.keys(cfg.pokeSellLimits || {}).length} raridades com limite${pokeSellKeepQ(cfg) ? `, guarda qualidade ≥ ${pokeSellKeepQ(cfg)}` : ''}`,
                 `viagem ${cfg.tripEveryMin}${cfg.tripEveryMaxMin > cfg.tripEveryMin ? `–${cfg.tripEveryMaxMin}` : ''} min (${cfg.tripCity})`,
                 `${Object.keys(cfg.routes || {}).length} rotas de treino${cfg.routeName ? ` (ativa: ${cfg.routeName})` : ''}`,
@@ -11787,6 +11931,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
     buildUI();
     setInterval(() => requestBalls(0), BALLS_POLL_MS);
     setInterval(requestSupplies, SUPPLY_POLL_MS);
+    setInterval(sellBagTick, SELL_BAG_TICK_MS);   // v3.55.0: mochila da venda (relê a cada 5 min com a venda ligada)
     setInterval(() => requestPokes(0), POKES_POLL_MS);
     setInterval(reloadTick, RELOAD_CHECK_MS);
     setInterval(dailyTick, DAILY_CHECK_MS);
@@ -11836,7 +11981,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
         '| auto boss:', bossOn() ? `retoma${cfg.bossResumeOnLoss ? ' (até após derrota)' : ''}` : 'não',
         '| guild:', guildOn() ? [guildDonateWanted() > 0 ? `doa ${guildDonateWanted()}/dia` : '', cfg.guildTributeEnabled ? 'tributo' : '', cfg.guildFarmTribute ? 'farma tributo' : '', cfg.guildHuntEnabled ? 'caça' : '', cfg.guildFishEnabled ? 'pesca' : '', guildRouteOn() ? `ordem ${guildOrderText()}` : '', cfg.guildAlerts ? 'avisos' : ''].filter(Boolean).join(' + ') : 'não',
         '| venda pokes:', cfg.pokeSellEnabled ? TIERS_ASC.filter(t => pokeSellLimit(cfg, t.key) > 0).map(t => `${t.name}<${pokeSellLimit(cfg, t.key)}`).join(' ') || 'sem limites' : 'não',
-        '| venda drops:', cfg.sellEnabled ? `${Object.keys(cfg.sellItems || {}).length} itens` : 'não',
+        '| venda drops:', cfg.sellEnabled ? `${cfg.sellRule ? `regra até ${sellRuleMaxPrice() || 'qualquer preço'} + ` : ''}${Object.keys(cfg.sellItems || {}).length} marcados${(cfg.sellNever || []).length ? `, ${cfg.sellNever.length} exceções` : ''}` : 'não',
         '| viagem à cidade:', `${cfg.tripCity} a cada ${cfg.tripEveryMin}${cfg.tripEveryMaxMin > cfg.tripEveryMin ? `–${cfg.tripEveryMaxMin}` : ''} min`,
         '| recarga auto:', cfg.reloadEnabled ? `${cfg.reloadEveryMin}${cfg.reloadEveryMaxMin > cfg.reloadEveryMin ? `–${cfg.reloadEveryMaxMin}` : ''} min` : 'não');
 })();

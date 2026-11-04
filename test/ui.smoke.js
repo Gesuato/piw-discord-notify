@@ -56,7 +56,7 @@ setTimeout(() => {
         log('colar botao direito: alerts=' + $('#pg-dn-hook-alerts').value + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 40));
         for (const t of panel.querySelectorAll('.dn-tab')) { t.click(); log('aba ' + t.dataset.tab + ' badge=' + t.querySelector('.b').dataset.state + ' paneVisivel=' + !panel.querySelector('[data-pane=' + t.dataset.tab + ']').hidden); }
         log('bolas=' + $('#pg-dn-balls-status').textContent.trim() + ' | warn0=' + !$('#pg-dn-autobuy-warn').hidden);
-        log('venda=' + $('#pg-dn-sell-hunt').textContent.trim() + ' | ' + $('#pg-dn-sell-count').textContent + ' | lista=' + $('#pg-dn-sell-list').textContent.trim());
+        log('venda=' + $('#pg-dn-sell-status').textContent.trim() + ' | ' + $('#pg-dn-sell-count').textContent + ' | lista=' + $('#pg-dn-sell-list').textContent.trim());
         log('psell=' + $('#pg-dn-psell-status').textContent.trim() + ' | campos=' + panel.querySelectorAll('.pg-dn-psell-lim').length + ' | faixa=' + $('#pg-dn-trip-title').textContent + ' / ' + $('#pg-dn-trip-sub').textContent + ' | faixaNaAba=' + ($('#pg-dn-trip').parentElement.dataset.pane) + ' blkAberto=' + [...panel.querySelectorAll('.dn-blk.open')].map(b => b.dataset.blk));
         $('#pg-dn-blk-pokes').querySelector('h3').click(); log('clicou pokes: aberto=' + [...panel.querySelectorAll('.dn-blk.open')].map(b => b.dataset.blk) + ' ui=' + window.localStorage.getItem('pgDiscordNotifyUi'));
         log('treino level.disabled=' + $('#pg-dn-level').disabled + ' value=' + $('#pg-dn-level').value + ' | ' + $('#pg-dn-route-status').textContent + ' | itens=' + $('#pg-dn-route-list').children.length);
@@ -178,14 +178,13 @@ setTimeout(() => {
         recv({ type: 'catch-result', success: true, speciesName: 'Pidgey', shiny: false, ballId: 4, ballName: 'Ultra Ball' });
         recv({ type: 'balls', counts: { 4: 1240 } });
         panel.querySelector('.dn-tab[data-tab=venda]').click();
-        log('hunt=' + $('#pg-dn-sell-hunt').textContent.trim());
+        log('mochila antes=' + $('#pg-dn-sell-status').textContent.trim());
+        recv({ type: 'inventory', items: [{ itemId: 1, quantity: 40 }, { itemId: 2, quantity: 3 }, { itemId: 120, quantity: 7 }] });   // v3.55.0: a lista é a mochila
+        log('mochila=' + $('#pg-dn-sell-status').textContent.trim());
         log('drops=' + [...panel.querySelectorAll('#pg-dn-sell-list .dn-item')].map(i => i.className + ':' + i.textContent.replace(/\s+/g, ' ').trim()).join(' | '));
-        const chk = panel.querySelector('#pg-dn-sell-list .pg-dn-sell-chk'); chk.checked = true; fire(chk, 'change');
-        log('marcou=' + chk.closest('.dn-item').className + ' contagem=' + $('#pg-dn-sell-count').textContent + ' msg=' + $('#pg-dn-msg').textContent);
+        log('drops (catálogo ainda carregando nesta fase)=' + panel.querySelectorAll('#pg-dn-sell-list .dn-item').length + ' linhas');
         recv({ type: 'field-kill', speciesName: 'Pidgey', loot: [{ itemId: 1, name: 'Pidgey Feather', qty: 1 }] });
-        log('apos drop novo ainda marcado=' + panel.querySelector('#pg-dn-sell-list .pg-dn-sell-chk').checked);
-        $('#pg-dn-save').click();
-        log('salvo sellItems=' + JSON.stringify(JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg')).sellItems) + ' perfil=' + JSON.stringify(JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg')).sellProfiles));
+        log('apos drop: ' + $('#pg-dn-sell-status').textContent.trim());
         panel.querySelector('.dn-tab[data-tab=treino]').click(); log('team=' + $('#pg-dn-team').textContent + ' | rota=' + $('#pg-dn-route-list').textContent.replace(/\s+/g, ' '));
         // ---- Breeding (v3.29.0): box com dois Donphan chega, menu lista o box, escolhe quem sobe, salva; a comida aparece na prévia ----
         recv({ type: 'pokes', list: [{ id: 'a', speciesId: 1, name: 'Larvitar', level: 12, team: true, slot: 0, leader: true, quality: 1.3, ivTotal: 100 }, { id: 'd1', speciesId: 232, name: 'Donphan', level: 20, team: false, quality: 1.466, ivTotal: 126, sellValue: 100 }, { id: 'd2', speciesId: 232, name: 'Donphan', level: 20, team: false, quality: 1.345, ivTotal: 104, sellValue: 100 }, { id: 'd3', speciesId: 232, name: 'Donphan', level: 20, team: false, quality: 1.5, ivTotal: 90, sellValue: 100 }] });
@@ -329,21 +328,43 @@ setTimeout(() => {
             const lst = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg')).depositFamilyList || [];
             log('lista familia chip=' + chip + ' salvo=' + JSON.stringify(lst));
             if (!(/Devoted Token/.test(chip) && lst.length === 1 && lst[0].name === 'Devoted Token' && lst[0].keep === 2)) errors.push('lista da família: item não entrou ou não salvou');
-            // venda por hunt (v3.20.0): escolhe outra hunt, marca um drop que ainda não caiu, salva no perfil dela
+            // venda pela mochila (v3.55.0, catálogo já carregado): regra marca o loot comum, Rare Candy (preço 0) fica protegida;
+            // desmarcar item da regra vira exceção; "manter" vira marcação; busca + "Marcar visíveis" só nas linhas visíveis; regra
+            // desligada deixa só os marcados na mão
             panel.querySelector('.dn-tab[data-tab=venda]').click();
-            const ativoAntes = JSON.stringify(JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg')).sellItems);
-            $('#pg-dn-sell-view').value = 'Geodude'; fire($('#pg-dn-sell-view'), 'change');
+            recv({ type: 'inventory', items: [{ itemId: 1, quantity: 40 }, { itemId: 2, quantity: 3 }, { itemId: 120, quantity: 7 }] });
+            log('mochila=' + $('#pg-dn-sell-status').textContent.trim());
+            log('drops=' + [...panel.querySelectorAll('#pg-dn-sell-list .dn-item')].map(i => i.className + ':' + i.textContent.replace(/\s+/g, ' ').trim()).join(' | '));
+            const rows = panel.querySelectorAll('#pg-dn-sell-list .dn-item[data-item-id]');
+            if (rows.length !== 2 || !panel.querySelector('#pg-dn-sell-list .dn-item.locked')) errors.push('mochila: esperava 2 linhas marcáveis (1 e 120) + Rare Candy protegida; veio ' + rows.length);
+            const chk120 = panel.querySelector('#pg-dn-sell-list [data-item-id="120"] .pg-dn-sell-chk');
+            if (!chk120 || !chk120.checked) errors.push('regra: Small Stone (loot, 10 gold) devia estar marcada pela regra');
+            if (chk120) { chk120.checked = false; fire(chk120, 'change'); }   // vira exceção
+            log('desmarcou 120=' + (panel.querySelector('#pg-dn-sell-list [data-item-id="120"]') || {}).className + ' contagem=' + $('#pg-dn-sell-count').textContent + ' msg=' + $('#pg-dn-msg').textContent);
+            recv({ type: 'field-kill', speciesName: 'Pidgey', loot: [{ itemId: 1, name: 'Pidgey Feather', qty: 1 }] });
+            if (panel.querySelector('#pg-dn-sell-list [data-item-id="120"] .pg-dn-sell-chk').checked) errors.push('drop novo com o painel aberto perdeu a exceção');
+            const keep1 = panel.querySelector('#pg-dn-sell-list [data-item-id="1"] .pg-dn-sell-keep'); keep1.value = 5; fire(keep1, 'input'); fire(keep1, 'change');
+            $('#pg-dn-save').click();
+            const cfgBag = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+            log('salvo sellItems=' + JSON.stringify(cfgBag.sellItems) + ' never=' + JSON.stringify(cfgBag.sellNever) + ' regra=' + cfgBag.sellRule + ' perfis=' + ('sellProfiles' in cfgBag) + ' msg=' + $('#pg-dn-msg').textContent.slice(0, 60));
+            if (!(cfgBag.sellItems && cfgBag.sellItems[1] && cfgBag.sellItems[1].keep === 5 && JSON.stringify(cfgBag.sellNever) === '[120]' && cfgBag.sellRule === true && !('sellProfiles' in cfgBag))) errors.push('venda mochila: salvar não gravou manter 5 / exceção 120 / regra');
+            $('#pg-dn-sell-search').value = 'stone'; fire($('#pg-dn-sell-search'), 'input');
             const linhas = [...panel.querySelectorAll('#pg-dn-sell-list .dn-item')].map(i => i.textContent.replace(/\s+/g, ' ').trim());
-            log('venda outra hunt=' + $('#pg-dn-sell-hunt').textContent.trim().slice(0, 90) + ' | linhas=' + linhas.join(' | '));
-            const pedra = panel.querySelector('#pg-dn-sell-list [data-item-id="120"] .pg-dn-sell-chk');
-            if (!pedra) errors.push('venda por hunt: Small Stone (tabela de drops) não apareceu em geodude');
-            else { pedra.checked = true; fire(pedra, 'change'); }
+            log('busca stone=' + linhas.join(' | ') + ' | msg=' + $('#pg-dn-msg').textContent.slice(0, 40));
+            if (linhas.length !== 1 || !/Small Stone/.test(linhas[0])) errors.push('busca: esperava só a Small Stone, veio ' + linhas.join(' | '));
+            $('#pg-dn-sell-mark').click();
+            log('marcar visíveis: tela=' + $('#pg-dn-sell-count').textContent + ' msg=' + $('#pg-dn-msg').textContent.slice(0, 40));
             $('#pg-dn-save').click();
             const cfgV = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
-            log('perfil geodude=' + JSON.stringify(cfgV.sellProfiles && cfgV.sellProfiles.geodude) + ' ativo=' + JSON.stringify(cfgV.sellItems));
-            if (!(cfgV.sellProfiles && cfgV.sellProfiles.geodude && cfgV.sellProfiles.geodude.items && cfgV.sellProfiles.geodude.items[120])) errors.push('venda por hunt: perfil de geodude não salvou a Small Stone');
-            if (JSON.stringify(cfgV.sellItems) !== ativoAntes) errors.push('venda por hunt: editar outra hunt mexeu na lista ativa');
-            $('#pg-dn-sell-view-cur').click();
+            log('salvo: never=' + JSON.stringify(cfgV.sellNever) + ' itens=' + JSON.stringify(cfgV.sellItems));
+            if ((cfgV.sellNever || []).length) errors.push('marcar visíveis não tirou a exceção da Small Stone');
+            $('#pg-dn-sell-search').value = ''; fire($('#pg-dn-sell-search'), 'input');
+            $('#pg-dn-sell-rule').checked = false; fire($('#pg-dn-sell-rule'), 'change');
+            const soMarcados = [...panel.querySelectorAll('#pg-dn-sell-list .pg-dn-sell-chk:checked')].map(c => c.closest('[data-item-id]').dataset.itemId);
+            log('regra desligada: marcados=' + soMarcados.join(','));
+            if (soMarcados.join(',') !== '1') errors.push('regra desligada: só o item 1 (marcado na mão) devia seguir marcado, veio ' + soMarcados.join(','));
+            $('#pg-dn-sell-rule').checked = true; fire($('#pg-dn-sell-rule'), 'change');
+            $('#pg-dn-save').click();
             log('apos delta: fetch=' + fetchCalls.map(c => c.split(' ')[0]).join(',') + ' | enviados=' + ws.sent.slice(1).map(x => JSON.parse(x).type + (JSON.parse(x).capturedId ? ':' + JSON.parse(x).capturedId : '')).join(','));
             recv({ type: 'family', family: { name: 'Fam', movesUsed: 3, movesCap: 50, frozen: false, members: [] }, depot: { items: [], pokes: [{ id: 'cuid-bagon-1', name: 'Bagon', level: 5 }] } });
             // v3.30.0: frame `guild` (formato do bundle), `guild-dirty` e um `guild-action` enviado pela tela passam sem erro e entram no log

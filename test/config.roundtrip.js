@@ -18,7 +18,7 @@ function boot(cfg, extra) {
 const rica = {
   webhookUrl: 'https://discord.com/api/webhooks/1/a', webhookShiny: 'https://discord.com/api/webhooks/2/b', webhookAlerts: 'https://discord.com/api/webhooks/3/c', webhookLevel: 'https://discord.com/api/webhooks/4/d', webhookHuman: 'https://discord.com/api/webhooks/5/e',
   watchList: ['dratini', 'larvitar'], notifyEveryCapture: true, notifyShiny: false, lockNotified: true, familyNotified: true, minTier: 'epic', minIv: 150, minTierIv: 120,
-  ballsMin: 200, ballsWatch: '4', autoBuy: true, autoBuyQty: 500, sellEnabled: true, sellItems: { 39: { keep: 5 } }, sellProfiles: { pidgey: { items: { 39: { keep: 5 } } } },
+  ballsMin: 200, ballsWatch: '4', autoBuy: true, autoBuyQty: 500, sellEnabled: true, sellItems: { 39: { keep: 5 } }, sellRule: false, sellRuleMaxPrice: 800, sellNever: [120],
   pokeSellEnabled: true, pokeSellLimits: { common: 100, legendary: 140 }, pokeSellKeepQuality: 1.79, boxAlertAt: 150, levelAlertAt: 30, levelSwap: true, routeEnabled: true, route: [{ slug: 'pidgey', level: 10 }], routeStage: 0,
   routes: { A: { route: [{ slug: 'pidgey', level: 10 }], stage: 0 } }, routeName: 'A', catchRouteEnabled: false, catchRouteAreas: ['kanto', 'orre'], catchRouteMaxLevel: 30, catchRouteAuto: true, catchRouteBall: '4',
   catchRouteSkipped: ['abra'], catchRouteDone: [16, 19], dailyEnabled: true, dailyClaim: false, dailyReturnSlug: 'larvitar', tripCity: 'pewter', tripMinGapMin: 5, tripEveryMin: 12, tripEveryMaxMin: 20,
@@ -87,8 +87,9 @@ setTimeout(() => {
     w3.document.querySelector('#pg-dn-import-text').value = box; w3.document.querySelector('#pg-dn-import-keephooks').checked = true;
     w3.document.querySelector('#pg-dn-import-apply').click();
     const s3 = JSON.parse(w3.localStorage.getItem('pgDiscordNotifyCfg'));
-    console.log('import mantendo canais: webhookUrl=' + s3.webhookUrl + ' watchList=' + s3.watchList + ' routes=' + Object.keys(s3.routes) + ' perfis=' + JSON.stringify(s3.sellProfiles));
-    const somaOk = s3.sellProfiles.soDaqui && s3.sellProfiles.soDaqui.items[7] && JSON.stringify(s3.sellProfiles.pidgey) === JSON.stringify(rica.sellProfiles.pidgey);
+    console.log('import mantendo canais: webhookUrl=' + s3.webhookUrl + ' watchList=' + s3.watchList + ' routes=' + Object.keys(s3.routes) + ' marcados=' + JSON.stringify(s3.sellItems) + ' regra=' + s3.sellRule + ' exceções=' + JSON.stringify(s3.sellNever));
+    // v3.55.0: a lista importada SUBSTITUI (os perfis antigos do painel viraram lista única no loadCfg e foram trocados pela que veio)
+    const somaOk = JSON.stringify(s3.sellItems) === JSON.stringify(rica.sellItems) && !('sellProfiles' in s3) && s3.sellRule === false && s3.sellRuleMaxPrice === 800 && JSON.stringify(s3.sellNever) === '[120]';
     // drops conhecidos viajam no _drops; import normal não avisa versão; log registra
     const dropsW2 = JSON.parse(w2.localStorage.getItem('pgDiscordNotifyDrops') || '[]');
     const logW2 = JSON.parse(w2.localStorage.getItem('pgDiscordNotifyLog') || '[]').map(e => e.kind);

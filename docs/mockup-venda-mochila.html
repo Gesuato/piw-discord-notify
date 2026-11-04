@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<title>Venda pela mochila</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Mock da seção "Mochila" da aba Venda do painel 🔔 (proposta para a v3.55.0): a lista de venda deixa de ser por hunt e passa
+     a ser a MOCHILA inteira da conta. Sem dependências externas. Os tokens --dn-* são os mesmos do userscript; a mochila de
+     exemplo tem 48 itens (nomes e preços reais do items.json) e as duas variantes são interativas: busca, filtros, lote, "manter". -->
+<style>
+  :root {
+    --pg-bg: #f2f1ec; --pg-surface: #ffffff; --pg-text: #1f2124; --pg-muted: #6b6f76; --pg-border: #dad8d0;
+    --pg-accent: #4752c4; --pg-stage: #101215; color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --pg-bg: #17181b; --pg-surface: #1f2125; --pg-text: #e6e7ea; --pg-muted: #9a9ea6; --pg-border: #34363c; --pg-accent: #8891ff; --pg-stage: #0a0b0d; color-scheme: dark; }
+  }
+  :root[data-theme="dark"] { --pg-bg: #17181b; --pg-surface: #1f2125; --pg-text: #e6e7ea; --pg-muted: #9a9ea6; --pg-border: #34363c; --pg-accent: #8891ff; --pg-stage: #0a0b0d; color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--pg-bg); color: var(--pg-text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding-block: 24px 56px; padding-inline: 16px; display: flex; flex-direction: column; gap: 22px; }
+  h1 { font-size: 22px; margin: 0; text-wrap: balance; }
+  h2 { font-size: 16px; margin: 0; }
+  .lead { color: var(--pg-muted); margin: 4px 0 0; max-width: 70ch; }
+  .row { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+  .stage { flex: none; width: 100%; max-width: 400px; background: var(--pg-stage); border: 1px solid var(--pg-border); border-radius: 8px; padding: 14px; }
+  .notes { flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+  .notes ol, .notes ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+  .notes b { font-weight: 600; }
+  .tag { display: inline-block; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--pg-accent); font-weight: 600; }
+  .compare { border-top: 1px solid var(--pg-border); padding-top: 18px; }
+  .q { background: var(--pg-surface); border: 1px solid var(--pg-border); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+  .q p { margin: 0; }
+  code { font-size: 12px; background: color-mix(in srgb, var(--pg-border) 50%, transparent); padding: 0 4px; border-radius: 3px; }
+
+  /* ---- painel: tokens e componentes iguais ao userscript ---- */
+  .dn { --dn-bg-0:#1e1f22; --dn-bg-1:#2b2d31; --dn-bg-2:#313338; --dn-bg-3:#3a3c42; --dn-border:#3f4147; --dn-text:#dbdee1; --dn-muted:#949ba4;
+    --dn-dim:#80848e; --dn-accent:#5865f2; --dn-ok:#23a559; --dn-ok-t:#57d38a; --dn-warn:#f0b232; --dn-danger:#da373c; --dn-danger-t:#ff7a7e; --dn-shiny:#fee75c;
+    --dn-radius:6px; --dn-radius-sm:4px; font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--dn-text);
+    background: var(--dn-bg-1); border: 1px solid var(--dn-border); border-radius: var(--dn-radius); overflow: hidden; color-scheme: dark;
+    height: 520px; display: flex; flex-direction: column; }
+  .dn-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--dn-bg-0); border-bottom: 1px solid var(--dn-border); flex: none; }
+  .dn-head .t { font-weight: 600; font-size: 14px; }
+  .dn-head .v { color: var(--dn-muted); font-size: 12px; }
+  .dn-tabs { display: flex; flex-wrap: wrap; background: var(--dn-bg-0); border-bottom: 1px solid var(--dn-border); flex: none; }
+  .dn-tab { flex: 1 1 auto; min-width: 0; background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--dn-muted); font: inherit; font-size: 12px; font-weight: 600; padding: 7px 4px 6px; white-space: nowrap; }
+  .dn-tab[aria-selected="true"] { color: var(--dn-text); border-bottom-color: var(--dn-accent); background: var(--dn-bg-1); }
+  .dn-body { padding: 12px; display: flex; flex-direction: column; gap: 10px; overflow: auto; flex: 1; }
+  .dn-section { background: var(--dn-bg-2); border: 1px solid var(--dn-border); border-radius: var(--dn-radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .dn-section h3 { margin: 0; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .dn-section h3 .spacer { flex: 1; }
+  .dn-help { margin: 0; color: var(--dn-muted); font-size: 12px; }
+  .dn-toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+  .dn-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .dn-toggle .sw { width: 30px; height: 17px; border-radius: 9px; background: var(--dn-bg-3); position: relative; flex: none; transition: background .15s; }
+  .dn-toggle .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: #fff; transition: left .15s; }
+  .dn-toggle input:checked + .sw { background: var(--dn-ok); }
+  .dn-toggle input:checked + .sw::after { left: 15px; }
+  .dn-toggle input:focus-visible + .sw { outline: 2px solid var(--dn-accent); outline-offset: 1px; }
+  .dn-input, .dn-select { min-height: 28px; background: var(--dn-bg-0); color: var(--dn-text); border: 1px solid var(--dn-border); border-radius: var(--dn-radius-sm); padding: 4px 8px; font: inherit; margin: 0; }
+  .dn-input:focus, .dn-select:focus, .dn-btn:focus-visible { outline: 2px solid var(--dn-accent); outline-offset: 1px; }
+  .dn-btn { min-height: 28px; padding: 4px 10px; border-radius: var(--dn-radius-sm); border: 1px solid var(--dn-border); background: var(--dn-bg-3); color: var(--dn-text); font: inherit; font-weight: 600; cursor: pointer; }
+  .dn-btn--primary { background: var(--dn-accent); border-color: var(--dn-accent); color: #fff; }
+  .dn-btn--ghost { background: transparent; color: var(--dn-muted); font-weight: 400; padding: 2px 6px; }
+  .dn-btn--sm { min-height: 24px; padding: 2px 8px; font-size: 12px; }
+  .dn-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .dn-inline { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .dn-status { display: flex; align-items: center; gap: 8px; font-size: 12px; background: var(--dn-bg-0); border-radius: var(--dn-radius-sm); padding: 6px 8px; font-variant-numeric: tabular-nums; flex-wrap: wrap; }
+  .dn-status .k { color: var(--dn-muted); }
+  .dn-status .r { margin-left: auto; }
+  .dn-foot { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--dn-bg-0); border-top: 1px solid var(--dn-border); flex: none; }
+  .dn-foot .msg { flex: 1; color: var(--dn-muted); font-size: 12px; }
+  .dn-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 10px; background: var(--dn-bg-3); color: var(--dn-text); }
+  .dn-badge[data-state="on"] { background: color-mix(in srgb, var(--dn-ok) 25%, var(--dn-bg-0)); color: var(--dn-ok-t); }
+  .dn-badge[data-state="warn"] { background: color-mix(in srgb, var(--dn-warn) 25%, var(--dn-bg-0)); color: var(--dn-warn); }
+
+  /* ---- proposta: lista da mochila ---- */
+  .bag-tools { display: flex; gap: 6px; align-items: center; }
+  .bag-tools .dn-input { flex: 1; min-width: 0; }
+  .bag-tools .dn-select { width: 112px; flex: none; }
+  .chips { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+  .fchip { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; background: var(--dn-bg-3); color: var(--dn-muted); border: 1px solid transparent; cursor: pointer; font-family: inherit; }
+  .fchip[aria-pressed="true"] { color: var(--dn-text); border-color: var(--dn-accent); background: color-mix(in srgb, var(--dn-accent) 18%, var(--dn-bg-0)); }
+  .chips .sp { flex: 1; }
+  .grp { border: 1px solid var(--dn-border); border-radius: var(--dn-radius-sm); background: var(--dn-bg-1); }
+  .grp > h4 { margin: 0; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; padding: 5px 8px; cursor: pointer; user-select: none; }
+  .grp > h4 .chev { color: var(--dn-muted); font-size: 10px; transition: transform .15s; }
+  .grp.open > h4 .chev { transform: rotate(90deg); }
+  .grp > h4 .n { color: var(--dn-muted); font-weight: 400; }
+  .grp > h4 .g { margin-left: auto; color: var(--dn-ok-t); font-weight: 400; font-variant-numeric: tabular-nums; }
+  .grp > .rows { display: none; flex-direction: column; padding: 0 4px 4px; }
+  .grp.open > .rows { display: flex; }
+  .grp.sell > h4 { color: var(--dn-ok-t); }
+  .grp.keep > h4 { color: var(--dn-muted); }
+  .dn-item { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; padding: 3px 6px; border-radius: var(--dn-radius-sm); font-size: 12px; cursor: pointer; margin: 0; }
+  .dn-item:hover { background: var(--dn-bg-2); }
+  .dn-item input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var(--dn-accent); }
+  .dn-item .nm { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; min-width: 0; }
+  .dn-item .q { color: var(--dn-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .dn-item .w { color: var(--dn-shiny); font-size: 11px; }
+  .dn-item .t { font-size: 10px; font-weight: 600; padding: 0 5px; border-radius: 8px; background: var(--dn-bg-3); color: var(--dn-muted); letter-spacing: .02em; }
+  .dn-item .t.regra { color: var(--dn-ok-t); background: color-mix(in srgb, var(--dn-ok) 18%, var(--dn-bg-0)); }
+  .dn-item .t.exc { color: var(--dn-danger-t); background: color-mix(in srgb, var(--dn-danger) 18%, var(--dn-bg-0)); }
+  .dn-item .t.novo { color: var(--dn-shiny); background: color-mix(in srgb, var(--dn-shiny) 14%, var(--dn-bg-0)); }
+  .dn-item .keep { display: none; align-items: center; gap: 4px; color: var(--dn-muted); white-space: nowrap; }
+  .dn-item.on .keep { display: inline-flex; }
+  .dn-item .keep input { width: 52px; min-height: 24px; padding: 2px 6px; text-align: right; }
+  .dn-item.locked { color: var(--dn-dim); cursor: default; }
+  .dn-item.locked:hover { background: transparent; }
+  .dn-item.locked .why { font-size: 11px; color: var(--dn-dim); white-space: nowrap; }
+  .empty { color: var(--dn-muted); font-size: 12px; padding: 6px 8px; }
+  @media (prefers-reduced-motion: reduce) { .dn-toggle .sw, .dn-toggle .sw::after, .grp > h4 .chev { transition: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="tag">Mock para validar antes de implementar</span>
+    <h1>Venda de itens pela mochila, não por hunt</h1>
+    <p class="lead">Seção <b>Mochila</b> da aba <b>💰 Venda</b> do painel 🔔. A lista é a mochila real da conta (48 itens de exemplo, nomes e preços do jogo). Os dois painéis abaixo são interativos: busca, filtros, marcar em lote, "manter". O painel tem a altura real (520 px): role dentro dele.</p>
+  </header>
+
+  <section class="row">
+    <div class="stage">
+      <div class="dn" id="p-a">
+        <div class="dn-head"><span class="t">🔔 Discord Notify</span><span class="v">v3.55.0</span></div>
+        <div class="dn-tabs" aria-hidden="true">
+          <button class="dn-tab" type="button">🔔 Avisos</button><button class="dn-tab" type="button">🛒 Compras</button><button class="dn-tab" type="button" aria-selected="true">💰 Venda</button><button class="dn-tab" type="button">⚔ Treino</button><button class="dn-tab" type="button">🌐 Mercado</button><button class="dn-tab" type="button">⚙ Sistema</button>
+        </div>
+        <div class="dn-body">
+          <div class="dn-section">
+            <h3>Mochila <span class="spacer"></span><label class="dn-toggle"><input type="checkbox" checked data-role="on"><span class="sw"></span>Vender sozinho</label></h3>
+            <div class="dn-status"><span class="k">Mochila lida há 2 min</span><b data-role="resumo">—</b><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm r" title="Pede a mochila ao jogo (inv-get). Funciona na hunt.">Ler mochila</button></div>
+            <div class="bag-tools">
+              <input class="dn-input" type="search" placeholder="buscar item…" data-role="busca" spellcheck="false" aria-label="Buscar item">
+              <select class="dn-select" data-role="ordem" aria-label="Ordenar por"><option value="valor">por valor</option><option value="qtd">por quantidade</option><option value="nome">por nome</option></select>
+            </div>
+            <div class="chips" data-role="filtros">
+              <button type="button" class="fchip" data-f="tudo" aria-pressed="true">Tudo</button>
+              <button type="button" class="fchip" data-f="loot" aria-pressed="false">Loot</button>
+              <button type="button" class="fchip" data-f="atencao" aria-pressed="false">⚠ Atenção</button>
+              <button type="button" class="fchip" data-f="novos" aria-pressed="false">Novos</button>
+              <span class="sp"></span>
+              <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" data-role="marcar" title="Marca os itens visíveis (busca e filtro valem).">Marcar visíveis</button>
+              <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" data-role="desmarcar">Desmarcar</button>
+            </div>
+            <div data-role="grupos"></div>
+            <p class="dn-help">Marcado = vendido na próxima viagem, de onde quer que tenha caído. "Manter" = quantidade que fica. ⚠ = raro, pedra ou outra categoria: confira. 🔒 = o jogo ou outro módulo segura o item (família, clã, guild, farm, mercado, boss, invasão, profissão). Pedras vão ao Stone Researcher.</p>
+          </div>
+          <div class="dn-section" style="opacity:.55"><h3>Pokémon fora do time <span class="spacer"></span><span class="dn-help">como hoje</span></h3></div>
+          <div class="dn-section" style="opacity:.55"><h3>Guardar na cidade <span class="spacer"></span><span class="dn-help">como hoje</span></h3></div>
+        </div>
+        <div class="dn-foot"><span class="msg">● Alterações não salvas</span><button type="button" class="dn-btn dn-btn--sm">Testar canais</button><button type="button" class="dn-btn dn-btn--primary dn-btn--sm">Salvar</button></div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <h2>Variante 1: lista pura, com ferramentas para a lista grande</h2>
+      <ol>
+        <li><b>Dois grupos em vez de uma lista corrida.</b> "Vende" em cima, com o que a próxima viagem leva e o gold estimado; "Fica" embaixo, recolhido. Com 60 itens você vê 20 linhas, não 60.</li>
+        <li><b>Busca</b> filtra na hora. Busca + "Marcar visíveis" marca uma família inteira de itens (ex.: digitar "gem") sem clicar um a um.</li>
+        <li><b>Filtros</b>: Loot (só o que o Mark compra sem aviso), ⚠ Atenção (raros, pedras, outras categorias), Novos (apareceu na mochila desde a última leitura: é o item da daily que você nunca marcou).</li>
+        <li><b>Ordem por valor</b> (quantidade × preço) traz para cima o que pesa no gold; por quantidade mostra o que está acumulando.</li>
+        <li><b>"Manter" só aparece em quem está marcado</b>, como hoje. O campo é estreito para não quebrar a linha nos 400 px.</li>
+        <li><b>🔒 em cinza</b> = não dá para marcar, com o motivo: lista da família, item da guild/clã/farm/mercado/boss/invasão, cadeado do jogo, preço 0.</li>
+        <li>Botão <b>Ler mochila</b> pede o frame <code>inventory</code> pelo socket (o que o jogo faz ao abrir a bolsa): funciona na hunt. O script também lê sozinho antes de cada viagem.</li>
+      </ol>
+      <p class="dn-help" style="color:var(--pg-muted)">Esta variante guarda exatamente o que você marcou: <code>sellItems = { id: { keep } }</code>, uma lista só por conta. Item novo que cair numa hunt nova NÃO entra sozinho: aparece em "Fica" com a etiqueta "novo" até você marcar.</p>
+    </div>
+  </section>
+
+  <section class="compare">
+    <div class="row">
+      <div class="stage">
+        <div class="dn" id="p-b">
+          <div class="dn-head"><span class="t">🔔 Discord Notify</span><span class="v">v3.55.0</span></div>
+          <div class="dn-tabs" aria-hidden="true">
+            <button class="dn-tab" type="button">🔔 Avisos</button><button class="dn-tab" type="button">🛒 Compras</button><button class="dn-tab" type="button" aria-selected="true">💰 Venda</button><button class="dn-tab" type="button">⚔ Treino</button><button class="dn-tab" type="button">🌐 Mercado</button><button class="dn-tab" type="button">⚙ Sistema</button>
+          </div>
+          <div class="dn-body">
+            <div class="dn-section">
+              <h3>Mochila <span class="spacer"></span><label class="dn-toggle"><input type="checkbox" checked data-role="on"><span class="sw"></span>Vender sozinho</label></h3>
+              <label class="dn-toggle" style="font-size:12px"><input type="checkbox" checked data-role="regra"><span class="sw"></span>Vender todo drop comum (categoria loot, não raro)</label>
+              <p class="dn-help">Com a regra ligada você só mexe nas exceções: desmarque o que NÃO quer vender; marque na mão o que é raro ou de outra categoria. Item novo que cair em qualquer hunt já entra.</p>
+              <div class="dn-status"><span class="k">Mochila lida há 2 min</span><b data-role="resumo">—</b><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm r" title="Pede a mochila ao jogo (inv-get). Funciona na hunt.">Ler mochila</button></div>
+              <div class="bag-tools">
+                <input class="dn-input" type="search" placeholder="buscar item…" data-role="busca" spellcheck="false" aria-label="Buscar item">
+                <select class="dn-select" data-role="ordem" aria-label="Ordenar por"><option value="valor">por valor</option><option value="qtd">por quantidade</option><option value="nome">por nome</option></select>
+              </div>
+              <div class="chips" data-role="filtros">
+                <button type="button" class="fchip" data-f="tudo" aria-pressed="true">Tudo</button>
+                <button type="button" class="fchip" data-f="loot" aria-pressed="false">Loot</button>
+                <button type="button" class="fchip" data-f="atencao" aria-pressed="false">⚠ Atenção</button>
+                <button type="button" class="fchip" data-f="novos" aria-pressed="false">Novos</button>
+                <span class="sp"></span>
+                <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" data-role="marcar">Marcar visíveis</button>
+                <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" data-role="desmarcar">Desmarcar</button>
+              </div>
+              <div data-role="grupos"></div>
+              <p class="dn-help">Etiquetas: <span class="dn-item" style="display:inline;padding:0"><span class="t regra">regra</span></span> = entra pela regra; <span class="dn-item" style="display:inline;padding:0"><span class="t">marcado</span></span> = você marcou na mão; <span class="dn-item" style="display:inline;padding:0"><span class="t exc">exceção</span></span> = a regra venderia, você tirou. O resto é igual à variante 1.</p>
+            </div>
+            <div class="dn-section" style="opacity:.55"><h3>Pokémon fora do time <span class="spacer"></span><span class="dn-help">como hoje</span></h3></div>
+            <div class="dn-section" style="opacity:.55"><h3>Guardar na cidade <span class="spacer"></span><span class="dn-help">como hoje</span></h3></div>
+          </div>
+          <div class="dn-foot"><span class="msg">● Alterações não salvas</span><button type="button" class="dn-btn dn-btn--sm">Testar canais</button><button type="button" class="dn-btn dn-btn--primary dn-btn--sm">Salvar</button></div>
+        </div>
+      </div>
+      <div class="notes">
+        <h2>Variante 2: a mesma lista, com uma regra por baixo</h2>
+        <ol>
+          <li><b>Um interruptor resolve o grosso:</b> "vender todo drop comum" marca sozinho tudo que é categoria <code>loot</code> e não é raro. Nas suas 4 contas é exatamente isso que você marca hoje (Earth Ball, Sandbag, Small Stone, Stone Orb, Bug Gosme, Seed, Straw…).</li>
+          <li><b>A caixinha sempre mostra o que vai acontecer.</b> Desmarcar um item que a regra cobre vira "exceção" (nunca vende); marcar um raro vira "marcado". Não existe terceiro estado escondido.</li>
+          <li><b>Raros e pedras continuam opt-in</b>: Pinsir Horn, Scythe, Helix Fossil, Lizard Tail e as stones só vendem se você marcar, como hoje. O que a regra não cobre fica em "Fica" com ⚠.</li>
+          <li><b>Item novo de daily/guild/invasão entra sozinho</b> se for loot comum. Era o problema de origem: a conta muda de hunt e ninguém marca o drop novo.</li>
+          <li>Regra desligada = a variante 1, sem perder as marcações.</li>
+        </ol>
+        <p class="dn-help" style="color:var(--pg-muted)">Config: <code>sellRule: true</code>, <code>sellItems = { id: { keep } }</code> (marcados na mão) e <code>sellNever: [ids]</code> (exceções). A lista da família e os itens que outro módulo segura vencem a regra sempre.</p>
+        <div class="q">
+          <p><b>Minha recomendação:</b> a variante 2. A lista grande deixa de ser um problema porque você não precisa clicar nela: a regra marca o comum, a busca e os grupos servem para conferir e abrir exceções. Para as 4 contas a migração é automática: a união dos perfis vira os "marcados", o resto do loot comum entra pela regra.</p>
+          <p>Em cima do que está aqui, falta você decidir: (1) a regra nasce <b>ligada</b> nas contas que já vendem hoje? (2) "Novos" merece um aviso no Discord ("caiu item que você nunca marcou") ou só a etiqueta? (3) o "manter" vira um campo só quando marcado (como aqui) ou um padrão global "manter N de tudo"?</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+// Mochila de exemplo: ids, nomes, categoria, preço do NPC e flag `rare` reais do items.json; quantidades inventadas.
+// `hold` = motivo pelo qual nem a lista nem a regra podem vender (família, módulos, cadeado).
+const BAG = [
+  { id: 39, name: 'Earth Ball', cat: 'loot', price: 1, qty: 18240 },
+  { id: 112, name: 'Sandbag', cat: 'loot', price: 15, qty: 6210 },
+  { id: 120, name: 'Small Stone', cat: 'loot', price: 1, qty: 15300 },
+  { id: 126, name: 'Stone Orb', cat: 'loot', price: 17, qty: 2890 },
+  { id: 11560, name: 'Lizard Tail', cat: 'loot', price: 450, qty: 44, rare: true },
+  { id: 16, name: 'Bug Gosme', cat: 'loot', price: 1, qty: 1936 },
+  { id: 23, name: 'Cocoon Stone', cat: 'stone', price: 5000, qty: 4754, rare: true },
+  { id: 41, name: 'Electric Box', cat: 'loot', price: 20, qty: 2 },
+  { id: 44, name: 'Enchanted Gem', cat: 'loot', price: 1, qty: 5 },
+  { id: 77, name: 'Leaves', cat: 'loot', price: 9, qty: 2 },
+  { id: 97, name: 'Pinsir Horn', cat: 'loot', price: 500, qty: 425, rare: true },
+  { id: 102, name: 'Pot of Moss Bug', cat: 'loot', price: 8, qty: 966 },
+  { id: 113, name: 'Screw', cat: 'loot', price: 1, qty: 30 },
+  { id: 114, name: 'Scythe', cat: 'loot', price: 500, qty: 12, rare: true },
+  { id: 117, name: 'Seed', cat: 'loot', price: 1, qty: 2 },
+  { id: 131, name: 'Straw', cat: 'loot', price: 1, qty: 4 },
+  { id: 140, name: 'Water Gem', cat: 'loot', price: 1, qty: 4 },
+  { id: 141, name: 'Water Pendant', cat: 'loot', price: 10, qty: 1 },
+  { id: 109, name: 'Rock Stone', cat: 'stone', price: 5000, qty: 318, rare: true },
+  { id: 110, name: 'Rubber Ball', cat: 'loot', price: 1, qty: 8199, novo: true },
+  { id: 9, name: 'Bird Beak', cat: 'loot', price: 30, qty: 1120, novo: true },
+  { id: 48, name: 'Feather', cat: 'loot', price: 8, qty: 3340, novo: true },
+  { id: 59251, name: 'crimson feather', cat: 'loot', price: 40, qty: 87, novo: true },
+  { id: 67, name: 'Helix Fossil', cat: 'loot', price: 500, qty: 61, rare: true },
+  { id: 4, name: 'Bag of Pollen', cat: 'loot', price: 40, qty: 410 },
+  { id: 57, name: 'Fur', cat: 'loot', price: 13, qty: 2210 },
+  { id: 70, name: 'Ice Orb', cat: 'loot', price: 33, qty: 190 },
+  { id: 123, name: 'Snowball', cat: 'loot', price: 1, qty: 7730 },
+  { id: 38, name: 'Fire Tail', cat: 'loot', price: 12, qty: 540 },
+  { id: 46, name: 'Fairy Dust', cat: 'loot', price: 3, qty: 1260 },
+  { id: 54, name: 'Fox Fur', cat: 'loot', price: 25, qty: 96 },
+  { id: 90, name: 'Magma Core', cat: 'loot', price: 60, qty: 33 },
+  { id: 101, name: 'Poison Sting', cat: 'loot', price: 2, qty: 3020 },
+  { id: 118, name: 'Shell', cat: 'loot', price: 6, qty: 440 },
+  { id: 2380, name: 'Dragon Scale', cat: 'loot', price: 1200, qty: 3, rare: true },
+  { id: 11515, name: 'Spore Pouch', cat: 'loot', price: 90, qty: 211 },
+  { id: 59218, name: 'molten feather', cat: 'loot', price: 40, qty: 12 },
+  { id: 59195, name: 'Rare Pokémon Picture', cat: 'misc', price: 0, qty: 1, hold: 'NPC não compra' },
+  { id: 240, name: 'Rocket Plans', cat: 'misc', price: 0, qty: 36, hold: 'invasão (o jogo não deixa)' },
+  { id: 70000, name: 'Bronze Boss Token', cat: 'misc', price: 1500, qty: 97, hold: 'Auto Boss' },
+  { id: 5001, name: 'Devoted Token', cat: 'clan', price: 200, qty: 14, hold: 'lista da família' },
+  { id: 5002, name: 'Strange Pheromone', cat: 'misc', price: 300, qty: 7, hold: 'lista da família' },
+  { id: 5003, name: 'Bronze Dimensional Key', cat: 'misc', price: 0, qty: 2, hold: 'lista da família' },
+  { id: 201, name: 'Great Potion', cat: 'heal', price: 10, qty: 200 },
+  { id: 205, name: 'Revive', cat: 'revive', price: 50, qty: 10 },
+  { id: 2, name: 'Great Ball', cat: 'ball', price: 100, qty: 5100 },
+  { id: 300, name: 'TM Thunderbolt', cat: 'tm', price: 2500, qty: 1 },
+  { id: 400, name: 'Oran Berry', cat: 'berry', price: 2, qty: 420 },
+];
+// O que o usuário já tinha marcado nos perfis (união) — vira a lista "marcado na mão" nas duas variantes.
+const MARKED = new Set([39, 112, 120, 126, 11560, 16, 23, 41, 44, 77, 97, 102, 113, 114, 117, 131, 140, 141, 109, 110, 9, 48, 59251]);
+const fmt = (n) => Number(n).toLocaleString('pt-BR');
+const norm = (s) => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+const isCommonLoot = (i) => i.cat === 'loot' && i.rare !== true;
+const warning = (i) => i.cat === 'stone' ? 'pedra (Stone Researcher)' : i.cat !== 'loot' ? `categoria ${i.cat}` : i.rare ? 'raro' : null;
+
+function mount(root, opts) {
+  const $ = (sel) => root.querySelector(sel);
+  const state = { on: true, rule: Boolean(opts.rule), items: new Map([...MARKED].map(id => [id, { keep: 0 }])), never: new Set(), filtro: 'tudo', busca: '', ordem: 'valor', open: { sell: true, keep: false } };
+  const decision = (i) => {
+    if (i.hold) return { sells: false, why: i.hold, tag: null, locked: true };
+    if (state.items.has(i.id)) return { sells: true, why: null, tag: state.rule ? 'marcado' : null, keep: state.items.get(i.id).keep };
+    if (state.rule && isCommonLoot(i)) {
+      if (state.never.has(i.id)) return { sells: false, why: null, tag: 'exceção' };
+      return { sells: true, why: null, tag: 'regra', keep: 0 };
+    }
+    return { sells: false, why: null, tag: null };
+  };
+  const visible = () => {
+    const q = norm(state.busca.trim());
+    let list = BAG.filter(i => !q || norm(i.name).includes(q));
+    if (state.filtro === 'loot') list = list.filter(isCommonLoot);
+    if (state.filtro === 'atencao') list = list.filter(i => !i.hold && warning(i));
+    if (state.filtro === 'novos') list = list.filter(i => i.novo);
+    const key = state.ordem === 'nome' ? (a, b) => a.name.localeCompare(b.name) : state.ordem === 'qtd' ? (a, b) => b.qty - a.qty : (a, b) => b.qty * b.price - a.qty * a.price;
+    return list.sort(key);
+  };
+  function setChecked(i, on) {
+    if (i.hold) return;
+    if (on) { state.never.delete(i.id); if (!(state.rule && isCommonLoot(i))) state.items.set(i.id, { keep: 0 }); }
+    else { state.items.delete(i.id); if (state.rule && isCommonLoot(i)) state.never.add(i.id); }
+  }
+  function row(i) {
+    const d = decision(i);
+    const w = warning(i);
+    const extra = `×${fmt(i.qty)} · ${fmt(i.price)} g`;
+    if (d.locked) return `<div class="dn-item locked" title="🔒 ${d.why}"><span>🔒</span><span class="nm">${i.name} <span class="q">${extra}</span></span><span class="why">${d.why}</span></div>`;
+    const tag = d.tag ? `<span class="t ${d.tag === 'regra' ? 'regra' : d.tag === 'exceção' ? 'exc' : ''}">${d.tag}</span>` : '';
+    const novo = i.novo ? '<span class="t novo">novo</span>' : '';
+    const keep = d.sells && state.items.has(i.id) ? (state.items.get(i.id).keep || 0) : 0;
+    return `<label class="dn-item${d.sells ? ' on' : ''}" data-id="${i.id}">
+      <input type="checkbox" ${d.sells ? 'checked' : ''}>
+      <span class="nm">${i.name} <span class="q">${extra}</span>${w ? ` <span class="w" title="Atenção: ${w}">⚠ ${w}</span>` : ''}${tag}${novo}</span>
+      <span class="keep" title="Quantidade que fica na mochila">manter <input class="dn-input" type="number" min="0" step="1" value="${keep}"></span>
+    </label>`;
+  }
+  function render() {
+    const list = visible();
+    const sells = list.filter(i => decision(i).sells), keeps = list.filter(i => !decision(i).sells);
+    const allSells = BAG.filter(i => decision(i).sells);
+    const gold = allSells.reduce((s, i) => s + Math.max(0, i.qty - (decision(i).keep || 0)) * i.price, 0);
+    const total = allSells.reduce((s, i) => s + Math.max(0, i.qty - (decision(i).keep || 0)), 0);
+    $('[data-role="resumo"]').textContent = state.on ? `próxima viagem: ${allSells.length} itens (${fmt(total)} un., ~${fmt(gold)} gold)` : `desligado · ${allSells.length} itens marcados`;
+    const grp = (cls, title, items, open, empty) => `<div class="grp ${cls}${open ? ' open' : ''}" data-grp="${cls}"><h4><span class="chev">▶</span>${title} <span class="n">(${items.length}${items.length !== (cls === 'sell' ? allSells.length : BAG.length - allSells.length) ? ` de ${cls === 'sell' ? allSells.length : BAG.length - allSells.length}` : ''})</span>${cls === 'sell' ? `<span class="g">~${fmt(gold)} g</span>` : ''}</h4><div class="rows">${items.length ? items.map(row).join('') : `<div class="empty">${empty}</div>`}</div></div>`;
+    $('[data-role="grupos"]').innerHTML = grp('sell', '✔ Vende', sells, state.open.sell, 'Nada marcado com esse filtro.') + grp('keep', 'Fica na mochila', keeps, state.open.keep || Boolean(state.busca) || state.filtro !== 'tudo', 'Tudo que está visível vai ser vendido.');
+    for (const h of root.querySelectorAll('.grp > h4')) h.onclick = () => { const g = h.parentElement; state.open[g.dataset.grp] = !g.classList.contains('open'); render(); };
+    for (const lab of root.querySelectorAll('.dn-item[data-id]')) {
+      const i = BAG.find(x => x.id === Number(lab.dataset.id));
+      lab.querySelector('input[type="checkbox"]').addEventListener('change', (e) => { setChecked(i, e.target.checked); render(); });
+      const k = lab.querySelector('.keep input');
+      k.addEventListener('click', (e) => e.stopPropagation());
+      k.addEventListener('input', () => { if (!state.items.has(i.id)) state.items.set(i.id, { keep: 0 }); state.items.get(i.id).keep = Math.max(0, Number(k.value) || 0); $('[data-role="resumo"]').textContent = ''; });
+      k.addEventListener('change', render);
+    }
+  }
+  $('[data-role="on"]').addEventListener('change', (e) => { state.on = e.target.checked; render(); });
+  const r = $('[data-role="regra"]');
+  if (r) r.addEventListener('change', (e) => { state.rule = e.target.checked; render(); });
+  $('[data-role="busca"]').addEventListener('input', (e) => { state.busca = e.target.value; render(); });
+  $('[data-role="ordem"]').addEventListener('change', (e) => { state.ordem = e.target.value; render(); });
+  for (const c of root.querySelectorAll('.fchip')) c.addEventListener('click', () => { state.filtro = c.dataset.f; for (const o of root.querySelectorAll('.fchip')) o.setAttribute('aria-pressed', String(o === c)); render(); });
+  $('[data-role="marcar"]').addEventListener('click', () => { for (const i of visible()) setChecked(i, true); render(); });
+  $('[data-role="desmarcar"]').addEventListener('click', () => { for (const i of visible()) setChecked(i, false); render(); });
+  render();
+}
+mount(document.getElementById('p-a'), { rule: false });
+mount(document.getElementById('p-b'), { rule: true });
+</script>
+</html>

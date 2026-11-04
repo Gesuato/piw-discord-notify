@@ -42,7 +42,8 @@ Pokémon, usar o Mercado Global nem o Depot **durante a hunt**. Por isso toda ve
 
 | O quê | Como | Quando |
 |---|---|---|
-| Itens (drops marcados) | viagem → `GET /api/game/depot` + `GET /api/game/item/lock` + `POST /api/game/shop/sell` | vencido o intervalo (10–15 min sorteado, configurável) |
+| Mochila (lista do bloco "Mochila" e carga da viagem, v3.55.0) | `inv-get` → frame `inventory` | 4,5 s após o socket, a cada 5 min com a venda ligada, ao abrir o painel e no botão "Ler mochila" (mínimo 20 s entre pedidos); `field-kill` soma os drops até o próximo frame |
+| Itens (regra "todo drop comum" + marcados − exceções, v3.55.0) | viagem → `GET /api/game/depot` + `GET /api/game/item/lock` + `POST /api/game/shop/sell` (decisão por item na cidade, pela mochila real) | vencido o intervalo (10–15 min sorteado, configurável) ou de carona em qualquer viagem com algo a vender |
 | Pedras de evolução marcadas (v3.54.0) | mesma viagem, depois do Mark → `set-city shopping` (se a viagem foi a outra cidade) + `GET /api/game/flint` + `POST /api/game/flint/sell { itemId, qty }` por pedra + `inv-get` | junto com os itens (o Mark não compra pedras; o Stone Researcher fica só no Shopping) |
 | Pokémon fora do time | viagem → `POST /api/game/pokemon/sell` (lotes de 50; lote recusado vira um por um) | vencido o intervalo (10–15 min sorteado, configurável) |
 | Catálogo de itens | `GET /game/items.json` (público) | uma vez por carga |

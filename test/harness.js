@@ -380,6 +380,7 @@ function loadTripModule(cfg, init) {
         lastSocket: { dispatchEvent: (ev) => { state.nudges.push(JSON.parse(ev.data)); if (state.onTeleport) state.onTeleport(); return true; } },
         MessageEvent: class { constructor(type, i) { this.type = type; this.data = i.data; } },
         sellWantedNow: () => init.wantedNow || [],
+        sellCandidates: () => (init.wantedNow || []).map(id => ({ itemId: id, qty: 1, name: 'x', price: 1 })),   // v3.55.0: carga da viagem pela mochila lida
         huntLoot: new Map((init.wantedNow || []).map(id => [id, { name: 'x', qty: 1 }])),
         pokeSellCandidates: () => init.pokeCands || [],
         pokeSellListUnread: () => Boolean(init.pokesUnread),
@@ -1506,9 +1507,11 @@ function loadMarketModule(cfg, init) {
     return { api, state, cfg, clock };
 }
 
-// Extrai o módulo "Venda automática de drops" (v3.54.0: Mark + Stone Researcher) e o executa com stubs: `init.api(url, opts)` responde
-// ao depot, aos cadeados, ao `POST /shop/sell`, ao `GET /flint` e ao `POST /flint/sell` (`state.calls` guarda tudo); `init.items` é o
-// catálogo público; `init.city` é a cidade da viagem (`tripCity`); `state.sent` guarda o que foi ao socket (`set-city`, `inv-get`).
+// Extrai o módulo "Venda automática de drops" (v3.55.0: a mochila inteira — regra "todo drop comum" + marcados + exceções; v3.54.0:
+// Mark + Stone Researcher) e o executa com stubs: `init.api(url, opts)` responde ao depot, aos cadeados, ao `POST /shop/sell`, ao
+// `GET /flint` e ao `POST /flint/sell` (`state.calls` guarda tudo); `init.items` é o catálogo público; `init.city` é a cidade da viagem
+// (`tripCity`); `state.sent` guarda o que foi ao socket (`set-city`, `inv-get`); `init.familyListEntry`/`init.clanKeepsItem` fazem o papel
+// dos módulos que seguram item; `state.store` é o localStorage (ids já vistos na mochila); `clock.now` é o relógio.
 const SELL_START = '    // ---- Venda automática de drops';
 const SELL_END = '    // ---- Venda automática de Pokémon';
 
@@ -1518,18 +1521,24 @@ function loadSellModule(cfg, init) {
     const a = src.indexOf(SELL_START), b = src.indexOf(SELL_END);
     if (a < 0 || b < 0) throw new Error('marcadores do módulo de venda não encontrados no script');
     const mod = src.slice(a, b);
-    const state = { calls: [], hooks: [], logs: [], sent: [], saves: 0 };
+    const clock = { now: Date.now() };
+    const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
+    const state = { calls: [], hooks: [], logs: [], sent: [], saves: 0, store: Object.assign({}, init.store || {}) };
     const normalize = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
     const noop = () => {};
     const ctx = {
         cfg,
         gameApi: (url, opts) => { state.calls.push({ url, opts, body: opts && opts.body ? JSON.parse(opts.body) : null }); return Promise.resolve().then(() => (init.api ? init.api(url, opts) : {})); },
+        localStorage: { getItem: (k) => (k in state.store ? state.store[k] : null), setItem: (k, v) => { state.store[k] = String(v); }, removeItem: (k) => { delete state.store[k]; } },
+        familyListEntry: init.familyListEntry || (() => null),
+        clanKeepsItem: init.clanKeepsItem || (() => false),
+        Date: FakeDate,
         fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({ items: init.items || [] }) }),
         logEvent: (k, d) => state.logs.push([k, d]),
         postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', color: p.embeds?.[0]?.color, meta: m }); return Promise.resolve(true); },
         playerName: () => 'Teste',
         saveCfg: () => { state.saves++; },
-        sendGame: (m) => { state.sent.push(m); },
+        sendGame: (m) => { state.sent.push(m); return true; },
         withoutPokeGridSellGuard: (fn) => fn(),
         tripCity: () => init.city || 'cerulean',
         normalize,
@@ -1539,11 +1548,12 @@ function loadSellModule(cfg, init) {
     };
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
-            runSellCycle, sellWantedNow, setHunt, handleFieldKill, protectedReason, sellWarning, isStoneItem, sellStonesAtResearcher, loadItemsCatalog,
-            get huntLoot() { return huntLoot; }, get huntSlug() { return huntSlug; },
+            runSellCycle, sellWantedNow, sellCandidates, sellDecision, sellRuleCovers, sellRuleMaxPrice, sellHoldReason, sellWouldSell,
+            sellOnInventory, sellRequestBag, sellBagTick, setHunt, handleFieldKill, protectedReason, sellWarning, isStoneItem, sellStonesAtResearcher, loadItemsCatalog,
+            get sellBag() { return sellBag; }, get sellBagNew() { return sellBagNew; }, get sellBagAt() { return sellBagAt; }, get huntSlug() { return huntSlug; },
         };`);
     const api = factory(...Object.values(ctx));
-    return { api, state, cfg };
+    return { api, state, cfg, clock };
 }
 
 module.exports = { loadSellModule, loadMarketModule, loadProfModule, loadInvasionModule, loadGymModule, loadHoldModule, loadBossModule, loadHumanModule, loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

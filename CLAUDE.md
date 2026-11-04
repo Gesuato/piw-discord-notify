@@ -188,7 +188,7 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   da comida do breeding na família falhou com "não está disponível durante a hunt"): antes de cada tarefa `tripInHunt()` = `tripLeaveHunt()`
   de novo (log `viagem-hunt-no-meio`); falha do breeding "durante a hunt" tenta em 3 min (`BREED_HUNT_RETRY_MS`), não em 30. No harness da
   viagem `leave-hunt` zera a hunt e `switchHunt` a preenche, como no script. `runSellCycle(manual, wantedIds, huntName)`
-  recebe a lista congelada (na cidade `huntSlug` é null e `huntLoot` zera). NUNCA chamar `runSellCycle`,
+  decide NA CIDADE pela mochila real (`GET /depot` + `sellDecision`; `wantedIds` null = tudo, v3.55.0 — não existe mais lista congelada). NUNCA chamar `runSellCycle`,
   `runPokeSellCycle` ou `autoBuyBalls` direto de dentro da hunt de novo. Cidades: `CITY_SLUGS` (lista `o4` do bundle).
   Relógio ÚNICO (v3.15.0): `tripEveryMin`/`tripEveryMaxMin` (`drawTripDelay`/`restartTripCycle`/`tripDueAt`); vencido,
   `tripTick` leva tudo que `tripAugment` achar, ou só sorteia o próximo horário. Não existem mais intervalos próprios de
@@ -197,14 +197,27 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   Chamadas por aba: `docs/chamadas-por-aba.md`. v3.45.1: pedido urgente que não sai (cura, Auto Boss, troca de hunt/líder, captura esperando
   detalhes, intervalo mínimo) vira log `viagem-espera { tarefas, motivo, pedidoHa }` 1x/5 min (`tripBlockedReason`) e aparece no título da
   faixa de viagem — "pedi a viagem e nada acontece" se lê direto no log.
-- Regra de venda (ver `protectedReason` e `sellWarning`): desde a v3.1.0, a pedido do usuário, só preço 0
-  (NPC não compra) e cadeado do jogo bloqueiam; categoria fora de `loot`, `rare` e nome com Pheromone/Stone
-  viram aviso ⚠️ na lista, mas podem ser marcados. Lista branca por item em `cfg.sellItems`. Não voltar a
-  bloquear sem o usuário pedir.
-- `cfg.sellItems` é a lista ATIVA; `cfg.sellProfiles[slug]` guarda a lista de cada hunt e sobrescreve a ativa em
-  `setHunt()` (ver `loadHuntProfile`/`saveHuntProfile`). Desde a v3.20.0 a lista do painel nasce com a tabela de drops do
-  monstro (`huntLootTable`, `creatures.json`) e o campo "Hunt" edita o perfil de outra hunt (`readForm` devolve
-  `sellItems` + `sellProfiles`; rascunhos por hunt em `sellDrafts`). Desde a v3.15.0 os perfis não têm mais intervalo próprio.
+- Venda de drops pela MOCHILA inteira (v3.55.0, aba Venda → bloco "Mochila"; pedido do usuário em 04/11/2026: "muito item ficando
+  acumulado no inventário, as dailys etc. trocam de hunt"; mock escolhido em `docs/mockup-venda-mochila.html`, variante 2). Até a
+  v3.54.0 a lista era POR HUNT (`sellProfiles[slug]`) e a viagem só levava o que tinha caído na hunt atual desde a entrada (`huntLoot`,
+  zerado a cada troca e recarga): hunt da daily sem perfil = viagem sem a tarefa de itens (contas 3 e 4 no log de 04/11/2026). Agora:
+  `cfg.sellItems` = marcados NA MÃO (uma lista por conta, `{ id: { keep } }`), `cfg.sellRule` (padrão ligada) = "vender todo drop
+  comum" (`sellRuleCovers`: categoria `loot`, `rare !== true`, preço > 0, sem feromônio — Strange Pheromone é loot NÃO raro a 1.000.000 —
+  e preço ≤ `cfg.sellRuleMaxPrice`, padrão 500, 0 = sem teto) e `cfg.sellNever` = exceções (a regra cobriria, o usuário desmarcou).
+  `sellDecision(id, item, d)` → `{ sells, why, tag:'marcado'|'regra'|'exceção'|null, keep, locked }` é a ÚNICA fonte (painel, carga da
+  viagem, venda na cidade, guardar, painel do clã via `sellWouldSell`). `sellHoldReason` vence qualquer marcação: preço 0, lista da
+  família (`familyListEntry`), clã/profissão/guild/farm/mercado/boss/invasão (`*KeepsItem`, com `typeof`). Mochila NA HUNT pelo frame
+  `inventory` (`sellOnInventory`; `sellRequestBag` 4,5 s após o socket, `sellBagTick` a cada 5 min com a venda ligada, botão "Ler
+  mochila", ao abrir o painel; mínimo 20 s entre pedidos); `handleFieldKill` soma os drops até o próximo frame; `sellCandidates(d)` =
+  o que a próxima viagem vende (`tripLoad.drops`, `sellWantedNow`). Etiqueta "novo" = id que nunca esteve em
+  `localStorage.pgDiscordNotifyBagSeen` (zera no Salvar). Painel: busca, ordem (valor/quantidade/nome), chips Tudo/Loot/⚠ Atenção/Novos,
+  "Marcar visíveis"/"Desmarcar" (só nas linhas visíveis, nunca nas protegidas), grupos "✔ Vende" (aberto) e "Fica na mochila"
+  (recolhido); rascunho em `sellDraft` (marcados + exceções), lido por `sellFormCfg()` no `readForm` — a busca NÃO marca "não salvo" e
+  Enter nela não salva. Desmarcar item da regra = exceção; marcar item fora da regra = marcado; "manter" > 0 em item da regra = vira
+  marcado (0 = volta para a regra). `migrateCfg`: perfis antigos viram a união (maior reserva) e somem. Regras fixas desde a v3.1.0:
+  só preço 0 e cadeado do jogo bloqueiam; raro, pedra, outra categoria e nome sensível só ganham ⚠ (`sellWarning`) e podem ser
+  marcados — não voltar a bloquear sem o usuário pedir. Teste: `node test/sell.test.js`; painel no `test/ui.smoke.js` (fase assíncrona,
+  depois do catálogo).
 - Referências: https://github.com/edulanzarin/piwdex (`src/lib/robo/motor/sessao.ts`, cases
   `catch-result`/`pending`) e https://github.com/luishferreira/poke-standalone-scripts (`AGENTS.md`).
 - Venda de Pokémon (v3.11.0, aba Venda → "Pokémon fora do time"): desde a v3.12.0 UM limite por raridade em
@@ -397,7 +410,7 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   próxima e `farmTick` na hora; lista toda fechada → volta para `farmFrom`. 5ª rota excludente do Salvar (`farmOn`); espera viagem,
   cura, troca, líder e Daily Kill como a guild; `farmOnHuntChange` reentra 8 s depois; hunt inexistente ou `farmHuntFailed` sem outra
   hunt da espécie = etapa pulada na sessão (`farmSkipped`, aviso) e o Salvar/"Zerar contagem" (`farmReset`) tenta de novo. Itens da
-  lista ficam fora da venda de drops e do guardar (`farmKeepsItem`, por nome no `items.json`/`huntLoot`). Botões "Pular item atual"
+  lista ficam fora da venda de drops e do guardar (`farmKeepsItem`, por nome no `items.json`). Botões "Pular item atual"
   (got = qty, persistido) e "Zerar contagem". Logs `farm-alvo`, `farm-espera`, `farm-etapa`, `farm-pulada`, `farm-volta`,
   `farm-reentrada`, `farm-hunt-falhou`, `farm-aviso`, `farm-zerado`. Teste: `node test/farm.test.js` (`loadFarmModule`).
 - Guild (patch 1.9 do jogo, 09/10/2026; v3.30.0 = farejador, ROADMAP #32; protocolo completo em `docs/mensagens-do-jogo.md` →
@@ -671,7 +684,7 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   na tela (rascunho se houver alteração não salva) + `_drops` (ids de `pgDiscordNotifyDrops`); Importar registra
   `config-importada`/`config-import-falhou` no log e avisa quando a config veio de versão mais nova que a do painel
   (painel não recarregado). `test/config.roundtrip.js` exige que o fixture cubra TODA chave do cfg: feature nova com
-  campo novo precisa entrar lá. v3.20.3: `sellProfiles` SOMAM no import (a que veio ganha na mesma hunt);
+  campo novo precisa entrar lá. v3.55.0: `sellProfiles` de um export antigo viram a lista única no `migrateCfg` (o import não soma mais: a lista que veio substitui);
   `test/config.live.js` importa num painel vivo (em hunt, com perfis próprios). Cada PC tem a própria cópia do script no
   PokeGrid: "não importou" em outro PC costuma ser painel sem Atualizar/⟳ (a versão aparece no topo do 🔔).
 - Colar com o botão direito (v3.15.1): o webview do PokeGrid não tem menu de contexto e o jogo captura teclas, então
@@ -709,7 +722,9 @@ para implementar uma delas. Ao concluir, marcar o status no ROADMAP e seguir o f
   `node test/clan.test.js` (`loadClanModule`: `// ---- Clã: subir de rank` até `// ---- Viagem à cidade`),
   `node test/dailyauto.test.js` (daily sozinha, mesmo `loadDailyModule` com `init.team`/`init.huntCatalog`/`init.store`) e
   `node test/balls.test.js` (`loadBallsModule`: módulo de bolas + `checkBallStock`), `node test/supply.test.js`
-  (`loadSupplyModule`: `// ---- Refil de poções e revives` até `// ---- Mercado Global`), `node test/market.test.js` (`loadMarketModule`:
+  (`loadSupplyModule`: `// ---- Refil de poções e revives` até `// ---- Mercado Global`), `node test/sell.test.js` (`loadSellModule`:
+  `// ---- Venda automática de drops` até `// ---- Venda automática de Pokémon`; decisão por item, migração dos perfis, mochila pelo frame
+  `inventory`, venda na cidade com Mark + Stone Researcher; `init.familyListEntry`/`init.clanKeepsItem` seguram itens), `node test/market.test.js` (`loadMarketModule`:
   `// ---- Mercado Global` até `// ---- Venda automática de drops`; `init.api` responde GET lista/POST compra, `init.items` catálogo), `node test/heal.test.js`
   (`loadHealModule`: `// ---- Cura na Joy` até `// ---- Volta da cidade`), `node test/gift.test.js` (`loadGiftModule`:
   `// ---- Daily Gift` até `// ---- Clã: subir de rank`), `node test/idle.test.js` (`loadIdleModule`:

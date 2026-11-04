@@ -4,6 +4,7 @@ try { ({ JSDOM } = require('jsdom')); } catch { console.log('PULADO config.live:
 const fs = require('fs');
 const src = fs.readFileSync(require('path').join(__dirname, '..', 'piw-discord-notify.user.js'), 'utf8');
 const falhas = []; const ok = (c, m) => { if (!c) falhas.push(m); };
+const sameItems = (a, b) => JSON.stringify(Object.entries(a || {}).sort()) === JSON.stringify(Object.entries(b || {}).sort());   // v3.55.0: lista única (ordem das chaves não importa)
 function boot(cfg) {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://poke.idleworld.online/play', runScripts: 'outside-only', pretendToBeVisual: true });
   const w = dom.window;
@@ -38,20 +39,20 @@ setTimeout(() => {
   d.querySelector('#pg-dn-import-apply').click();
   const s1 = JSON.parse(wB.localStorage.getItem('pgDiscordNotifyCfg'));
   console.log('msg:', d.querySelector('#pg-dn-msg').textContent.slice(0, 160));
-  ok(s1.sellEnabled && JSON.stringify(s1.sellItems) === JSON.stringify(A.sellProfiles.larvitar.items), 'a hunt atual (larvitar) usa a lista importada dela');
-  ok(s1.sellProfiles.pidgey && s1.sellProfiles.geodude && s1.sellProfiles.omanyte, 'perfis somam: pidgey (daqui) + geodude/omanyte (vieram)');
+  ok(s1.sellEnabled && sameItems(s1.sellItems, { 7: { keep: 3 }, 39: { keep: 0 }, 120: { keep: 10 } }), 'lista única importada = união dos perfis antigos da conta A (maior reserva vence): ' + JSON.stringify(s1.sellItems));
+  ok(!('sellProfiles' in s1) && s1.sellRule === true, 'sem perfis por hunt no painel; regra dos drops comuns ligada');
   ok((s1.depositFamilyList || []).length === 2 && s1.depositItems === 'depot' && s1.depositPokes === 'family', 'guardar na cidade veio');
-  console.log('salvo logo após importar: sellEnabled', s1.sellEnabled, 'ativa', JSON.stringify(s1.sellItems), 'perfis', JSON.stringify(s1.sellProfiles), 'lista', (s1.depositFamilyList || []).length);
+  console.log('salvo logo após importar: sellEnabled', s1.sellEnabled, 'marcados', JSON.stringify(s1.sellItems), 'regra', s1.sellRule, 'lista', (s1.depositFamilyList || []).length);
   d.querySelector('.dn-tab[data-tab=venda]').click();
   const marcados = [...d.querySelectorAll('#pg-dn-sell-list .pg-dn-sell-chk:checked')].map(c => c.closest('[data-item-id]').dataset.itemId);
-  console.log('tela venda: hunt', d.querySelector('#pg-dn-sell-hunt').textContent.trim().slice(0, 60), '| marcados', marcados, '| vender sozinho', d.querySelector('#pg-dn-sell').checked, '| guardar', d.querySelector('#pg-dn-dep-items').value, d.querySelector('#pg-dn-dep-pokes').value, '| família:', d.querySelector('#pg-dn-famlist').textContent);
-  ok(JSON.stringify(marcados.sort()) === JSON.stringify(['39', '7']) && d.querySelector('#pg-dn-sell').checked, 'tela da Venda mostra as marcações importadas');
+  console.log('tela venda: hunt', d.querySelector('#pg-dn-sell-status').textContent.trim().slice(0, 60), '| marcados', marcados, '| vender sozinho', d.querySelector('#pg-dn-sell').checked, '| guardar', d.querySelector('#pg-dn-dep-items').value, d.querySelector('#pg-dn-dep-pokes').value, '| família:', d.querySelector('#pg-dn-famlist').textContent);
+  ok(JSON.stringify(marcados.sort()) === JSON.stringify(['120', '39', '7']) && d.querySelector('#pg-dn-sell').checked, 'tela da Venda mostra as marcações importadas (mesmo sem a mochila lida): ' + marcados);
   ok(d.querySelector('#pg-dn-dep-items').value === 'depot' && /Devoted Token/.test(d.querySelector('#pg-dn-famlist').textContent), 'tela do Guardar mostra o que veio');
   wB.__recv({ type: 'field-kill', speciesName: 'Larvitar', loot: [{ itemId: 39, name: 'Earth Ball', qty: 2 }] });
   d.querySelector('#pg-dn-save').click();
   const s2 = JSON.parse(wB.localStorage.getItem('pgDiscordNotifyCfg'));
-  console.log('depois de um drop e Salvar: ativa', JSON.stringify(s2.sellItems), 'perfis', JSON.stringify(s2.sellProfiles), 'lista', (s2.depositFamilyList || []).length, s2.depositItems, s2.depositPokes);
-  ok(JSON.stringify(s2.sellProfiles) === JSON.stringify(s1.sellProfiles) && (s2.depositFamilyList || []).length === 2, 'drop + Salvar depois do import não perdem nada');
+  console.log('depois de um drop e Salvar: marcados', JSON.stringify(s2.sellItems), 'lista', (s2.depositFamilyList || []).length, s2.depositItems, s2.depositPokes);
+  ok(sameItems(s2.sellItems, s1.sellItems) && !('sellProfiles' in s2) && (s2.depositFamilyList || []).length === 2, 'drop + Salvar depois do import não perdem nada');
   if (falhas.length) { console.error('FALHOU config.live: ' + falhas.join(' | ')); process.exit(1); }
   console.log('OK config.live — import num painel vivo (em hunt, com perfis próprios, drop e Salvar depois)');
   process.exit(0);
