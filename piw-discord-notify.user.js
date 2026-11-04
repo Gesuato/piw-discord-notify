@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.55.0
+// @version      3.55.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.55.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.55.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -1524,6 +1524,11 @@
     const SELL_RULE_MAX_PRICE_DEFAULT = 500;
     const PROTECTED_NAME = /pherom|feromon|stone|pedra/i;
     const PHEROMONE_NAME = /pherom|feromon/i;
+    // v3.55.1 (pedido do usuário em 04/11/2026: "Strange Pheromone e Bronze Boss Token NUNCA podem ser vendidos automaticamente"):
+    // trava FIXA, acima de qualquer marcação, regra ou lista de ids — por id (items.json de 04/11/2026: 44417 'Strange Pheromone',
+    // loot 1.000.000; 70000 'Bronze Boss Token', loot raro 250.000) e também pelo NOME, caso o id mude ou o item venha só da mochila.
+    const SELL_FIXED_NEVER = { 44417: 'Strange Pheromone', 70000: 'Bronze Boss Token' };
+    const SELL_FIXED_NEVER_NAME = /pherom|feromon|boss\s*token/i;
 
     let huntSlug = null;
     let itemsCatalog = null;        // Map id -> item do catálogo
@@ -1594,6 +1599,7 @@
     function sellHoldReason(id, item, d) {
         d = d || cfg;
         id = Number(id);
+        if (sellFixedNever(id, item)) return 'nunca vende sozinho (trava fixa)';   // v3.55.1: Strange Pheromone e Bronze Boss Token
         const motivo = protectedReason(item);
         if (motivo) return motivo;
         if (typeof familyListEntry === 'function' && familyListEntry(id, item?.name, d)) return 'lista da família';
@@ -1605,6 +1611,11 @@
         if (typeof bossKeepsItem === 'function' && bossKeepsItem(id)) return 'token do Auto Boss';      // v3.43.1
         if (typeof invKeepsItem === 'function' && invKeepsItem(id)) return 'Rocket Plans (invasão)';    // v3.50.0
         return null;
+    }
+    // Trava fixa: por id ou pelo nome (catálogo ou linha da mochila). Nunca configurável.
+    function sellFixedNever(id, item) {
+        if (Object.prototype.hasOwnProperty.call(SELL_FIXED_NEVER, Number(id))) return true;
+        return SELL_FIXED_NEVER_NAME.test(String(item?.name || ''));
     }
     function sellNeverSet(d) { d = d || cfg; return new Set((Array.isArray(d.sellNever) ? d.sellNever : []).map(Number)); }
     // Decisão de UM item: { sells, why, tag:'marcado'|'regra'|'exceção'|null, keep, locked }. `item` = catálogo (ou a linha da mochila).

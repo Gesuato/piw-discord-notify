@@ -15,6 +15,7 @@ const ITEMS = [
     { id: 14876, name: 'Data UFO', category: 'loot', npcPrice: 0 },
     { id: 13115, name: 'Devoted Token', category: 'loot', rare: true, npcPrice: 0 },
     { id: 201, name: 'Great Potion', category: 'heal', npcPrice: 10 },
+    { id: 70000, name: 'Bronze Boss Token', category: 'loot', rare: true, npcPrice: 250000 },
 ];
 const byId = (id) => ITEMS.find(i => i.id === id);
 const INVENTORY = () => [
@@ -73,6 +74,17 @@ function migrate(cfg) {
         r = api.sellDecision(14876, byId(14876), base({ 14876: { keep: 0 } }, { sellRule: true }));
         assert(!r.sells && r.locked && r.why === 'NPC não compra', 'preço 0 nunca, mesmo marcado: ' + JSON.stringify(r));
         assert(api.sellWouldSell(16, d, byId(16)) && !api.sellWouldSell(16, base({}, { sellRule: true, sellEnabled: false }), byId(16)), 'sellWouldSell respeita o liga/desliga');
+    }
+    // 1a) v3.55.1: trava FIXA — Strange Pheromone e Bronze Boss Token nunca vendem sozinhos, nem marcados, nem por lista de ids, nem pelo nome
+    {
+        const { api, state } = loadSellModule(base({ 44417: { keep: 0 }, 70000: { keep: 0 }, 16: { keep: 0 } }, { sellRule: true }), { items: ITEMS, api: apiFor({ inventory: INVENTORY().concat([{ id: 70000, name: 'Bronze Boss Token', quantity: 97, npcPrice: 250000, category: 'loot' }, { id: 99001, name: 'strange pheromone', quantity: 1, npcPrice: 5, category: 'loot' }, { id: 99002, name: 'Silver Boss Token', quantity: 1, npcPrice: 5, category: 'loot' }]) }) });
+        for (const id of [44417, 70000]) { const r = api.sellDecision(id, byId(id)); assert(!r.sells && r.locked && /trava fixa/.test(r.why), `${byId(id).name} marcado continua travado: ` + JSON.stringify(r)); }
+        assert(!api.sellDecision(99001, { id: 99001, name: 'strange pheromone', category: 'loot', npcPrice: 5 }).sells && !api.sellDecision(99002, { id: 99002, name: 'Silver Boss Token', category: 'loot', npcPrice: 5 }).sells, 'pelo nome também (id desconhecido, outra grafia)');
+        assert(!api.sellWouldSell(70000, base({ 70000: { keep: 0 } }), byId(70000)), 'sellWouldSell respeita a trava');
+        const r = await api.runSellCycle(true, [44417, 70000, 16, 99001, 99002], 'magmar');
+        const mark = state.calls.find(c => c.url === '/api/game/shop/sell');
+        assert(mark && JSON.stringify(mark.body.items) === JSON.stringify([{ itemId: 16, qty: 100 }]), 'na cidade, mesmo pedidos por id, só o Bug Wing vai ao Mark: ' + JSON.stringify(mark && mark.body));
+        assert(r.ok && r.total === 100, 'resultado só com o Bug Wing: ' + JSON.stringify(r));
     }
     // 1b) família e módulos seguram o item acima de qualquer marcação
     {

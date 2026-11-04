@@ -216,8 +216,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   Enter nela não salva. Desmarcar item da regra = exceção; marcar item fora da regra = marcado; "manter" > 0 em item da regra = vira
   marcado (0 = volta para a regra). `migrateCfg`: perfis antigos viram a união (maior reserva) e somem. Regras fixas desde a v3.1.0:
   só preço 0 e cadeado do jogo bloqueiam; raro, pedra, outra categoria e nome sensível só ganham ⚠ (`sellWarning`) e podem ser
-  marcados — não voltar a bloquear sem o usuário pedir. Teste: `node test/sell.test.js`; painel no `test/ui.smoke.js` (fase assíncrona,
-  depois do catálogo).
+  marcados — não voltar a bloquear sem o usuário pedir. EXCEÇÃO FIXA (v3.55.1, pedido do usuário em 04/11/2026): Strange Pheromone
+  (44417) e Bronze Boss Token (70000) NUNCA vendem sozinhos — `SELL_FIXED_NEVER` por id + `SELL_FIXED_NEVER_NAME` pelo nome, checado em
+  `sellFixedNever` antes de tudo em `sellHoldReason` (vence marcação, regra e lista de ids). Não tornar configurável. Teste: `node
+  test/sell.test.js` (caso 1a); painel no `test/ui.smoke.js` (fase assíncrona, depois do catálogo).
 - Referências: https://github.com/edulanzarin/piwdex (`src/lib/robo/motor/sessao.ts`, cases
   `catch-result`/`pending`) e https://github.com/luishferreira/poke-standalone-scripts (`AGENTS.md`).
 - Venda de Pokémon (v3.11.0, aba Venda → "Pokémon fora do time"): desde a v3.12.0 UM limite por raridade em

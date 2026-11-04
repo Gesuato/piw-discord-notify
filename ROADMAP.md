@@ -1063,7 +1063,8 @@ cada troca de hunt e recarga) e a lista ativa era o perfil da hunt — na hunt d
 união (maior reserva) e some. **Lógica:** `sellDecision` única (painel, carga da viagem, venda na cidade, guardar, clã); família e
 módulos que seguram item vencem a marcação. **Mensagens:** `inv-get`/`inventory` na hunt; na cidade `GET /depot` + `GET /item/lock` +
 `POST /shop/sell` (+ Stone Researcher para pedras marcadas). **Testes:** `node test/sell.test.js`, `test/ui.smoke.js`, `config.roundtrip`,
-`config.live`.
+`config.live`. **v3.55.1:** trava fixa — Strange Pheromone (44417) e Bronze Boss Token (70000) nunca vendem sozinhos, por id e pelo nome,
+acima de qualquer marcação (pedido do usuário em 04/11/2026).
 
 ## ❌ 10. Config compartilhada entre painéis (descartada)
 
