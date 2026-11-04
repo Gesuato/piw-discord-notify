@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.55.1
+// @version      3.56.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.55.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.56.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -8074,15 +8074,18 @@
     //   derrota). Plano = ginásios abertos SEM insígnia (ou, com `gymRedo`, com bônus em `needWin`) e sem cooldown -> desafiar; bônus
     //   `claimable` (com `gymBonus`) -> resgatar. Com algo no plano pede viagem à cidade (`tripRequest('ginasio')`, e vai de carona em
     //   toda viagem); na cidade `gymCityWork` desafia um a um (modo Insígnia, time atual), relê, resgata os bônus liberados e avisa em
-    //   Alertas (insígnia, derrota com o time do líder, bônus, outfit). Derrota = espera 2 h, dobrando a cada derrota seguida do mesmo
-    //   ginásio (máx. 24 h): o time precisa ficar mais forte, insistir não adianta. Erro = 15 min antes de tentar de novo.
+    //   Alertas (insígnia, derrota com o time do líder, bônus, outfit). Derrota = tenta de novo SÓ 1x por dia (v3.56.0, pedido do usuário em
+    //   03/11/2026, "quando morrer em um ginásio, tentar refazer somente 1 vez por dia"; até a v3.55.1 era 2 h dobrando até 24 h): espera
+    //   fixa de 24 h por ginásio, gravada em `localStorage.pgDiscordNotifyGym` (é da conta, fora do cfg) — a recarga automática do painel
+    //   zerava a memória e o ginásio era desafiado de novo no mesmo dia. Erro = 15 min antes de tentar de novo.
 
     const GYM_URL = '/api/game/gyms';
     const GYM_TICK_MS = 60 * 1000;
     const GYM_POLL_MS = 30 * 60 * 1000;          // relê a janela de meia em meia hora (antes disso só quando um prazo vence)
     const GYM_RETRY_MS = 15 * 60 * 1000;         // espera depois de um erro (leitura, desafio ou resgate)
-    const GYM_LOSS_WAIT_MS = 2 * 60 * 60 * 1000; // espera depois de uma derrota (dobra a cada derrota seguida do mesmo ginásio)
-    const GYM_LOSS_WAIT_MAX_MS = 24 * 60 * 60 * 1000;
+    const GYM_LOSS_WAIT_MS = 24 * 60 * 60 * 1000; // v3.56.0: depois de uma derrota só tenta de novo 1x por dia (espera fixa; antes 2 h dobrando)
+    const GYM_LOSS_KEY = 'pgDiscordNotifyGym';      // derrotas gravadas por conta (fora do cfg): a recarga do painel não pode esquecer a de hoje
+    const GYM_LOSS_KEEP_MS = 7 * 24 * 60 * 60 * 1000; // registro mais velho que isso é descartado na carga
     const GYM_BETWEEN_MS = [1200, 2500];         // entre desafios/resgates ("humano")
     const GYM_BONUS_RETRY_MS = 3000;             // v3.45.2: vitória sem bônus `claimable` na releitura: espera e relê mais uma vez
 
@@ -8094,7 +8097,8 @@
     let gymLast = null;         // { at, desafios:[{ id, city, badge, won, badgeEarned, outfit, defender, npc }], bonus:[{ id, city, name, qty }], falhas:[{ id, city, motivo }] }
     let gymSig = '';
     let gymFieldsLogged = false;
-    const gymLoss = {};         // id -> { at, n }: derrotas seguidas (zera na vitória)
+    const gymLoss = gymLossLoad();   // id -> { at, n }: última derrota e derrotas seguidas (zera na vitória); v3.56.0: fica em localStorage
+    let gymLossLogged = false;       // log `ginasio-derrota-lembrada` 1x por carga (no 1º tique, quando o log já existe)
     let onGymChange = null;     // callback do painel
 
     function gymEnabled(d) { return Boolean((d || cfg).gymEnabled); }
@@ -8132,13 +8136,31 @@
         const perk = bp ? { active: Number(bp.active) || 0, max: Number(bp.max) || 0, xpPct: Number(bp.xpPct) || 0, dropPct: Number(bp.dropPct) || 0 } : null;
         return { gyms, badges, total, regions: raw?.regions && typeof raw.regions === 'object' ? raw.regions : {}, perk };
     }
-    // Quanto falta da espera por derrota do ginásio (0 = pode desafiar).
-    function gymLossWait(id) {
-        const l = gymLoss[id];
-        if (!l) return 0;
-        const w = Math.min(GYM_LOSS_WAIT_MAX_MS, GYM_LOSS_WAIT_MS * Math.pow(2, Math.max(0, l.n - 1)));
-        return Math.max(0, l.at + w - Date.now());
+    // v3.56.0: derrotas gravadas por conta. Sem isso a recarga automática do painel (e o ⟳ do PokeGrid) zerava `gymLoss` e o ginásio
+    // perdido de manhã era desafiado de novo na viagem seguinte — o usuário quer UMA tentativa por dia.
+    function gymLossLoad() {
+        const out = {};
+        try {
+            const r = JSON.parse(localStorage.getItem(GYM_LOSS_KEY) || 'null');
+            const now = Date.now();
+            for (const [id, l] of Object.entries(r && typeof r === 'object' ? r : {})) {
+                const at = Number(l?.at) || 0;
+                if (!id || at <= 0 || at > now || now - at > GYM_LOSS_KEEP_MS) continue;
+                out[id] = { at, n: Math.max(1, Number(l?.n) || 1) };
+            }
+        } catch { /* sem registro ou sem localStorage */ }
+        return out;
     }
+    function gymLossSave() {
+        try {
+            if (Object.keys(gymLoss).length) localStorage.setItem(GYM_LOSS_KEY, JSON.stringify(gymLoss));
+            else localStorage.removeItem(GYM_LOSS_KEY);
+        } catch { /* sem localStorage: a derrota vale só nesta carga */ }
+    }
+    // Até quando a derrota segura o ginásio (0 = sem derrota pendente): uma tentativa por dia.
+    function gymLossUntil(id) { const l = gymLoss[id]; return l ? l.at + GYM_LOSS_WAIT_MS : 0; }
+    // Quanto falta da espera por derrota do ginásio (0 = pode desafiar).
+    function gymLossWait(id) { return Math.max(0, gymLossUntil(id) - Date.now()); }
     // Plano para a cidade: { desafiar:[g], resgatar:[g], esperando:[{ g, ms, motivo:'cooldown'|'derrota' }] }.
     function gymPlan(d, st) {
         d = d || cfg; st = st || gymState;
@@ -8172,8 +8194,8 @@
             if (!g.enabled) continue;
             if (g.cooldownUntil > after) ts.push(g.cooldownUntil);
             if (g.bonus && g.bonus.until > after) ts.push(g.bonus.until);
-            const l = gymLoss[g.id];
-            if (l) { const fim = l.at + Math.min(GYM_LOSS_WAIT_MAX_MS, GYM_LOSS_WAIT_MS * Math.pow(2, Math.max(0, l.n - 1))); if (fim > after) ts.push(fim); }
+            const fim = gymLossUntil(g.id);
+            if (fim > after) ts.push(fim);
         }
         return ts.length ? Math.min(...ts) : 0;
     }
@@ -8205,6 +8227,11 @@
     }
     function gymTick(force) {
         if (!gymEnabled() || gymBusy || gymWorking) return;
+        if (!gymLossLogged) {
+            gymLossLogged = true;
+            const ids = Object.keys(gymLoss);
+            if (ids.length) logEvent('ginasio-derrota-lembrada', { ginasios: ids.map(id => ({ id, derrotasSeguidas: gymLoss[id].n, tentaEm: gymFmtLeft(gymLossWait(id)) })) });
+        }
         if (!force && gymFailedAt && Date.now() - gymFailedAt < GYM_RETRY_MS) return;
         if (!force && !gymDue()) return gymAsk();
         return gymRead().then(() => gymAsk());
@@ -8285,6 +8312,7 @@
                     desafios.push(feito);
                     if (won) delete gymLoss[g.id];
                     else gymLoss[g.id] = { at: Date.now(), n: (gymLoss[g.id]?.n || 0) + 1 };
+                    gymLossSave();
                     logEvent('ginasio-desafio', { id: g.id, venceu: won, insignia: feito.badgeEarned, outfit: feito.outfit, lider: feito.defender, fim: r?.snapshot?.endReason ?? null, lances: Array.isArray(r?.log) ? r.log.length : null, insignias: r?.badges ?? null, meuTime: gymTeamText(meuTime), timeDoLider: gymTeamText(feito.npc), derrotasSeguidas: gymLoss[g.id]?.n || 0, campos: r && typeof r === 'object' ? Object.keys(r) : null });
                     if (won && cfg.gymBonus !== false) {   // v3.45.3: bônus na hora (a vitória o deixa `claimable`); falhou = fica para a passada final
                         await gymWait(gymRnd(GYM_BETWEEN_MS));
@@ -10240,7 +10268,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <label class="dn-toggle"><input id="pg-dn-gym-bonus" type="checkbox"><span class="sw"></span>Resgatar a Recompensa bônus depois de vencer <span class="dn-hint">(pedras de evolução; libera a cada 48 h)</span></label>
                         <label class="dn-toggle"><input id="pg-dn-gym-redo" type="checkbox"><span class="sw"></span>Refazer o ginásio quando a Recompensa bônus liberar de novo <span class="dn-hint">(a cada 48 h: "Vença o ginásio de novo")</span></label>
                         <label class="dn-toggle"><input id="pg-dn-gym-alerts" type="checkbox"><span class="sw"></span>Avisar no canal de Alertas <span class="dn-hint">(insígnia, derrota, bônus, outfit das 18)</span></label>
-                        <p class="dn-help">Cada insígnia dá +1% de XP e +1% de drop (as 18 dão +18% e a Gym Champion Outfit). A luta é resolvida na hora pelo servidor com o seu time atual contra os 6 Pokémon lv 400 do líder; não há golpe a escolher. Quando um ginásio aberto sem insígnia estiver fora do cooldown (10 min após cada desafio), o script pede uma viagem à cidade, desafia um a um, resgata a Recompensa bônus que a vitória libera e volta para a hunt. Depois de uma derrota espera 2 h (dobrando a cada derrota seguida, até 24 h): o time precisa ficar mais forte. Liderança de ginásio fica de fora.</p>
+                        <p class="dn-help">Cada insígnia dá +1% de XP e +1% de drop (as 18 dão +18% e a Gym Champion Outfit). A luta é resolvida na hora pelo servidor com o seu time atual contra os 6 Pokémon lv 400 do líder; não há golpe a escolher. Quando um ginásio aberto sem insígnia estiver fora do cooldown (10 min após cada desafio), o script pede uma viagem à cidade, desafia um a um, resgata a Recompensa bônus que a vitória libera e volta para a hunt. Depois de uma derrota só tenta aquele ginásio de novo uma vez por dia (24 h, e a espera sobrevive à recarga do painel): o time precisa ficar mais forte. Liderança de ginásio fica de fora.</p>
                         <div class="dn-actions"><button type="button" class="dn-btn dn-btn--sm" id="pg-dn-gym-now" title="Na cidade: desafia os ginásios prontos agora. Na hunt: pede a viagem à cidade.">⚔ Desafiar agora</button></div>
                         <div class="dn-status"><span>🏟️</span><span id="pg-dn-gym-status"></span></div>
                     </div>

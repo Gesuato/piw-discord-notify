@@ -399,8 +399,9 @@ luta é resolvida na hora pelo servidor e o HUD da arena (o mesmo do PvP) só an
   de `pw:gym-challenge-pending`; log `ginasio-global`, ainda não visto). Histórico de diamantes tem a origem `GYM_PAYOUT`.
 - Script (v3.45.0, módulo `// ---- Ginásio`): lê a janela a cada 30 min ou quando um prazo vence; ginásio aberto sem insígnia (ou com
   bônus `needWin`, com `gymRedo`) fora do cooldown → tarefa `ginasio` da viagem à cidade: `POST /challenge { mode:'badge' }` um a um, relê,
-  `POST /bonus` nos `claimable` (com `gymBonus`), avisa em Alertas. Logs `ginasio-campos`, `ginasio`, `ginasio-desafio`, `ginasio-bonus`,
-  `ginasio-erro`. Teste: `node test/gym.test.js`.
+  `POST /bonus` nos `claimable` (com `gymBonus`), avisa em Alertas. Derrota = só tenta de novo 1x por dia (v3.56.0: 24 h fixas em
+  `localStorage.pgDiscordNotifyGym`). Logs `ginasio-campos`, `ginasio`, `ginasio-desafio`, `ginasio-bonus`, `ginasio-erro`,
+  `ginasio-derrota-lembrada`. Teste: `node test/gym.test.js`.
 
 ### Invasão Rocket (bundle em 27/10/2026, patch do mesmo dia; frames `invasion-*` CONFIRMADOS no log em 28/10/2026 01:00Z, conta1, janela das 22h BRT; feature na v3.50.0, entrada corrigida na v3.50.1)
 

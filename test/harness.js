@@ -1253,6 +1253,8 @@ function loadHoldModule(init) {
 
 // Ginásios (v3.45.0): `init.api(url, opts)` responde GET /api/game/gyms e POST /challenge e /bonus; `state.calls` = chamadas REST,
 // `state.trips` = pedidos de viagem, `state.hooks` = avisos; `clock.now` é o relógio (as esperas são imediatas), `clock.rnd` o Math.random.
+// v3.56.0: `init.store` = localStorage inicial (as derrotas ficam em `pgDiscordNotifyGym`), exposto em `state.store`; `init.now` = relógio
+// na carga (a leitura do registro descarta derrota 'no futuro').
 const GY_START = '    // ---- Ginásio (v3.45.0)';
 const GY_END = '    // ---- Auto Boss (v3.43.0)';
 
@@ -1262,14 +1264,15 @@ function loadGymModule(cfg, init) {
     const a = src.indexOf(GY_START), b = src.indexOf(GY_END);
     if (a < 0 || b < 0) throw new Error('marcadores do módulo do ginásio não encontrados no script');
     const mod = src.slice(a, b);
-    const clock = { now: Date.UTC(2026, 9, 21, 15, 0, 0), rnd: 0 };
+    const clock = { now: init.now || Date.UTC(2026, 9, 21, 15, 0, 0), rnd: 0 };
     const FakeDate = new Proxy(Date, { get(t, k) { return k === 'now' ? () => clock.now : t[k]; } });
     const FakeMath = new Proxy(Math, { get(t, k) { return k === 'random' ? () => clock.rnd : t[k]; } });
-    const state = { hooks: [], logs: [], trips: [], calls: [] };
+    const state = { hooks: [], logs: [], trips: [], calls: [], store: init.store || {} };
     const ctx = {
         cfg,
         gameApi: (url, opts) => { state.calls.push({ url, method: opts?.method || 'GET', body: opts?.body ? JSON.parse(opts.body) : null }); return Promise.resolve().then(() => (init.api ? init.api(url, opts) : {})); },
         tripRequest: (key, dados, motivo) => state.trips.push({ key, dados, motivo }),
+        localStorage: { getItem: (k) => (k in state.store ? state.store[k] : null), setItem: (k, v) => { state.store[k] = String(v); }, removeItem: (k) => { delete state.store[k]; } },
         logEvent: (k, d) => state.logs.push([k, d]),
         postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', desc: p.embeds?.[0]?.description || '', color: p.embeds?.[0]?.color, meta: m }); return Promise.resolve(true); },
         playerName: () => 'Teste',
@@ -1282,8 +1285,8 @@ function loadGymModule(cfg, init) {
     };
     const factory = new Function(...Object.keys(ctx), mod + `
         return {
-            gymTick, gymRead, gymCityWork, gymStatus, gymWanted, gymPlan, gymLossWait, gymNextEventAt, gymDue, parseGymState, gymOnGlobal, gymNow, gymInCity,
-            GYM_POLL_MS, GYM_RETRY_MS, GYM_LOSS_WAIT_MS, GYM_LOSS_WAIT_MAX_MS,
+            gymTick, gymRead, gymCityWork, gymStatus, gymWanted, gymPlan, gymLossWait, gymLossUntil, gymNextEventAt, gymDue, parseGymState, gymOnGlobal, gymNow, gymInCity,
+            GYM_POLL_MS, GYM_RETRY_MS, GYM_LOSS_WAIT_MS, GYM_LOSS_KEY, GYM_LOSS_KEEP_MS,
             get gymState() { return gymState; },
             get gymLast() { return gymLast; },
             get gymFailedAt() { return gymFailedAt; },

@@ -1,5 +1,6 @@
 // Ginásios (v3.45.0): lê a janela (GET /api/game/gyms) por prazo, pede viagem com ginásio pronto, na cidade desafia (modo Insígnia),
-// resgata a Recompensa bônus liberada pela vitória e avisa; derrota = espera 2 h dobrando; erro = 15 min antes de insistir.
+// resgata a Recompensa bônus liberada pela vitória e avisa; derrota = tenta de novo só 1x por dia (v3.56.0, gravado em localStorage);
+// erro = 15 min antes de insistir.
 // Rodar: node test/gym.test.js
 const { loadGymModule, assert } = require('./harness');
 
@@ -112,36 +113,59 @@ const gets = (state) => state.calls.filter(c => c.method === 'GET').length;
         assert(api.gymLast && api.gymLast.desafios.length === 1 && api.gymLast.bonus.length === 2, 'gymLast');
     }
 
-    // 4) derrota: espera 2 h (dobrando a cada derrota seguida), não resgata nada, avisa com o time do líder; vitória zera a espera
+    // 4) derrota (v3.56.0): tenta de novo só 1x por dia (24 h fixas, sem dobrar), não resgata nada, avisa com o time do líder;
+    //    a derrota fica em localStorage (a recarga do painel não desafia de novo no mesmo dia); vitória zera a espera e o registro
     {
         const srv = mkServer([{ id: 'cerulean' }], { won: () => false });
         const { api, state, clock } = loadGymModule({ gymEnabled: true }, { api: srv.api });
         const r = await api.gymCityWork();
         assert(r.ok && r.vitorias === 0 && r.derrotas === 1 && r.bonus === 0, 'resultado: ' + JSON.stringify(r));
         assert(srv.posts.length === 1, 'só o desafio');
-        assert(api.gymLoss.cerulean && api.gymLoss.cerulean.n === 1 && api.gymLossWait('cerulean') === 2 * H, 'espera 2 h: ' + api.gymLossWait('cerulean'));
-        assert(/1 derrota/.test(state.hooks[0].content) && /✖ Cerulean \(Misty\): derrota — time do líder: Aerodactyl lv400, Sudowoodo✨ lv400 · tenta de novo em 2h/.test(state.hooks[0].desc) && state.hooks[0].color === 0xfee75c, 'aviso de derrota: ' + state.hooks[0].desc);
+        assert(api.gymLoss.cerulean && api.gymLoss.cerulean.n === 1 && api.gymLossWait('cerulean') === 24 * H, 'espera 24 h: ' + api.gymLossWait('cerulean'));
+        assert(/1 derrota/.test(state.hooks[0].content) && /✖ Cerulean \(Misty\): derrota — time do líder: Aerodactyl lv400, Sudowoodo✨ lv400 · tenta de novo em 24h/.test(state.hooks[0].desc) && state.hooks[0].color === 0xfee75c, 'aviso de derrota: ' + state.hooks[0].desc);
         assert(!api.gymWanted(), 'não insiste');
-        // 10 min depois o cooldown venceu mas a derrota ainda segura; 2 h depois volta ao plano
+        const gravado = JSON.parse(state.store[api.GYM_LOSS_KEY] || 'null');
+        assert(gravado && gravado.cerulean && gravado.cerulean.at === T0 && gravado.cerulean.n === 1, 'derrota gravada em localStorage: ' + state.store[api.GYM_LOSS_KEY]);
+        // 10 min depois o cooldown venceu mas a derrota ainda segura; 2 h depois (a espera antiga) ainda segura; 24 h depois volta ao plano
         srv.st[0].cooldownMs = 0;
         clock.now = T0 + 11 * MIN;
         await api.gymTick();
         let p = api.gymPlan();
         assert(p.desafiar.length === 0 && p.esperando.length === 1 && p.esperando[0].motivo === 'derrota', 'segura pela derrota: ' + JSON.stringify(p.esperando.map(e => e.motivo)));
-        assert(/Cerulean após derrota 1h49/.test(api.gymStatus()), 'status: ' + api.gymStatus());
+        assert(/Cerulean após derrota 23h49/.test(api.gymStatus()), 'status: ' + api.gymStatus());
         clock.now = T0 + 2 * H + MIN;
         await api.gymTick();
         p = api.gymPlan();
-        assert(p.desafiar.map(g => g.id).join() === 'cerulean' && state.trips.length === 1, 'volta ao plano e pede viagem: ' + JSON.stringify(state.trips));
+        assert(p.desafiar.length === 0 && p.esperando.length === 1 && state.trips.length === 0, '2 h depois ainda segura (não é mais 2 h dobrando): ' + JSON.stringify(p.esperando.map(e => e.motivo)));
+        // recarga do painel no mesmo dia: módulo novo lê a derrota do localStorage e NÃO desafia de novo
+        {
+            const srvR = mkServer([{ id: 'cerulean' }], { won: () => false });
+            const m = loadGymModule({ gymEnabled: true }, { api: srvR.api, store: state.store, inHunt: false, now: T0 + 5 * H });
+            assert(m.api.gymLoss.cerulean && m.api.gymLoss.cerulean.n === 1 && m.api.gymLossWait('cerulean') === 19 * H, 'derrota lembrada após a recarga: ' + JSON.stringify(m.api.gymLoss));
+            await m.api.gymTick();
+            assert(srvR.posts.length === 0 && m.api.gymPlan().esperando[0]?.motivo === 'derrota', 'recarga não desafia de novo no mesmo dia: ' + JSON.stringify(srvR.posts));
+            assert(m.state.logs.some(l => l[0] === 'ginasio-derrota-lembrada' && l[1].ginasios[0].id === 'cerulean'), 'log ginasio-derrota-lembrada: ' + JSON.stringify(m.state.logs.map(l => l[0])));
+        }
+        clock.now = T0 + 24 * H + MIN;
+        await api.gymTick();
+        p = api.gymPlan();
+        assert(p.desafiar.map(g => g.id).join() === 'cerulean' && state.trips.length === 1, 'no dia seguinte volta ao plano e pede viagem: ' + JSON.stringify(state.trips));
         await api.gymCityWork();
-        assert(api.gymLoss.cerulean.n === 2 && api.gymLossWait('cerulean') === 4 * H, '2ª derrota seguida = 4 h: ' + api.gymLossWait('cerulean'));
-        // vitória zera
+        assert(api.gymLoss.cerulean.n === 2 && api.gymLossWait('cerulean') === 24 * H, '2ª derrota seguida = mais 24 h (não 48): ' + api.gymLossWait('cerulean'));
+        assert(JSON.parse(state.store[api.GYM_LOSS_KEY]).cerulean.n === 2, 'registro atualizado');
+        // registro velho demais (7 dias) é descartado na carga
+        {
+            const m = loadGymModule({ gymEnabled: true }, { api: srv.api, store: { [api.GYM_LOSS_KEY]: JSON.stringify({ cerulean: { at: T0 - 8 * 24 * H, n: 3 }, pewter: { at: T0 - MIN, n: 1 } }) } });
+            assert(!m.api.gymLoss.cerulean && m.api.gymLoss.pewter && m.api.gymLoss.pewter.n === 1, 'registro velho descartado, recente fica: ' + JSON.stringify(m.api.gymLoss));
+        }
+        // vitória zera a espera e apaga o registro
         srv.st[0].cooldownMs = 0;
-        clock.now = T0 + 7 * H;
-        const srv2 = srv; srv2.api = mkServer([{ id: 'cerulean', cooldownMs: 0 }]).api;
-        const m = loadGymModule({ gymEnabled: true }, { api: srv2.api });
+        clock.now = T0 + 3 * 24 * H;
+        const srv2 = mkServer([{ id: 'cerulean', cooldownMs: 0 }]);
+        const m = loadGymModule({ gymEnabled: true }, { api: srv2.api, store: state.store, now: clock.now });
+        assert(m.api.gymLoss.cerulean, 'derrota ainda lembrada antes da vitória');
         await m.api.gymCityWork();
-        assert(!m.api.gymLoss.cerulean && m.api.gymLast.desafios[0].won, 'vitória zera a espera');
+        assert(!m.api.gymLoss.cerulean && m.api.gymLast.desafios[0].won && !(api.GYM_LOSS_KEY in state.store), 'vitória zera a espera e apaga o registro: ' + JSON.stringify(state.store));
     }
 
     // 5) refazer a cada 48 h e resgate: `needWin` só entra com gymRedo; `claimable` só com gymBonus
@@ -217,5 +241,5 @@ const gets = (state) => state.calls.filter(c => c.method === 'GET').length;
         assert(rn.ok && /Viagem à cidade pedida: desafiar Pewter/.test(rn.msg), 'botão na hunt: ' + rn.msg);
     }
 
-    console.log('OK gym.test — leitura por prazo, plano (insígnia/bônus/cooldown), pedido de viagem, desafio + resgate na cidade, derrota com espera dobrada, redo/bonus, erros com 15 min, fechado, outfit, avisos, já na cidade = na hora + botão');
+    console.log('OK gym.test — leitura por prazo, plano (insígnia/bônus/cooldown), pedido de viagem, desafio + resgate na cidade, derrota 1x por dia (gravada em localStorage), redo/bonus, erros com 15 min, fechado, outfit, avisos, já na cidade = na hora + botão');
 })().catch(e => { console.error(e); process.exit(1); });

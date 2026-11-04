@@ -507,8 +507,10 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   insígnias que faltam e resgatar a recompensa depois de ganhar. É tarefa da VIAGEM (`ginasio` em `tripTasksFor`/`tripAugment`, pedida
   por `gymAsk` quando `gymPlan()` tem algo): o POST só foi visto com a conta na cidade. v3.45.4: conta JÁ na cidade (parada, "Esperar
   na cidade" pelo botão) = `gymAsk` roda `gymCityWork` na hora (`gymInCity`, log `ginasio-cidade`) em vez de esperar a viagem — relato do
-  usuário: "travado em → viagem, o personagem já está parado na cidade"; botão "⚔ Desafiar agora" (`gymNow`) na aba. Derrota = `gymLoss[id]` com espera 2 h dobrando
-  (máx. 24 h); nunca usa `mode:'leader'` nem `/abandon`. O farejador da v3.43.2 (`ginasio-rest` etc.) saiu. Logs `ginasio-campos`,
+  usuário: "travado em → viagem, o personagem já está parado na cidade"; botão "⚔ Desafiar agora" (`gymNow`) na aba. Derrota = `gymLoss[id]`, e o ginásio só é tentado de
+  novo 1x por dia (v3.56.0, pedido do usuário em 03/11/2026: `GYM_LOSS_WAIT_MS` 24 h fixas, sem dobrar; até a v3.55.1 era 2 h dobrando). As
+  derrotas ficam em `localStorage.pgDiscordNotifyGym` (`gymLossLoad`/`gymLossSave`, fora do cfg, 7 dias) porque a recarga automática do
+  painel zerava a memória e desafiava de novo no mesmo dia; log `ginasio-derrota-lembrada` no 1º tique. Nunca usa `mode:'leader'` nem `/abandon`. O farejador da v3.43.2 (`ginasio-rest` etc.) saiu. Logs `ginasio-campos`,
   `ginasio`, `ginasio-desafio`, `ginasio-bonus-estado` (v3.45.2: estado do bônus de cada vitória, com releitura extra de 3 s; v3.45.3: o bônus é
   resgatado LOGO depois de cada vitória — a recarga da página no meio da viagem matava a passada final de resgates),
   `ginasio-bonus`, `ginasio-erro`, `ginasio-global`. Teste: `node test/gym.test.js` (`loadGymModule`:

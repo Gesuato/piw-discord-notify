@@ -897,7 +897,8 @@ mode:'badge' }` → luta já resolvida (`won`, `badgeEarned`, `log`, `snapshot` 
 
 **Regras:** tique de 1 min; relê a cada 30 min ou quando um prazo vence (cooldown, bônus, espera por derrota). Com ginásio pronto pede
 viagem à cidade (tarefa `ginasio`, e carona em toda viagem): desafia um a um, relê, resgata os `claimable`, avisa (insígnia, derrota com o
-time do líder, bônus, outfit das 18). Derrota = espera 2 h, dobrando a cada derrota seguida do mesmo ginásio (máx. 24 h). Erro = 15 min.
+time do líder, bônus, outfit das 18). Derrota = tenta de novo só 1x por dia (v3.56.0, pedido de 03/11/2026: 24 h fixas, gravadas em
+`localStorage.pgDiscordNotifyGym` para a recarga do painel não desafiar de novo no mesmo dia; até a v3.55.1 era 2 h dobrando). Erro = 15 min.
 O POST foi visto só com a conta na cidade; por isso é tarefa da viagem (não se testou de dentro da hunt).
 
 **v3.43.2 (farejador):** `ginasio-rest`/`ginasio-tela`/`ginasio-pvp`/`ginasio-envio` confirmaram o protocolo e saíram na v3.45.0.
