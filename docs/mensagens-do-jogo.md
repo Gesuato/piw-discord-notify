@@ -492,6 +492,22 @@ Janela "Mercado Global" (`window.market`), só para VIP (`vipGate`); o jogo deix
 - A janela também ouve o frame `balls` (`catalog`, `counts`, `gold`), `inventory`, `pokes` e `autohelper { isVip }`, e lê
   `GET /api/game/diamonds` → `{ diamonds }`.
 
+### Stone Researcher (bundle em 03/11/2026; formatos ainda NÃO vistos no log — `venda-pedras-campos` registra as chaves; feature na v3.54.0)
+
+NPC `flint` ("Stone Researcher — Pedras de Evolução", `npcAction.openFlint`), SÓ na cidade `shopping` (`GET /api/game/city-npcs?slug=shopping`,
+público, lista `flint`; Cerulean tem só `fishing, market, nurse, pokedepot, shop`). Descrição no bundle: "Compra Pedras de Evolução e troca
+Rough Gemstone por pedras". **O Mark (`POST /api/game/shop/sell`) NÃO compra pedras**: aceita o lote, responde ok e as pedras ficam na
+mochila (conta2, 04/11/2026 00:57Z → 02:08Z, 4.734 → 4.754 Cocoon Stone).
+- `GET /api/game/flint` → `{ gold, gemQty, stones:[{ id, name, icon, quantity, unitPrice }], catalog:[{ id, name, icon }] }` — `stones` = o que o
+  jogador tem e o NPC compra (quantidade e preço por unidade); `catalog` = pedras que a Rough Gemstone vira.
+- `POST /api/game/flint/sell { itemId, qty }` → `{ sold, item, goldGained }` — um POST por pedra (a janela tem um slider por linha); a tela
+  manda `inv-get` e relê o GET depois. **Usado pelo script (v3.54.0, `sellStonesAtResearcher`).**
+- `POST /api/game/flint/convert { toStoneItemId }` → `{ stone }` — 1 Rough Gemstone (item 5200) = 1 pedra do `catalog`. O script não usa.
+- Outros NPCs do Shopping vistos na mesma lista (não usados): `outland_merchant` = TM Researcher (`GET /api/game/tm-researcher`,
+  `POST .../exchange { diskItemId }`), `held_machine` (Devoted Tokens → held), `license_trader` (`GET /api/game/license-trader`,
+  `POST .../exchange`), `pokemaniac_trader` (`GET /api/game/pokemaniac-trader`, `POST .../buy`), `heather` (compra Pokémon; não está
+  em nenhuma cidade hoje).
+
 ## Ideias que esses nomes destravam
 
 - `field-none` / `hunt-cooldown` / `hunt-resume`: detectar hunt parada e religar (auto-reconnect).

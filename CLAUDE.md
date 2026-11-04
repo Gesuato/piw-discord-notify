@@ -169,6 +169,16 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   category,npcPrice,rare,icon}] }` (667 itens; categorias: loot, stone, heal, revive, clan, misc, card,
   addon, tm, berry, held). `field-kill` → `{ speciesName, shiny, xpGained, level, loot:[{itemId,name,qty}] }`.
   Cliente envia `enter-hunt {slug}` / `leave-hunt`.
+  **Pedras de evolução (categoria `stone`) o Mark NÃO compra** (v3.54.0; conta2, 04/11/2026: `shop/sell` aceitou 4.734 Cocoon
+  Stone e respondeu ok, mas elas continuaram na mochila na viagem seguinte). Quem compra é o **Stone Researcher** (NPC `flint`,
+  SÓ na cidade `shopping`; `GET /api/game/city-npcs?slug=<cidade>` é público e lista os NPCs): `GET /api/game/flint` →
+  `{ gold, gemQty, stones:[{ id, name, icon, quantity, unitPrice }], catalog:[{ id, name, icon }] }`; `POST /api/game/flint/sell
+  { itemId, qty }` → `{ sold, item, goldGained }` (um POST por pedra; a tela manda `inv-get` depois); `POST /api/game/flint/convert
+  { toStoneItemId }` troca 1 Rough Gemstone por 1 pedra (o script NÃO usa). `runSellCycle` separa as pedras do lote
+  (`isStoneItem`) e, depois do Mark, `sellStonesAtResearcher` manda `set-city shopping` (se `tripCity()` for outra), lê a lista do
+  NPC e vende o que está marcado (mesmas regras: reserva, cadeado, módulos que seguram o item). Logs `venda-pedras-cidade`,
+  `venda-pedras-campos` (formato ainda não visto no log), `venda-pedras { itens, faltou, ganho, gold }`, `venda-pedras-erro`.
+  Teste: `node test/sell.test.js` (`loadSellModule`: `// ---- Venda automática de drops` até `// ---- Venda automática de Pokémon`).
 - **REGRA DO JOGO (anúncio de 26/09/2026): não comprar/vender no NPC Mark, vender Pokémon, usar o Mercado Global nem o
   Depot DURANTE a hunt.** Toda venda/compra do script passa pela viagem à cidade (módulo "Viagem à cidade", v3.14.0):
   `tripRequest(key, dados, motivo)` acumula, `tripTick` faz uma viagem só (`cityTrip`), com carona (`tripAugment`).

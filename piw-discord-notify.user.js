@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.53.4
+// @version      3.54.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.53.4';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.54.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -1469,6 +1469,12 @@
     //   cadeados : GET /api/game/item/lock        -> { locked:[itemId, ...] }  (o jogo recusa o lote inteiro
     //                                                 se um item travado entrar nele)
     //   venda    : POST /api/game/shop/sell { items:[{ itemId, qty }] } -> { ok, soldCount, goldGained, gold }
+    //   pedras   : o Mark NÃO compra pedras de evolução (categoria `stone` do items.json): o lote é aceito e responde ok,
+    //              mas as pedras ficam na mochila (conta2, 04/11/2026: 4.734 Cocoon Stone "vendidas" às 00:57Z continuavam
+    //              lá às 02:08Z, 4.754). Quem compra é o Stone Researcher (NPC `flint`, só na cidade `shopping`; v3.54.0):
+    //              GET  /api/game/flint -> { gold, gemQty, stones:[{ id, name, icon, quantity, unitPrice }], catalog:[{ id, name, icon }] }
+    //              POST /api/game/flint/sell { itemId, qty } -> { sold, item, goldGained }   (um POST por pedra; a tela manda
+    //              `inv-get` depois). Bundle de 03/11/2026; formatos ainda não vistos no log — `venda-pedras-campos` registra as chaves.
     //   hunt     : `enter-hunt { slug }` / `leave-hunt` enviados pelo cliente; `field-kill` traz
     //              loot:[{ itemId, name, qty }] — é daí que sai a lista "o que cai nesta hunt".
     // Regras fixas (não configuráveis): nunca preço 0 (o NPC não compra) e nunca item com cadeado
@@ -1480,6 +1486,11 @@
     const DEPOT_URL = '/api/game/depot';
     const LOCK_URL = '/api/game/item/lock';
     const SHOP_SELL_URL = '/api/game/shop/sell';
+    const FLINT_URL = '/api/game/flint';                 // v3.54.0: Stone Researcher (pedras de evolução)
+    const FLINT_SELL_URL = '/api/game/flint/sell';
+    const FLINT_CITY = 'shopping';                       // `GET /api/game/city-npcs?slug=shopping` traz `flint`; Cerulean não tem
+    const FLINT_CITY_WAIT_MS = 2000;
+    const FLINT_BETWEEN_MS = [1200, 2500];               // entre uma pedra e outra ("humano")
     const SELL_CHECK_MS = 60 * 1000;
     const PROTECTED_NAME = /pherom|feromon|stone|pedra/i;
 
@@ -1512,6 +1523,7 @@
     // Aviso (não bloqueia) para itens que merecem atenção antes de marcar para venda.
     function sellWarning(item) {
         if (!item) return 'fora do catálogo';
+        if (isStoneItem(item)) return 'pedra: vende no Stone Researcher (Shopping)';   // v3.54.0
         if (item.category && item.category !== 'loot') return `categoria ${item.category}`;
         if (item.rare === true) return 'raro';
         if (PROTECTED_NAME.test(String(item.name || ''))) return 'pedra/feromônio';
@@ -1584,8 +1596,48 @@
         if (novo) { loadItemsCatalog(); if (onHuntLootChange) onHuntLootChange(); }
     }
 
+    // v3.54.0: pedra de evolução = categoria `stone` (items.json ou a própria mochila). O Mark ignora; o Stone Researcher compra.
+    function isStoneItem(item) { return String(item?.category || '').toLowerCase() === 'stone'; }
+
+    const sellWait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    const sellRnd = (par) => par[0] + Math.floor(Math.random() * (par[1] - par[0] + 1));
+    let flintFieldsLogged = false;
+    // Vende as pedras marcadas no Stone Researcher (Shopping). `pedras` = [{ itemId, qty, name, price }] já filtradas (reserva, cadeado,
+    // módulos que seguram o item). Vai para `shopping` se a viagem foi a outra cidade (mesmo padrão do slot e da Jenny), lê a lista
+    // do NPC (quantidade e preço reais) e faz um POST por pedra. Devolve { ok, motivo, vendidos:[{ itemId, qty, name, ganho }], ganho,
+    // gold, faltou:[nome] } — `faltou` = pedra marcada que o NPC não lista (não compra ou não está mais na mochila).
+    async function sellStonesAtResearcher(pedras) {
+        if (!pedras.length) return { ok: true, motivo: null, vendidos: [], ganho: 0, gold: null, faltou: [] };
+        if (typeof tripCity === 'function' && tripCity() !== FLINT_CITY) {
+            logEvent('venda-pedras-cidade', { de: tripCity(), para: FLINT_CITY });
+            sendGame({ type: 'set-city', slug: FLINT_CITY });
+            await sellWait(FLINT_CITY_WAIT_MS);
+        }
+        const st = await gameApi(FLINT_URL);
+        if (!flintFieldsLogged) { flintFieldsLogged = true; logEvent('venda-pedras-campos', { chaves: Object.keys(st || {}), pedra: Object.keys(st?.stones?.[0] || {}) }); }
+        const lista = Array.isArray(st?.stones) ? st.stones : [];
+        const vendidos = [], faltou = [];
+        let ganho = 0, gold = Number.isFinite(Number(st?.gold)) ? Number(st.gold) : null;
+        for (const p of pedras) {
+            const s = lista.find(x => Number(x?.id) === p.itemId);
+            const qty = Math.min(p.qty, Math.floor(Number(s?.quantity) || 0));
+            if (!s || qty <= 0 || !(Number(s.unitPrice) > 0)) { faltou.push(p.name); continue; }
+            const r = await withoutPokeGridSellGuard(() => gameApi(FLINT_SELL_URL, { method: 'POST', body: JSON.stringify({ itemId: p.itemId, qty }) }));
+            const sold = Number.isFinite(Number(r?.sold)) ? Number(r.sold) : qty;
+            const g = Number.isFinite(Number(r?.goldGained)) ? Number(r.goldGained) : sold * (Number(s.unitPrice) || 0);
+            ganho += g;
+            if (Number.isFinite(Number(r?.gold))) gold = Number(r.gold);
+            vendidos.push({ itemId: p.itemId, qty: sold, name: String(r?.item || s.name || p.name), ganho: g });
+            await sellWait(sellRnd(FLINT_BETWEEN_MS));
+        }
+        if (vendidos.length) sendGame({ type: 'inv-get' });
+        logEvent('venda-pedras', { itens: vendidos.map(v => ({ id: v.itemId, qty: v.qty, ganho: v.ganho })), faltou, ganho, gold });
+        return { ok: faltou.length === 0, motivo: faltou.length ? `o Stone Researcher não comprou: ${faltou.join(', ')}` : null, vendidos, ganho, gold, faltou };
+    }
+
     // Vende o excedente dos itens marcados que caem na hunt atual. `manual` ignora sellEnabled.
     // `wantedIds`/`huntName` (v3.14.0): a viagem congela a lista na hunt, porque na cidade `huntSlug` é null e `huntLoot` zera.
+    // v3.54.0: pedras de evolução saem do lote do Mark e vão para o Stone Researcher (`sellStonesAtResearcher`), depois do Mark.
     async function runSellCycle(manual, wantedIds, huntName) {
         if (sellRunning) return { ok: false, motivo: 'venda já em andamento' };
         if (!manual && !cfg.sellEnabled) return { ok: false, motivo: 'desligada' };
@@ -1604,7 +1656,7 @@
             try { const lk = await gameApi(LOCK_URL); locked = new Set((Array.isArray(lk?.locked) ? lk.locked : []).map(Number)); }
             catch (err) { logEvent('cadeado-erro', { erro: String(err?.message || err) }); return { ok: false, motivo: 'não consegui ler os cadeados; venda cancelada por segurança' }; }
 
-            const lote = [];
+            const lote = [], pedras = [];
             for (const inv of inventory) {
                 const id = Number(inv?.id);
                 if (!wanted.includes(id)) continue;
@@ -1621,27 +1673,51 @@
                 const keep = Math.max(0, Number(cfg.sellItems[id]?.keep) || 0);
                 const qty = Math.floor(Number(inv.quantity) || 0) - keep;
                 if (qty <= 0) continue;
-                lote.push({ itemId: id, qty, name: inv.name || item.name || `Item ${id}`, price: Number(inv.npcPrice ?? item.npcPrice) || 0 });
+                const entrada = { itemId: id, qty, name: inv.name || item.name || `Item ${id}`, price: Number(inv.npcPrice ?? item.npcPrice) || 0 };
+                if (isStoneItem(item) || isStoneItem(inv)) pedras.push(entrada); else lote.push(entrada);   // v3.54.0: pedra = Stone Researcher
             }
-            if (!lote.length) { logEvent('venda-nada', { hunt: huntSlug, marcados: wanted }); return { ok: false, motivo: 'nada acima da reserva para vender' }; }
+            if (!lote.length && !pedras.length) { logEvent('venda-nada', { hunt: huntSlug, marcados: wanted }); return { ok: false, motivo: 'nada acima da reserva para vender' }; }
 
-            const r = await withoutPokeGridSellGuard(() => gameApi(SHOP_SELL_URL, { method: 'POST', body: JSON.stringify({ items: lote.map(({ itemId, qty }) => ({ itemId, qty })) }) }));
-            const ok = r?.ok !== false;
-            const ganho = Number.isFinite(Number(r?.goldGained)) ? Number(r.goldGained) : lote.reduce((a, i) => a + i.qty * i.price, 0);
-            const gold = Number.isFinite(Number(r?.gold)) ? Number(r.gold) : null;
-            const total = lote.reduce((a, i) => a + i.qty, 0);
-            const lista = lote.map(i => `${i.qty}x ${i.name}`).join(', ');
-            logEvent('venda', { hunt: huntSlug, itens: lote.map(i => ({ id: i.itemId, qty: i.qty })), ok, ganho, gold });
+            let ok = true, ganho = 0, gold = null, total = 0;
+            const partes = [], falhas = [];
+            if (lote.length) {
+                const r = await withoutPokeGridSellGuard(() => gameApi(SHOP_SELL_URL, { method: 'POST', body: JSON.stringify({ items: lote.map(({ itemId, qty }) => ({ itemId, qty })) }) }));
+                const okMark = r?.ok !== false;
+                const ganhoMark = Number.isFinite(Number(r?.goldGained)) ? Number(r.goldGained) : lote.reduce((a, i) => a + i.qty * i.price, 0);
+                if (Number.isFinite(Number(r?.gold))) gold = Number(r.gold);
+                logEvent('venda', { hunt: huntSlug, itens: lote.map(i => ({ id: i.itemId, qty: i.qty })), ok: okMark, ganho: ganhoMark, gold });
+                ok = ok && okMark;
+                ganho += ganhoMark;
+                total += lote.reduce((a, i) => a + i.qty, 0);
+                partes.push(lote.map(i => `${i.qty}x ${i.name}`).join(', '));
+                if (!okMark) falhas.push('o Mark não confirmou a venda');
+            }
+            if (pedras.length) {
+                try {
+                    const p = await sellStonesAtResearcher(pedras);
+                    ganho += p.ganho;
+                    if (p.gold != null) gold = p.gold;
+                    total += p.vendidos.reduce((a, v) => a + v.qty, 0);
+                    if (p.vendidos.length) partes.push(p.vendidos.map(v => `${v.qty}x ${v.name}`).join(', ') + ' (Stone Researcher)');
+                    if (p.motivo) falhas.push(p.motivo);
+                } catch (err) {
+                    const motivo = String(err?.message || err);
+                    logEvent('venda-pedras-erro', { hunt: huntSlug, itens: pedras.map(i => ({ id: i.itemId, qty: i.qty })), erro: motivo });
+                    falhas.push(`pedras no Stone Researcher: ${motivo}`);
+                    ok = false;
+                }
+            }
+            const tudoOk = ok && !falhas.length;
             postWebhook('alert', {
                 content: `💰 ${who ? `**${who}**` : 'Sua conta'} vendeu **${total} ${total === 1 ? 'item' : 'itens'}** por **${ganho.toLocaleString('pt-BR')} gold**`,
                 username: 'Poke Idle World',
                 embeds: [{
                     title: `Venda automática${huntSlug ? ` (${huntSlug})` : ''}`,
-                    description: conta + lista + (gold != null ? `\nGold agora: ${gold.toLocaleString('pt-BR')}` : '') + `\nEm ${new Date().toLocaleString('pt-BR')}`,
-                    color: ok ? 0x57f287 : 0xfee75c,
+                    description: conta + partes.join('\n') + falhas.map(f => `\n⚠ ${f}`).join('') + (gold != null ? `\nGold agora: ${gold.toLocaleString('pt-BR')}` : '') + `\nEm ${new Date().toLocaleString('pt-BR')}`,
+                    color: tudoOk ? 0x57f287 : 0xfee75c,
                 }],
             }, { evento: 'venda', total, ganho });
-            return { ok, motivo: ok ? null : 'o jogo não confirmou a venda', total, ganho };
+            return { ok: tudoOk, motivo: falhas.join('; ') || null, total, ganho };
         } catch (err) {
             const motivo = String(err?.message || err);
             logEvent('venda-erro', { hunt: huntSlug, erro: motivo });
