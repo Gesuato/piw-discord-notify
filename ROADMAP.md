@@ -734,6 +734,14 @@ tem quality a partir de", 0 = qualquer): `breedFoodTrunkReason` recusa quem est�
 comida"), então a criação de comida só começa de um candidato já bom, em vez de subir um Q baixo por dezenas de gerações. Sem candidato
 no piso, o motivo da linhagem cita o piso. Fim do caso 14 do teste.
 
+**v3.57.0 (06/11/2026) — teto de quality (parar de cruzar):** pedido do usuário: "adicionar uma trava para o breeding: um max quality; se eu
+colocar 1,95, só deve fazer o breeding até atingir 1,95 e parar". `cfg.breedMaxQ` (aba Breeding → "Parar quando quem sobe chegar a quality",
+0 = sem teto, aceita vírgula). Linhagem com quem sobe (ou filho chocado / quem entrou no ovo) em quality ≥ teto está CONCLUÍDA
+(`breedLineDone`): `breedPlan` não planeja nem cria comida para ela (e isso NÃO vira "parado": as outras linhagens seguem), a viagem pula um
+plano feito antes do teto baixar (`breeding-concluida { fase:'viagem-pulada' }`), avisa 1x por teto em Alertas ("Breeding concluído";
+`line.teto` no cfg, esquecido quando o teto sobe) e `breedKeepsPoke` passa a guardar só quem sobe — a comida da espécie volta às regras da
+aba Venda. Status e prévia da comida dizem "✅ concluída: chegou ao teto Q …". Caso 16 do teste; fixture no round-trip e passo no smoke.
+
 **Pendente:** se o `breed` funciona na hunt
 (o script sempre cruza na viagem). Teste: `node test/breeding.test.js`, caso novo no `pokesell.test.js`, passo no smoke e fixture no
 round-trip.

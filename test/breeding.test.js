@@ -520,5 +520,45 @@ function fakeApi(opts) {
         }
     }
 
-    console.log('OK breeding.test — filtro da comida (Q e IV menores, teto, família), checklist da cotação (donorId/growth/baseQuality), teto de protegidos (v3.47.0), comida em criação (v3.48.0), Breeding Box (v3.49.0), plano + viagem, cidade (stones e comida da família, Breeding Box, POST breed), parado/retry, hatch e filho');
+    // 16) v3.57.0: teto de quality — quem sobe em Q >= teto = linhagem concluída: não planeja, não pede viagem, não vira "parado", avisa 1x
+    //     (por teto, lembrado no cfg), status e prévia dizem; só quem sobe fica fora da venda (a comida volta às regras da aba Venda);
+    //     teto acima da quality atual cruza como antes e esquece o aviso; teto atingido entre o plano e a viagem pula o cruzamento; 0 = sem teto
+    {
+        const cfg = { breedEnabled: true, breedLines: [{ id: TRONCO.id, gen: 3, q0: 1.3 }], breedFoodIvMax: 150, breedFamily: false, breedDouble: false, breedMaxQ: '1,45' };
+        const fake = fakeApi({ box: { [TRONCO.id]: TRONCO, [COMIDA.id]: COMIDA } });
+        const { api, state } = loadBreedModule(cfg, { api: fake.api, pokes: [LIDER, TRONCO, COMIDA] });
+        assert(api.breedMaxQ() === 1.45 && api.breedLineDone(cfg.breedLines[0]), 'teto aceita vírgula e Q 1,466 >= 1,45 = concluída');
+        await api.breedTick(true);
+        assert(state.trips.length === 0 && !api.breedPlanned[TRONCO.id] && api.breedWait === null, 'concluída: nada planejado, sem viagem, sem "parado": ' + JSON.stringify(api.breedWait) + ' ' + JSON.stringify(state.trips));
+        assert(state.hooks.length === 1 && /teto Q 1\.450 atingido/.test(state.hooks[0].content) && cfg.breedLines[0].teto && cfg.breedLines[0].teto.q === 1.45, 'avisa 1x com o teto: ' + JSON.stringify(state.hooks) + ' ' + JSON.stringify(cfg.breedLines[0].teto));
+        assert(state.logs.some(([k, d]) => k === 'breeding-concluida' && d.quality === 1.466 && d.teto === 1.45 && d.geracao === 3), 'log breeding-concluida: ' + JSON.stringify(state.logs.filter(([k]) => k === 'breeding-concluida')));
+        await api.breedTick(true);
+        assert(state.hooks.length === 1 && state.logs.filter(([k]) => k === 'breeding-concluida').length === 1, 'não repete o aviso nem o log');
+        assert(/Linhagem 1: Donphan · geração 3 · começou em Q 1\.300 · Q 1\.466 · IV 126\/192 · ✅ concluída: chegou ao teto Q 1\.450/.test(api.breedStatus().join('\n')), 'status diz concluída: ' + api.breedStatus().join(' | '));
+        assert(api.breedFoodStatus().length === 1 && /Donphan Q 1\.466\): ✅ concluída — chegou ao teto Q 1\.450/.test(api.breedFoodStatus()[0].text) && api.breedFoodStatus()[0].ok, 'prévia da comida resume a conclusão: ' + JSON.stringify(api.breedFoodStatus()));
+        assert(api.breedKeepsPoke(TRONCO) && !api.breedKeepsPoke(COMIDA), 'concluída: só quem sobe fica fora da venda');
+        // teto acima da quality atual: cruza como antes e o aviso antigo é esquecido
+        cfg.breedMaxQ = 1.6;
+        api.breedReset();
+        await api.breedTick(true);
+        assert(!api.breedLineDone(cfg.breedLines[0]) && api.breedPlanned[TRONCO.id] && state.trips.length === 1 && !cfg.breedLines[0].teto, 'teto 1,6: planeja de novo e esquece o aviso: ' + JSON.stringify(cfg.breedLines[0]) + ' ' + JSON.stringify(state.trips));
+        assert(api.breedKeepsPoke(COMIDA), 'com a linhagem ativa a comida volta a ficar guardada');
+        // teto baixado depois do plano (sem Salvar): a cidade não cruza
+        cfg.breedMaxQ = 1.4;
+        const r = await api.breedCityWork();
+        assert(fake.posts.filter(p => p.action === 'breed').length === 0 && r.ok && state.logs.some(([k, d]) => k === 'breeding-concluida' && d.fase === 'viagem-pulada'), 'cidade pula a linhagem concluída: ' + JSON.stringify(r) + ' ' + JSON.stringify(fake.posts));
+        // sem teto (0) = como antes
+        const cfg0 = { breedEnabled: true, breedLines: [{ id: TRONCO.id, gen: 0 }], breedFoodIvMax: 150, breedFamily: false, breedDouble: false, breedMaxQ: 0 };
+        const m0 = loadBreedModule(cfg0, { api: fakeApi({ box: { [TRONCO.id]: TRONCO, [COMIDA.id]: COMIDA } }).api, pokes: [LIDER, TRONCO, COMIDA] });
+        await m0.api.breedTick(true);
+        assert(!m0.api.breedLineDone(cfg0.breedLines[0]) && m0.api.breedPlanned[TRONCO.id] && m0.state.trips.length === 1 && m0.state.hooks.length === 0, 'teto 0 = sem teto');
+        // duas linhagens: a concluída não segura a outra, e a outra sem comida vira "parado" só com o motivo dela
+        const outro = { id: 'outro', speciesId: 95, name: 'Onix', level: 10, team: false, quality: 1.2, ivTotal: 90, sellValue: 1000 };
+        const cfg2 = { breedEnabled: true, breedLines: [{ id: TRONCO.id, gen: 0 }, { id: 'outro', gen: 0 }], breedFoodIvMax: 150, breedFamily: false, breedDouble: false, breedMaxQ: 1.45 };
+        const m2 = loadBreedModule(cfg2, { api: fakeApi({ box: { [TRONCO.id]: TRONCO, [COMIDA.id]: COMIDA, outro } }).api, pokes: [LIDER, TRONCO, COMIDA, outro] });
+        await m2.api.breedTick(true);
+        assert(m2.state.trips.length === 0 && m2.api.breedWait && /^Onix \(Q 1\.200, IV 90\): sem comida que sirva no box$/.test(m2.api.breedWait.motivo), 'linhagem 2 parada só pelo motivo dela: ' + JSON.stringify(m2.api.breedWait));
+    }
+
+    console.log('OK breeding.test — filtro da comida (Q e IV menores, teto, família), checklist da cotação (donorId/growth/baseQuality), teto de protegidos (v3.47.0), comida em criação (v3.48.0), Breeding Box (v3.49.0), teto de quality (v3.57.0), plano + viagem, cidade (stones e comida da família, Breeding Box, POST breed), parado/retry, hatch e filho');
 })().catch(e => { console.error(e); process.exit(1); });

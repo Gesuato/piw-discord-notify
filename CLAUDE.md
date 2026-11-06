@@ -382,6 +382,11 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   quem já tem quality a partir de", `breedFoodMinQ(d)`, aceita vírgula, 0 = qualquer) — em `breedFoodTrunkReason` o candidato com
   quality abaixo do piso não vira comida em criação (motivo "abaixo do piso"), para não gastar gold e stones subindo um Q baixo por
   dezenas de gerações. Vale só para QUEM VIRA comida; a comida própria dele segue as regras de sempre. Fim do caso 14 do teste.
+  v3.57.0 (pedido do usuário em 06/11/2026: "um max quality: se eu colocar 1,95, só faz o breeding até atingir 1,95 e para"): `cfg.breedMaxQ`
+  (painel "Parar quando quem sobe chegar a quality", `breedMaxQ(d)`, aceita vírgula, 0 = sem teto). `breedLineDone(l)` = `breedLineQ(l)` ≥ teto
+  → linhagem CONCLUÍDA: `breedPlan` pula (sem "parado"; as outras seguem), não cria comida, a cidade pula plano velho, avisa 1x por teto
+  (`breedLineConcluded`, `line.teto` no cfg, apagado quando o teto sobe; log `breeding-concluida`) e `breedKeepsPoke` guarda só quem sobe.
+  Caso 16 do teste.
   v3.49.0 (mudança do JOGO, 26/10/2026, vista no outro PC: "Comida em criação … porém não tem nada sendo incubado" — cotação e última
   viagem falhando com "Os dois pais precisam estar na Breeding Box — separe-os na aba Breeding Box do Depósito"): o Depósito ganhou a
   aba 🥚 **Breeding Box** e só quem está nela cota/cruza no centro (`docs/mensagens-do-jogo.md` → "Breeding Box"). `pokes[].breedingBox`

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.56.0
+// @version      3.57.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.56.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.57.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -116,6 +116,7 @@
         breedDouble: true,      // ...dobrar stones (40 em vez de 20): 5% de +1 IV no filho
         breedFoodBreed: false,  // v3.48.0 ...criar comida: sem capturado que sirva, cruza o melhor da espécie abaixo da faixa com um mais fraco até ele entrar na faixa de quem sobe
         breedFoodMinQ: 0,       // v3.51.0 ...piso de quality para VIRAR comida em criação (ex.: 1.7): candidato com quality abaixo disto não entra; 0 = qualquer
+        breedMaxQ: 0,           // v3.57.0 ...teto de quality: quem sobe em quality >= isto não cruza mais (linhagem concluída, aviso 1x, só ele fica fora da venda); 0 = sem teto
         guildDonateGold: 0,     // v3.31.0 Guild (aba 🛡): gold a doar por dia para a próxima vaga (0 = não doa; o jogo limita a 500.000/dia por membro)
         guildDonateKeep: 0,     // ...gold que fica sempre na conta (não doa o que faria o saldo cair abaixo disto)
         guildTributeEnabled: false, // ...depositar o item do Tributo do Dia que estiver na mochila (o item fica fora da venda enquanto o tributo está aberto)
@@ -3791,6 +3792,11 @@
     //   nem time (a venda e o depósito do script pulam quem tem `breedingBox`), e os filhotes nascem lá. O script: na hunt a cotação fora da
     //   Breeding Box não é falta de material (planeja sem cotar, log `breeding-box { fase:'cotacao-na-viagem' }`); na viagem, antes da
     //   cotação, `breedBoxMove([quem sobe, comida], 'in')` separa os dois e confere pela lista nova (log `breeding-box`). Caso 15 do teste.
+    //   v3.57.0 — teto de quality (`cfg.breedMaxQ`, pedido do usuário em 06/11/2026: "um max quality: se eu colocar 1,95, só faz o breeding
+    //   até atingir 1,95 e para"): linhagem com quem sobe (ou filho chocado / quem entrou no ovo) em quality >= teto está CONCLUÍDA
+    //   (`breedLineDone`): `breedPlan` não planeja nem cria comida para ela, a cidade pula um plano antigo, avisa 1x por teto
+    //   (`line.teto`, esquecido quando o teto sobe) e `breedKeepsPoke` guarda só quem sobe (a comida da espécie volta às regras da aba
+    //   Venda). Linhagem concluída não vira "parado": as outras seguem. Caso 16 do teste.
 
     const BREED_URL = '/api/game/breeding';
     const BREED_TICK_MS = 60 * 1000;
@@ -3854,6 +3860,15 @@
     // v3.51.0: piso de quality para virar comida em criação (pedido do usuário em 27/10/2026: "qualidade mínima da food a ser criada,
     // ex.: 1.7"): quem está abaixo não é escolhido, para não gastar gold e stones subindo um Q 1,2 por dezenas de gerações. Aceita vírgula.
     function breedFoodMinQ(d) { const v = parseFloat(String((d || cfg).breedFoodMinQ ?? '').replace(',', '.')); return Number.isFinite(v) && v > 0 ? v : 0; }
+    // v3.57.0: teto de quality (pedido do usuário em 06/11/2026). Aceita vírgula; 0 = sem teto. `breedLineDone(l)` = a quality de
+    // referência da linhagem (quem sobe no box, senão o filho chocado, senão quem entrou no ovo) já chegou ao teto: concluída.
+    function breedMaxQ(d) { const v = parseFloat(String((d || cfg).breedMaxQ ?? '').replace(',', '.')); return Number.isFinite(v) && v > 0 ? v : 0; }
+    function breedLineDone(l, d) {
+        const max = breedMaxQ(d);
+        if (!max || !l) return false;
+        const q = breedLineQ(l);
+        return Number.isFinite(q) && q >= max - BREED_Q_EPS;
+    }
     // Quem sobe, pelo id, na lista `pokes` (box).
     const breedPokeView = (p) => ({ id: String(p.id), name: p.name || '?', speciesId: Number(p.speciesId), quality: Number(p.quality), ivTotal: Number(p.ivTotal), level: Number(p.level) || 0, shiny: Boolean(p.shiny), team: Boolean(p.team || p.leader), starter: Boolean(p.starter), breedingBox: Boolean(p.breedingBox) });
     function breedTrunk(line) {
@@ -3918,7 +3933,10 @@
         const id = String(p.id ?? ''), sp = Number(p.speciesId) || 0, nome = normalize(p.name || '');
         const max = breedKeepMax();
         for (const l of breedUnits()) {   // v3.48.0: a comida em criação e a faixa dela também ficam guardadas
+            const owner = breedUnitInfo(l), done = breedLineDone(owner.line);   // v3.57.0: linhagem no teto de quality
+            if (done && owner.food) continue;             // comida em criação de linhagem concluída não precisa mais ficar guardada
             if (l.id && String(l.id) === id) return true;
+            if (done) continue;                           // concluída: só quem sobe fica fora da venda
             const t = l.speciesId ? null : breedTrunk(l);   // linhagem recém-escolhida: espécie pelo box
             const lsp = Number(l.speciesId) || (t ? t.speciesId : 0), lnome = normalize(l.name || (t ? t.name : ''));
             if (!((lsp && sp && lsp === sp) || (lnome && nome && lnome === nome))) continue;
@@ -4256,6 +4274,20 @@
             embeds: [{ title: 'Breeding parado', description: `${who ? `Conta: ${who}\n` : ''}${motivo}\nTenta de novo a cada ${BREED_RETRY_MS / 60000} min (a família pode abastecer).\nEm ${new Date().toLocaleString('pt-BR')}`, color: 0xfee75c }],
         }, { evento: 'breeding-parado' });
     }
+    // v3.57.0: a linhagem chegou ao teto de quality — avisa 1x por teto (`line.teto` fica no cfg: sobrevive à recarga do painel; `breedPlan`
+    // apaga quando o teto sobe e a linhagem volta a cruzar) e registra `breeding-concluida`.
+    function breedLineConcluded(line, trunk) {
+        const max = breedMaxQ();
+        if (line.teto && Math.abs(Number(line.teto.q) - max) < BREED_Q_EPS) return;
+        line.teto = { q: max, at: Date.now(), quality: trunk.quality }; saveCfg(cfg);
+        logEvent('breeding-concluida', { linhagem: trunk.name, troncoId: trunk.id, quality: trunk.quality, ivTotal: trunk.ivTotal, teto: max, geracao: Number(line.gen) || 0, comecouEm: line.q0 ?? null });
+        const who = playerName();
+        postWebhook('alert', {
+            content: `🥚 ${who ? `**${who}**` : 'Sua conta'}: **${trunk.name}** chegou a Q ${breedQ(trunk.quality)} — teto Q ${breedQ(max)} atingido, breeding da linhagem concluído`,
+            username: 'Poke Idle World',
+            embeds: [{ title: 'Breeding concluído', description: `${who ? `Conta: ${who}\n` : ''}${trunk.name} Q ${breedQ(trunk.quality)} · IV ${trunk.ivTotal}/${IV_MAX} · geração ${Number(line.gen) || 0}${line.q0 != null ? ` (começou em Q ${breedQ(line.q0)})` : ''}\nA linhagem não cruza mais; quem sobe segue fora da venda e a comida da espécie volta às regras da aba Venda. Para continuar, suba o teto na aba 🥚 Breeding.\nEm ${new Date().toLocaleString('pt-BR')}`, color: 0x57f287 }],
+        }, { evento: 'breeding-concluida', troncoId: trunk.id });
+    }
     function breedReset() {
         for (const k of Object.keys(breedPlanned)) delete breedPlanned[k];
         breedWait = null; breedCenterAt = 0; breedFamilyAskedAt = 0;
@@ -4377,12 +4409,14 @@
         };
         for (const line of linhas) {
             if (!line.id) continue;                                  // ovo chocando ou filho por identificar
+            if (line.teto && !breedLineDone(line)) { delete line.teto; saveCfg(cfg); }   // v3.57.0: o teto subiu — a linhagem volta a cruzar
             if (breedPlanned[line.id]) { livres--; planejou = true; continue; }
             const fu = breedFoodLine(line);
             if (fu && fu.id && breedPlanned[fu.id]) { livres--; planejou = true; continue; }   // v3.48.0: comida em criação já planejada
             if (livres <= 0) { motivos.push('incubadora cheia'); break; }
             const trunk = breedTrunk(line);
             if (!trunk) { motivos.push(`${line.name || line.id}: não está no box (lista ainda não lida?)`); continue; }
+            if (breedLineDone(line)) { breedLineConcluded(line, trunk); continue; }   // v3.57.0: chegou ao teto de quality — não cruza mais (não é "parado")
             if (trunk.team || trunk.starter || trunk.shiny) { motivos.push(`${trunk.name}: no time, inicial ou shiny não cruza`); continue; }
             const food = breedFoodPick(trunk);
             if (food) {
@@ -4447,6 +4481,7 @@
                 const line = breedUnits().find(u => u.id && String(u.id) === troncoId);
                 if (!line) continue;
                 const info = breedUnitInfo(line);   // v3.48.0: `line` pode ser a comida em criação de `info.line`
+                if (breedLineDone(info.line)) { logEvent('breeding-concluida', { linhagem: info.line?.name || line.name || troncoId, fase: 'viagem-pulada', teto: breedMaxQ() }); continue; }   // v3.57.0: teto atingido/baixado entre o plano e a viagem
                 try {
                     if (c.usedSlots >= c.slots) throw new Error('incubadora cheia');
                     if (plan.troncoOrigem === 'familia') {   // v3.48.0: quem vira comida estava no depot da família
@@ -4569,7 +4604,7 @@
             if (!l) return;
             const t = breedTrunk(l);
             let estado;
-            if (l.id) estado = t ? `Q ${breedQ(t.quality)} · IV ${t.ivTotal}/${IV_MAX}${t.breedingBox ? ' · na Breeding Box' : ''}${breedPlanned[l.id] ? ' · viagem pedida para cruzar' : ''}` : 'não está no box (lista não lida?)';
+            if (l.id) estado = t ? `Q ${breedQ(t.quality)} · IV ${t.ivTotal}/${IV_MAX}${t.breedingBox ? ' · na Breeding Box' : ''}${breedPlanned[l.id] ? ' · viagem pedida para cruzar' : ''}${breedLineDone(l, d) ? ` · ✅ concluída: chegou ao teto Q ${breedQ(breedMaxQ(d))}` : ''}` : 'não está no box (lista não lida?)';
             else if (l.eggId) estado = 'ovo chocando';
             else if (!lastPokesList.length) estado = '⚠ filho não identificado: o jogo ainda não mandou a lista de Pokémon (box grande demais? venda na mão)';
             else estado = '⚠ filho não identificado: escolha no menu';
@@ -4601,6 +4636,10 @@
         const out = [];
         breedLines(d).forEach((l, i) => {
             if (!l) return;
+            if (breedLineDone(l, d)) {   // v3.57.0: linhagem concluída — sem comida a listar
+                out.push({ text: `Linhagem ${i + 1} (${breedTrunk(l)?.name || l.name || '?'} Q ${breedQ(breedLineQ(l))}): ✅ concluída — chegou ao teto Q ${breedQ(breedMaxQ(d))}; não cruza mais e só quem sobe fica fora da venda (suba o teto para continuar)`, ok: true });
+                return;
+            }
             let t = breedTrunk(l), previa = '';
             if (!t) {
                 const q = Number(l.lastQ), iv = Number(l.lastIv), sp = Number(l.speciesId) || 0;
@@ -10174,6 +10213,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <label class="dn-field"><span>Linhagem 2</span><select id="pg-dn-breed-l2" class="dn-select"></select></label>
                         <div class="dn-row"><button type="button" class="dn-btn dn-btn--sm" id="pg-dn-breed-refresh">↻ Atualizar box e família</button></div>
                         <p class="dn-help">Menu vazio = o jogo ainda não mandou a lista do box (na hunt ele costuma não responder; na cidade responde). O IV e a distribuição por stat do filho vêm do pai de MAIOR quality, por isso a comida é sempre mais fraca; quem sobe vai sempre no Slot 1 e o script confere na cotação, antes de todo cruzamento, que o IV vem dele.</p>
+                        <div class="dn-inline">🏁 Parar quando quem sobe chegar a quality <input id="pg-dn-breed-maxq" class="dn-input dn-input--sm" type="number" min="0" step="0.01" placeholder="0 = sem teto"> <span class="dn-hint">(ex.: 1,95 — ao chegar lá a linhagem não cruza mais, avisa em Alertas e só quem sobe continua fora da venda: a comida da espécie volta às regras da aba Venda. Suba o teto para continuar.)</span></div>
                         <div class="dn-inline">🔒 Fora da venda e do depósito, por linhagem, até <input id="pg-dn-breed-keepmax" class="dn-input dn-input--sm" type="number" min="0" max="3000"> da espécie <span class="dn-hint">(0 = todos que ainda podem servir ou são tão bons quanto quem sobe)</span></div>
                         <p class="dn-help">Quem sobe nunca é vendido. Dos outros da espécie ficam guardados, até esse teto, primeiro quem serve de comida hoje (maior quality primeiro: serve por mais gerações), depois quem é tão bom quanto quem sobe; o resto segue as regras da aba Venda (shiny, nível > 1 e o piso de qualidade continuam valendo). Sem teto, com quem sobe de quality baixa, quase toda captura ficava guardada e o box enchia até o jogo parar de mandar a lista.</p>
                     </div>
@@ -10481,6 +10521,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 breedDouble: $('#pg-dn-breed-double').checked,
                 breedFoodBreed: $('#pg-dn-breed-foodbreed').checked,
                 breedFoodMinQ: breedFoodMinQ({ breedFoodMinQ: $('#pg-dn-breed-foodminq').value }),
+                breedMaxQ: breedMaxQ({ breedMaxQ: $('#pg-dn-breed-maxq').value }),   // v3.57.0
                 guildDonateGold: Math.max(0, parseInt($('#pg-dn-guild-donate').value, 10) || 0),
                 guildDonateKeep: Math.max(0, parseInt($('#pg-dn-guild-keep').value, 10) || 0),
                 guildTributeEnabled: $('#pg-dn-guild-tribute').checked,
@@ -11551,6 +11592,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-breed-double').checked = cfg.breedDouble !== false;
             $('#pg-dn-breed-foodbreed').checked = Boolean(cfg.breedFoodBreed);
             $('#pg-dn-breed-foodminq').value = breedFoodMinQ(cfg) || '';
+            $('#pg-dn-breed-maxq').value = breedMaxQ(cfg) || '';   // v3.57.0
             $('#pg-dn-guild-donate').value = Math.max(0, Number(cfg.guildDonateGold) || 0);
             $('#pg-dn-guild-keep').value = Math.max(0, Number(cfg.guildDonateKeep) || 0);
             $('#pg-dn-guild-tribute').checked = Boolean(cfg.guildTributeEnabled);
@@ -11662,7 +11704,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const slotAntes = JSON.stringify([cfg.slotEnabled, cfg.slotWanted]);
             const gymAntes = JSON.stringify([cfg.gymEnabled, cfg.gymBonus, cfg.gymRedo]);
             const invAntes = JSON.stringify([cfg.invJennyEnabled, cfg.invJennyOffer, cfg.invJennyKeep]);
-            const breedAntes = JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble, cfg.breedFoodBreed, cfg.breedFoodMinQ]);
+            const breedAntes = JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble, cfg.breedFoodBreed, cfg.breedFoodMinQ, cfg.breedMaxQ]);
             const guildAntes = JSON.stringify([cfg.guildDonateGold, cfg.guildDonateKeep, cfg.guildTributeEnabled, cfg.guildTributeKeep, cfg.guildAlerts, cfg.guildHuntEnabled, cfg.guildFishEnabled, cfg.guildFarmTribute, cfg.guildRouteOrder]);
             const capturaAntes = JSON.stringify([cfg.catchRouteEnabled, cfg.catchRouteAreas, cfg.catchRouteMaxLevel]);
             const viagemAntes = JSON.stringify([cfg.tripEveryMin, cfg.tripEveryMaxMin]);
@@ -11720,7 +11762,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 gymFailedAt = 0;
                 if (cfg.gymEnabled) setTimeout(() => gymTick(true), 500);
             }
-            if (JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble, cfg.breedFoodBreed, cfg.breedFoodMinQ]) !== breedAntes) { // breeding mudou: replaneja já
+            if (JSON.stringify([cfg.breedEnabled, cfg.breedLines, cfg.breedFoodIvMax, cfg.breedFamily, cfg.breedDouble, cfg.breedFoodBreed, cfg.breedFoodMinQ, cfg.breedMaxQ]) !== breedAntes) { // breeding mudou: replaneja já
                 breedReset();
                 if (cfg.breedEnabled) setTimeout(() => breedTick(true), 500);
             }
