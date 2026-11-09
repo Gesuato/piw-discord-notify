@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.57.0
+// @version      3.58.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.57.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.58.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -8117,6 +8117,17 @@
     //   03/11/2026, "quando morrer em um ginásio, tentar refazer somente 1 vez por dia"; até a v3.55.1 era 2 h dobrando até 24 h): espera
     //   fixa de 24 h por ginásio, gravada em `localStorage.pgDiscordNotifyGym` (é da conta, fora do cfg) — a recarga automática do painel
     //   zerava a memória e o ginásio era desafiado de novo no mesmo dia. Erro = 15 min antes de tentar de novo.
+    //   v3.58.0 — "Desafiar todos" (patch do jogo de 08/11/2026, botão ⚔️ "Desafiar todos (n/18)" da Jornada das Insígnias; bundle de
+    //   08/11/2026, formato ainda NÃO visto no log — `ginasio-todos-campos` registra as chaves): POST /api/game/gyms/challenge-all {} ->
+    //   { fought, won, lost, skipped, badgesEarned, badges, total, championOutfit, championLook, entries[{ gymId, city, leader, type,
+    //   status ('skipped' = pulado), won, badgeEarned, reason }] }. O servidor enfrenta TODOS os ginásios abertos (fora de cooldown) de uma
+    //   vez, no modo Insígnia, e pula os em cooldown. Por isso o script só o usa quando o conjunto de ginásios abertos é EXATAMENTE o
+    //   plano (`gymAllApplies`): ginásio aberto na espera de 24 h por derrota, ou já com insígnia e fora do plano (sem `gymRedo` ou com
+    //   bônus ainda em cooldown), faz a ida seguir um a um, como antes — senão o "todos" desafiaria o ginásio perdido ontem (regra do
+    //   usuário) ou refaria os já conquistados a cada viagem. Na prática: 1ª rodada de uma conta sem insígnias e o refazer das 18 a cada
+    //   48 h saem num pedido só. Sem `snapshot`/`log`, o log `ginasio-todos` traz só o resultado por ginásio; a resposta não diz o time do
+    //   líder (fica o `npcTeam` da leitura). Erro no "todos" = falha da ida (não repete um a um na hora: parte pode ter acontecido no
+    //   servidor); 2 erros seguidos (`GYM_ALL_MAX_FAILS`) = volta ao um a um nesta carga.
 
     const GYM_URL = '/api/game/gyms';
     const GYM_TICK_MS = 60 * 1000;
@@ -8127,6 +8138,7 @@
     const GYM_LOSS_KEEP_MS = 7 * 24 * 60 * 60 * 1000; // registro mais velho que isso é descartado na carga
     const GYM_BETWEEN_MS = [1200, 2500];         // entre desafios/resgates ("humano")
     const GYM_BONUS_RETRY_MS = 3000;             // v3.45.2: vitória sem bônus `claimable` na releitura: espera e relê mais uma vez
+    const GYM_ALL_MAX_FAILS = 2;                 // v3.58.0: erros seguidos do "Desafiar todos" até voltar a desafiar um a um nesta carga
 
     let gymState = null;        // última leitura (parseGymState)
     let gymFetchedAt = 0;
@@ -8138,6 +8150,8 @@
     let gymFieldsLogged = false;
     const gymLoss = gymLossLoad();   // id -> { at, n }: última derrota e derrotas seguidas (zera na vitória); v3.56.0: fica em localStorage
     let gymLossLogged = false;       // log `ginasio-derrota-lembrada` 1x por carga (no 1º tique, quando o log já existe)
+    let gymAllFails = 0;             // v3.58.0: erros seguidos do POST /challenge-all (zera quando ele responde)
+    let gymAllSeen = false;          // log `ginasio-todos-campos` 1x por carga
     let onGymChange = null;     // callback do painel
 
     function gymEnabled(d) { return Boolean((d || cfg).gymEnabled); }
@@ -8218,6 +8232,15 @@
             else out.desafiar.push(g);
         }
         return out;
+    }
+    // v3.58.0: o "Desafiar todos" do jogo enfrenta TODO ginásio aberto; só serve quando os abertos são exatamente os do plano.
+    function gymAllApplies(plan, st) {
+        st = st || gymState;
+        if (!plan || !plan.desafiar.length || !st) return false;
+        const now = Date.now();
+        const abertos = st.gyms.filter(g => g.enabled && g.cooldownUntil - now <= 0);
+        const ids = new Set(plan.desafiar.map(g => g.id));
+        return abertos.length === plan.desafiar.length && abertos.every(g => ids.has(g.id));
     }
     function gymWanted(d) {   // carona na viagem
         if (!gymEnabled(d) || gymWorking) return false;
@@ -8340,7 +8363,38 @@
             if (!gymState) return { ok: false, motivo: 'não consegui ler os ginásios' };
             let plan = gymPlan();
             if (!plan.desafiar.length && !plan.resgatar.length) return { ok: true, motivo: 'nenhum ginásio pronto (cooldown, derrota recente ou nada a fazer)' };
-            for (const g of plan.desafiar) {
+            let umAUm = plan.desafiar;
+            if (gymAllApplies(plan) && gymAllFails < GYM_ALL_MAX_FAILS) {   // v3.58.0: um pedido só para todos os abertos
+                try {
+                    const r = await gameApi(`${GYM_URL}/challenge-all`, { method: 'POST', body: '{}' });
+                    const entries = Array.isArray(r?.entries) ? r.entries : [];
+                    if (!gymAllSeen) { gymAllSeen = true; logEvent('ginasio-todos-campos', { chaves: r && typeof r === 'object' ? Object.keys(r) : null, entrada: entries[0] && typeof entries[0] === 'object' ? Object.keys(entries[0]) : null }); }
+                    const pulados = [];
+                    let ultimaVitoria = null;
+                    for (const e of entries) {
+                        const id = String(e?.gymId || '');
+                        if (!id) continue;
+                        const g = gymState.gyms.find(x => x.id === id) || { id, city: e?.city, leader: e?.leader, badge: '', npcTeam: [] };
+                        if (e?.status === 'skipped') { pulados.push({ id, motivo: String(e?.reason || 'pulado') }); continue; }
+                        const won = e?.won === true;
+                        const feito = { id, city: String(e?.city || g.city || id), badge: g.badge, won, badgeEarned: Boolean(e?.badgeEarned), outfit: false, defender: String(e?.leader || g.leader || '?'), npc: g.npcTeam, todos: true };
+                        desafios.push(feito);
+                        if (won) { delete gymLoss[id]; ultimaVitoria = feito; }
+                        else gymLoss[id] = { at: Date.now(), n: (gymLoss[id]?.n || 0) + 1 };
+                    }
+                    if (r?.championOutfit && ultimaVitoria) ultimaVitoria.outfit = true;
+                    gymLossSave();
+                    gymAllFails = 0;
+                    umAUm = [];
+                    logEvent('ginasio-todos', { pedidos: plan.desafiar.map(g => g.id), lutou: r?.fought ?? null, vitorias: r?.won ?? null, derrotas: r?.lost ?? null, pulados, insignias: r?.badges ?? null, novas: r?.badgesEarned ?? null, outfit: Boolean(r?.championOutfit), resultados: desafios.map(x => `${x.id}:${x.won ? 'V' : 'D'}`) });
+                } catch (err) {
+                    gymAllFails++;
+                    umAUm = [];   // parte dos desafios pode ter acontecido no servidor: não repete um a um nesta ida
+                    falhas.push({ id: 'todos', city: 'todos', motivo: `desafiar todos: ${err?.message || err}` });
+                    logEvent('ginasio-erro', { etapa: 'todos', erro: String(err?.message || err), seguidas: gymAllFails, pedidos: plan.desafiar.map(g => g.id) });
+                }
+            }
+            for (const g of umAUm) {
                 try {
                     const r = await gameApi(`${GYM_URL}/challenge`, { method: 'POST', body: JSON.stringify({ gymId: g.id, mode: 'badge' }) });
                     const won = r?.won === true;

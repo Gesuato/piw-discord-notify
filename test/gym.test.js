@@ -1,6 +1,6 @@
 // Ginásios (v3.45.0): lê a janela (GET /api/game/gyms) por prazo, pede viagem com ginásio pronto, na cidade desafia (modo Insígnia),
 // resgata a Recompensa bônus liberada pela vitória e avisa; derrota = tenta de novo só 1x por dia (v3.56.0, gravado em localStorage);
-// erro = 15 min antes de insistir.
+// erro = 15 min antes de insistir. v3.58.0: "Desafiar todos" (POST /challenge-all) quando os ginásios abertos são exatamente os do plano.
 // Rodar: node test/gym.test.js
 const { loadGymModule, assert } = require('./harness');
 
@@ -33,6 +33,22 @@ function mkServer(list, opts) {
             if (!o || o.method !== 'POST') { if (opts.failGet) throw new Error(opts.failGet); return raw(); }
             const b = JSON.parse(o.body); posts.push({ url: url.replace('/api/game/gyms', ''), body: b });
             const g = find(b.gymId);
+            if (url.endsWith('/challenge-all')) {   // v3.58.0: enfrenta todo ginásio aberto; em cooldown = pulado
+                if (opts.failAll) throw new Error(opts.failAll);
+                const entries = [];
+                let wonN = 0, lostN = 0, skipped = 0;
+                for (const x of st) {
+                    if (!x.enabled) continue;
+                    const base = { gymId: x.id, city: x.id, leader: LEADER[x.id] || 'Líder', type: 'ROCK' };
+                    if (x.cooldownMs > 0) { skipped++; entries.push(Object.assign(base, { status: 'skipped', won: false, badgeEarned: false, reason: `cooldown ${Math.ceil(x.cooldownMs / MIN)} min` })); continue; }
+                    const won = opts.won ? opts.won(x.id) : true;
+                    x.cooldownMs = 10 * MIN;
+                    if (won) { x.owned = true; x.bonus = Object.assign({}, x.bonus || {}, { state: 'claimable', cooldownMs: 0 }); wonN++; } else lostN++;
+                    entries.push(Object.assign(base, { status: won ? 'won' : 'lost', won, badgeEarned: won }));
+                }
+                const all = st.every(x => x.owned);
+                return { fought: wonN + lostN > 0, won: wonN, lost: lostN, skipped, badgesEarned: wonN, badges: st.filter(x => x.owned).length, total: st.length, championOutfit: opts.outfit && all && wonN > 0 ? true : undefined, entries };
+            }
             if (url.endsWith('/challenge')) {
                 if (opts.failChallenge && opts.failChallenge[b.gymId]) throw new Error(opts.failChallenge[b.gymId]);
                 const won = opts.won ? opts.won(b.gymId) : true;
@@ -184,10 +200,11 @@ const gets = (state) => state.calls.filter(c => c.method === 'GET').length;
 
     // 6) erro no desafio: falha registrada, aviso parcial, 15 min sem insistir; erro na leitura idem
     {
-        const srv = mkServer([{ id: 'pewter' }, { id: 'cerulean' }], { failChallenge: { pewter: 'Não foi possível desafiar agora.' } });
+        const srv = mkServer([{ id: 'pewter' }, { id: 'cerulean' }, { id: 'celadon', owned: true }], { failChallenge: { pewter: 'Não foi possível desafiar agora.' } });   // celadon aberto e fora do plano = um a um
         const { api, state, clock } = loadGymModule({ gymEnabled: true }, { api: srv.api });
         const r = await api.gymCityWork();
         assert(!r.ok && r.vitorias === 1 && r.falhas === 1 && /Pewter desafio: Não foi possível desafiar agora\./.test(r.motivo), 'resultado: ' + JSON.stringify(r));
+        assert(srv.posts.filter(p => p.url === '/challenge').length === 2 && !srv.posts.some(p => p.url === '/challenge-all'), 'um a um: ' + JSON.stringify(srv.posts.map(p => p.url)));
         assert(api.gymFailedAt === clock.now && /⚠ Pewter: desafio: Não foi possível/.test(state.hooks[0].desc) && /Ginásios \(parcial\)/.test(JSON.stringify(state.hooks[0])) === false || true, 'falha anotada');
         assert(state.logs.some(l => l[0] === 'ginasio-erro' && l[1].etapa === 'desafio'), 'log de erro');
         const n = gets(state);
@@ -241,5 +258,55 @@ const gets = (state) => state.calls.filter(c => c.method === 'GET').length;
         assert(rn.ok && /Viagem à cidade pedida: desafiar Pewter/.test(rn.msg), 'botão na hunt: ' + rn.msg);
     }
 
-    console.log('OK gym.test — leitura por prazo, plano (insígnia/bônus/cooldown), pedido de viagem, desafio + resgate na cidade, derrota 1x por dia (gravada em localStorage), redo/bonus, erros com 15 min, fechado, outfit, avisos, já na cidade = na hora + botão');
+    // 10) v3.58.0 "Desafiar todos": abertos == plano -> um POST /challenge-all; em cooldown = pulado; derrota lembrada; bônus das vitórias;
+    //     depois, com um ginásio aberto fora do plano (espera de 24 h por derrota), volta ao um a um
+    {
+        const srv = mkServer([{ id: 'pewter' }, { id: 'cerulean' }, { id: 'vermilion' }, { id: 'celadon', cooldownMs: 4 * MIN }], { won: (id) => id !== 'cerulean' });
+        const { api, state, clock } = loadGymModule({ gymEnabled: true }, { api: srv.api });
+        await api.gymTick(true);
+        assert(api.gymPlan().desafiar.map(g => g.id).join() === 'pewter,cerulean,vermilion', 'plano: ' + api.gymPlan().desafiar.map(g => g.id).join());
+        const r = await api.gymCityWork();
+        assert(r.ok && r.vitorias === 2 && r.derrotas === 1 && r.bonus === 2, 'resultado: ' + JSON.stringify(r));
+        const posts = () => srv.posts.map(p => p.url + (p.body.gymId ? ':' + p.body.gymId : '')).join();
+        assert(posts() === '/challenge-all,/bonus:pewter,/bonus:vermilion', 'POSTs: ' + posts());
+        assert(api.gymLoss.cerulean && api.gymLoss.cerulean.n === 1 && !api.gymLoss.pewter && JSON.parse(state.store[api.GYM_LOSS_KEY]).cerulean, 'derrota do "todos" lembrada: ' + JSON.stringify(api.gymLoss));
+        const todos = state.logs.find(l => l[0] === 'ginasio-todos')[1];
+        assert(todos.lutou === true && todos.vitorias === 2 && todos.derrotas === 1 && todos.pulados.length === 1 && todos.pulados[0].id === 'celadon' && /cooldown/.test(todos.pulados[0].motivo) && todos.resultados.join() === 'pewter:V,cerulean:D,vermilion:V', 'log ginasio-todos: ' + JSON.stringify(todos));
+        assert(state.logs.some(l => l[0] === 'ginasio-todos-campos' && l[1].chaves.includes('entries') && l[1].entrada.includes('gymId')), 'ginasio-todos-campos');
+        assert(!state.logs.some(l => l[0] === 'ginasio-desafio'), 'sem ginasio-desafio (não houve um a um)');
+        const d = state.hooks[0].desc;
+        assert(/2 vitórias, 1 derrota, 2 bônus/.test(state.hooks[0].content) && /✔ Pewter \(Brock\): insígnia \*\*Rocha\*\* conquistada/.test(d) && /✖ Cerulean \(Misty\): derrota — time do líder: Aerodactyl lv400/.test(d) && /🎁 Vermilion: 20x Rock Stone/.test(d), 'aviso: ' + d);
+        assert(/última ida .*2 vitórias, 1 derrota, 2 bônus/.test(api.gymStatus()), 'status: ' + api.gymStatus());
+        // 15 min depois: todos fora do cooldown; cerulean (aberto, na espera de 24 h) está fora do plano -> um a um, só celadon
+        srv.st.forEach(x => { x.cooldownMs = 0; });
+        clock.now += 15 * MIN;
+        srv.posts.length = 0;
+        await api.gymTick();
+        const p = api.gymPlan();
+        assert(p.desafiar.map(g => g.id).join() === 'celadon' && p.esperando.some(e => e.g.id === 'cerulean' && e.motivo === 'derrota'), 'plano 2: ' + JSON.stringify(p.desafiar.map(g => g.id)));
+        await api.gymCityWork();
+        assert(posts() === '/challenge:celadon,/bonus:celadon', 'um a um quando há aberto fora do plano: ' + posts());
+        // outfit pelo "todos": a 18ª (aqui a última) insígnia vem no `championOutfit` da resposta
+        const srvO = mkServer([{ id: 'pewter' }, { id: 'cerulean' }], { outfit: true });
+        const o = loadGymModule({ gymEnabled: true }, { api: srvO.api });
+        await o.api.gymCityWork();
+        assert(srvO.posts[0].url === '/challenge-all' && /Gym Champion Outfit/.test(o.state.hooks[0].desc) && o.api.gymLast.desafios.length === 2, 'outfit pelo todos: ' + o.state.hooks[0]?.desc);
+    }
+
+    // 10b) erro no "todos": falha da ida sem repetir um a um (parte pode ter acontecido no servidor); 2 erros seguidos = volta ao um a um
+    {
+        const srv = mkServer([{ id: 'pewter' }, { id: 'cerulean' }], { failAll: 'Não foi possível desafiar os ginásios agora.' });
+        const { api, state, clock } = loadGymModule({ gymEnabled: true }, { api: srv.api });
+        let r = await api.gymCityWork();
+        assert(!r.ok && r.falhas === 1 && r.vitorias === 0 && /desafiar todos: Não foi possível/.test(r.motivo) && srv.posts.map(p => p.url).join() === '/challenge-all', '1º erro: ' + JSON.stringify(r) + ' ' + JSON.stringify(srv.posts));
+        assert(api.gymFailedAt === clock.now && state.logs.some(l => l[0] === 'ginasio-erro' && l[1].etapa === 'todos' && l[1].seguidas === 1), 'erro anotado (15 min sem insistir)');
+        clock.now += api.GYM_RETRY_MS + MIN;
+        r = await api.gymCityWork();
+        assert(!r.ok && srv.posts.map(p => p.url).join() === '/challenge-all,/challenge-all', '2º erro ainda tenta o todos: ' + JSON.stringify(srv.posts.map(p => p.url)));
+        clock.now += api.GYM_RETRY_MS + MIN;
+        r = await api.gymCityWork();
+        assert(r.ok && r.vitorias === 2 && srv.posts.filter(p => p.url === '/challenge').length === 2, 'depois de 2 erros seguidos desafia um a um: ' + JSON.stringify(srv.posts.map(p => p.url)));
+    }
+
+    console.log('OK gym.test — leitura por prazo, plano (insígnia/bônus/cooldown), pedido de viagem, desafio + resgate na cidade, derrota 1x por dia (gravada em localStorage), redo/bonus, erros com 15 min, fechado, outfit, avisos, já na cidade = na hora + botão, "Desafiar todos" (um POST quando abertos == plano, pulados, erro = volta ao um a um)');
 })().catch(e => { console.error(e); process.exit(1); });

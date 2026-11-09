@@ -518,7 +518,13 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   painel zerava a memória e desafiava de novo no mesmo dia; log `ginasio-derrota-lembrada` no 1º tique. Nunca usa `mode:'leader'` nem `/abandon`. O farejador da v3.43.2 (`ginasio-rest` etc.) saiu. Logs `ginasio-campos`,
   `ginasio`, `ginasio-desafio`, `ginasio-bonus-estado` (v3.45.2: estado do bônus de cada vitória, com releitura extra de 3 s; v3.45.3: o bônus é
   resgatado LOGO depois de cada vitória — a recarga da página no meio da viagem matava a passada final de resgates),
-  `ginasio-bonus`, `ginasio-erro`, `ginasio-global`. Teste: `node test/gym.test.js` (`loadGymModule`:
+  `ginasio-bonus`, `ginasio-erro`, `ginasio-global`. v3.58.0 ("Desafiar todos", patch do jogo de 08/11/2026): `POST /api/game/gyms/challenge-all {}`
+  → `{ fought, won, lost, skipped, badgesEarned, badges, total, championOutfit, entries[{ gymId, city, leader, type, status, won, badgeEarned,
+  reason }] }` (bundle; formato ainda NÃO visto no log — `ginasio-todos-campos`) enfrenta TODO ginásio aberto; o script só o usa quando os abertos
+  são exatamente o plano (`gymAllApplies`): aberto na espera de 24 h por derrota ou já conquistado fora do plano = um a um como antes (senão o
+  "todos" desafiaria o perdido ontem ou refaria os conquistados a cada viagem). Erro no "todos" = falha da ida sem repetir um a um; 2 seguidos
+  (`GYM_ALL_MAX_FAILS`) = um a um na carga. Logs `ginasio-todos-campos`, `ginasio-todos { pedidos, lutou, vitorias, derrotas, pulados, resultados }`.
+  Casos 10/10b do teste. Teste: `node test/gym.test.js` (`loadGymModule`:
   `// ---- Ginásio (v3.45.0)` até `// ---- Auto Boss (v3.43.0)`; `init.api` responde GET/POST; `clock.now`).
 - Invasão Rocket (v3.50.0, aba própria 🚀 Invasão (`TABS` id `invasao`), `cfg.invEnabled`/`invHours`/`invKeepEnergy`/`invAlerts` +
   `invJennyEnabled`/`invJennyOffer`/`invJennyKeep`; módulo `// ---- Invasão Rocket` antes do Ginásio; patch notes e bundle de 27/10/2026,

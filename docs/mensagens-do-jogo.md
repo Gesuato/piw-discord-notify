@@ -394,14 +394,24 @@ luta é resolvida na hora pelo servidor e o HUD da arena (o mesmo do PvP) só an
 - `POST /api/game/gyms/bonus { gymId }` → `{ ok, itemId, name, qty, nextAvailableAt }` ("Recompensa bônus": 20x Rock/Water/Thunder/Leaf/
   Venom/Enigma/Fire/Earth/Feather/Cocoon/Heart/Darkness/Punch/Ice Stone ou 2x Metal/Ancient/Crystal Stone; "Disponível novamente a cada 48
   horas" = `bonus.cooldownMs` ≈ 172 800 000; depois `needWin` = "Vença o ginásio de novo"; antes da 1ª vitória `state:'locked'`, visto no log).
+- `POST /api/game/gyms/challenge-all {}` (v3.58.0; patch do jogo de 08/11/2026, botão ⚔️ "Desafiar todos (n/18)" da Jornada das Insígnias;
+  bundle de 08/11/2026, formato ainda NÃO visto no log — `ginasio-todos-campos` registra as chaves) → `{ fought, won, lost, skipped,
+  badgesEarned, badges, total, championOutfit, championLook, entries[{ gymId, city, leader, type, status ('skipped' = pulado), won,
+  badgeEarned, reason }] }`. Enfrenta TODOS os ginásios abertos de uma vez, no modo Insígnia, sem animação; os em cooldown são pulados
+  (`status:'skipped'` + `reason`); a tela mostra "Rodada concluída: N vitória(s), N derrota(s), N pulado(s)" e "insígnias ativas: n/18";
+  `fought:false` = "Nenhum ginásio disponível agora — todos em cooldown". A roupa de Campeão vem em `championOutfit`/`championLook`
+  (evento `poke:outfit` na tela). Não traz `snapshot` nem `log`.
 - `POST /api/game/gyms/abandon { gymId }` → deixa a liderança (perde o tempo de reinado; o script nunca usa).
 - Servidor → cliente: `gym-global` (anúncio global "assumiu/derrotou o ginásio de …", `hud.gymAnnounce.*`; o HUD segura 15 s depois
   de `pw:gym-challenge-pending`; log `ginasio-global`, ainda não visto). Histórico de diamantes tem a origem `GYM_PAYOUT`.
 - Script (v3.45.0, módulo `// ---- Ginásio`): lê a janela a cada 30 min ou quando um prazo vence; ginásio aberto sem insígnia (ou com
   bônus `needWin`, com `gymRedo`) fora do cooldown → tarefa `ginasio` da viagem à cidade: `POST /challenge { mode:'badge' }` um a um, relê,
   `POST /bonus` nos `claimable` (com `gymBonus`), avisa em Alertas. Derrota = só tenta de novo 1x por dia (v3.56.0: 24 h fixas em
-  `localStorage.pgDiscordNotifyGym`). Logs `ginasio-campos`, `ginasio`, `ginasio-desafio`, `ginasio-bonus`, `ginasio-erro`,
-  `ginasio-derrota-lembrada`. Teste: `node test/gym.test.js`.
+  `localStorage.pgDiscordNotifyGym`). v3.58.0: quando os ginásios abertos são EXATAMENTE os do plano (`gymAllApplies`), um só
+  `POST /challenge-all` no lugar do um a um (ginásio aberto na espera por derrota ou já conquistado e fora do plano = segue um a um, para
+  não desafiar o perdido ontem nem refazer os conquistados a cada viagem); erro no "todos" = falha da ida sem repetir um a um, 2 seguidos =
+  volta ao um a um na carga. Logs `ginasio-campos`, `ginasio`, `ginasio-desafio`, `ginasio-todos-campos`, `ginasio-todos`, `ginasio-bonus`,
+  `ginasio-erro`, `ginasio-derrota-lembrada`. Teste: `node test/gym.test.js`.
 
 ### Invasão Rocket (bundle em 27/10/2026, patch do mesmo dia; frames `invasion-*` CONFIRMADOS no log em 28/10/2026 01:00Z, conta1, janela das 22h BRT; feature na v3.50.0, entrada corrigida na v3.50.1)
 
