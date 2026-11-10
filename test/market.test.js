@@ -241,5 +241,34 @@ const base = () => ({ marketEnabled: true, marketEveryMin: 3, marketKeepGold: 0,
         assert(t && t.kind === 'item' && t.refId === 70000 && api.marketResolve({ item: 'Bronze Boss Token' }).refId === 70000 && api.marketResolve({ item: 'rare-candy' }).refId === 300, 'bronze_boss_token / rare-candy: ' + JSON.stringify(t));
     }
 
+    // 12) v3.59.0: compra de item marca "esperando a família" (persistido fora do cfg); bola não; `marketFamilyEntries` lista os itens
+    //     com reserva 0; `marketFamilyDeposited` zera; desligado (`marketToFamily: false`) nada disso vale
+    {
+        const cfg = Object.assign(base(), { marketToFamily: true });
+        cfg.marketList = [{ item: 'Rare Candy', qty: 100, max: 5000, cur: 'GOLD', got: 0 }, { item: 'Ultra Ball', qty: 5, max: 400, cur: 'GOLD', got: 0 }, { item: 'rare candy', qty: 1, max: 100, cur: 'GOLD', got: 0 }];
+        const listings = [{ id: 'L1', kind: 'item', refId: 300, name: 'Rare Candy', price: 4000, currency: 'GOLD', quantity: 10 }, { id: 'L2', kind: 'ball', refId: 4, name: 'Ultra Ball', price: 350, currency: 'GOLD', quantity: 5 }];
+        const { api, state } = loadMarketModule(cfg, { items: ITEMS, api: (url) => url.startsWith('/api/game/market?') ? { listings, mine: [] } : { ok: true, bought: 5 } });
+        assert(api.marketFamilyOn(cfg) && !api.marketFamilyWanted(), 'ligado, mas nada comprado ainda');
+        assert(JSON.stringify(api.marketFamilyEntries(cfg)) === JSON.stringify([{ id: 300, name: 'Rare Candy', keep: 0 }]), 'só itens (bola fora), sem repetir id: ' + JSON.stringify(api.marketFamilyEntries(cfg)));
+        assert(api.marketItemIds(cfg).has(300) && !api.marketItemIds(cfg).has(4), 'ids dos itens da lista');
+        await api.marketScan('teste');
+        assert(api.marketFamilyWanted() && Number(state.store.pgDiscordNotifyMarketFamily) > 0, 'compra de item feita: esperando a família (persistido): ' + JSON.stringify(state.store));
+        assert(/vai para a família na próxima viagem/.test(api.marketStatus(cfg)), 'status: ' + api.marketStatus(cfg));
+        api.marketFamilyDeposited();
+        assert(!api.marketFamilyWanted() && !('pgDiscordNotifyMarketFamily' in state.store), 'guardado: nada pendente');
+        // recarga com a compra pendente: continua pedindo
+        const { api: b } = loadMarketModule(Object.assign(base(), { marketToFamily: true }), { items: ITEMS, store: { pgDiscordNotifyMarketFamily: String(Date.now() - 1000) } });
+        assert(b.marketFamilyWanted(), 'pendência sobrevive à recarga');
+        // só bola comprada: não pede a família
+        const cb = Object.assign(base(), { marketToFamily: true, marketList: [{ item: 'Ultra Ball', qty: 5, max: 400, cur: 'GOLD', got: 0 }] });
+        const { api: c } = loadMarketModule(cb, { items: ITEMS, api: (url) => url.startsWith('/api/game/market?') ? { listings, mine: [] } : { ok: true, bought: 5 } });
+        await c.marketScan('teste');
+        assert(cb.marketList[0].got === 5 && !c.marketFamilyWanted() && !c.marketFamilyOn(cb), 'bola comprada não vai para a família');
+        // desligado
+        const cd = Object.assign(base(), { marketToFamily: false });
+        const { api: dd } = loadMarketModule(cd, { items: ITEMS, store: { pgDiscordNotifyMarketFamily: String(Date.now()) } });
+        assert(!dd.marketFamilyOn(cd) && !dd.marketFamilyEntries(cd).length && !dd.marketFamilyWanted() && dd.marketKeepsItem(300), 'desligado: nada para a família e o item segue segurado');
+    }
+
     console.log('market.test.js OK');
 })().catch(e => { console.error(e); process.exit(1); });

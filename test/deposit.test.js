@@ -136,5 +136,44 @@ const sellRule = (p) => (Number(p.ivTotal) < 30 ? null : 'poder alto');   // "ve
         assert(api.depositWanted(cfg) && api.depositWanted({ depositFamilyList: [{ name: 'X' }] }), 'só a lista já liga o guardar');
     }
 
-    console.log('OK deposit.test — drops para Depot/família, Pokémon não vendidos para a família, limite de movimentos, sem família e lista da família');
+    // 8) v3.59.0: itens comprados no Mercado Global vão para a família (reserva 0), mesmo sem lista da família e sem serem drop;
+    //    marketKeepsItem não segura mais; consumível e item do clã continuam ficando; depois marca a compra como guardada
+    {
+        const bag = [
+            { id: 300, name: 'Rare Candy', quantity: 40, category: 'misc' },
+            { id: 70000, name: 'Bronze Boss Token', quantity: 5, category: 'misc' },
+            { id: 8, name: 'Super Potion', quantity: 10, category: 'heal' },
+            { id: 120, name: 'Small Stone', quantity: 450, category: 'loot' },
+            { id: 7, name: 'Feather', quantity: 30, category: 'loot' },
+        ];
+        const mercado = [{ id: 300, name: 'Rare Candy', keep: 0 }, { id: 70000, name: 'Bronze Boss Token', keep: 0 }, { id: 8, name: 'Super Potion', keep: 0 }, { id: 120, name: 'Small Stone', keep: 0 }];
+        const init = { api: depotApi(bag), items: ITEMS, marketKeepsItem: (id) => mercado.some(e => e.id === Number(id)), marketFamilyOn: () => true, marketFamilyEntries: () => mercado.slice(), clanKeepsItem: (id) => id === 120 };
+        const cfg = {};
+        const { api, state } = loadDepositModule(cfg, init);
+        assert(api.depositWanted(cfg), 'só o Mercado → família já liga o guardar');
+        assert(api.depositList(cfg).length === 4 && api.depositList(cfg).every(e => e.mercado), 'lista = itens do mercado marcados como tal');
+        const r = await api.depositCityWork();
+        const it = state.family.filter(f => f.kind === 'item').map(f => [f.itemId, f.qty]);
+        assert(JSON.stringify(it) === JSON.stringify([[300, 40], [70000, 5]]), 'Rare Candy e token foram; poção (consumível), Small Stone (clã) e Feather (fora da lista) ficam: ' + JSON.stringify(it));
+        assert(r.itensFamilia.length === 2 && state.marketDeposited === 1, 'compra marcada como guardada: ' + JSON.stringify(r));
+        const log = state.logs.find(l => l[0] === 'guardar-cidade');
+        assert(log && JSON.stringify(log[1].mercado) === JSON.stringify(['Rare Candy', 'Bronze Boss Token', 'Super Potion', 'Small Stone']) && !log[1].lista.length, 'log separa a lista da família dos itens do mercado: ' + JSON.stringify(log && log[1]));
+        assert(/4 itens comprados no Mercado Global para a família/.test(api.depositStatus(cfg)), 'status fala dos itens do mercado: ' + api.depositStatus(cfg));
+        // lista da família com reserva vence a entrada do mercado para o mesmo id (não repete); desligado, marketKeepsItem segura como antes
+        const { api: a2, state: s2 } = loadDepositModule({ depositFamilyList: [{ id: 300, name: 'Rare Candy', keep: 10 }] }, Object.assign({}, init, { api: depotApi(bag.map(x => Object.assign({}, x))) }));
+        assert(a2.depositList().filter(e => e.id === 300).length === 1 && !a2.depositList().find(e => e.id === 300).mercado, 'id repetido: fica a entrada da família');
+        await a2.depositCityWork();
+        assert(JSON.stringify(s2.family.filter(f => f.kind === 'item').map(f => [f.itemId, f.qty])) === JSON.stringify([[300, 30], [70000, 5]]), 'reserva 10 da lista da família vale: ' + JSON.stringify(s2.family));
+        const off = Object.assign({}, init, { api: depotApi(bag.map(x => Object.assign({}, x))), marketFamilyOn: () => false, marketFamilyEntries: () => [] });
+        const { api: a3, state: s3 } = loadDepositModule({ depositItems: 'family' }, Object.assign(off, { store: { pgDiscordNotifyDrops: JSON.stringify([300, 7]) } }));
+        assert(a3.depositItemReason({ id: 300, quantity: 40 }, { id: 300, name: 'Rare Candy', category: 'misc' }) === 'pedido do Mercado Global', 'desligado: o pedido do mercado segura o item como até a v3.58.0');
+        await a3.depositCityWork();
+        assert(JSON.stringify(s3.family.filter(f => f.kind === 'item').map(f => f.itemId)) === JSON.stringify([7]) && !s3.marketDeposited, 'desligado: só Feather vai e a compra não é marcada como guardada: ' + JSON.stringify(s3.family));
+        // família sem movimento: a compra NÃO é marcada como guardada (a carona tenta de novo na próxima viagem)
+        const { api: a4, state: s4 } = loadDepositModule({}, Object.assign({}, init, { api: depotApi(bag.map(x => Object.assign({}, x))), family: { movesUsed: 50, movesCap: 50, frozen: false } }));
+        await a4.depositCityWork();
+        assert(!s4.family.length && !s4.marketDeposited, 'sem movimentos: nada move e a compra segue pendente');
+    }
+
+    console.log('OK deposit.test — drops para Depot/família, Pokémon não vendidos para a família, limite de movimentos, sem família, lista da família e itens do Mercado Global');
 })().catch(e => { console.error(e); process.exit(1); });

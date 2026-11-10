@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.58.0
+// @version      3.59.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.58.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.59.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -55,6 +55,7 @@
         marketEveryMaxMin: 0,   // v3.53.1 intervalo máximo; 0 ou <= mínimo = fixo; entre os dois é sorteado a cada leitura
         marketKeepGold: 0,      // gold que fica sempre na conta (não gasta abaixo disto)
         marketKeepDiamonds: 0,  // v3.53.1 diamonds que ficam sempre na conta (pedidos em diamantes)
+        marketToFamily: true,   // v3.59.0 o que o Mercado comprou vai para o depósito da família na próxima viagem à cidade (pedido do usuário em 10/11/2026)
         sellEnabled: false,     // vender drops marcados da hunt atual periodicamente
         sellEveryMin: 10,       // intervalo mínimo da venda automática (minutos)
         sellEveryMaxMin: 0,     // intervalo máximo; 0 ou <= mínimo = intervalo fixo. Entre os dois é sorteado
@@ -1193,7 +1194,10 @@
     // intervalo sorteado entre `marketEveryMin` e `marketEveryMaxMin`, compra o anúncio mais barato dentro do preço — na moeda do
     // pedido, nunca o próprio anúncio — até fechar a quantidade, respeitando as reservas `marketKeepGold`/`marketKeepDiamonds`; o
     // comprado (`got`) fica no cfg, como no Farm.
-    // Os itens da lista ficam fora da venda de drops e do guardar na cidade (`marketKeepsItem`). Avisos no canal de Alertas.
+    // Os itens da lista ficam fora da venda de drops (`marketKeepsItem`). Avisos no canal de Alertas.
+    // v3.59.0: com `marketToFamily` (padrão ligado) o comprado vai para o depósito da FAMÍLIA na próxima viagem à cidade — até a
+    // v3.58.0 `marketKeepsItem` também segurava o item no guardar, e o guardar genérico só leva drop de hunt, então o comprado
+    // nunca saía da mochila (pergunta do usuário em 10/11/2026). Ver `marketFamilyEntries`/`marketFamilyWanted` abaixo.
 
     const MARKET_URL = '/api/game/market?category=All';
     const MARKET_ACTION_URL = '/api/game/market/action';
@@ -1310,12 +1314,35 @@
         if (all.length) marketCatalog = all;
     }
     // Ids dos itens da lista: fora da venda de drops e do guardar na cidade enquanto o mercado está ligado.
-    function marketItemIds() {
+    function marketItemIds(d) {
         const ids = new Set();
-        for (const e of marketList()) { const r = marketResolve(e); if (r && r.kind === 'item') ids.add(r.refId); }
+        for (const e of marketList(d)) { const r = marketResolve(e); if (r && r.kind === 'item') ids.add(r.refId); }
         return ids;
     }
     function marketKeepsItem(id) { return marketOn() && marketItemIds().has(Number(id)); }
+    // v3.59.0: o que o Mercado compra vai para o depósito da FAMÍLIA na próxima viagem à cidade (pedido do usuário em 10/11/2026:
+    // "os itens comprados vão também para a família"). Os itens da lista (kind 'item'; bola não vai para a família) entram no
+    // "Guardar na cidade" como se estivessem na lista da família (reserva 0, `marketFamilyEntries`); a venda continua não vendendo
+    // (`marketKeepsItem`) e as outras travas (consumível, clã, profissão, guild, farm, Auto Boss, Invasão) seguem valendo lá.
+    // Compra feita e ainda não guardada fica em `pgDiscordNotifyMarketFamily` (FORA do cfg, sobrevive à recarga) e pede a carona
+    // `guardar` na viagem (`marketFamilyWanted`): sem outra tarefa, a viagem sai só para isso quando o relógio vence.
+    // `marketFamilyDeposited` zera depois de o guardar passar pela mochila com movimentos da família sobrando.
+    const MARKET_FAMILY_KEY = 'pgDiscordNotifyMarketFamily';
+    let marketFamilyPendingAt = marketFamilyLoad();
+    function marketFamilyLoad() { try { return Math.max(0, Number(localStorage.getItem(MARKET_FAMILY_KEY)) || 0); } catch { return 0; } }
+    function marketFamilySave() { try { if (marketFamilyPendingAt) localStorage.setItem(MARKET_FAMILY_KEY, String(marketFamilyPendingAt)); else localStorage.removeItem(MARKET_FAMILY_KEY); } catch { /* sem localStorage: vale só nesta carga */ } }
+    function marketFamilyOn(d) { d = d || cfg; return Boolean(d.marketToFamily) && marketItemIds(d).size > 0; }
+    // Itens da lista no formato da lista da família: [{ id, name, keep: 0 }], sem repetir id.
+    function marketFamilyEntries(d) {
+        d = d || cfg;
+        if (!marketFamilyOn(d)) return [];
+        const out = [], vistos = new Set();
+        for (const e of marketList(d)) { const r = marketResolve(e); if (r && r.kind === 'item' && !vistos.has(r.refId)) { vistos.add(r.refId); out.push({ id: r.refId, name: r.name, keep: 0 }); } }
+        return out;
+    }
+    function marketFamilyNoteBought() { marketFamilyPendingAt = Date.now(); marketFamilySave(); }
+    function marketFamilyDeposited() { if (!marketFamilyPendingAt) return; marketFamilyPendingAt = 0; marketFamilySave(); }
+    function marketFamilyWanted() { return marketFamilyOn() && marketFamilyPendingAt > 0; }
     function marketIsLimit(msg) { return /429|too many|rate|muitas|limite|aguarde/i.test(String(msg || '')); }
     // Quantas unidades a resposta da compra confirma. Formato não visto: `ok:false` = nada; `bought` numérico vale; senão o pedido.
     function marketBoughtFrom(resp, want) {
@@ -1404,6 +1431,7 @@
                     if (resp && resp.diamonds != null) marketNoteDiamonds(resp.diamonds);
                     if (got > 0 && (resp == null || (cur === 'DIAMONDS' ? resp.diamonds : resp.gold) == null)) marketSpend(cur, got * c.price);
                     e.got = marketGot(e) + got;
+                    if (got > 0 && r.kind === 'item') marketFamilyNoteBought();   // v3.59.0: a próxima viagem leva para a família
                     logEvent('mercado-compra', { item: r.name, kind: r.kind, refId: r.refId, moeda: marketCurName(cur), preco: c.price, pedido: want, comprado: got, total: `${marketGot(e)}/${marketQty(e)}`, anuncios: c.ids.length, gold: marketGold, diamonds: marketDiamonds, motivo, resposta: marketRespSummary(resp) });
                     compras.push({ item: r.name, qtd: got, preco: c.price, moeda: marketCurName(cur), feito: marketEntryDone(e), resposta: got === want ? undefined : marketRespSummary(resp) });
                     marketHistAdd({ item: r.name, qtd: got, pedido: want, preco: c.price, moeda: marketCurName(cur), total: got * c.price, erro: got > 0 ? undefined : 'o jogo não confirmou a compra' });
@@ -1473,6 +1501,7 @@
         else if (!cfg.marketEnabled) partes.push('liga ao salvar');
         else if (!list.length) partes.push('lista vazia');
         else partes.push(feitos >= list.length ? `${list.length} pedido(s) concluído(s)` : `${feitos}/${list.length} pedidos concluídos`);
+        if (marketFamilyOn(d)) partes.push(marketFamilyPendingAt ? 'compra na mochila: vai para a família na próxima viagem' : 'comprado vai para a família');   // v3.59.0
         if (marketRunning) partes.push('lendo o mercado…');
         else if (marketLast) partes.push(marketLast.erro ? `erro às ${marketHora(marketLast.at)}: ${marketLast.erro}` : `lido às ${marketHora(marketLast.at)} (${marketLast.anuncios} anúncios)`);
         else partes.push('mercado ainda não lido');
@@ -6453,6 +6482,8 @@
     //   Pokémon no "Depot comum" = o box: todo Pokémon fora do time já está lá (`poke-store` só tira do time). Por isso o
     //   destino dos Pokémon é só a família.
     // Roda como ÚLTIMA tarefa de toda viagem à cidade (depois de vender, comprar e do clã) e nunca pede viagem sozinho.
+    // v3.59.0: os itens dos pedidos do Mercado Global (`marketToFamily`, aba Mercado) entram na lista da família com reserva 0
+    //   (`depositList`): comprou, a próxima viagem guarda na família. Até então `marketKeepsItem` segurava o comprado na mochila.
     // Lista da família (v3.19.0, `depositFamilyList`): itens escolhidos pelo usuário (ex.: Devoted Token, Bronze Dimensional
     //   Key, Strange Pheromone, algumas stones) vão SEMPRE para a família, venham de onde vierem (drop, daily, boss), menos a
     //   reserva `keep` de cada um. Vão primeiro, antes dos Pokémon e dos drops, para não ficarem sem movimento no dia.
@@ -6498,7 +6529,18 @@
         const n = normalize(name || '');
         return familyList(d).find(e => (e.id && e.id === Number(id)) || (n && normalize(e.name) === n)) || null;
     }
-    function depositWanted(d) { d = d || cfg; return Boolean(d.depositItems || d.depositPokes || familyList(d).length); }
+    function depositWanted(d) { d = d || cfg; return Boolean(d.depositItems || d.depositPokes || familyList(d).length || (typeof marketFamilyOn === 'function' && marketFamilyOn(d))); }
+    // v3.59.0: lista da família + itens comprados no Mercado Global (`marketToFamily`), sem repetir id; os do mercado levam `mercado: true`.
+    function depositList(d) {
+        const lista = familyList(d);
+        const extra = typeof marketFamilyEntries === 'function' ? marketFamilyEntries(d) : [];
+        for (const e of extra) if (!lista.some(x => x.id === e.id)) lista.push(Object.assign({ mercado: true }, e));
+        return lista;
+    }
+    function depositListEntry(lista, id, name) {
+        const n = normalize(name || '');
+        return lista.find(e => (e.id && e.id === Number(id)) || (n && normalize(e.name) === n)) || null;
+    }
     // Motivo para um item da mochila NÃO ir para o depósito, ou null se vai.
     function depositItemReason(inv, item) {
         const id = Number(inv?.id ?? inv?.itemId);
@@ -6510,7 +6552,7 @@
         if (typeof profKeepsItem === 'function' && profKeepsItem(id)) return 'picture da profissão';   // v3.52.0
         if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) return 'tributo da guild';
         if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) return 'lista de farm';
-        if (typeof marketKeepsItem === 'function' && marketKeepsItem(id)) return 'pedido do Mercado Global';   // v3.53.0
+        if (typeof marketKeepsItem === 'function' && marketKeepsItem(id) && !(typeof marketFamilyOn === 'function' && marketFamilyOn())) return 'pedido do Mercado Global';   // v3.53.0 (v3.59.0: com marketToFamily vai para a família)
         if (typeof bossKeepsItem === 'function' && bossKeepsItem(id)) return 'token do Auto Boss';
         if (typeof invKeepsItem === 'function' && invKeepsItem(id)) return 'Rocket Plans (o jogo não deixa guardar)';   // v3.50.0
         return null;
@@ -6555,7 +6597,7 @@
         if (depositRunning) return { ok: false, motivo: 'já guardando' };
         depositRunning = true;
         const res = { itens: [], itensFamilia: [], pokes: [], erros: [] };
-        const lista = familyList();
+        const lista = depositList();   // v3.59.0: lista da família + itens comprados no Mercado Global
         let movs = Infinity;
         const familiaNaConta = () => movs > 0;
         const pararFamilia = (motivo) => FAMILY_STOP.test(motivo || '');
@@ -6574,20 +6616,20 @@
                 else movs = Math.max(0, lastFamily.movesCap - lastFamily.movesUsed);
                 if (lastFamily && !movs && !lastFamily.frozen) res.erros.push(`limite diário da família (${lastFamily.movesUsed}/${lastFamily.movesCap})`);
             }
-            let mochila = [], catalog = new Map();
+            let mochila = [], catalog = new Map(), mochilaOk = false;
             if (lista.length || cfg.depositItems) {
                 catalog = await loadItemsCatalog();
-                try { const dep = await gameApi(DEPOT_URL); mochila = Array.isArray(dep?.inventory) ? dep.inventory : []; }
+                try { const dep = await gameApi(DEPOT_URL); mochila = Array.isArray(dep?.inventory) ? dep.inventory : []; mochilaOk = true; }
                 catch (err) { res.erros.push(`mochila: ${err?.message || err}`); }
             }
             const feitos = new Set();
-            // 1) lista da família: o que o usuário escolheu, de qualquer origem, menos a reserva
+            // 1) lista da família: o que o usuário escolheu, de qualquer origem, menos a reserva (v3.59.0: + itens comprados no Mercado Global)
             if (lista.length && familiaNaConta()) {
                 for (const inv of mochila) {
                     const id = Number(inv?.id ?? inv?.itemId);
                     const item = catalog.get(id) || inv;
                     const nome = inv.name || item.name || `Item ${id}`;
-                    const e = familyListEntry(id, nome);
+                    const e = depositListEntry(lista, id, nome);
                     if (!e) continue;
                     feitos.add(id);
                     if (DEPOSIT_SKIP_CATS.includes(String(item?.category || inv?.category || ''))) continue;   // consumível nunca sai
@@ -6595,7 +6637,7 @@
                     if (typeof profKeepsItem === 'function' && profKeepsItem(id)) continue;   // v3.52.0: Rare Pokémon Picture da profissão
                     if (typeof guildKeepsItem === 'function' && guildKeepsItem(id)) continue;
                     if (typeof farmKeepsItem === 'function' && farmKeepsItem(id)) continue;
-                    if (typeof marketKeepsItem === 'function' && marketKeepsItem(id)) continue;   // v3.53.0: item comprado no Mercado Global
+                    if (typeof marketKeepsItem === 'function' && marketKeepsItem(id) && !(typeof marketFamilyOn === 'function' && marketFamilyOn())) continue;   // v3.53.0: item comprado no Mercado Global fica (v3.59.0: com marketToFamily vai para a família)
                     if (typeof bossKeepsItem === 'function' && bossKeepsItem(id)) continue;   // v3.43.1: token do Auto Boss pendente
                     if (typeof invKeepsItem === 'function' && invKeepsItem(id)) continue;     // v3.50.0: Rocket Plans (não vendem nem vão para a família)
                     const qty = Math.floor(Number(inv.quantity) || 0) - e.keep;
@@ -6607,6 +6649,8 @@
                     await depositSleep();
                 }
             }
+            // v3.59.0: o comprado no Mercado passou pela mochila com movimentos sobrando: a carona `guardar` não precisa mais sair
+            if (mochilaOk && familiaNaConta() && typeof marketFamilyDeposited === 'function' && typeof marketFamilyOn === 'function' && marketFamilyOn()) marketFamilyDeposited();
             // 2) Pokémon (só família), com a lista relida depois da venda
             if (cfg.depositPokes === 'family' && familiaNaConta()) {
                 await waitFrame(() => lastPokesAt, () => sendGame({ type: 'pokes-get' }), DEPOSIT_WAIT_MS);
@@ -6647,7 +6691,7 @@
             depositRunning = false;
         }
         lastDeposit = Object.assign({ at: Date.now() }, res);
-        logEvent('guardar-cidade', { itensDepot: res.itens, itensFamilia: res.itensFamilia, pokes: res.pokes, erros: res.erros, lista: lista.map(e => e.name), destinoItens: cfg.depositItems || null, destinoPokes: cfg.depositPokes || null, movimentosSobrando: Number.isFinite(movs) ? movs : null });
+        logEvent('guardar-cidade', { itensDepot: res.itens, itensFamilia: res.itensFamilia, pokes: res.pokes, erros: res.erros, lista: lista.filter(e => !e.mercado).map(e => e.name), mercado: lista.filter(e => e.mercado).map(e => e.name), destinoItens: cfg.depositItems || null, destinoPokes: cfg.depositPokes || null, movimentosSobrando: Number.isFinite(movs) ? movs : null });
         const movidos = res.itens.length + res.itensFamilia.length + res.pokes.length;
         if (movidos || res.erros.length) {
             const who = playerName();
@@ -6681,6 +6725,8 @@
         if (d.depositPokes === 'family') { const n = depositPokeCandidates(d).length; p.push(`${n} Pokémon iriam para a família agora`); }
         const lista = familyList(d);
         if (lista.length) p.push(`${lista.length} ${lista.length === 1 ? 'item escolhido' : 'itens escolhidos'} para a família`);
+        const mercado = typeof marketFamilyEntries === 'function' ? marketFamilyEntries(d) : [];   // v3.59.0
+        if (mercado.length) p.push(`${mercado.length} ${mercado.length === 1 ? 'item comprado' : 'itens comprados'} no Mercado Global para a família`);
         if (d.depositItems) p.push(`drops ${d.depositItems === 'depot' ? 'para o Depot' : 'para a família'} (${droppedIds.size} tipos de drop conhecidos)`);
         let txt = `Na próxima viagem: ${p.join(' · ')}.`;
         if (lastDeposit) txt += ` Última (${new Date(lastDeposit.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}): ${lastDeposit.itensFamilia.length + lastDeposit.itens.length} itens, ${lastDeposit.pokes.length} Pokémon${lastDeposit.erros.length ? `, ⚠ ${lastDeposit.erros[0]}` : ''}.`;
@@ -6752,7 +6798,8 @@
         const breeding = typeof breedWanted === 'function' && breedWanted();
         const ginasio = typeof gymWanted === 'function' && gymWanted(d);
         const profissao = typeof profWantsCity === 'function' && profWantsCity(d);   // v3.52.0
-        return { drops, pokes, bolas, cla, suprimentos, slot, time, breeding, ginasio, profissao, nada: !drops && !pokes && !bolas && !cla && !suprimentos && !slot && !time && !breeding && !ginasio && !profissao };
+        const mercado = typeof marketFamilyWanted === 'function' && marketFamilyWanted();   // v3.59.0: comprado esperando a família
+        return { drops, pokes, bolas, cla, suprimentos, slot, time, breeding, ginasio, profissao, mercado, nada: !drops && !pokes && !bolas && !cla && !suprimentos && !slot && !time && !breeding && !ginasio && !profissao && !mercado };
     }
     function tripLoadText(l) {
         const p = [];
@@ -6766,6 +6813,7 @@
         if (l.ginasio) p.push('ginásios (desafiar/bônus)');
         if (l.time) p.push('ler o time (a lista nunca veio; o jogo só responde na cidade)');
         if (l.breeding) p.push('breeding (cruzar)');
+        if (l.mercado) p.push('guardar na família o comprado no Mercado Global');
         if (p.length && typeof depositWanted === 'function' && depositWanted()) p.push('guardar o resto');
         return p.length ? `Vai levar: ${p.join(', ')}` : 'Nada para levar por enquanto';
     }
@@ -6836,7 +6884,9 @@
             else if (key === 'breeding') tarefas.push({ key, run: () => breedCityWork() });
         }
         // Guardar na cidade (v3.18.0): última tarefa de toda viagem que tenha outra coisa a fazer.
-        if (tarefas.length && typeof depositWanted === 'function' && depositWanted()) tarefas.push({ key: 'guardar', run: () => depositCityWork() });
+        // v3.59.0: compra do Mercado Global esperando a família = viagem só para guardar (carona 'guardar' de tripAugment).
+        const soGuardar = needs.some(([key]) => key === 'guardar');
+        if ((tarefas.length || soGuardar) && typeof depositWanted === 'function' && depositWanted()) tarefas.push({ key: 'guardar', run: () => depositCityWork() });
         return tarefas;
     }
 
@@ -6920,6 +6970,7 @@
         if (!has('ginasio') && typeof gymWanted === 'function' && gymWanted()) needs.push(['ginasio', { dados: null, motivo: 'carona' }]);
         if (!has('jenny') && typeof invJennyWanted === 'function' && invJennyWanted()) needs.push(['jenny', { dados: null, motivo: 'carona' }]);
         if (!has('breeding') && typeof breedWanted === 'function' && breedWanted()) needs.push(['breeding', { dados: null, motivo: 'carona' }]);
+        if (!has('guardar') && typeof marketFamilyWanted === 'function' && marketFamilyWanted()) needs.push(['guardar', { dados: null, motivo: 'itens comprados no Mercado Global para a família' }]);   // v3.59.0
         return needs;
     }
 
@@ -9966,7 +10017,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             `Avisos: ${d.notifyEveryCapture ? 'toda captura' : (d.watchList && d.watchList.length ? `lista (${d.watchList.length})` : 'todas')}${d.notifyShiny ? ' + shiny' : ''}${d.lockNotified ? ' + 🔒' : ''}${d.familyNotified ? ' + 📦' : ''}`,
             `Bolas: ${!((Number(d.ballsMin) || 0) > 0 || d.autoBuy) ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}${supplyOn(d) ? ` · refil: ${supplySlots(d).map(s => `${s.name} < ${s.min}`).join(', ')}` : ''}${d.healJoyEnabled ? ' · Joy' : ''}${d.cityIdleEnabled ? ` · volta da cidade ${Number(d.cityIdleMin) || IDLE_MIN_DEFAULT} min${idleDefaultSlug(d) ? ` (padrão ${idleDefaultSlug(d)})` : ''}` : ''}`,
             `Venda: ${[d.sellEnabled ? (d.sellRule ? `drops comuns até ${sellRuleMaxPrice(d) ? `${fmtNum(sellRuleMaxPrice(d))} gold` : 'qualquer preço'}${Object.keys(d.sellItems || {}).length ? ` + ${Object.keys(d.sellItems || {}).length} marcados` : ''}` : `${Object.keys(d.sellItems || {}).length} drops marcados`) : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades${pokeSellKeepQ(d) ? `, guarda ≥ ${pokeSellKeepQ(d)}` : ''})` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
-            `Mercado: ${d.marketEnabled ? (marketList(d).length ? `${marketList(d).filter(marketEntryDone).length}/${marketList(d).length} pedidos, a cada ${marketEveryRange(d).min}${marketEveryRange(d).max > marketEveryRange(d).min ? `–${marketEveryRange(d).max}` : ''} min${marketKeepGold(d) ? `, reserva ${marketKeepGold(d).toLocaleString('pt-BR')} gold` : ''}${marketKeepDiamonds(d) ? `, reserva ${marketKeepDiamonds(d)} diamonds` : ''}` : 'sem pedido') : 'desligado'}`,
+            `Mercado: ${d.marketEnabled ? (marketList(d).length ? `${marketList(d).filter(marketEntryDone).length}/${marketList(d).length} pedidos, a cada ${marketEveryRange(d).min}${marketEveryRange(d).max > marketEveryRange(d).min ? `–${marketEveryRange(d).max}` : ''} min${marketKeepGold(d) ? `, reserva ${marketKeepGold(d).toLocaleString('pt-BR')} gold` : ''}${marketKeepDiamonds(d) ? `, reserva ${marketKeepDiamonds(d)} diamonds` : ''}${d.marketToFamily ? ', comprado → família' : ''}` : 'sem pedido') : 'desligado'}`,
             `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? `daily sozinha (${dailyAreas(d).join('+')})` : 'daily') : '', d.giftEnabled ? 'gift' : '', d.evolveEnabled ? 'evolução' : '', d.slotEnabled ? 'slot machine' : '', bossOn(d) ? `auto boss${d.bossResumeOnLoss ? ' (até após derrota)' : ''}` : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : '', profOn(d) ? `profissão ${[d.profRankupEnabled ? 'rank up' : '', d.profRoute ? 'caça' : ''].filter(Boolean).join(' + ')}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Breeding: ${d.breedEnabled ? `${breedActiveLines(d).length} ${breedActiveLines(d).length === 1 ? 'linhagem' : 'linhagens'}${d.breedDouble ? ' + dobrar' : ''}${d.breedFoodBreed ? ' + cria comida' : ''}` : 'desligado'}`,
@@ -10329,6 +10380,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <textarea id="pg-dn-market-list" class="dn-textarea" rows="4" placeholder="1 Poke Ball 300 gold&#10;100 Rare Candy 5.000 gold&#10;10 Fire Stone 50k gold&#10;5 Rare Candy 40 diamantes" spellcheck="false"></textarea>
                         <div class="dn-inline">Conferir a cada <input id="pg-dn-market-min" class="dn-input dn-input--sm" type="number" min="1" step="1" placeholder="3" aria-label="mínimo"> a <input id="pg-dn-market-max" class="dn-input dn-input--sm" type="number" min="0" step="1" placeholder="0" aria-label="máximo"> min (sorteado)</div>
                         <div class="dn-inline">Deixar na conta <input id="pg-dn-market-keep" class="dn-input dn-input--sm" type="number" min="0" step="1000" placeholder="0"> gold e <input id="pg-dn-market-keep-dia" class="dn-input dn-input--sm" type="number" min="0" step="1" placeholder="0"> diamonds</div>
+                        <label class="dn-toggle"><input id="pg-dn-market-family" type="checkbox"><span class="sw"></span>Guardar o que comprar no depósito da família (na próxima viagem à cidade)</label>
+                        <p class="dn-help">Comprou, foi para a família: a próxima viagem à cidade leva os itens dos pedidos acima para o depósito da família (reserva 0), como a lista de Venda → Guardar na cidade. Sem outra tarefa, a viagem sai só para isso quando o relógio da viagem vencer. Ficam na mochila: bolas e consumíveis (poção, revive, berry) e item que o clã, a profissão, a guild, o farm, o Auto Boss ou a Invasão estão usando. Desligado, o comprado fica na mochila e nunca é vendido.</p>
                         <div class="dn-status col"><div id="pg-dn-market-status"></div><ol class="dn-route" id="pg-dn-market-items"></ol></div>
                         <div class="dn-actions">
                             <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-market-now" title="Lê o mercado agora e compra o que estiver dentro do preço (vale com o módulo desligado).">Conferir agora</button>
@@ -10623,6 +10676,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 marketEveryMaxMin: Math.max(0, parseInt($('#pg-dn-market-max').value, 10) || 0),
                 marketKeepGold: Math.max(0, parseInt($('#pg-dn-market-keep').value, 10) || 0),
                 marketKeepDiamonds: Math.max(0, parseInt($('#pg-dn-market-keep-dia').value, 10) || 0),
+                marketToFamily: $('#pg-dn-market-family').checked,   // v3.59.0
                 mentionUserId: $('#pg-dn-mention').value.trim(),
                 cooldownSeconds: Math.max(0, parseInt($('#pg-dn-cooldown').value, 10) || 0),
                 debug: $('#pg-dn-debug').checked,
@@ -11588,6 +11642,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-market-max').value = Number(cfg.marketEveryMaxMin) || 0;
             $('#pg-dn-market-keep').value = Number(cfg.marketKeepGold) || 0;
             $('#pg-dn-market-keep-dia').value = Number(cfg.marketKeepDiamonds) || 0;
+            $('#pg-dn-market-family').checked = cfg.marketToFamily !== false;   // v3.59.0
             $('#pg-dn-sell').checked = Boolean(cfg.sellEnabled);
             $('#pg-dn-sell-rule').checked = Boolean(cfg.sellRule);
             $('#pg-dn-sell-rule-max').value = sellRuleMaxPrice(cfg);

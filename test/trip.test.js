@@ -191,5 +191,32 @@ const MIN = 60 * 1000;
         assert(sb.sent.filter(o => o.type === 'leave-hunt').length === 1 && !sb.logs.some(l => l[0] === 'viagem-hunt-no-meio'), 'viagem normal: um leave-hunt só');
     }
 
-    console.log('OK trip.test — pedidos juntos numa viagem, ida pela tela ou manual, intervalo, cidade, volta e falhas');
+    // v3.59.0: compra do Mercado Global esperando a família = carona 'guardar' e viagem SÓ para guardar quando o relógio vence
+    {
+        const { api, state, clock } = loadTripModule({ tripCity: 'cerulean', tripEveryMin: 10, tripMinGapMin: 3 }, { huntSlug: 'pidgey', depositWanted: true, marketFamily: true });
+        state.onTeleport = () => api.tripOnSetCity();
+        api.restartTripCycle();   // como na carga do script: o relógio começa agora
+        const load = api.tripLoad();
+        assert(load.mercado === true && !load.nada && /guardar na família o comprado no Mercado Global/.test(api.tripLoadText(load)), 'carga da viagem mostra o comprado: ' + api.tripLoadText(load));
+        await api.tripTick();
+        assert(!state.tasks.length && !state.sent.length, 'relógio não venceu: não viaja só por isso');
+        clock.now = api.tripDueAt() + 1;
+        await api.tripTick();
+        assert(state.tasks.map(t => t[0]).join(',') === 'guardar', 'viagem só com o guardar: ' + state.tasks.map(t => t[0]));
+        assert(state.switches.length === 1 && state.switches[0].slug === 'pidgey', 'voltou para a hunt');
+        // sem compra pendente e sem outra tarefa: o guardar sozinho não gera viagem (como antes)
+        const { api: b, state: sb, clock: cb } = loadTripModule({ tripCity: 'cerulean', tripEveryMin: 10 }, { huntSlug: 'pidgey', depositWanted: true, marketFamily: false });
+        b.restartTripCycle();
+        cb.now = b.tripDueAt() + 1;
+        await b.tripTick();
+        assert(!sb.tasks.length && !sb.sent.length, 'nada a levar: fica na hunt');
+        // com outra tarefa, o guardar continua sendo a última
+        const { api: c, state: sc } = loadTripModule({ tripCity: 'cerulean', tripMinGapMin: 3 }, { huntSlug: 'pidgey', depositWanted: true, marketFamily: true });
+        sc.onTeleport = () => c.tripOnSetCity();
+        c.tripRequest('bolas', { id: 4, qty: 0, min: 1 }, 'acabou');
+        await c.tripTick();
+        assert(sc.tasks.map(t => t[0]).join(',') === 'bolas,guardar', 'bolas e depois guardar: ' + sc.tasks.map(t => t[0]));
+    }
+
+    console.log('OK trip.test — pedidos juntos numa viagem, ida pela tela ou manual, intervalo, cidade, volta, falhas e viagem só para guardar');
 })().catch(e => { console.error(e); process.exit(1); });

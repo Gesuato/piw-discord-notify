@@ -119,7 +119,14 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   espera 10 min): mais barato primeiro, na MOEDA do pedido, nunca o próprio anúncio (`mine`), reserva por moeda (`marketGold` vem do
   frame `balls`, que traz `gold`, e da resposta; `marketDiamonds` de `GET /api/game/diamonds` antes de toda leitura com pedido em
   diamantes), até 6 compras por leitura; `got` fica no cfg (`saveCfg`).
-  `marketKeepsItem` tira os itens da lista da venda e do guardar. Botões "Conferir agora" (vale desligado) e "Zerar contagem". v3.53.3:
+  `marketKeepsItem` tira os itens da lista da venda. v3.59.0 (pergunta do usuário em 10/11/2026, "por que o comprado não vai para a
+  família?"): `cfg.marketToFamily` (aba Mercado, "Guardar o que comprar no depósito da família", padrão LIGADO) — os itens dos pedidos
+  (kind `item`; bola não) entram no Guardar na cidade como lista da família com reserva 0 (`marketFamilyEntries` → `depositList` no
+  módulo Guardar; `depositWanted` passa a valer só com isso); as outras travas (consumível, clã, profissão, guild, farm, boss, invasão)
+  seguem. Compra de item ainda não guardada fica em `localStorage.pgDiscordNotifyMarketFamily` (fora do cfg; `marketFamilyNoteBought`/
+  `marketFamilyDeposited`/`marketFamilyWanted`) e pede a carona `guardar` em `tripAugment`; `tripTasksFor` aceita viagem SÓ com o guardar
+  (antes só ia no fim de outra tarefa). Desligado = comportamento antigo (fica na mochila, nunca vende). Casos: deposit.test 8,
+  market.test 12, trip.test (último). Botões "Conferir agora" (vale desligado) e "Zerar contagem". v3.53.3:
   "🧾 Últimas compras" na aba (compras e falhas, 30 por conta, em `localStorage.pgDiscordNotifyMarket` — FORA do cfg, não entra no
   Exportar/Importar; `marketHistAdd`/`marketHistory`; botão "Limpar últimas compras"). Logs
   `mercado-campos`, `mercado`, `mercado-compra`, `mercado-erro`, `mercado-zerado`. Teste: `node test/market.test.js` (`loadMarketModule`).

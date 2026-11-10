@@ -395,6 +395,10 @@ function loadTripModule(cfg, init) {
         autoBuyBalls: (id, qty, min) => { state.tasks.push(['bolas', { id, qty, min }]); return Promise.resolve(init.bolas || { ok: true, bought: 100 }); },
         supplyLow: () => init.supplyLow || [],
         supplyCityWork: () => { state.tasks.push(['suprimentos', {}]); return Promise.resolve(init.suprimentos || { ok: true, compras: [] }); },
+        // v3.59.0: guardar na cidade e compra do Mercado Global esperando a família (`init.depositWanted`, `init.marketFamily`)
+        depositWanted: () => Boolean(init.depositWanted),
+        depositCityWork: () => { state.tasks.push(['guardar', {}]); return Promise.resolve(init.guardar || { ok: true, itens: [], itensFamilia: ['3x Rare Candy'], pokes: [], erros: [] }); },
+        marketFamilyWanted: () => Boolean(init.marketFamily),
         setTimeout: (fn, ms) => { clock.now += ms; fn(); return 1; },
         Date: FakeDate,
     };
@@ -513,13 +517,18 @@ function loadDepositModule(cfg, init) {
         pokeLabel: (p) => `${p.name} ${p.ivTotal}`,
         clanKeepsItem: init.clanKeepsItem || (() => false),
         clanKeepsSpecies: () => false,
+        // v3.59.0: Mercado Global (itens comprados para a família); por padrão desligado, como sem o módulo
+        marketKeepsItem: init.marketKeepsItem || (() => false),
+        marketFamilyOn: init.marketFamilyOn || (() => false),
+        marketFamilyEntries: init.marketFamilyEntries || (() => []),
+        marketFamilyDeposited: () => { state.marketDeposited = (state.marketDeposited || 0) + 1; },
         localStorage: { getItem: (k) => (k in state.store ? state.store[k] : null), setItem: (k, v) => { state.store[k] = String(v); }, removeItem: (k) => { delete state.store[k]; } },
         setTimeout: (fn, ms) => { clock.now += ms; fn(); return 1; },
         Date: FakeDate,
     };
     const factory = new Function(...Object.keys(ctx), 'let lastFamily = null, lastFamilyAt = 0, lastPokesList = [], lastPokesAt = 0;\n' + mod + `
         return {
-            depositCityWork, depositPokeCandidates, depositItemReason, depositWanted, depositStatus, noteDepositDrop,
+            depositCityWork, depositPokeCandidates, depositItemReason, depositWanted, depositStatus, noteDepositDrop, depositList,
             _set: { family(f) { lastFamily = f; lastFamilyAt++; }, pokes(l) { lastPokesList = l; lastPokesAt++; } },
             get droppedIds() { return droppedIds; },
         };`);
@@ -1504,6 +1513,7 @@ function loadMarketModule(cfg, init) {
         return {
             parseMarketLine, parseMarketText, marketParsePrice, marketList, marketOn, marketPending, marketResolve, marketKeepsItem, marketScan, marketTick,
             marketNow, marketReset, marketRearm, marketStatus, marketOnBalls, marketNoteGold, marketNoteDiamonds, marketEntryDone, marketLineText, marketCur, marketEveryRange, marketEveryMs, marketHistory, marketHistClear, marketNoteCatalog,
+            marketItemIds, marketFamilyOn, marketFamilyEntries, marketFamilyWanted, marketFamilyDeposited,
             get marketDiamonds() { return marketDiamonds; }, get marketGold() { return marketGold; }, get marketNextAt() { return marketNextAt; }, get marketLast() { return marketLast; }, get marketRunning() { return marketRunning; },
         };`);
     const api = factory(...Object.values(ctx));

@@ -36,6 +36,7 @@ Pokémon, usar o Mercado Global nem o Depot **durante a hunt**. Por isso toda ve
 
 | O quê | Como | Quando |
 |---|---|---|
+| Comprado → família (v3.59.0, `marketToFamily`) | viagem à cidade → tarefa `guardar` (`family-action item deposit` pelo socket) com os itens dos pedidos como lista da família (reserva 0) | carona `guardar` enquanto houver compra de item ainda não guardada (`pgDiscordNotifyMarketFamily`); sem outra tarefa, a viagem sai só para isso quando o relógio vence |
 | Mercado Global (v3.53.0) | `GET /api/game/market?category=All` (v3.53.4; `Items` deixava bolas, pedras e TMs de fora) + `POST /api/game/market/action { action:'buy-stack', ... }` (REST, SEM viagem: o jogo deixa comprar na hunt); `GET /api/game/diamonds` antes de cada leitura com pedido em diamantes | intervalo sorteado em `marketEveryMin`–`marketEveryMaxMin` (padrão 3 min fixo) enquanto houver pedido pendente; 8 s após a carga; no Salvar; botão "Conferir agora"; 429 = espera 10 min |
 
 ## 💰 Venda
