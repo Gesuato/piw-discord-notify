@@ -528,6 +528,14 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `auto-boss-saida { tela, chegouPelaTela }`); 2 retomadas aceitas sem luta (`BOSS_RELOAD_AFTER_NO_FIGHT`) = `doReload` (1x/15 min,
   `reloadAt` na intenção, log `auto-boss-recarga`); na carga nova (`fresh`) o 1º "nada rodando" não conta como luta que não começou.
   Caso 13 do teste.
+  v3.61.0 (pedido do usuário em 11/11/2026, conta4 com 300 tokens): o jogo aceita no máx. 100 lutas por pedido. `cfg.bossRepeat` (aba Boss,
+  "Repetir até acabar as fichas", padrão LIGADO): `done` vira fim de bloco (`bossNextBlock`: placar somado em `bossWanted.acc`, persistido;
+  `bossLastActive` zerado) e o próximo bloco de 100 sai pelo fluxo da retomada com motivo `bloco` (`bossQuiet`: não conta retomada nem avisa)
+  8 s depois; sem token na mochila ou `no-token` no bloco = `bossFinish('no-token')` limpo, sem "desisti". `cfg.bossReturnHunt` ("Voltar para a
+  hunt quando acabar", padrão LIGADO): `bossGoBack` no fim (concluído, sem tokens, desistiu de vez; derrota só sem a cura na Joy; "Parar" não)
+  manda `joy-heal` + `switchHunt(slug, 1, 'boss-volta')` 5 s depois para `from` (hunt de onde o Iniciar do painel saiu) ou `idleTarget()`;
+  "Esperar na cidade" recusa. Logs `auto-boss-bloco`, `auto-boss-volta`; o aviso do fim diz "em N blocos". Caso 14 do teste (harness:
+  `bossRepeat`/`bossReturnHunt` desligados por padrão, `init.idleSlug`, `state.switches`).
 - Ginásios (v3.45.0, aba própria 🏟 Ginásio (`TABS` id `ginasio`), `cfg.gymEnabled`/`gymBonus`/`gymRedo`/`gymAlerts`; módulo `// ---- Ginásio` antes do
   Auto Boss; protocolo CONFIRMADO no log em 21/10/2026 na conta3, `docs/mensagens-do-jogo.md` → "Ginásio"): 18 ginásios (8 Kanto + 10
   Johto), tudo por REST — `GET /api/game/gyms` (`details[].owned/cooldownMs/bonus.state/npcTeam`, `badges/total`, `badgePerk` = +1% XP

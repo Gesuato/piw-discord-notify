@@ -41,7 +41,7 @@ const rica = {
   // v3.50.0 (Invasão Rocket)
   invEnabled: true, invHours: '0, 12, 20', invKeepEnergy: 2, invAlerts: false, invJennyEnabled: true, invJennyOffer: 'ball', invJennyKeep: 400,
   // v3.43.0 (Auto Boss)
-  bossResumeEnabled: false, bossResumeOnLoss: true, bossAlerts: false,
+  bossResumeEnabled: false, bossResumeOnLoss: true, bossAlerts: false, bossRepeat: false, bossReturnHunt: false,
   // v3.29.0 (Breeding)
   // v3.31.0 (Guild)
   guildDonateGold: 500000, guildDonateKeep: 2000000, guildTributeEnabled: true, guildTributeKeep: 5, guildAlerts: true, guildHuntEnabled: false, guildFishEnabled: false, guildFarmTribute: false, guildRouteOrder: ['fish', 'tributo', 'kill'], // rota da guild é excludente com a rota de treino do fixture

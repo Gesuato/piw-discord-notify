@@ -463,5 +463,86 @@ const frame = (o) => Object.assign({ type: 'auto-boss', bossKey: 'cruel', bossNa
         assert(b.api.wanted().noFight === 0 && b.api.wanted().fought, 'luta começou');
     }
 
+    // 14) v3.61.0 — 300 tokens: blocos de 100 em sequência até acabar; no fim volta para a hunt de antes
+    {
+        const { api, state } = loadBossModule({ bossRepeat: true, bossReturnHunt: true }, { huntSlug: 'enraged_typhlosion' });
+        state.onSend = (o) => api.onOutgoing(o);
+        const bloco = async (tokens, esperado) => {
+            api.setHunt(null);
+            await state.fire(api.BOSS_LEAVE_WAIT_MS);
+            await state.fire(api.BOSS_HEAL_WAIT_MS);
+            api.onInventory([{ itemId: 70000, quantity: tokens }]);
+            await api.flush();
+            const starts = state.sent.filter(s => s.type === 'auto-boss-start');
+            assert(starts[starts.length - 1].count === esperado, `pediu ${esperado}: ` + JSON.stringify(starts));
+            api.onFrame(frame({ active: true, phase: 'fighting', started: 1, total: esperado, wins: 0, losses: 0 }));
+            await api.flush();
+            api.setHunt('cruel_boss');
+            await state.fire(api.BOSS_ARENA_WAIT_MS);
+        };
+        assert(api.startNow('cruel', 100).ok, 'iniciou');
+        assert(api.wanted().from === 'enraged_typhlosion', 'hunt de volta guardada');
+        await bloco(300, 100);
+        api.onFrame(frame({ active: false, reason: 'done', started: 100, total: 100, wins: 99, losses: 1, spent: 100, loot: [{ itemId: 1, name: 'Gema', qty: 5 }] }));
+        const b1 = state.logs.find(l => l[0] === 'auto-boss-bloco');
+        assert(b1 && b1[1].bloco === 1 && api.wanted() && api.wanted().acc.wins === 99, 'bloco 1 somado: ' + JSON.stringify(b1));
+        assert(!state.hooks.some(h => /concluído/.test(h.content)), 'sem aviso de concluído no meio');
+        assert(/bloco 1 concluído/.test(api.status()), 'status entre blocos: ' + api.status());
+        assert(JSON.parse(state.store.pgDiscordNotifyBoss).acc.blocks === 1, 'placar dos blocos persistido');
+        await state.fire(api.BOSS_NEXT_BLOCK_MS);
+        await bloco(200, 100);
+        assert(api.wanted().resumes === 0, 'bloco novo não conta retomada');
+        assert(/bloco 2/.test(api.status()), 'status no bloco 2: ' + api.status());
+        api.onFrame(frame({ active: false, reason: 'done', started: 100, total: 100, wins: 100, losses: 0, spent: 100, loot: [{ itemId: 1, name: 'Gema', qty: 3 }] }));
+        await state.fire(api.BOSS_NEXT_BLOCK_MS);
+        await bloco(100, 100);
+        // o jogo encerra o 3º bloco porque acabaram as fichas
+        api.onFrame(frame({ active: false, reason: 'no-token', started: 100, total: 100, wins: 100, losses: 0, spent: 100 }));
+        assert(!api.wanted(), 'acabou');
+        const l = api.last();
+        assert(l.reason === 'no-token' && l.wins === 299 && l.losses === 1 && l.total === 300 && l.blocks === 3, 'placar somado: ' + JSON.stringify(l));
+        assert(l.loot.find(x => x.name === 'Gema').qty === 8, 'loot somado');
+        const fim = state.hooks.find(h => /tokens acabaram/.test(h.content));
+        assert(fim && /em 3 blocos/.test(fim.embeds), 'aviso do fim com os blocos: ' + JSON.stringify(state.hooks.map(h => h.content)));
+        await state.fire(api.BOSS_RETURN_DELAY_MS);
+        assert(state.switches && state.switches[0].slug === 'enraged_typhlosion' && state.switches[0].origem === 'boss-volta', 'voltou para a hunt: ' + JSON.stringify(state.switches));
+        const v = state.logs.find(x => x[0] === 'auto-boss-volta');
+        assert(v && v[1].ok, 'log da volta: ' + JSON.stringify(v));
+    }
+    // 14b) bloco seguinte sem ficha na mochila = fim limpo (sem "desisti") e volta pelo idleTarget; "Parar" não volta
+    {
+        const { api, state } = loadBossModule({ bossRepeat: true, bossReturnHunt: true }, { huntSlug: null, idleSlug: 'pidgey' });
+        state.onSend = (o) => api.onOutgoing(o);
+        api.onOutgoing({ type: 'auto-boss-start', bossKey: 'cruel', count: 100 });
+        api.onFrame(frame({ active: true, phase: 'fighting', started: 1, total: 100, wins: 0, losses: 0 }));
+        api.onFrame(frame({ active: false, reason: 'done', started: 100, total: 100, wins: 100, losses: 0, spent: 100 }));
+        await state.fire(api.BOSS_NEXT_BLOCK_MS);
+        await state.fire(api.BOSS_HEAL_WAIT_MS);
+        api.onInventory([]);
+        await api.flush();
+        assert(!state.sent.some(s => s.type === 'auto-boss-start'), 'não pede sem fichas');
+        assert(!api.wanted() && api.last().reason === 'no-token' && !state.logs.some(x => x[0] === 'auto-boss-desisti'), 'fim limpo: ' + JSON.stringify(api.last()));
+        await state.fire(api.BOSS_RETURN_DELAY_MS);
+        assert(state.switches && state.switches[0].slug === 'pidgey', 'voltou pela hunt lembrada: ' + JSON.stringify(state.switches));
+    }
+    {
+        const { api, state } = loadBossModule({ bossRepeat: true, bossReturnHunt: true }, { huntSlug: 'cruel_boss', idleSlug: 'pidgey' });
+        api.onOutgoing({ type: 'auto-boss-start', bossKey: 'cruel', count: 100 });
+        api.onFrame(frame({ active: true, phase: 'fighting', started: 1, total: 100, wins: 0, losses: 0 }));
+        api.onOutgoing({ type: 'auto-boss-stop' });
+        api.onFrame(frame({ active: false, reason: 'stopped', started: 5, total: 100, wins: 5, losses: 0 }));
+        await state.fire(api.BOSS_RETURN_DELAY_MS);
+        assert(!state.switches && !api.wanted(), 'Parar não repete nem volta');
+    }
+    // 14c) sem repetir: concluído encerra e volta (comportamento antigo + volta)
+    {
+        const { api, state } = loadBossModule({ bossRepeat: false, bossReturnHunt: true }, { huntSlug: null, idleSlug: 'pidgey' });
+        api.onOutgoing({ type: 'auto-boss-start', bossKey: 'cruel', count: 10 });
+        api.onFrame(frame({ active: true, phase: 'fighting', started: 1, total: 10, wins: 0, losses: 0 }));
+        api.onFrame(frame({ active: false, reason: 'done', started: 10, total: 10, wins: 10, losses: 0 }));
+        assert(!api.wanted() && api.last().reason === 'done' && !state.logs.some(x => x[0] === 'auto-boss-bloco'), 'sem repetir: fim');
+        await state.fire(api.BOSS_RETURN_DELAY_MS);
+        assert(state.switches && state.switches[0].slug === 'pidgey', 'voltou');
+    }
     console.log('boss.test.js: ok');
 })().catch(err => { console.error(err); process.exit(1); });

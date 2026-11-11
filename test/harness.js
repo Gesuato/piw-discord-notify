@@ -1171,7 +1171,9 @@ function loadBossModule(cfg, init) {
         static now() { return clock.now; }
     };
     const ctx = {
-        cfg: Object.assign({ bossResumeEnabled: true, bossResumeOnLoss: false, bossAlerts: true }, cfg || {}),
+        cfg: Object.assign({ bossResumeEnabled: true, bossResumeOnLoss: false, bossAlerts: true, bossRepeat: false, bossReturnHunt: false }, cfg || {}),
+        switchHunt: (slug, tentativa, origem) => { state.switches = (state.switches || []).concat([{ slug, origem }]); return init.switchOk !== false; },   // v3.61.0: volta para a hunt
+        idleTarget: () => (init.idleSlug ? { slug: init.idleSlug } : { motivo: 'sem hunt' }),
         nudgeClientToHunt: (slug) => { state.nudges.push(slug); return init.nudge !== false; },
         nudgeClientToCity: init.nudgeCity ? () => { state.cityNudges = (state.cityNudges || 0) + 1; return init.nudgeCity(); } : undefined,   // v3.60.1: a tela sai da arena
         doReload: init.reload ? (motivo) => { state.reloads = (state.reloads || []).concat([motivo]); } : undefined,   // v3.43.1: a tela viaja para a arena
@@ -1199,6 +1201,7 @@ function loadBossModule(cfg, init) {
             BOSS_RESUME_DELAY_MS, BOSS_LEAVE_WAIT_MS, BOSS_HEAL_WAIT_MS, BOSS_INV_WAIT_MS, BOSS_START_WAIT_MS, BOSS_RETRY_MS, BOSS_TICK_MS, BOSS_STALE_MS,
             BOSS_ARENA_WAIT_MS, BOSS_MAX_TRIES, BOSS_MAX_NO_FIGHT, BOSS_KEEP_AFTER_MS,
             BOSS_NO_FIGHT_DELAY_MS, BOSS_BUSY_RETRY_MS, BOSS_BUSY_MAX_MS, BOSS_PAUSE_MS, BOSS_MAX_PAUSES, BOSS_FIGHT_TYPICAL_MS, BOSS_FIGHT_MARGIN_MS, BOSS_MAX_RESUMES,
+            BOSS_NEXT_BLOCK_MS, BOSS_RETURN_DELAY_MS,
             startNow: bossStartNow, stopNow: bossStopNow, resumeNow: bossResumeNow, last: () => bossLast, onSetCity: bossOnSetCity, BOSS_CITY_WAIT_MS, BOSS_RELOAD_AFTER_NO_FIGHT,
             flush: async () => { await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)); },
         };`);
