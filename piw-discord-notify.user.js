@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.60.0
+// @version      3.60.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.60.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.60.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -1689,7 +1689,7 @@
         try { m = JSON.parse(data); } catch { return; }
         if (m?.type === 'enter-hunt') setHunt(m.slug);
         else if (m?.type === 'leave-hunt') { healOnLeave(); setHunt(null); }
-        else if (m?.type === 'set-city') { tripOnSetCity(); healOnSetCity(); pokesOnSetCity(); holdOnSetCity(); invOnSetCity(); armResume(RESUME_AFTER_CITY_MS); } // SPA na cidade: viagem chegou / hora de voltar pra hunt
+        else if (m?.type === 'set-city') { tripOnSetCity(); bossOnSetCity(); healOnSetCity(); pokesOnSetCity(); holdOnSetCity(); invOnSetCity(); armResume(RESUME_AFTER_CITY_MS); } // SPA na cidade: viagem chegou / hora de voltar pra hunt
         else if (m?.type === 'auto-boss-start' || m?.type === 'auto-boss-stop') bossOnOutgoing(m);   // v3.43.0: intenção do Auto Boss (pela tela ou pela retomada)
         // v3.29.2: todo `family-action` enviado (pela tela OU pelo script) entra no log com os campos, para confirmar o formato da
         // retirada (`dir:'withdraw'`) que o breeding usa — a janela "Família" do jogo passa por aqui também.
@@ -8611,6 +8611,14 @@
     const BOSS_MAX_PAUSES = 3;
     const BOSS_NAMES = { cruel: 'Giant Cruel', aerodactyl2: 'Ancient Aero' };   // os dois bosses com arena (aceitam Auto Boss)
     const BOSS_MAX_COUNT = 100;               // a janela do jogo aceita até 100 lutas por pedido
+    // v3.60.1 (conta4, 11/11/2026 02:03–02:06Z): retomada feita com a conta DENTRO da arena (`leave-hunt` + `set-city` só pelo socket)
+    // era aceita, a tela mandava o enter-hunt da arena e a luta nunca começava (30 s em `starting` → `error`, 4 vezes). A que funcionou
+    // (01:31Z) e o start na mão das 02:08Z saíram com a TELA na cidade (logo depois de uma recarga). Agora a saída faz a tela viajar
+    // (`field-teleport-city` sintético, como a viagem) e espera o `set-city` dela; se mesmo assim a luta não começar 2 vezes seguidas,
+    // recarrega o painel (no máx. 1x a cada 15 min) e retoma com a tela nova.
+    const BOSS_CITY_WAIT_MS = 6000;
+    const BOSS_RELOAD_AFTER_NO_FIGHT = 2;
+    const BOSS_RELOAD_GAP_MS = 15 * 60 * 1000;
     const BOSS_ARENAS = { cruel: 'cruel_boss', aerodactyl2: 'aero_boss' };   // tabela `og` do bundle (arena.map); a hunt vista na sessão ganha
     const BOSS_FEE_ITEMS = [70000];           // Bronze Boss Token: entrada das duas arenas
     const BOSS_KEEP_AFTER_MS = 2 * 60 * 60 * 1000;   // depois de desistir, o token ainda fica fora do guardar por 2 h (o jogador reinicia na mão)
@@ -8631,6 +8639,8 @@
     let bossRun = null;         // retomada em andamento: { since, motivo, tries, fase, waitStart, waitInv }
     let bossRetryTimer = null;  // retomada agendada
     let bossRetryAt = 0;        // quando a retomada agendada dispara (status do painel)
+    let bossCityArrived = false; // a tela mandou `set-city` (chegou à cidade) durante a saída da arena
+    function bossOnSetCity() { bossCityArrived = true; }
     let bossInv = new Map();    // mochila (frame `inventory`): itemId -> quantidade
     let bossInvAt = 0;
     let bossFieldsLogged = false;
@@ -8672,6 +8682,7 @@
             stopping: Boolean(rec.stopping), prog: rec.prog && typeof rec.prog === 'object' ? { total: Number(rec.prog.total) || 0, wins: Number(rec.prog.wins) || 0, losses: Number(rec.prog.losses) || 0 } : null,
             arena: rec.arena ? String(rec.arena) : null, fought: false, noFight: Math.max(0, Number(rec.noFight) || 0),
             stuck: Math.max(0, Number(rec.stuck) || 0), pauses: Math.max(0, Number(rec.pauses) || 0), fightMs: Math.max(0, Number(rec.fightMs) || 0),
+            reloadAt: Math.max(0, Number(rec.reloadAt) || 0), fresh: true,   // v3.60.1: o 1º "nada rodando" da carga nova não conta como luta que não começou
         };
         logEvent('auto-boss-lembrado', { bossKey: bossWanted.bossKey, boss: bossWanted.bossName, lutas: bossWanted.total, progresso: bossWanted.prog, idadeMin: Math.round(idade / 60000), retomadas: bossWanted.resumes });
         bossNotify();
@@ -8785,9 +8796,18 @@
         if (!bossOn()) { logEvent('auto-boss-parado', { motivo: reason || 'sem motivo', restantes, retomada: 'desligada no painel' }); bossWanted = null; bossSave(); bossNotify(); return; }
         if (restantes <= 0) { bossFinish(reason || 'done', s, ref); return; }
         let delay;
-        if (bossWanted.resumes > 0 && !bossWanted.fought) {                                                              // retomada aceita, mas a luta nem começou
+        const fresh = bossWanted.fresh; bossWanted.fresh = false;
+        if (bossWanted.resumes > 0 && !bossWanted.fought && !fresh) {                                                    // retomada aceita, mas a luta nem começou
             bossWanted.noFight = (bossWanted.noFight || 0) + 1; bossSave();
             if (bossWanted.noFight >= BOSS_MAX_NO_FIGHT) { bossGiveUp(`${BOSS_MAX_NO_FIGHT} retomadas seguidas sem a luta começar (time abaixo do nível do boss, líder desmaiado ou arena)`, reason || 'sem motivo'); return; }
+            // v3.60.1: a tela presa no mapa da arena não deixa a luta começar; recarregar o painel a põe na cidade (foi o que funcionou no log)
+            if (bossWanted.noFight >= BOSS_RELOAD_AFTER_NO_FIGHT && Date.now() - (bossWanted.reloadAt || 0) > BOSS_RELOAD_GAP_MS && typeof doReload === 'function') {
+                bossWanted.reloadAt = Date.now(); bossSave();
+                logEvent('auto-boss-recarga', { porque: `${bossWanted.noFight} retomadas seguidas sem a luta começar`, boss: bossWanted.bossKey, restantes });
+                bossArm(1500, () => { try { doReload('auto-boss: tela presa na arena'); } catch { /* sem recarga: segue a retomada normal */ } });
+                bossNotify();
+                return;
+            }
             delay = BOSS_NO_FIGHT_DELAY_MS[Math.min(bossWanted.noFight, BOSS_NO_FIGHT_DELAY_MS.length) - 1];          // v3.60.0: a luta antiga pode estar terminando
         } else if (!reason && antes?.active && antes.phase === 'fighting') delay = bossFightLeftMs(antes);                // v3.60.0: caiu no meio da luta
         bossScheduleResume(reason || 'parou sem motivo (reconexão?)', restantes, reason === 'lost', delay);
@@ -8948,9 +8968,18 @@
         try {
             const h = normalize(huntSlug || '');
             if (h && !CITY_SLUGS.includes(h)) {                                      // o Auto Boss só começa fora de hunt (inclusive da arena)
+                // v3.60.1: a TELA tem de sair do mapa da arena (como na viagem); senão o start é aceito e a luta não começa
+                bossCityArrived = false;
                 sendGame({ type: 'leave-hunt' });
-                sendGame({ type: 'set-city', slug: 'cerulean' });
+                const tela = typeof nudgeClientToCity === 'function' ? Boolean(nudgeClientToCity()) : false;
+                if (!tela) sendGame({ type: 'set-city', slug: 'cerulean' });          // sem como mover a tela: avisa o servidor nós mesmos
                 await bossWait(BOSS_LEAVE_WAIT_MS);
+                if (tela) {
+                    const limite = Date.now() + BOSS_CITY_WAIT_MS;
+                    while (!bossCityArrived && Date.now() < limite) await bossWait(500);
+                    if (!bossCityArrived) sendGame({ type: 'set-city', slug: 'cerulean' });   // a tela não viajou: avisa o servidor nós mesmos
+                }
+                logEvent('auto-boss-saida', { de: h, tela, chegouPelaTela: bossCityArrived });
             }
             bossRun.fase = 'curando na Joy';
             sendGame({ type: 'joy-heal' });                                          // grátis; "líder desmaiado" é um dos motivos de `error`
@@ -10594,7 +10623,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <label class="dn-toggle"><input id="pg-dn-boss" type="checkbox"><span class="sw"></span>Retomar o Auto Boss quando ele parar sem terminar <span class="dn-hint">(queda da conexão, erro na próxima luta, saiu da arena)</span></label>
                         <label class="dn-toggle"><input id="pg-dn-boss-loss" type="checkbox"><span class="sw"></span>Retomar também depois de derrota <span class="dn-hint">(cura na Joy antes; cada derrota perde 1 token)</span></label>
                         <label class="dn-toggle"><input id="pg-dn-boss-alerts" type="checkbox"><span class="sw"></span>Avisar no canal de Alertas <span class="dn-hint">(retomada, pausa, desistência e fim)</span></label>
-                        <p class="dn-help">Quando o jogo encerra o Auto Boss antes de acabar a fila, o script sai da hunt, cura na Joy, confere os tokens e pede de novo só as lutas que faltam. Se a conexão caiu no meio de uma luta, espera essa luta terminar no servidor (~70 s) antes de pedir; enquanto o jogo responder "a luta anterior ainda está terminando", tenta a cada 15 s por até 3 min. Sem conseguir, faz uma pausa de 10 min e tenta de novo (até 3 pausas seguidas). Só desiste de vez sem tokens ou depois dessas pausas. "Concluído", "tokens acabaram" e o seu "Parar" encerram. Enquanto o Auto Boss roda, viagem à cidade, parada na cidade, recarga, rotas e troca de líder esperam (qualquer saída da arena encerra o Auto Boss).</p>
+                        <p class="dn-help">Quando o jogo encerra o Auto Boss antes de acabar a fila, o script sai da hunt, cura na Joy, confere os tokens e pede de novo só as lutas que faltam. Se a conexão caiu no meio de uma luta, espera essa luta terminar no servidor (~70 s) antes de pedir; enquanto o jogo responder "a luta anterior ainda está terminando", tenta a cada 15 s por até 3 min. Para sair da arena, faz a tela viajar até a cidade; se o jogo aceitar o pedido e a luta não começar duas vezes seguidas, recarrega o painel (no máximo 1x a cada 15 min) e retoma com a tela nova. Sem conseguir, faz uma pausa de 10 min e tenta de novo (até 3 pausas seguidas). Só desiste de vez sem tokens ou depois dessas pausas. "Concluído", "tokens acabaram" e o seu "Parar" encerram. Enquanto o Auto Boss roda, viagem à cidade, parada na cidade, recarga, rotas e troca de líder esperam (qualquer saída da arena encerra o Auto Boss).</p>
                     </div>
                 </section>
                 <section class="dn-pane" data-pane="sistema" hidden>

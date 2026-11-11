@@ -521,6 +521,13 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   pelo painel (`bossStartNow(bossKey, n)`: mesmo fluxo da retomada, motivo `painel`, não conta retomada nem avisa; boss e lutas em
   `pgDiscordNotifyUi`, fora do cfg; `BOSS_NAMES` = cruel/aerodactyl2, máx. 100), "🔁 Retomar agora" (`bossResumeNow`) e "■ Parar"
   (`bossStopNow`: stop do jogo com sessão ativa, senão cancela a retomada). Casos 11–12 do teste.
+  v3.60.1 (conta4, 11/11/2026 02:03–02:06Z): retomada com a conta DENTRO da arena (saída só pelo socket: `leave-hunt` + `set-city`) era
+  aceita, a tela mandava o enter-hunt da arena e a luta NUNCA começava (30 s em `starting` → `error`, 4x); as que funcionaram (01:31Z e o
+  start na mão das 02:08Z) saíram com a TELA na cidade, logo depois de uma recarga. Agora a saída injeta o `field-teleport-city`
+  sintético (`nudgeClientToCity`, como a viagem) e espera o `set-city` da tela (`bossOnSetCity`, 6 s; senão manda ele mesmo; log
+  `auto-boss-saida { tela, chegouPelaTela }`); 2 retomadas aceitas sem luta (`BOSS_RELOAD_AFTER_NO_FIGHT`) = `doReload` (1x/15 min,
+  `reloadAt` na intenção, log `auto-boss-recarga`); na carga nova (`fresh`) o 1º "nada rodando" não conta como luta que não começou.
+  Caso 13 do teste.
 - Ginásios (v3.45.0, aba própria 🏟 Ginásio (`TABS` id `ginasio`), `cfg.gymEnabled`/`gymBonus`/`gymRedo`/`gymAlerts`; módulo `// ---- Ginásio` antes do
   Auto Boss; protocolo CONFIRMADO no log em 21/10/2026 na conta3, `docs/mensagens-do-jogo.md` → "Ginásio"): 18 ginásios (8 Kanto + 10
   Johto), tudo por REST — `GET /api/game/gyms` (`details[].owned/cooldownMs/bonus.state/npcTeam`, `badges/total`, `badgePerk` = +1% XP

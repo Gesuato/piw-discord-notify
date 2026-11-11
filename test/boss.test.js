@@ -415,5 +415,53 @@ const frame = (o) => Object.assign({ type: 'auto-boss', bossKey: 'cruel', bossNa
         assert(/retomando Giant Cruel/.test(api.status()), 'status: ' + api.status());
     }
 
+    // 13) v3.60.1 — conta4 em 11/11/2026 02:03–02:06Z: retomada com a conta DENTRO da arena. A saída faz a tela viajar (set-city da
+    //     própria tela); 2 retomadas aceitas sem a luta começar = recarrega o painel; na carga nova o "nada rodando" não conta
+    {
+        const { api, state } = loadBossModule({}, { huntSlug: 'cruel_boss', reload: true, nudgeCity: () => true });
+        api.onOutgoing({ type: 'auto-boss-start', bossKey: 'cruel', count: 90 });
+        api.onFrame(frame({ active: true, phase: 'cooldown', started: 23, total: 90, wins: 23, losses: 0 }));
+        api.onFrame(frame({ active: false, reason: 'error', started: 23, total: 90, wins: 23, losses: 0 }));
+        const ciclo = async (ms) => {
+            await state.fire(ms);
+            assert(state.sent.filter(s => s.type === 'leave-hunt').length >= 1, 'saiu da arena');
+            api.setHunt(null);
+            api.onSetCity();                                                             // a tela chegou na cidade (set-city dela)
+            await state.fire(api.BOSS_LEAVE_WAIT_MS);
+            await state.fire(api.BOSS_HEAL_WAIT_MS);
+            api.onInventory([{ itemId: 70000, quantity: 80 }]);
+            await api.flush();
+            api.onFrame(frame({ active: true, phase: 'starting', started: 0, total: 67, wins: 0, losses: 0 }));
+            await api.flush();
+            api.setHunt('cruel_boss');
+            await state.fire(api.BOSS_ARENA_WAIT_MS);
+            api.onFrame(frame({ active: false, reason: 'error', started: 0, total: 67, wins: 0, losses: 0 }));   // 30 s em starting
+        };
+        await ciclo(api.BOSS_RESUME_DELAY_MS);
+        const saida = state.logs.find(l => l[0] === 'auto-boss-saida');
+        assert(saida && saida[1].tela && saida[1].chegouPelaTela && state.cityNudges === 1, 'a tela saiu da arena: ' + JSON.stringify(saida));
+        assert(!state.sent.some(s => s.type === 'set-city'), 'a tela mandou o set-city: o script não manda');
+        assert(api.wanted().noFight === 1 && !state.reloads, '1ª sem luta: espera e tenta de novo');
+        await ciclo(api.BOSS_NO_FIGHT_DELAY_MS[0]);
+        assert(api.wanted().noFight === 2 && state.logs.some(l => l[0] === 'auto-boss-recarga'), '2ª sem luta: recarrega o painel');
+        await state.fire(1500);
+        assert(state.reloads && state.reloads.length === 1 && /tela presa na arena/.test(state.reloads[0]), 'recarregou: ' + JSON.stringify(state.reloads));
+        assert(JSON.parse(state.store.pgDiscordNotifyBoss).reloadAt > 0, 'recarga anotada (1x a cada 15 min)');
+        // carga nova: intenção lembrada; o "nada rodando" do get não conta como luta que não começou
+        const b = loadBossModule({}, { store: state.store, huntSlug: null, reload: true });
+        b.state.clock.now = state.clock.now;
+        b.api.load();
+        b.api.onFrame({ type: 'auto-boss', active: false });
+        const p = b.state.logs.find(l => l[0] === 'auto-boss-parado');
+        assert(p && p[1].retomadaEmS === b.api.BOSS_RESUME_DELAY_MS / 1000 && b.api.wanted().noFight === 2, 'carga nova retoma em 8 s sem contar: ' + JSON.stringify(p));
+        await b.state.fire(b.api.BOSS_RESUME_DELAY_MS);
+        await b.state.fire(b.api.BOSS_HEAL_WAIT_MS);
+        b.api.onInventory([{ itemId: 70000, quantity: 80 }]);
+        await b.api.flush();
+        assert(b.state.sent.some(s => s.type === 'auto-boss-start' && s.count === 67), 'pede as 67 com a tela nova');
+        b.api.onFrame(frame({ active: true, phase: 'fighting', started: 1, total: 67, wins: 0, losses: 0 }));
+        assert(b.api.wanted().noFight === 0 && b.api.wanted().fought, 'luta começou');
+    }
+
     console.log('boss.test.js: ok');
 })().catch(err => { console.error(err); process.exit(1); });
