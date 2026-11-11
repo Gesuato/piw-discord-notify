@@ -349,6 +349,8 @@ estando numa cidade". Tudo pelo **socket**:
   `error { message:"Sua luta de boss anterior ainda está terminando — aguarde alguns segundos." }` + frame `error`; start com sessão
   ativa: `error { message:"O Auto Boss já está ativo." }`. Visto na conta1 em 20/10/2026 01:00Z; a sessão sumiu após uma queda do socket
   (1006): o `auto-boss-get` da reconexão respondeu `active:false` sem `reason` e sem `bossKey`.
+  v3.60.0 (conta4, 11/11/2026): depois da queda no meio da luta, o "ainda está terminando" dura até a luta antiga acabar no servidor
+  (~72 s); o script espera o resto da luta antes de retomar e não conta esse erro como tentativa.
 - Frame real (20/10/2026 01:36Z): chaves `active, bossKey, bossName, phase, total, started, wins, losses, loot, fee, spent, elapsedMs,
   last`; `fee { itemId, name, qty }`; `loot`/`last` nulos no começo.
 - Histórico e lutas manuais são REST: `GET /api/game/boss` → `{ bosses[keys liberados], penalties{ key:{ strength, mult } },

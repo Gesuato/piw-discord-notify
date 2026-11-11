@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.59.0
+// @version      3.60.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.59.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.60.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -8594,7 +8594,23 @@
     const BOSS_RESUME_DELAY_MS = 8000;        // depois do frame que parou: a tela ainda está voltando do mapa da arena
     const BOSS_RETRY_MS = [10000, 20000, 40000, 60000];
     const BOSS_ARENA_WAIT_MS = 4000;          // start aceito: a tela viaja para a arena; sem a hunt da arena até lá, o script manda o enter-hunt
-    const BOSS_MAX_NO_FIGHT = 3;              // retomadas seguidas em que a luta nem começou (time/líder/arena): desiste antes das 10
+    const BOSS_MAX_NO_FIGHT = 5;              // retomadas seguidas em que a luta nem começou (time/líder/arena): pausa antes das 10
+    const BOSS_NO_FIGHT_DELAY_MS = [30000, 60000, 90000, 120000];   // v3.60.0: espera crescente entre essas retomadas (antes 8 s fixos)
+    // v3.60.0 (conta4 Bruenta, 10–11/11/2026): a conexão cai (1006) no meio da luta, o servidor encerra a sessão, mas a LUTA em andamento
+    // segue até o fim (~70 s). Toda retomada nesse meio-tempo é recusada com "Sua luta de boss anterior ainda está terminando" e as 4
+    // tentativas (10/20/40 s) acabavam antes da luta terminar. Agora: queda no meio da luta = espera o que falta da luta; "ainda está
+    // terminando" não conta tentativa (tenta a cada 15 s por até 3 min); desistir vira PAUSA de 10 min (3 vezes) e o limite de 10
+    // retomadas vale só para retomadas seguidas sem nenhuma luta terminar (com quedas frequentes, 100 lutas passam de 10 retomadas).
+    const BOSS_FIGHT_TYPICAL_MS = 75000;      // duração de uma luta do Giant Cruel no log (fighting → cooldown ≈ 72 s)
+    const BOSS_FIGHT_MARGIN_MS = 8000;
+    const BOSS_FIGHT_MAX_WAIT_MS = 120000;
+    const BOSS_BUSY_RE = /ainda est[aá] terminando|luta de boss anterior/i;
+    const BOSS_BUSY_RETRY_MS = 15000;
+    const BOSS_BUSY_MAX_MS = 3 * 60 * 1000;
+    const BOSS_PAUSE_MS = 10 * 60 * 1000;
+    const BOSS_MAX_PAUSES = 3;
+    const BOSS_NAMES = { cruel: 'Giant Cruel', aerodactyl2: 'Ancient Aero' };   // os dois bosses com arena (aceitam Auto Boss)
+    const BOSS_MAX_COUNT = 100;               // a janela do jogo aceita até 100 lutas por pedido
     const BOSS_ARENAS = { cruel: 'cruel_boss', aerodactyl2: 'aero_boss' };   // tabela `og` do bundle (arena.map); a hunt vista na sessão ganha
     const BOSS_FEE_ITEMS = [70000];           // Bronze Boss Token: entrada das duas arenas
     const BOSS_KEEP_AFTER_MS = 2 * 60 * 60 * 1000;   // depois de desistir, o token ainda fica fora do guardar por 2 h (o jogador reinicia na mão)
@@ -8614,11 +8630,12 @@
     let bossWanted = null;      // intenção: { bossKey, bossName, total, at, origem, resumes, sawActive, stopping, prog{ total, wins, losses } }
     let bossRun = null;         // retomada em andamento: { since, motivo, tries, fase, waitStart, waitInv }
     let bossRetryTimer = null;  // retomada agendada
+    let bossRetryAt = 0;        // quando a retomada agendada dispara (status do painel)
     let bossInv = new Map();    // mochila (frame `inventory`): itemId -> quantidade
     let bossInvAt = 0;
     let bossFieldsLogged = false;
     let bossLast = null;        // último encerramento: { reason, at, boss, wins, losses, started, total, spent, loot }
-    let onBossChange = null;    // painel (aba Treino)
+    let onBossChange = null;    // painel (aba Boss, v3.60.0)
 
     function bossIsArena(slug) { const h = normalize(slug || ''); return Boolean(h) && /_boss$/.test(h); }
     function bossOn(d) { return (d || cfg).bossResumeEnabled !== false; }
@@ -8654,6 +8671,7 @@
             at: Number(rec.at) || Date.now(), origem: 'lembrado', resumes: Math.max(0, Number(rec.resumes) || 0), sawActive: Boolean(rec.sawActive),
             stopping: Boolean(rec.stopping), prog: rec.prog && typeof rec.prog === 'object' ? { total: Number(rec.prog.total) || 0, wins: Number(rec.prog.wins) || 0, losses: Number(rec.prog.losses) || 0 } : null,
             arena: rec.arena ? String(rec.arena) : null, fought: false, noFight: Math.max(0, Number(rec.noFight) || 0),
+            stuck: Math.max(0, Number(rec.stuck) || 0), pauses: Math.max(0, Number(rec.pauses) || 0), fightMs: Math.max(0, Number(rec.fightMs) || 0),
         };
         logEvent('auto-boss-lembrado', { bossKey: bossWanted.bossKey, boss: bossWanted.bossName, lutas: bossWanted.total, progresso: bossWanted.prog, idadeMin: Math.round(idade / 60000), retomadas: bossWanted.resumes });
         bossNotify();
@@ -8696,14 +8714,14 @@
         if (m.type === 'auto-boss-start') {
             if (bossRun) return;                                   // é o nosso start (retomada): a intenção já está certa
             const count = Math.max(0, Number(m.count) || 0);
-            bossWanted = { bossKey: String(m.bossKey || ''), bossName: bossWanted?.bossKey === String(m.bossKey || '') ? bossWanted.bossName : null, total: count, at: Date.now(), origem: 'tela', resumes: 0, sawActive: false, stopping: false, prog: null, arena: bossWanted?.bossKey === String(m.bossKey || '') ? bossWanted.arena : null, fought: false, noFight: 0 };
+            bossWanted = { bossKey: String(m.bossKey || ''), bossName: bossWanted?.bossKey === String(m.bossKey || '') ? bossWanted.bossName : (BOSS_NAMES[String(m.bossKey || '')] || null), total: count, at: Date.now(), origem: 'tela', resumes: 0, sawActive: false, stopping: false, prog: null, arena: bossWanted?.bossKey === String(m.bossKey || '') ? bossWanted.arena : null, fought: false, noFight: 0, stuck: 0, pauses: 0, fightMs: bossWanted?.fightMs || 0 };
             bossSave();
-            clearTimeout(bossRetryTimer); bossRetryTimer = null;   // o jogador reiniciou na mão
+            clearTimeout(bossRetryTimer); bossRetryTimer = null; bossRetryAt = 0;   // o jogador reiniciou na mão
             logEvent('auto-boss-envio', { acao: 'start', bossKey: bossWanted.bossKey, lutas: count, hunt: huntSlug || null });
         } else if (m.type === 'auto-boss-stop') {
             logEvent('auto-boss-envio', { acao: 'stop', bossKey: bossWanted?.bossKey || null });
             if (bossWanted) { bossWanted.stopping = true; bossSave(); }
-            clearTimeout(bossRetryTimer); bossRetryTimer = null;
+            clearTimeout(bossRetryTimer); bossRetryTimer = null; bossRetryAt = 0;
         } else return;
         bossNotify();
     }
@@ -8741,6 +8759,9 @@
             if (s.stopping) bossWanted.stopping = true;
             if (bossIsArena(huntSlug)) bossWanted.arena = normalize(huntSlug);                          // mapa da arena desta sessão
             if (s.phase === 'fighting' || s.phase === 'cooldown') { bossWanted.fought = true; bossWanted.noFight = 0; }   // a luta começou de verdade
+            const feitas = (bossWanted.prog?.wins || 0) + (bossWanted.prog?.losses || 0);
+            if (s.wins + s.losses > feitas) { bossWanted.stuck = 0; bossWanted.pauses = 0; bossWanted.busySince = 0; }   // uma luta terminou: a sessão anda
+            if (s.last?.durationMs > 10000 && s.last.durationMs < 10 * 60000) bossWanted.fightMs = s.last.durationMs;    // duração da última luta (espera após queda)
             bossWanted.prog = { total: s.total, wins: s.wins, losses: s.losses };
             bossSave();
             if (bossRun?.waitStart) { const r = bossRun.waitStart; bossRun.waitStart = null; r(s); }
@@ -8763,17 +8784,26 @@
         if (reason === 'lost' && !cfg.bossResumeOnLoss) { bossFinish('lost', s, ref); return; }
         if (!bossOn()) { logEvent('auto-boss-parado', { motivo: reason || 'sem motivo', restantes, retomada: 'desligada no painel' }); bossWanted = null; bossSave(); bossNotify(); return; }
         if (restantes <= 0) { bossFinish(reason || 'done', s, ref); return; }
+        let delay;
         if (bossWanted.resumes > 0 && !bossWanted.fought) {                                                              // retomada aceita, mas a luta nem começou
             bossWanted.noFight = (bossWanted.noFight || 0) + 1; bossSave();
             if (bossWanted.noFight >= BOSS_MAX_NO_FIGHT) { bossGiveUp(`${BOSS_MAX_NO_FIGHT} retomadas seguidas sem a luta começar (time abaixo do nível do boss, líder desmaiado ou arena)`, reason || 'sem motivo'); return; }
-        }
-        bossScheduleResume(reason || 'parou sem motivo (reconexão?)', restantes, reason === 'lost');
+            delay = BOSS_NO_FIGHT_DELAY_MS[Math.min(bossWanted.noFight, BOSS_NO_FIGHT_DELAY_MS.length) - 1];          // v3.60.0: a luta antiga pode estar terminando
+        } else if (!reason && antes?.active && antes.phase === 'fighting') delay = bossFightLeftMs(antes);                // v3.60.0: caiu no meio da luta
+        bossScheduleResume(reason || 'parou sem motivo (reconexão?)', restantes, reason === 'lost', delay);
+    }
+    // Queda do socket no meio da luta: o servidor encerra a sessão mas termina a luta em andamento; retomar antes disso é recusado
+    // ("Sua luta de boss anterior ainda está terminando"). Espera o que falta da luta (duração da última vista, senão ~75 s) + margem.
+    function bossFightLeftMs(last) {
+        const dur = bossWanted?.fightMs || BOSS_FIGHT_TYPICAL_MS;
+        const dentro = Math.max(0, Date.now() - last.at) + (last.fightMs || 0);
+        return Math.round(Math.min(BOSS_FIGHT_MAX_WAIT_MS, Math.max(BOSS_RESUME_DELAY_MS, dur - dentro + BOSS_FIGHT_MARGIN_MS)));
     }
 
     function bossFinish(reason, s, ref) {
         const w = bossWanted; bossWanted = null; bossSave();
         ref = ref || s;
-        bossLast = { reason, at: Date.now(), boss: ref.bossName || w?.bossName || ref.bossKey || w?.bossKey || 'boss', wins: ref.wins, losses: ref.losses, started: ref.started, total: ref.total, spent: ref.spent, loot: ref.loot || [], fee: s?.fee || bossFee(), resumes: w?.resumes || 0 };
+        bossLast = { reason, at: Date.now(), bossKey: ref.bossKey || w?.bossKey || null, boss: ref.bossName || w?.bossName || ref.bossKey || w?.bossKey || 'boss', wins: ref.wins, losses: ref.losses, started: ref.started, total: ref.total, spent: ref.spent, loot: ref.loot || [], fee: s?.fee || bossFee(), resumes: w?.resumes || 0 };
         logEvent('auto-boss-fim', { motivo: reason, boss: bossLast.boss, lutas: `${ref.started}/${ref.total}`, vitorias: ref.wins, derrotas: ref.losses, tokens: ref.spent, loot: bossLast.loot.map(l => `${l.qty}x ${l.name}`), retomadas: bossLast.resumes });
         if (reason === 'lost' && typeof healStart === 'function') setTimeout(() => { try { healStart('derrota no Auto Boss', null, true, true); } catch { /* cura desligada */ } }, 5000);   // a cura na Joy (se ligada) cura e volta para a hunt
         if (cfg.bossAlerts !== false && reason !== 'stopped') bossAlertFinish(reason, bossLast);
@@ -8797,28 +8827,63 @@
 
     function bossScheduleResume(motivo, restantes, curar, delayMs) {
         if (bossRun || bossRetryTimer || !bossWanted) return;
-        if (bossWanted.resumes >= BOSS_MAX_RESUMES) { bossGiveUp(`${BOSS_MAX_RESUMES} retomadas nesta sessão`, motivo); return; }
+        if ((bossWanted.stuck || 0) >= BOSS_MAX_RESUMES) { bossGiveUp(`${BOSS_MAX_RESUMES} retomadas seguidas sem nenhuma luta terminar`, motivo); return; }
         const ms = delayMs ?? BOSS_RESUME_DELAY_MS;
         logEvent('auto-boss-parado', { motivo, restantes, boss: bossWanted.bossName || bossWanted.bossKey, retomadaEmS: Math.round(ms / 1000), hunt: huntSlug || null });
-        bossRetryTimer = setTimeout(() => { bossRetryTimer = null; bossResumeFlow(motivo, restantes, Boolean(curar), 1); }, ms);
+        bossArm(ms, () => bossResumeFlow(motivo, restantes, Boolean(curar), 1));
         bossNotify();
     }
+    function bossArm(ms, fn) {
+        clearTimeout(bossRetryTimer);
+        bossRetryAt = Date.now() + ms;
+        bossRetryTimer = setTimeout(() => { bossRetryTimer = null; bossRetryAt = 0; fn(); }, ms);
+    }
     function bossRetry(motivo, restantes, curar, tentativa, porque) {
-        logEvent('auto-boss-retomada', { fase: 'falhou', tentativa, porque, boss: bossWanted?.bossKey || null });
-        if (!bossWanted) return;
+        if (!bossWanted) { logEvent('auto-boss-retomada', { fase: 'falhou', tentativa, porque, boss: null }); return; }
+        // v3.60.0: "Sua luta de boss anterior ainda está terminando" = o servidor ainda fecha a luta da sessão que caiu. Não conta
+        // tentativa: tenta de novo a cada 15 s por até 3 min (a luta dura ~70 s).
+        if (BOSS_BUSY_RE.test(porque)) {
+            bossWanted.busySince = bossWanted.busySince || Date.now();
+            if (Date.now() - bossWanted.busySince < BOSS_BUSY_MAX_MS) {
+                logEvent('auto-boss-retomada', { fase: 'espera', tentativa, porque, boss: bossWanted.bossKey, esperandoS: Math.round((Date.now() - bossWanted.busySince) / 1000), proximaEmS: BOSS_BUSY_RETRY_MS / 1000 });
+                bossArm(BOSS_BUSY_RETRY_MS, () => bossResumeFlow(motivo, restantes, curar, tentativa));
+                return;
+            }
+        }
+        logEvent('auto-boss-retomada', { fase: 'falhou', tentativa, porque, boss: bossWanted.bossKey });
         if (tentativa >= BOSS_MAX_TRIES) { bossGiveUp(`${tentativa} tentativas sem o jogo aceitar (${porque})`, motivo); return; }
         const ms = BOSS_RETRY_MS[Math.min(tentativa, BOSS_RETRY_MS.length) - 1];
-        bossRetryTimer = setTimeout(() => { bossRetryTimer = null; bossResumeFlow(motivo, restantes, curar, tentativa + 1); }, ms);
+        bossArm(ms, () => bossResumeFlow(motivo, restantes, curar, tentativa + 1));
     }
-    function bossGiveUp(porque, motivo) {
-        const w = bossWanted; bossWanted = null; bossSave();
+    // v3.60.0: desistir vira PAUSA de 10 min (até 3 seguidas, zeradas quando uma luta termina): a queda da conexão ou a luta antiga
+    // terminando não podem largar 100 lutas pedidas. `final` (sem tokens) desiste de vez.
+    function bossGiveUp(porque, motivo, final) {
+        const w = bossWanted;
+        if (w && !final && (w.pauses || 0) < BOSS_MAX_PAUSES) {
+            w.pauses = (w.pauses || 0) + 1; w.noFight = 0; w.stuck = 0; w.busySince = 0; bossSave();
+            const boss = w.bossName || w.bossKey || 'boss';
+            logEvent('auto-boss-pausa', { porque, parou: motivo, boss, pausa: w.pauses, de: BOSS_MAX_PAUSES, voltaEmMin: BOSS_PAUSE_MS / 60000 });
+            if (cfg.bossAlerts !== false && w.pauses === 1) {
+                const who = playerName();
+                postWebhook('alert', {
+                    content: `⏳ ${who ? `**${who}**` : 'Sua conta'}: o Auto Boss em **${boss}** não voltou (${porque}). Tento de novo em ${BOSS_PAUSE_MS / 60000} min.`,
+                    username: 'Poke Idle World',
+                    embeds: [{ title: `Auto Boss: pausa antes de retomar (${boss})`, color: 0xfee75c, description: (who ? `Conta: ${who}\n` : '') + `Parou por: ${BOSS_REASON_LABEL[motivo] || motivo}\nPausa ${w.pauses} de ${BOSS_MAX_PAUSES}\nEm ${new Date().toLocaleString('pt-BR')}` }],
+                }, { evento: 'auto-boss-pausa', boss, porque });
+            }
+            const ref = bossRef(null);
+            bossArm(BOSS_PAUSE_MS, () => bossResumeFlow(motivo, bossRemaining(ref) || w.total, false, 1));
+            bossNotify();
+            return;
+        }
+        bossWanted = null; bossSave();
         const boss = w?.bossName || w?.bossKey || 'boss';
-        bossLast = { reason: 'desisti', at: Date.now(), boss, wins: w?.prog?.wins || 0, losses: w?.prog?.losses || 0, started: (w?.prog?.wins || 0) + (w?.prog?.losses || 0), total: w?.prog?.total || w?.total || 0, spent: null, loot: [], fee: bossFee(), resumes: w?.resumes || 0, porque };
+        bossLast = { reason: 'desisti', at: Date.now(), bossKey: w?.bossKey || null, boss, wins: w?.prog?.wins || 0, losses: w?.prog?.losses || 0, started: (w?.prog?.wins || 0) + (w?.prog?.losses || 0), total: w?.prog?.total || w?.total || 0, spent: null, loot: [], fee: bossFee(), resumes: w?.resumes || 0, porque };
         logEvent('auto-boss-desisti', { porque, parou: motivo, boss, retomadas: w?.resumes || 0 });
         if (cfg.bossAlerts !== false) {
             const who = playerName();
             postWebhook('alert', {
-                content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: não consegui retomar o Auto Boss em **${boss}** — ${porque}. Inicie na mão (Bosses → ⟳ Auto Boss, numa cidade).`,
+                content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: não consegui retomar o Auto Boss em **${boss}** — ${porque}. Inicie de novo pela aba 👹 Boss do painel ou no jogo (Bosses → ⟳ Auto Boss, numa cidade).`,
                 username: 'Poke Idle World',
                 embeds: [{ title: `Auto Boss: desisti de retomar (${boss})`, color: 0xed4245, description: (who ? `Conta: ${who}\n` : '') + `Parou por: ${BOSS_REASON_LABEL[motivo] || motivo}\nRetomadas nesta sessão: ${w?.resumes || 0}\nEm ${new Date().toLocaleString('pt-BR')}` }],
             }, { evento: 'auto-boss-desisti', boss, porque });
@@ -8873,7 +8938,7 @@
     async function bossResumeFlow(motivo, restantes, curar, tentativa) {
         if (!bossWanted || bossRun) return;
         if (typeof humanPending === 'function' && humanPending()) {                 // verificação humana pendente: espera (o socket pode estar fechado)
-            bossRetryTimer = setTimeout(() => { bossRetryTimer = null; bossResumeFlow(motivo, restantes, curar, tentativa); }, 30000);
+            bossArm(30000, () => bossResumeFlow(motivo, restantes, curar, tentativa));
             return;
         }
         const w = bossWanted;
@@ -8890,14 +8955,15 @@
             bossRun.fase = 'curando na Joy';
             sendGame({ type: 'joy-heal' });                                          // grátis; "líder desmaiado" é um dos motivos de `error`
             await bossWait(BOSS_HEAL_WAIT_MS);
-            const fee = bossFee();
+            // Início pelo painel ainda sem frame do jogo: as duas arenas cobram 1 Bronze Boss Token por luta.
+            const fee = bossFee() || (bossFromPanel(motivo) && BOSS_NAMES[w.bossKey] ? { itemId: BOSS_FEE_ITEMS[0], name: 'Bronze Boss Token', qty: 1 } : null);
             let lutas = restantes;
             if (fee?.itemId) {
                 bossRun.fase = 'conferindo os tokens';
                 const tem = await bossFetchInv(fee.itemId);
                 if (tem !== null) {
                     const cabem = Math.floor(tem / fee.qty);
-                    if (cabem < 1) { bossGiveUp(`sem ${fee.name} na mochila`, motivo); return; }
+                    if (cabem < 1) { bossGiveUp(`sem ${fee.name} na mochila`, motivo, true); return; }
                     lutas = Math.min(lutas, cabem);
                 }
             }
@@ -8905,9 +8971,12 @@
             bossNotify();
             const r = await bossSendStart(w.bossKey, lutas);
             if (r?.active) {
-                w.resumes += 1; w.total = r.total || lutas; w.sawActive = true; w.fought = false; w.prog = { total: r.total || lutas, wins: r.wins, losses: r.losses }; bossSave();
-                logEvent('auto-boss-retomada', { fase: 'ok', tentativa, lutas, boss: r.bossName || w.bossKey, retomadas: w.resumes });
-                if (cfg.bossAlerts !== false) {
+                const painel = bossFromPanel(motivo);
+                if (!painel) { w.resumes += 1; w.stuck = (w.stuck || 0) + 1; }
+                w.busySince = 0;
+                w.total = r.total || lutas; w.sawActive = true; w.fought = false; w.prog = { total: r.total || lutas, wins: r.wins, losses: r.losses }; bossSave();
+                logEvent('auto-boss-retomada', { fase: 'ok', tentativa, lutas, boss: r.bossName || w.bossKey, retomadas: w.resumes, seguidasSemLuta: w.stuck || 0, painel });
+                if (cfg.bossAlerts !== false && !painel) {
                     const who = playerName();
                     postWebhook('alert', {
                         content: `🔁 ${who ? `**${who}**` : 'Sua conta'}: Auto Boss retomado em **${r.bossName || w.bossName || w.bossKey}** com ${lutas} luta${lutas === 1 ? '' : 's'} (tinha parado: ${BOSS_REASON_LABEL[motivo] || motivo})`,
@@ -8920,7 +8989,7 @@
                 else logEvent('auto-boss-arena', { slug: null, tela: false, chegou: false, direto: false, tentativa, hunt: huntSlug || null, porque: 'arena desconhecida para este boss' });
                 return;
             }
-            if (r?.reason === 'no-token') { bossGiveUp(`o jogo diz que não há ${fee?.name || 'tokens'} suficientes`, motivo); return; }
+            if (r?.reason === 'no-token') { bossGiveUp(`o jogo diz que não há ${fee?.name || 'tokens'} suficientes`, motivo, true); return; }
             const erro = bossRun?.lastError || null;
             bossRun = null;
             bossRetry(motivo, restantes, curar, tentativa, !r ? 'sem resposta em 8 s' : `recusado: ${erro || BOSS_REASON_LABEL[r.reason] || r.reason || 'sem motivo'}`);
@@ -8933,7 +9002,71 @@
         }
     }
 
-    // Linha de estado do painel (aba Treino).
+    // ---- ações da aba 👹 Boss (v3.60.0): iniciar, parar e retomar pelo painel ----
+    function bossFromPanel(motivo) { return /^painel/.test(String(motivo || '')); }
+    function bossOtherBusy() {
+        if (typeof invBusy === 'function' && invBusy()) return 'a Invasão Rocket está em andamento';
+        if (typeof humanPending === 'function' && humanPending()) return 'o jogo pede a verificação humana';
+        return null;
+    }
+    function bossTokens() {
+        const id = bossFee()?.itemId || BOSS_FEE_ITEMS[0];
+        return bossInvAt ? (bossInv.get(id) || 0) : null;
+    }
+    // Iniciar pelo painel: o mesmo caminho da retomada (sai da hunt, cura, confere tokens, pede o start e leva a tela para a arena).
+    function bossStartNow(bossKey, count) {
+        const key = String(bossKey || '').trim();
+        const n = Math.min(BOSS_MAX_COUNT, Math.max(1, Math.floor(Number(count) || 0)));
+        if (!BOSS_NAMES[key]) return { ok: false, msg: 'Escolha um boss com arena (Giant Cruel ou Ancient Aero).' };
+        if (bossActive()) return { ok: false, msg: `O Auto Boss já está rodando (${bossState.bossName || bossState.bossKey}). Pare antes de iniciar outro.` };
+        if (bossRun) return { ok: false, msg: `Já estou ${bossRun.fase}.` };
+        const outro = bossOtherBusy();
+        if (outro) return { ok: false, msg: `Agora não: ${outro}.` };
+        clearTimeout(bossRetryTimer); bossRetryTimer = null; bossRetryAt = 0;
+        bossWanted = { bossKey: key, bossName: BOSS_NAMES[key], total: n, at: Date.now(), origem: 'painel', resumes: 0, sawActive: true, stopping: false, prog: { total: n, wins: 0, losses: 0 }, arena: BOSS_ARENAS[key] || null, fought: false, noFight: 0, stuck: 0, pauses: 0, fightMs: 0 };
+        bossSave();
+        logEvent('auto-boss-envio', { acao: 'start', origem: 'painel', bossKey: key, lutas: n, hunt: huntSlug || null });
+        bossResumeFlow('painel', n, false, 1);
+        return { ok: true, msg: `Iniciando ${BOSS_NAMES[key]} com ${n} luta${n === 1 ? '' : 's'}: saindo da hunt, curando e conferindo os tokens…` };
+    }
+    // Parar: com a sessão rodando manda o "Parar" do jogo (encerra depois da luta atual); sem sessão, esquece a intenção e a retomada.
+    function bossStopNow() {
+        if (!bossWanted && !bossActive() && !bossRetryTimer) return { ok: false, msg: 'Nenhum Auto Boss em andamento.' };
+        clearTimeout(bossRetryTimer); bossRetryTimer = null; bossRetryAt = 0;
+        if (bossActive()) {
+            if (bossWanted) { bossWanted.stopping = true; bossSave(); }
+            const enviado = sendGame({ type: 'auto-boss-stop' });
+            logEvent('auto-boss-envio', { acao: 'stop', origem: 'painel', bossKey: bossWanted?.bossKey || bossState?.bossKey || null, enviado });
+            bossNotify();
+            return enviado ? { ok: true, msg: 'Pedi ao jogo para parar depois da luta atual.' } : { ok: false, msg: 'Sem conexão com o jogo agora.' };
+        }
+        const w = bossWanted; bossWanted = null; bossSave();
+        logEvent('auto-boss-fim', { motivo: 'stopped', origem: 'painel', boss: w?.bossName || w?.bossKey || null, retomadas: w?.resumes || 0 });
+        bossNotify();
+        return { ok: true, msg: 'Retomada cancelada: o script não pede mais o Auto Boss.' };
+    }
+    // Retomar agora: pula a espera agendada (ou recomeça depois de desistir) com as lutas que faltam.
+    function bossResumeNow() {
+        if (bossActive()) return { ok: false, msg: 'O Auto Boss já está rodando.' };
+        if (bossRun) return { ok: false, msg: `Já estou ${bossRun.fase}.` };
+        const outro = bossOtherBusy();
+        if (outro) return { ok: false, msg: `Agora não: ${outro}.` };
+        if (!bossWanted) {
+            const l = bossLast;
+            const falta = l ? Math.max(0, (l.total || 0) - (l.wins || 0) - (l.losses || 0)) : 0;
+            if (!l || !l.bossKey || !falta) return { ok: false, msg: 'Nada a retomar: use Iniciar.' };
+            return bossStartNow(l.bossKey, falta);
+        }
+        clearTimeout(bossRetryTimer); bossRetryTimer = null; bossRetryAt = 0;
+        const w = bossWanted;
+        w.noFight = 0; w.busySince = 0; w.sawActive = true; bossSave();
+        const restantes = bossRemaining(bossRef(null)) || w.total;
+        logEvent('auto-boss-envio', { acao: 'retomar', origem: 'painel', bossKey: w.bossKey, lutas: restantes });
+        bossResumeFlow('painel (retomar)', restantes, false, 1);
+        return { ok: true, msg: `Retomando ${w.bossName || w.bossKey} com ${restantes} luta${restantes === 1 ? '' : 's'}…` };
+    }
+
+    // Linha de estado do painel (aba Boss).
     function bossStatus(d) {
         d = d || cfg;
         const s = bossState;
@@ -8943,10 +9076,14 @@
             return `▶ ${s.bossName || s.bossKey}: luta ${Math.max(1, s.started)}/${s.total} · ${fase} · 🏆 ${s.wins} 💀 ${s.losses}${s.fee ? ` · ${s.spent != null ? s.spent : s.started * s.fee.qty}× ${s.fee.name}` : ''}${bossWanted?.resumes ? ` · ${bossWanted.resumes} retomada${bossWanted.resumes === 1 ? '' : 's'}` : ''}`;
         }
         if (bossRun) return `retomando ${bossWanted?.bossName || bossWanted?.bossKey || ''} (${bossRun.fase}, tentativa ${bossRun.tries}/${BOSS_MAX_TRIES})`;
-        if (bossRetryTimer && bossWanted) return `parou; retomada de ${bossWanted.bossName || bossWanted.bossKey} agendada`;
+        if (bossRetryTimer && bossWanted) {
+            const em = bossRetryAt ? ` em ${bossFmt(bossRetryAt - Date.now())}` : '';
+            const pausa = bossWanted.pauses ? ` (pausa ${bossWanted.pauses}/${BOSS_MAX_PAUSES})` : bossWanted.busySince ? ' (a luta anterior ainda está terminando no servidor)' : '';
+            return `parou; retomada de ${bossWanted.bossName || bossWanted.bossKey} agendada${em}${pausa}`;
+        }
         if (bossWanted) return `${bossWanted.bossName || bossWanted.bossKey} pedido (${bossWanted.total} luta${bossWanted.total === 1 ? '' : 's'}) · esperando o jogo confirmar`;
         if (bossLast) return `último: ${bossLast.boss} ${bossLast.reason === 'desisti' ? `— desisti de retomar (${bossLast.porque})` : `(${BOSS_REASON_LABEL[bossLast.reason] || bossLast.reason})`} às ${new Date(bossLast.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} · 🏆 ${bossLast.wins} 💀 ${bossLast.losses}`;
-        return d.bossResumeEnabled === false ? 'retomada desligada; nada em andamento' : 'nenhum Auto Boss em andamento (inicie no jogo: Bosses → ⟳ Auto Boss, numa cidade)';
+        return d.bossResumeEnabled === false ? 'retomada desligada; nada em andamento' : 'nenhum Auto Boss em andamento (inicie acima ou no jogo: Bosses → ⟳ Auto Boss, numa cidade)';
     }
 
     // ---- Verificação humana (v3.40.0): o jogo pede o clique "sou humano" (Cloudflare Turnstile) e a conta fica parada ----
@@ -9939,6 +10076,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         { id: 'farm', icon: '🎒', label: 'Farm' },
         { id: 'ginasio', icon: '🏟', label: 'Ginásio' },
         { id: 'invasao', icon: '🚀', label: 'Invasão' },
+        { id: 'boss', icon: '👹', label: 'Boss' },          // v3.60.0: Auto Boss em aba própria (antes na Treino)
         { id: 'sistema', icon: '⚙', label: 'Sistema' },
     ];
 
@@ -10006,6 +10144,11 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
                 if (d.invAlerts !== false && !temAlertas) return 'warn';
                 return 'on';
             }
+            case 'boss': {
+                if (!bossOn(d)) return bossBusy() ? 'warn' : 'off';
+                if (d.bossAlerts !== false && !temAlertas) return 'warn';
+                return 'on';
+            }
             case 'sistema': return holdActive() ? 'warn' : d.reloadEnabled ? 'on' : 'off';   // v3.44.0: esperando na cidade de propósito = ⚠ para não esquecer
         }
         return 'off';
@@ -10018,13 +10161,14 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             `Bolas: ${!((Number(d.ballsMin) || 0) > 0 || d.autoBuy) ? 'desligado' : `${d.ballsWatch && d.ballsWatch !== 'auto' ? ballName(Number(d.ballsWatch)) : 'em uso'} < ${Number(d.ballsMin) || (d.autoBuy ? 1 : 0)}${d.autoBuy ? ' + compra' : ''}`}${supplyOn(d) ? ` · refil: ${supplySlots(d).map(s => `${s.name} < ${s.min}`).join(', ')}` : ''}${d.healJoyEnabled ? ' · Joy' : ''}${d.cityIdleEnabled ? ` · volta da cidade ${Number(d.cityIdleMin) || IDLE_MIN_DEFAULT} min${idleDefaultSlug(d) ? ` (padrão ${idleDefaultSlug(d)})` : ''}` : ''}`,
             `Venda: ${[d.sellEnabled ? (d.sellRule ? `drops comuns até ${sellRuleMaxPrice(d) ? `${fmtNum(sellRuleMaxPrice(d))} gold` : 'qualquer preço'}${Object.keys(d.sellItems || {}).length ? ` + ${Object.keys(d.sellItems || {}).length} marcados` : ''}` : `${Object.keys(d.sellItems || {}).length} drops marcados`) : '', d.pokeSellEnabled ? `Pokémon (${TIERS.filter(t => pokeSellLimit(d, t.key) > 0).length} raridades${pokeSellKeepQ(d) ? `, guarda ≥ ${pokeSellKeepQ(d)}` : ''})` : '', depositWanted(d) ? 'guardar' : ''].filter(Boolean).join(' + ') || 'desligada'} · viagem ${d.tripEveryMin}${d.tripEveryMaxMin > d.tripEveryMin ? `–${d.tripEveryMaxMin}` : ''} min`,
             `Mercado: ${d.marketEnabled ? (marketList(d).length ? `${marketList(d).filter(marketEntryDone).length}/${marketList(d).length} pedidos, a cada ${marketEveryRange(d).min}${marketEveryRange(d).max > marketEveryRange(d).min ? `–${marketEveryRange(d).max}` : ''} min${marketKeepGold(d) ? `, reserva ${marketKeepGold(d).toLocaleString('pt-BR')} gold` : ''}${marketKeepDiamonds(d) ? `, reserva ${marketKeepDiamonds(d)} diamonds` : ''}${d.marketToFamily ? ', comprado → família' : ''}` : 'sem pedido') : 'desligado'}`,
-            `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? `daily sozinha (${dailyAreas(d).join('+')})` : 'daily') : '', d.giftEnabled ? 'gift' : '', d.evolveEnabled ? 'evolução' : '', d.slotEnabled ? 'slot machine' : '', bossOn(d) ? `auto boss${d.bossResumeOnLoss ? ' (até após derrota)' : ''}` : ''].filter(Boolean).join(' + ') || 'desligado'}`,
+            `Treino: ${[d.routeEnabled && rota.length ? (st >= rota.length ? 'rota concluída' : `rota${cfg.routeName ? ` "${cfg.routeName}"` : ''} ${st + 1}/${rota.length}`) : ((Number(d.levelAlertAt) || 0) ? `nível ${d.levelAlertAt}${d.levelSwap ? ' + troca' : ''}` : ''), d.dailyEnabled ? (d.dailyAuto ? `daily sozinha (${dailyAreas(d).join('+')})` : 'daily') : '', d.giftEnabled ? 'gift' : '', d.evolveEnabled ? 'evolução' : '', d.slotEnabled ? 'slot machine' : ''].filter(Boolean).join(' + ') || 'desligado'}`,
             `Profissão: ${[d.catchRouteEnabled ? `rota de captura (${(Array.isArray(d.catchRouteAreas) && d.catchRouteAreas.length ? d.catchRouteAreas : ['kanto']).join('+')}${Number(d.catchRouteMaxLevel) ? ` até lv ${d.catchRouteMaxLevel}` : ''}${d.catchRouteAuto ? ', bola auto' : ''})` : '', d.clanEnabled ? `clã ${clanName(d.clanKey)}${d.clanRoute ? ' + caça' : ''}` : '', profOn(d) ? `profissão ${[d.profRankupEnabled ? 'rank up' : '', d.profRoute ? 'caça' : ''].filter(Boolean).join(' + ')}` : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Breeding: ${d.breedEnabled ? `${breedActiveLines(d).length} ${breedActiveLines(d).length === 1 ? 'linhagem' : 'linhagens'}${d.breedDouble ? ' + dobrar' : ''}${d.breedFoodBreed ? ' + cria comida' : ''}` : 'desligado'}`,
             `Guild: ${[guildDonateWanted(d) > 0 ? `doa ${guildN(guildDonateWanted(d))}/dia` : '', d.guildTributeEnabled ? 'tributo' : '', d.guildFarmTribute ? 'farma tributo' : '', d.guildHuntEnabled ? 'caça' : '', d.guildFishEnabled ? 'pesca' : '', guildRouteOn(d) ? `ordem ${guildOrderText(d)}` : '', d.guildAlerts ? 'avisos' : ''].filter(Boolean).join(' + ') || 'desligada'}`,
             `Farm: ${d.farmEnabled && farmList(d).length ? `${farmList(d).filter(farmEntryDone).length}/${farmList(d).length} itens` : 'desligado'}`,
             `Ginásios: ${d.gymEnabled ? ['insígnias', d.gymBonus !== false ? 'bônus' : '', d.gymRedo !== false ? 'refaz a cada 48 h' : ''].filter(Boolean).join(' + ') : 'desligados'}`,
             `Invasão: ${d.invEnabled ? `entra${invHours(d).length ? ` às ${invHours(d).map(h => `${h}h`).join(', ')}` : ' em toda janela'}${invKeepEnergy(d) ? `, reserva ${invKeepEnergy(d)}` : ''}` : 'desligada'}${d.invJennyEnabled ? ` + Jenny (${invJennyOffer(d) || 'sem oferta'})` : ''}`,
+            `Boss: ${bossOn(d) ? `retoma o Auto Boss${d.bossResumeOnLoss ? ' (até após derrota)' : ''}` : 'retomada desligada'}${bossActive() ? ' · rodando' : ''}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
             holdActive() ? '⏸ esperando na cidade (botão do painel)' : '',
         ].filter(Boolean).join(' · ');
@@ -10257,14 +10401,6 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <p class="dn-help">A Poke Slot Machine fica no shopping: cada slot tem um roll grátis a cada 12 h (depois custa 1 Poke Slot Card) e sorteia 9 Pokémon; o escolhido ganha um bônus (EXP, loot, captura, dano…) de +5% a +35% conforme a raridade, que só vale contra aquela espécie, por algumas horas. Quando um slot liberado estiver com o roll grátis pronto, o script pede uma viagem à cidade, vai ao shopping, gira e escolhe o primeiro da lista acima que tiver saído no sorteio; se nenhum saiu, escolhe um dos 9 ao acaso. Uma estrela ativa de um Pokémon pedido não é trocada antes de expirar. Aviso no canal de Alertas.</p>
                         <div class="dn-status"><span>🎰</span><span id="pg-dn-slot-status"></span></div>
                     </div>
-                    <div class="dn-section">
-                        <h3>Auto Boss</h3>
-                        <label class="dn-toggle"><input id="pg-dn-boss" type="checkbox"><span class="sw"></span>Retomar o Auto Boss do jogo quando ele parar sem terminar <span class="dn-hint">(erro na próxima luta, saiu da arena, queda da conexão)</span></label>
-                        <label class="dn-toggle"><input id="pg-dn-boss-loss" type="checkbox"><span class="sw"></span>Retomar também depois de derrota <span class="dn-hint">(cura na Joy antes; cada derrota perde 1 token)</span></label>
-                        <label class="dn-toggle"><input id="pg-dn-boss-alerts" type="checkbox"><span class="sw"></span>Avisar no canal de Alertas <span class="dn-hint">(retomada, desistência e fim)</span></label>
-                        <p class="dn-help">Inicie o Auto Boss no próprio jogo (Bosses → ⟳ Auto Boss, estando numa cidade). O script guarda o boss e a quantidade pedida e, se o jogo parar antes de acabar a fila (erro na próxima luta, saiu da arena, queda da conexão), sai da hunt, cura na Joy, confere os tokens na mochila e pede de novo só as lutas que faltam. "Concluído", "tokens acabaram" e o seu "Parar" encerram. Enquanto o Auto Boss roda, viagem à cidade, parada na cidade, recarga, rotas e troca de líder esperam (qualquer saída da arena encerra o Auto Boss). Até 3 tentativas por parada e 10 retomadas por sessão; depois avisa e desiste.</p>
-                        <div class="dn-status"><span>👹</span><span id="pg-dn-boss-status"></span></div>
-                    </div>
                 </section>
                 <section class="dn-pane" data-pane="profissao" hidden>
                     <div class="dn-section">
@@ -10439,6 +10575,26 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <p class="dn-help">Anúncio do jogo: 100 Idle Balls 200 Plans · Bronze Boss Token 1.500 · outfit Police Recruit 5.000 · Police Officer 10.000 · Police Bravery Medal 15.000 (+2 IV, uma por Pokémon, para sempre; nunca em Pokémon que passou pelo mercado, troca ou baú da família — o script só compra a medalha; em quem usar é com você). A lista de ofertas vem da própria janela da Jenny na 1ª leitura (ligue a troca para ler).</p>
                         <div class="dn-actions"><button type="button" class="dn-btn dn-btn--sm" id="pg-dn-inv-jenny-now" title="Na cidade: troca agora. Na hunt: pede a viagem à cidade.">👮 Trocar agora</button></div>
                         <div class="dn-status"><span>👮</span><span id="pg-dn-inv-jenny-status"></span></div>
+                    </div>
+                </section>
+                <section class="dn-pane" data-pane="boss" hidden>
+                    <div class="dn-section">
+                        <h3>👹 Iniciar o Auto Boss</h3>
+                        <div class="dn-inline">Boss <select id="pg-dn-boss-key" class="dn-input">${Object.entries(BOSS_NAMES).map(([k, n]) => `<option value="${k}">${n}</option>`).join('')}</select> lutas <input id="pg-dn-boss-count" class="dn-input dn-input--sm" type="number" min="1" max="100" step="1" placeholder="100"> <span class="dn-hint">(1 Bronze Boss Token por luta; máx. 100 por pedido)</span></div>
+                        <div class="dn-actions">
+                            <button type="button" class="dn-btn dn-btn--primary dn-btn--sm" id="pg-dn-boss-start" title="Sai da hunt, cura na Joy, confere os tokens, pede o Auto Boss e leva a tela para a arena.">▶ Iniciar</button>
+                            <button type="button" class="dn-btn dn-btn--sm" id="pg-dn-boss-resume" title="Pula a espera e pede de novo as lutas que faltam.">🔁 Retomar agora</button>
+                            <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-boss-stop" title="Com a sessão rodando: o jogo para depois da luta atual. Parada: cancela a retomada.">■ Parar</button>
+                        </div>
+                        <div class="dn-status col"><div id="pg-dn-boss-status"></div><div id="pg-dn-boss-tokens" class="dn-hint"></div></div>
+                        <p class="dn-help">Faz o mesmo que Bosses → ⟳ Auto Boss do jogo (só o Giant Cruel e o Ancient Aero têm arena). Pode iniciar daqui ou pelo jogo: nos dois casos o script acompanha e retoma.</p>
+                    </div>
+                    <div class="dn-section">
+                        <h3>🔁 Retomar quando parar</h3>
+                        <label class="dn-toggle"><input id="pg-dn-boss" type="checkbox"><span class="sw"></span>Retomar o Auto Boss quando ele parar sem terminar <span class="dn-hint">(queda da conexão, erro na próxima luta, saiu da arena)</span></label>
+                        <label class="dn-toggle"><input id="pg-dn-boss-loss" type="checkbox"><span class="sw"></span>Retomar também depois de derrota <span class="dn-hint">(cura na Joy antes; cada derrota perde 1 token)</span></label>
+                        <label class="dn-toggle"><input id="pg-dn-boss-alerts" type="checkbox"><span class="sw"></span>Avisar no canal de Alertas <span class="dn-hint">(retomada, pausa, desistência e fim)</span></label>
+                        <p class="dn-help">Quando o jogo encerra o Auto Boss antes de acabar a fila, o script sai da hunt, cura na Joy, confere os tokens e pede de novo só as lutas que faltam. Se a conexão caiu no meio de uma luta, espera essa luta terminar no servidor (~70 s) antes de pedir; enquanto o jogo responder "a luta anterior ainda está terminando", tenta a cada 15 s por até 3 min. Sem conseguir, faz uma pausa de 10 min e tenta de novo (até 3 pausas seguidas). Só desiste de vez sem tokens ou depois dessas pausas. "Concluído", "tokens acabaram" e o seu "Parar" encerram. Enquanto o Auto Boss roda, viagem à cidade, parada na cidade, recarga, rotas e troca de líder esperam (qualquer saída da arena encerra o Auto Boss).</p>
                     </div>
                 </section>
                 <section class="dn-pane" data-pane="sistema" hidden>
@@ -11046,7 +11202,28 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
         function renderBoss() {
             const d = current();
             $('#pg-dn-boss-status').textContent = `Auto Boss: ${bossStatus(d)}`;
+            const tk = bossTokens();
+            $('#pg-dn-boss-tokens').textContent = tk == null ? 'Tokens na mochila: ainda não lidos (leio ao iniciar).' : `Tokens na mochila: ${fmtNum(tk)} ${bossFee()?.name || 'Bronze Boss Token'}`;
+            const rodando = bossActive();
+            $('#pg-dn-boss-start').disabled = rodando || Boolean(bossRun);
+            $('#pg-dn-boss-resume').disabled = rodando || Boolean(bossRun) || !(bossWanted || (bossLast && bossLast.bossKey && bossLast.reason !== 'done' && bossLast.reason !== 'stopped'));
+            $('#pg-dn-boss-stop').disabled = !(rodando || bossWanted || bossRetryTimer);
         }
+        {
+            const ui = loadUi();
+            if (ui.bossKey && BOSS_NAMES[ui.bossKey]) $('#pg-dn-boss-key').value = ui.bossKey;
+            $('#pg-dn-boss-count').value = Number(ui.bossCount) > 0 ? ui.bossCount : BOSS_MAX_COUNT;
+        }
+        const bossMsg = (r) => { flash(`${r.ok ? '✔' : '⚠'} ${r.msg}`, r.ok ? 'ok' : 'warn', 12000); renderBoss(); renderState(); };
+        $('#pg-dn-boss-start').onclick = () => {
+            const key = $('#pg-dn-boss-key').value;
+            const n = Math.min(BOSS_MAX_COUNT, Math.max(1, Math.floor(Number($('#pg-dn-boss-count').value) || BOSS_MAX_COUNT)));
+            saveUi({ bossKey: key, bossCount: n });
+            bossMsg(bossStartNow(key, n));
+        };
+        $('#pg-dn-boss-resume').onclick = () => bossMsg(bossResumeNow());
+        $('#pg-dn-boss-stop').onclick = () => bossMsg(bossStopNow());
+        setInterval(() => { if (!panel.hidden && loadUi().tab === 'boss') renderBoss(); }, 5000);   // contagem da retomada agendada
         onBossChange = () => { if (!panel.hidden) renderBoss(); };
         // ---- Invasão Rocket (v3.50.0) ----
         function renderInvOffers(selected) {
@@ -11743,7 +11920,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
 
         // qualquer edição marca "não salvo" e recalcula resumos e badges
         const onEdit = (e) => {
-            if (e.target.closest('#pg-dn-import-box, #pg-dn-route-import-box, #pg-dn-route-share-box, #pg-dn-route-name-box') || e.target.id === 'pg-dn-route-sel' || e.target.id === 'pg-dn-sell-search' || e.target.id === 'pg-dn-sell-order') return;
+            if (e.target.closest('#pg-dn-import-box, #pg-dn-route-import-box, #pg-dn-route-share-box, #pg-dn-route-name-box') || e.target.id === 'pg-dn-route-sel' || e.target.id === 'pg-dn-sell-search' || e.target.id === 'pg-dn-sell-order' || e.target.id === 'pg-dn-boss-key' || e.target.id === 'pg-dn-boss-count') return;
             if (!e.target.matches('input, select, textarea')) return;
             dirty = true;
             renderDirty();

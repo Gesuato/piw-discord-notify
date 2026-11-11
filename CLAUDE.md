@@ -510,6 +510,17 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   começar (`fought`/`noFight`, `BOSS_MAX_NO_FIGHT`) desistem antes das 10. `bossOnError` guarda o texto do `error` do jogo para o log
   ("Sua luta de boss anterior ainda está terminando"). `bossKeepsItem` tira o token (fee, 70000) da venda e do guardar na cidade com boss
   pendente/rodando e por 2 h depois de desistir — às 02:11Z a viagem depositou os 97 tokens na família. Casos 9–10 do teste.
+  v3.60.0 (conta4 Bruenta, 10–11/11/2026, 100 fichas): a conexão cai (1006) várias vezes por hora e o servidor encerra a sessão, mas a
+  LUTA em andamento segue até o fim (~72 s): toda retomada antes disso é recusada com "Sua luta de boss anterior ainda está terminando",
+  e as 4 tentativas (10/20/40 s) acabavam antes — o usuário reiniciava na mão. Agora: queda com a última fase `fighting` = espera o que
+  falta da luta (`bossFightLeftMs`: duração da última luta `last.durationMs` ou 75 s, + 8 s, entre 8 e 120 s); "ainda está terminando"
+  (`BOSS_BUSY_RE`) NÃO conta tentativa (15 s, por até 3 min, log `auto-boss-retomada { fase:"espera" }`); retomada aceita sem a luta
+  começar espera 30/60/90/120 s e 5 seguidas (`BOSS_MAX_NO_FIGHT`) pausam; o limite de 10 retomadas vale só para SEGUIDAS sem nenhuma
+  luta terminar (`stuck`, zera a cada vitória/derrota); desistir vira PAUSA de 10 min (`BOSS_PAUSE_MS`, até 3, log `auto-boss-pausa`,
+  avisa só a 1ª) — sem token desiste de vez (`bossGiveUp(..., true)`). Aba própria 👹 Boss (`TABS` id `boss`, saiu da Treino): iniciar
+  pelo painel (`bossStartNow(bossKey, n)`: mesmo fluxo da retomada, motivo `painel`, não conta retomada nem avisa; boss e lutas em
+  `pgDiscordNotifyUi`, fora do cfg; `BOSS_NAMES` = cruel/aerodactyl2, máx. 100), "🔁 Retomar agora" (`bossResumeNow`) e "■ Parar"
+  (`bossStopNow`: stop do jogo com sessão ativa, senão cancela a retomada). Casos 11–12 do teste.
 - Ginásios (v3.45.0, aba própria 🏟 Ginásio (`TABS` id `ginasio`), `cfg.gymEnabled`/`gymBonus`/`gymRedo`/`gymAlerts`; módulo `// ---- Ginásio` antes do
   Auto Boss; protocolo CONFIRMADO no log em 21/10/2026 na conta3, `docs/mensagens-do-jogo.md` → "Ginásio"): 18 ginásios (8 Kanto + 10
   Johto), tudo por REST — `GET /api/game/gyms` (`details[].owned/cooldownMs/bonus.state/npcTeam`, `badges/total`, `badgePerk` = +1% XP
