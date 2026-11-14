@@ -475,6 +475,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   fica na hunt atual / origem / hunt padrão se já forem da região aberta (a região da hunt atual vence); senão a de maior nível da
   região até o nível do time (sem `_boss`, `rocket_`, pesca); região `active:false` ou `lockedLevel` acima do time não conta. Alvo na
   hunt atual vira a origem (no fim não pula para a hunt padrão). Caso 9 do `test/guild.test.js`.
+  v3.63.0 (relato em 14/11/2026: "personagens indo para Orre que não deveriam; só os selecionados"): `cfg.guildAreas` (painel "Regiões"
+  da aba Guild, por conta; padrão kanto + outland, vazio = padrão; `guildAreas(d)`/`guildAreaOk(h)`) limita a hunt do tributo, do "Derrotar"
+  (`guildHuntFor` devolve `foraDaRegiao`) e as dailies por região. Marcar Orre só nas contas que devem ir. Caso 10 do teste.
 - Pesca (v3.31.1, farejador; bundle em 10/10/2026, `docs/mensagens-do-jogo.md` → "Pesca"): NPC Pescador → `GET /api/game/fishing-tier`
   `{ skill, inLevel, forNext, selected, cooldownMs, tiers[{ id, unlocked, natural, minSkill, mobLevel, names, fish }] }`;
   `POST /api/game/fishing-tier { tierId }` e depois a tela faz `enter-hunt { slug:'pesca' }` (a pesca É uma hunt de slug fixo
