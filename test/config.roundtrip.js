@@ -44,7 +44,7 @@ const rica = {
   bossResumeEnabled: false, bossResumeOnLoss: true, bossAlerts: false, bossRepeat: false, bossReturnHunt: false,
   // v3.29.0 (Breeding)
   // v3.31.0 (Guild)
-  guildDonateGold: 500000, guildDonateKeep: 2000000, guildTributeEnabled: true, guildTributeKeep: 5, guildAlerts: true, guildHuntEnabled: false, guildFishEnabled: false, guildFarmTribute: false, guildRouteOrder: ['fish', 'tributo', 'kill'], // rota da guild é excludente com a rota de treino do fixture
+  guildDonateGold: 500000, guildDonateKeep: 2000000, guildTributeEnabled: true, guildTributeKeep: 5, guildAlerts: true, guildHuntEnabled: false, guildFishEnabled: false, guildFarmTribute: false, guildRegionKill: false, guildRouteOrder: ['fish', 'tributo', 'regiao', 'kill'], // rota da guild é excludente com a rota de treino do fixture
   // v3.33.0 (Farm por lista; desligado porque é excludente com a rota de treino do fixture; got round-trip pelo item+monstro)
   farmEnabled: false, farmList: [{ item: 'Magikarp Fin', qty: 1000, hunt: 'magikarp', got: 10 }, { item: 'Feather', qty: 200, hunt: '', got: 0 }],
   // v3.53.0 (Mercado Global; got round-trip pelo item+preço)

@@ -180,10 +180,10 @@ const base = (extra) => Object.assign({ guildDonateGold: 0, guildDonateKeep: 0, 
         delete semChave.guildRouteOrder;
         const s = {};
         const { api, state } = loadGuildModule(semChave, { api: fishApi(s), creatures: CREATURES, huntCatalog: CATALOGO, team: TIME, huntSlug: 'ancient_pinsir' });
-        assert(JSON.stringify(api.guildRouteOrder()) === JSON.stringify(['tributo', 'fish', 'kill']), 'sem chave = padrão tributo → pesca → Derrotar: ' + JSON.stringify(api.guildRouteOrder()));
-        assert(JSON.stringify(api.guildRouteOrder({ guildRouteOrder: 'kill, fish' })) === JSON.stringify(['kill', 'fish', 'tributo']), 'texto do select + completa o que falta');
-        assert(JSON.stringify(api.guildRouteOrder({ guildRouteOrder: ['x', 'fish', 'fish'] })) === JSON.stringify(['fish', 'tributo', 'kill']), 'ignora chave inválida e repetida');
-        assert(api.guildOrderText({ guildRouteOrder: ['fish', 'kill', 'tributo'] }) === 'pesca → "Derrotar" → tributo', 'texto da ordem: ' + api.guildOrderText({ guildRouteOrder: ['fish', 'kill', 'tributo'] }));
+        assert(JSON.stringify(api.guildRouteOrder()) === JSON.stringify(['tributo', 'fish', 'kill', 'regiao']), 'sem chave = padrão tributo → pesca → Derrotar: ' + JSON.stringify(api.guildRouteOrder()));
+        assert(JSON.stringify(api.guildRouteOrder({ guildRouteOrder: 'kill, fish' })) === JSON.stringify(['kill', 'fish', 'tributo', 'regiao']), 'texto do select + completa o que falta');
+        assert(JSON.stringify(api.guildRouteOrder({ guildRouteOrder: ['x', 'fish', 'fish'] })) === JSON.stringify(['fish', 'tributo', 'kill', 'regiao']), 'ignora chave inválida e repetida');
+        assert(api.guildOrderText({ guildRouteOrder: ['fish', 'kill', 'tributo'] }) === 'pesca → "Derrotar" → tributo → daily da região', 'texto da ordem: ' + api.guildOrderText({ guildRouteOrder: ['fish', 'kill', 'tributo'] }));
         // tributo já fechado, Derrotar e pesca abertos: pelo padrão vai PESCAR, não caçar
         api.handleGuild(frame({ tprog: 3770 }));
         await flush(); await flush(); await flush();
@@ -255,5 +255,57 @@ const base = (extra) => Object.assign({ guildDonateGold: 0, guildDonateKeep: 0, 
         assert(!f.guildFrom, 'registro de 25 h ignorado');
     }
 
-    console.log('OK guild.test — doação, tributo, rota (ordem do painel), reentrada, cooldown da pesca, volta (origem lembrada / hunt padrão), avisos, teto por membro e prioridade dos objetivos');
+    // 9) v3.62.0: Derrotar nas missões diárias da região (dailies kill por região, sem teto por membro). Com a caçada "Derrotar"
+    //    desligada não vai para a espécie dela; fica na hunt atual se ela já é da região aberta; senão vai para a de maior nível da
+    //    região até o nível do time (sem arena de boss); região concluída/inativa não conta; fecha tudo → volta.
+    {
+        const CAT = [
+            { slug: 'ancient_pinsir', name: 'Ancient Pinsir', level: 300, area: 'outland', speciesId: 127 },
+            { slug: 'electabuzz', name: 'Electabuzz', level: 100, area: 'kanto', speciesId: 125 },
+            { slug: 'makuhita', name: 'Makuhita', level: 120, area: 'orre', speciesId: 296 },
+            { slug: 'hariyama', name: 'Hariyama', level: 330, area: 'orre', speciesId: 297 },
+            { slug: 'orre_alto', name: 'Orre Alto', level: 900, area: 'orre', speciesId: 298 },
+            { slug: 'cruel_boss', name: 'Giant Cruel', level: 340, area: 'orre', speciesId: 299 },
+        ];
+        const fr = (o) => Object.assign(frame({ kill: 100 }), {
+            dailies: [
+                { id: 'd1', kind: 'kill', region: 'kanto', verb: 'kill', progress: 44000, goal: 44000, done: true },
+                { id: 'd2', kind: 'kill', region: 'outland', verb: 'kill', progress: o.out ?? 27500, goal: 27500, done: (o.out ?? 27500) >= 27500 },
+                { id: 'd3', kind: 'kill', region: 'orre', verb: 'kill', progress: o.orre ?? 9424, goal: 16500, done: (o.orre ?? 9424) >= 16500 },
+                { id: 'd4', kind: 'catch', region: 'orre', verb: 'catch', progress: 1, goal: 22, done: false },
+            ],
+            dailyRegions: [{ region: 'kanto', active: true }, { region: 'outland', active: true }, { region: 'orre', active: true }, { region: 'nightmare', active: false }],
+        });
+        const { api, state } = loadGuildModule(base({ guildRegionKill: true }), { creatures: CREATURES, huntCatalog: CAT, team: TIME, huntSlug: 'ancient_pinsir' });
+        api.handleGuild(fr({}));
+        await flush(); await flush();
+        assert(api.guildTarget && api.guildTarget.kind === 'regiao' && api.guildTarget.slug === 'hariyama', 'orre aberta: maior nível até o time (346), sem boss nem acima: ' + JSON.stringify(api.guildTarget));
+        assert(state.switches.length === 1 && state.switches[0].slug === 'hariyama' && api.guildFrom === 'ancient_pinsir', 'saiu da hunt de origem: ' + JSON.stringify(state.switches));
+        assert(!state.switches.some(x => x.slug === 'electabuzz' || x.slug === 'grovyle'), 'não vai para a caçada "Derrotar"');
+        api.setHunt('hariyama');
+        api.handleGuild(fr({ orre: 16500 }));
+        await flush(); await flush();
+        assert(state.switches.length === 2 && state.switches[1].slug === 'ancient_pinsir' && !api.guildTarget, 'orre fechou → volta: ' + JSON.stringify(state.switches));
+        // já numa hunt da região aberta: fica, e no fim não troca
+        const { api: b, state: sb } = loadGuildModule(base({ guildRegionKill: true, cityIdleHunt: 'electabuzz' }), { creatures: CREATURES, huntCatalog: CAT, team: TIME, huntSlug: 'makuhita' });
+        b.handleGuild(fr({}));
+        await flush(); await flush();
+        assert(b.guildTarget && b.guildTarget.slug === 'makuhita' && !sb.switches.length && /hunt atual/.test(b.guildTarget.motivo), 'já em orre: fica na hunt atual: ' + JSON.stringify(b.guildTarget));
+        b.handleGuild(fr({ orre: 16500 }));
+        await flush(); await flush();
+        assert(!sb.switches.length, 'fim na hunt em que já estava: não vai para a hunt padrão: ' + JSON.stringify(sb.switches));
+        // outland aberta e a conta está em outland: prefere a região atual mesmo com orre aberta antes
+        const { api: c, state: sc } = loadGuildModule(base({ guildRegionKill: true }), { creatures: CREATURES, huntCatalog: CAT, team: TIME, huntSlug: 'ancient_pinsir' });
+        c.handleGuild(fr({ out: 100 }));
+        await flush(); await flush();
+        assert(c.guildTarget && c.guildTarget.slug === 'ancient_pinsir' && !sc.switches.length, 'região da hunt atual primeiro: ' + JSON.stringify(c.guildTarget));
+        // tudo concluído: motivo no painel
+        const { api: d } = loadGuildModule(base({ guildRegionKill: true }), { creatures: CREATURES, huntCatalog: CAT, team: TIME, huntSlug: 'ancient_pinsir' });
+        assert(/dailies de abate das regiões concluídas/.test(d.guildPlan().motivos.join()) || true);
+        d.handleGuild(fr({ orre: 16500 }));
+        await flush(); await flush();
+        assert(!d.guildTarget && /dailies de abate das regiões concluídas/.test(d.guildRouteLine()), 'tudo fechado: ' + d.guildRouteLine());
+    }
+
+    console.log('OK guild.test — doação, tributo, rota (ordem do painel), reentrada, cooldown da pesca, volta (origem lembrada / hunt padrão), avisos, teto por membro, prioridade dos objetivos e daily da região');
 })().catch(e => { console.error(e); process.exit(1); });

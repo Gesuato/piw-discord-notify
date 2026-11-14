@@ -468,6 +468,13 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   próximo objetivo ou volta para `guildFrom`. `guildCountKill` soma os `field-kill` na hunt alvo e, na estimativa do teto, pede
   `guild-get` (motivo `parte da caçada no teto`, 1x/2 min) — quem decide é o frame. Aviso `◐ Sua parte … fechou` com `guildAlerts`;
   log `guild` traz `minha`/`teto`. Frame sem `cap` segue como antes. Caso 6 do `test/guild.test.js`.
+  v3.62.0 (pedido do usuário em 13/11/2026: "quero o Derrotar das Dailies e não dos Objetivos, são muitos bichos"): a janela da guild
+  tem as abas **Objetivos** (`hunts[]`, "Derrotar X & Y" = `guildHuntEnabled`, teto por membro) e **Dailies** (`dailies[{ region, verb,
+  progress, goal, done }]`, soma de todos, sem teto). `cfg.guildRegionKill` ("Dailies: derrotar na região") = parte `regiao` do plano
+  (`GUILD_ORDER_DEFAULT` ganhou `regiao` no fim; o select "Prioridade" lista as 24 ordens por `guildOrderOptions`). `guildRegionHunt`:
+  fica na hunt atual / origem / hunt padrão se já forem da região aberta (a região da hunt atual vence); senão a de maior nível da
+  região até o nível do time (sem `_boss`, `rocket_`, pesca); região `active:false` ou `lockedLevel` acima do time não conta. Alvo na
+  hunt atual vira a origem (no fim não pula para a hunt padrão). Caso 9 do `test/guild.test.js`.
 - Pesca (v3.31.1, farejador; bundle em 10/10/2026, `docs/mensagens-do-jogo.md` → "Pesca"): NPC Pescador → `GET /api/game/fishing-tier`
   `{ skill, inLevel, forNext, selected, cooldownMs, tiers[{ id, unlocked, natural, minSkill, mobLevel, names, fish }] }`;
   `POST /api/game/fishing-tier { tierId }` e depois a tela faz `enter-hunt { slug:'pesca' }` (a pesca É uma hunt de slug fixo
