@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.63.0
+// @version      3.63.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.63.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.63.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -5285,8 +5285,15 @@
         } catch { /* sem registro */ }
     }
     // Para onde a conta vai quando a rota acaba: { slug, fonte: 'origem'|'hunt padrão' } ou { motivo } quando não há destino.
+    // v3.63.1: origem numa região desmarcada (ex.: a conta já estava numa hunt de Orre quando a daily de Orre começou, e ela virou a
+    // origem) é ignorada — senão, com Orre desmarcado, a rota "voltava" para Orre e a viagem/recarga seguiam essa hunt.
+    function guildFromOk(slug) {
+        if (!slug) return false;
+        const h = Array.isArray(huntCatalog) ? huntCatalog.find(x => x.slug === slug) : null;
+        return !h || typeof guildAreaOk !== 'function' || guildAreaOk(h);
+    }
     function guildReturnTarget(d) {
-        if (guildFrom) return { slug: guildFrom, fonte: 'origem' };
+        if (guildFrom && guildFromOk(guildFrom)) return { slug: guildFrom, fonte: 'origem' };
         const padrao = typeof idleDefaultSlug === 'function' ? idleDefaultSlug(d) : null;
         if (padrao) return { slug: padrao, fonte: 'hunt padrão' };
         return { motivo: 'sem hunt de origem nem hunt padrão (preencha "Hunt padrão" em Compras → Parada na cidade)' };
@@ -5453,9 +5460,10 @@
         const atual = normalize(huntSlug || '');
         const destino = guildReturnTarget();
         const volta = destino.slug || null;
+        const origemIgnorada = guildFrom && !guildFromOk(guildFrom) ? guildFrom : null;
         guildTarget = null; guildFrom = null; guildSaveFrom();
         const trocou = Boolean(volta) && volta !== atual && switchHunt(volta, 1, 'guild') !== false;
-        logEvent('guild-volta', { motivo, volta, fonte: destino.fonte || null, de: atual || null, trocou, semDestino: destino.motivo || null });
+        logEvent('guild-volta', { motivo, volta, fonte: destino.fonte || null, de: atual || null, trocou, semDestino: destino.motivo || null, origemIgnorada });
         guildNotify();
         if (motivo === 'rota da guild desligada' || motivo === 'sem guild') return;   // Salvar / conta fora da guild: sem aviso
         const who = playerName();
@@ -5530,7 +5538,7 @@
                 if (alvo.kind === 'regiao' && !guildFrom && !CITY_SLUGS.includes(atual)) { guildFrom = atual; guildSaveFrom(); }
                 return;
             }
-            if (!guildFrom && atual && !CITY_SLUGS.includes(atual) && atual !== FISH_SLUG) { guildFrom = atual; guildSaveFrom(); }
+            if (!guildFrom && atual && !CITY_SLUGS.includes(atual) && atual !== FISH_SLUG && guildFromOk(atual)) { guildFrom = atual; guildSaveFrom(); }
             switchHunt(alvo.slug, 1, 'guild');
         } finally { guildRouteBusy = false; }
     }

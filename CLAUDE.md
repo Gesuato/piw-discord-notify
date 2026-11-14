@@ -478,6 +478,8 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   v3.63.0 (relato em 14/11/2026: "personagens indo para Orre que não deveriam; só os selecionados"): `cfg.guildAreas` (painel "Regiões"
   da aba Guild, por conta; padrão kanto + outland, vazio = padrão; `guildAreas(d)`/`guildAreaOk(h)`) limita a hunt do tributo, do "Derrotar"
   (`guildHuntFor` devolve `foraDaRegiao`) e as dailies por região. Marcar Orre só nas contas que devem ir. Caso 10 do teste.
+  v3.63.1: origem (`guildFrom`) numa região desmarcada é ignorada (`guildFromOk`) e a volta vai para a hunt padrão — a v3.62 gravava a
+  hunt de Orre em que a conta já estava como origem, e com Orre desmarcado a rota "voltava" para Orre. Log `guild-volta.origemIgnorada`. Caso 10b.
 - Pesca (v3.31.1, farejador; bundle em 10/10/2026, `docs/mensagens-do-jogo.md` → "Pesca"): NPC Pescador → `GET /api/game/fishing-tier`
   `{ skill, inLevel, forNext, selected, cooldownMs, tiers[{ id, unlocked, natural, minSkill, mobLevel, names, fish }] }`;
   `POST /api/game/fishing-tier { tierId }` e depois a tela faz `enter-hunt { slug:'pesca' }` (a pesca É uma hunt de slug fixo

@@ -329,5 +329,23 @@ const base = (extra) => Object.assign({ guildDonateGold: 0, guildDonateKeep: 0, 
         const linha = api.guildRouteLine();
         assert(/região desmarcada/.test(linha) && /fora das regiões marcadas/.test(linha), 'motivos: ' + linha);
     }
+    // 10b) v3.63.1: a origem lembrada era uma hunt de Orre (a conta já estava lá quando a daily começou). Com Orre desmarcado, a rota
+    //      encerra e vai para a hunt padrão, não "volta" para Orre.
+    {
+        const CAT = [
+            { slug: 'ancient_pinsir', name: 'Ancient Pinsir', level: 300, area: 'outland', speciesId: 127 },
+            { slug: 'hariyama', name: 'Hariyama', level: 330, area: 'orre', speciesId: 297 },
+        ];
+        const fr = Object.assign(frame({ kill: 100 }), {
+            dailies: [{ id: 'd3', kind: 'kill', region: 'orre', verb: 'kill', progress: 9608, goal: 16500, done: false }],
+            dailyRegions: [{ region: 'orre', active: true }],
+        });
+        const store = { pgDiscordNotifyGuild: JSON.stringify({ from: 'hariyama', at: Date.now() }) };
+        const { api, state } = loadGuildModule(base({ guildRegionKill: true, cityIdleHunt: 'Ancient Pinsir' }), { creatures: CREATURES, huntCatalog: CAT, team: TIME, huntSlug: 'hariyama', store });
+        api.handleGuild(fr);
+        await flush(); await flush();
+        assert(state.switches.length === 1 && state.switches[0].slug === 'ancient_pinsir', 'origem em orre ignorada → hunt padrão: ' + JSON.stringify(state.switches));
+        assert(state.logs.some(([k, d]) => k === 'guild-volta' && d.origemIgnorada === 'hariyama' && d.fonte === 'hunt padrão'), 'log diz que ignorou a origem');
+    }
     console.log('OK guild.test — doação, tributo, rota (ordem do painel), reentrada, cooldown da pesca, volta (origem lembrada / hunt padrão), avisos, teto por membro, prioridade dos objetivos e daily da região');
 })().catch(e => { console.error(e); process.exit(1); });
