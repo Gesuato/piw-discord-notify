@@ -229,5 +229,68 @@ async function enter(t, extra) {
         console.log('ok 10 - recarga com participação lembrada');
     }
 
+    // 11. (v3.65.0) Raid com os Pokémon da família: pega, monta o time (inicial fica), faz, devolve tudo e volta para a hunt
+    {
+        const game = {
+            pokes: [
+                { id: 'S', name: 'Pikachu', level: 50, team: true, slot: 0, leader: false, starter: true },
+                { id: 'A', name: 'Tyranitar', level: 882, team: true, slot: 1, leader: true },
+                { id: 'B', name: 'Golem', level: 644, team: true, slot: 2, leader: false },
+            ],
+            family: [{ id: 'X', name: 'Mewtwo', level: 900 }, { id: 'Y', name: 'Lugia', level: 880 }, { id: 'Z', name: 'Rattata', level: 2 }],
+        };
+        const sel = [{ id: 'X', name: 'Mewtwo', level: 900 }, { id: 'Y', name: 'Lugia', level: 880 }];
+        const t = loadRaidModule({ raidFamilyEnabled: true, raidFamilyPokes: sel, raidReenterMax: 0 }, { huntSlug: 'banette', game });
+        const { api, state, clock } = t;
+        api.onMessage(openState(clock));
+        api.tick(); await state.drain(api.RAID_ENTER_DELAY_MS); api.tick();   // 1ª leitura do depósito
+        await state.drain(1000); api.tick();
+        await state.drain(40e3);
+        api.onField(hud(clock));
+        const g = state.game;
+        const team = () => g.pokes.filter(p => p.team).map(p => p.id + (p.leader ? '*' : '')).sort().join(',');
+        assert(api.run() && api.run().fase === 'dentro', `entrou (${api.run() && api.run().fase})`);
+        assert.strictEqual(team(), 'S,X*,Y', 'time = inicial + os da família, o 1º escolhido de líder');
+        assert.strictEqual(g.family.map(p => p.id).join(','), 'Z', 'os escolhidos saíram da família');
+        assert(api.keepsPoke('A') && api.keepsPoke('X') && !api.keepsPoke('Z'), 'time original e os da família protegidos');
+        assert(api.holding(), 'segura viagem/rotas');
+        api.onMessage({ type: 'raid-end', reason: 'time', damage: 10, hpLeft: 9e8, hpMax: 1e9, stayedMs: 30 * MIN });
+        await state.drain(60e3);
+        assert.strictEqual(team(), 'A*,B,S', 'time original e líder de volta');
+        assert.strictEqual(g.family.map(p => p.id).sort().join(','), 'X,Y,Z', 'devolvidos à família');
+        assert(!api.fam(), 'vez encerrada');
+        assert.deepStrictEqual(state.switches.map(s => s.slug), ['banette'], 'voltou para a hunt');
+        assert(!api.holding());
+        console.log('ok 11 - Raid com os Pokémon da família');
+    }
+
+    // 12. Fila: Pokémon com outra conta = espera; voltaram ao depósito = posição 2 espera 90 s; outra pegou antes = devolve e espera
+    {
+        const game = { pokes: [{ id: 'A', name: 'Tyranitar', level: 882, team: true, slot: 0, leader: true }], family: [{ id: 'Z', name: 'Rattata', level: 2 }] };
+        const sel = [{ id: 'X', name: 'Mewtwo', level: 900 }, { id: 'Y', name: 'Lugia', level: 880 }];
+        const t = loadRaidModule({ raidFamilyEnabled: true, raidFamilyPokes: sel, raidQueuePos: 2 }, { huntSlug: 'banette', game });
+        const { api, state, clock } = t;
+        api.onMessage(openState(clock));
+        await state.drain(api.RAID_ENTER_DELAY_MS); api.tick(); await state.drain(1000); api.tick();
+        assert(!api.run(), 'Pokémon com outra conta: não entra');
+        assert(/vez de outra conta \(0 de 2/.test(api.status()), api.status());
+        state.game.family.push({ id: 'X', name: 'Mewtwo', level: 900 }, { id: 'Y', name: 'Lugia', level: 880 });   // a outra conta devolveu
+        await state.drain(30e3); api.tick();
+        assert(!api.run() && /posição 2/.test(api.status()), api.status());
+        await state.drain(95e3); api.tick();
+        assert(api.run(), 'depois de 90 s a posição 2 pega');
+        // corrida: a outra conta pegou o Y antes
+        state.game.family = state.game.family.filter(p => p.id !== 'Y');
+        await state.drain(40e3);
+        assert(!api.run(), 'desistiu desta vez');
+        assert(logsOf(state, 'raid-entrada').some(l => l.fase === 'falhou' && /outra conta pegou/.test(l.porque)), 'motivo: outra conta pegou');
+        await state.drain(30e3);
+        assert(state.game.family.some(p => p.id === 'X'), 'devolveu o X que já tinha pego');
+        assert(state.game.pokes.find(p => p.id === 'A').team, 'time original intacto');
+        assert(!api.fam(), 'sem vez pendente');
+        assert.strictEqual(state.hooks.filter(h => h.meta?.evento === 'raid-entrada-falhou').length, 0, 'sem alerta: era só a vez de outra conta');
+        console.log('ok 12 - fila pela presença no depósito da família');
+    }
+
     console.log('raid.test: tudo ok');
 })().catch(e => { console.error(e); process.exit(1); });

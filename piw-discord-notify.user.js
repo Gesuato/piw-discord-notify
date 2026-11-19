@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.64.2
+// @version      3.65.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.64.2';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.65.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -109,6 +109,9 @@
         raidEnabled: false,     // v3.64.0 Raid Mundial (Darkrai em Cerulean): entrar sozinho enquanto a Raid estiver aberta e voltar para a hunt
         raidReenterMax: 3,      // ...reentradas por Raid quando o time cai ou o servidor reinicia (0 = entra uma vez só)
         raidAlerts: true,       // ...avisa no canal de Alertas (fim da participação com dano e posição, recompensa, conquista, entrada que falhou)
+        raidFamilyEnabled: false, // v3.65.0 ...fazer a Raid com Pokémon do depósito da família, uma conta por vez (pega, equipa, devolve)
+        raidFamilyPokes: [],    // ...os escolhidos [{ id, name, level, iv, q }] (o 1º vira o líder; máx. 6, o inicial ocupa uma vaga)
+        raidQueuePos: 1,        // ...posição desta conta na fila (1 = pega primeiro quando os Pokémon voltam ao depósito)
         bossResumeEnabled: true, // v3.43.0 Auto Boss do jogo: retomar quando parar sem terminar (erro, saiu da arena, reconexão)
         bossResumeOnLoss: false, // ...também depois de derrota (cura na Joy antes; cada derrota perde 1 token)
         bossAlerts: true,       // ...avisar no canal de Alertas (retomada, desistência, fim)
@@ -1958,6 +1961,7 @@
 
     let lastPokesList = [];         // último frame `pokes` (para a prévia do painel e a venda)
     let lastPokesAt = 0;
+    function pokesSnapshot() { return { list: lastPokesList, seq: pokesFrameSeq, at: lastPokesAt }; }   // v3.65.0: a Raid lê por função (harness)
     let pokesFrameSeq = 0;           // conta os frames `pokes` (dois no mesmo ms têm o mesmo lastPokesAt)
     let pokeSellRunning = false;
     let lastPokeSellAt = 0;         // última venda de Pokémon (só informativo; a recarga restaura)
@@ -2087,6 +2091,7 @@
         if (!p || typeof p !== 'object') return 'inválido';
         if (p.team || p.leader) return 'no time';
         if (p.starter) return 'inicial';
+        if (typeof raidKeepsPoke === 'function' && raidKeepsPoke(p.id)) return 'Raid com a família';   // v3.65.0
         if (p.shiny) return 'shiny';
         if (Number(p.level) > 1) return `nível ${Number(p.level)}`;   // v3.38.0: quem já treinou (nível > 1) NUNCA vende (pedido do usuário em 16/10/2026)
         if (p.locked) return 'cadeado';
@@ -3993,6 +3998,7 @@
     function breedFoodReason(p, trunk, d) {
         d = d || cfg;
         if (!p || typeof p !== 'object' || !trunk) return 'inválido';
+        if (typeof raidFamIds === 'function' && raidFamIds(d).includes(String(p.id))) return 'escolhido para a Raid';   // v3.65.0: não vira comida
         if (String(p.id) === trunk.id) return 'é quem sobe';
         // v3.48.0: a comida em criação da PRÓPRIA linhagem existe para ser comida de quem sobe; as outras unidades (quem sobe e comida
         // em criação das outras linhagens) nunca
@@ -6638,6 +6644,7 @@
         if (!p || typeof p !== 'object') return 'inválido';
         if (p.team || p.leader || String(p.id).startsWith('team-')) return 'no time';
         if (p.starter) return 'inicial';
+        if (typeof raidKeepsPoke === 'function' && raidKeepsPoke(p.id)) return 'Raid com a família (time guardado)';   // v3.65.0: o guardar mandaria o time original para a família
         if (p.listed || p.tradeId) return 'anunciado no mercado';
         if (p.breedingBox) return 'na Breeding Box';   // v3.49.0: lá dentro não vai para a família
         if (p.locked) return 'cadeado';          // o jogo recusa: "Este Pokémon está TRAVADO (cadeado)" (log da conta3, 28/09/2026)
@@ -7402,6 +7409,7 @@
     // v3.39.0: leitura por função (a evolução roda isolada no harness e não enxerga as variáveis acima).
     function familyDepotItems() { return Array.isArray(lastFamilyDepot.items) ? lastFamilyDepot.items : []; }
     function familyDepotAt() { return lastFamilyAt; }
+    function familyDepotPokes() { return Array.isArray(lastFamilyDepot.pokes) ? lastFamilyDepot.pokes : []; }   // v3.65.0 (Raid)
     // Uma ação da família pelo socket; `check(depot)` diz se o frame `family` da resposta confirma o que foi pedido.
     function familyAction(payload, evento, dados, check) {
         return new Promise((resolve) => {
@@ -7571,6 +7579,232 @@
     let raidStateLoggedKey = null;
     let onRaidChange = null;    // painel (aba Raid)
 
+    // ---- Raid com os Pokémon da família (v3.65.0): uma conta por vez ----
+    // Pedido do usuário em 19/11/2026: "essa feature seja sequencial, 1 conta de cada vez da família, e eles usem os Pokémon que estão na
+    // família para fazer a Raid: pega os Pokémon na família, equipa e faz; quando acabar coloca de novo na família e a próxima conta faz a
+    // mesma coisa e volta para a hunt; selecionar os Pokémon da família que vão ser usados".
+    // Bundle de 18/11/2026: `family-action { action:'poke', dir:'withdraw', capturedId }` tira do depósito da família para o BOX (a janela
+    // "Família" lista o box e o depósito); `poke-withdraw { pokeId }` box → time (máx. 6: "teamFull"), `poke-store { pokeId }` time → box (o
+    // inicial não sai do time: "starterCantStore"); `poke-summon { pokeId }` = líder; o depósito na família só aceita quem está no BOX.
+    // Fila SEM config compartilhada (decisão de set/2026): o próprio depósito da família é a trava — quem está com os Pokémon faz a Raid, as
+    // outras esperam eles voltarem. A ordem vem da "posição na fila" de cada painel: com os Pokémon de volta no depósito, a posição N espera
+    // (N−1) × 90 s antes de pegar (a 1ª da fila pega primeiro; quem já fez hoje não entra). Pegar falhou porque outra conta pegou antes =
+    // devolve o que já tirou e espera. Antes de mexer, o time original (ids e líder) fica em localStorage (RAID_KEY), e é ele que volta.
+    // Enquanto a conta segura os Pokémon (`raidFam.held`), `raidHolding()` segura viagem/rotas/guardar (o time original está no box e o
+    // guardar mandaria para a família) e `raidKeepsPoke(id)` os tira da venda e do depósito.
+    const RAID_FAM_STEP_MS = 90 * 1000;           // espera por posição na fila depois que os Pokémon voltam ao depósito
+    const RAID_FAM_READ_MS = 25 * 1000;           // depósito da família mais velho que isto: relê antes de decidir a vez
+    const RAID_FAM_MAX = 6;
+    const RAID_FAM_POS_MAX = 8;
+    const RAID_MOVE_GAP_MS = 800;                 // entre um movimento e outro (o servidor manda o frame `pokes` de cada um)
+    const RAID_POKES_WAIT_MS = 6000;
+    const RAID_FAMILY_WAIT_MS = 8000;
+    const RAID_FAM_RETRY_MS = 2 * 60 * 1000;      // devolução que falhou: tenta de novo
+    let raidFam = null;          // { held, ids:[ids da família comigo], team:[ids do time original], leader, from, at, retryAt, avisado }
+    let raidFamWorking = false;
+    let raidFamAvailSince = 0;
+    let raidFamAskedAt = 0;
+    let raidFamNote = null;
+
+    function raidFamList(d) { const l = (d || cfg).raidFamilyPokes; return Array.isArray(l) ? l.filter(x => x && x.id).slice(0, RAID_FAM_MAX) : []; }
+    function raidFamOn(d) { d = d || cfg; return Boolean(d.raidFamilyEnabled) && raidFamList(d).length > 0; }
+    function raidFamIds(d) { return raidFamList(d).map(x => String(x.id)); }
+    function raidFamPos(d) { return Math.max(1, Math.min(RAID_FAM_POS_MAX, Math.floor(Number((d || cfg).raidQueuePos)) || 1)); }
+    function raidFamName(id) { const x = raidFamList().find(p => String(p.id) === String(id)); return x?.name || String(id); }
+    // Fora da venda e do guardar: os Pokémon da família comigo e o time original guardado no box durante a vez.
+    function raidKeepsPoke(id) {
+        if (!raidFam?.held) return false;
+        const s = String(id);
+        return raidFam.ids.includes(s) || (raidFam.team || []).includes(s);
+    }
+    function raidPokes() { const p = typeof pokesSnapshot === 'function' ? pokesSnapshot() : null; return { list: Array.isArray(p?.list) ? p.list : [], seq: p?.seq || 0 }; }
+    function raidTeamOf(list) { return list.filter(p => p && p.team).sort((a, b) => (Number(a.slot) || 0) - (Number(b.slot) || 0)); }
+    function raidDepotPokes() { return typeof familyDepotPokes === 'function' ? familyDepotPokes() : []; }
+    function raidDepotAt() { return typeof familyDepotAt === 'function' ? familyDepotAt() : 0; }
+    async function raidFreshPokes() {
+        const s0 = raidPokes().seq;
+        sendGame({ type: 'pokes-get' });
+        for (let t = 0; t < RAID_POKES_WAIT_MS; t += 250) { await raidWait(250); if (raidPokes().seq > s0) return true; }
+        return false;
+    }
+    async function raidFreshFamily() {
+        const a0 = raidDepotAt();
+        raidFamAskedAt = Date.now();
+        sendGame({ type: 'family-get' });
+        for (let t = 0; t < RAID_FAMILY_WAIT_MS; t += 250) { await raidWait(250); if (raidDepotAt() > a0) return true; }
+        return false;
+    }
+    function raidFamPresence() {
+        const dep = new Set(raidDepotPokes().map(p => String(p?.id)));
+        const mine = new Set(raidPokes().list.map(p => String(p?.id)));
+        const ids = raidFamIds();
+        return { total: ids.length, inFamily: ids.filter(i => dep.has(i)).length, withMe: ids.filter(i => mine.has(i)).length };
+    }
+    // É a vez desta conta? null = sim; senão o motivo da espera (status do painel). Lê o depósito quando ele envelhece.
+    function raidFamTurn(now) {
+        if (raidFam?.held) return null;
+        const pr = raidFamPresence();
+        if (pr.total && pr.withMe === pr.total) return null;   // já estão comigo (vez interrompida por recarga)
+        if (now - raidDepotAt() > RAID_FAM_READ_MS) {
+            if (now - raidFamAskedAt > RAID_FAM_READ_MS) { raidFamAskedAt = now; sendGame({ type: 'family-get' }); }
+            if (!raidDepotAt()) return 'lendo o depósito da família';
+        }
+        if (pr.inFamily + pr.withMe < pr.total) { raidFamAvailSince = 0; return `vez de outra conta (${pr.inFamily} de ${pr.total} Pokémon no depósito da família)`; }
+        if (!raidFamAvailSince) raidFamAvailSince = now;
+        const falta = (raidFamPos() - 1) * RAID_FAM_STEP_MS - (now - raidFamAvailSince);
+        if (falta > 0) return `fila: posição ${raidFamPos()}, pega os Pokémon em ${raidFmt(falta)} se nenhuma conta pegar antes`;
+        return null;
+    }
+    // Pega os Pokémon escolhidos na família e monta o time com eles (o 1º escolhido vira o líder).
+    async function raidFamEquip(r) {
+        const ids = raidFamIds();
+        r.fase = 'pegando os Pokémon da família'; raidNotify();
+        await raidFreshFamily();
+        await raidFreshPokes();
+        if (raidRun !== r) return { ok: false, motivo: 'cancelada' };
+        let list = raidPokes().list;
+        if (!raidFam?.held) {
+            const tm = raidTeamOf(list);
+            if (!tm.length) return { ok: false, motivo: 'time da conta ainda não lido (frame pokes)' };
+            raidFam = { held: true, ids: [], team: tm.map(p => String(p.id)), leader: String((tm.find(p => p.leader) || tm[0]).id), from: r.from, at: Date.now(), retryAt: 0, avisado: false };
+            raidSave();
+            logEvent('raid-familia', { fase: 'time-original', time: tm.map(p => `${p.name} lv${p.level}`), lider: raidFam.leader });
+        }
+        const mine = new Set(list.map(p => String(p?.id)));
+        for (const id of ids) {
+            if (mine.has(id)) { if (!raidFam.ids.includes(id)) raidFam.ids.push(id); continue; }
+            if (!raidDepotPokes().some(p => String(p?.id) === id)) return { ok: false, turno: true, motivo: `${raidFamName(id)} não está no depósito da família (outra conta pegou antes)` };
+            const res = await familyAction({ action: 'poke', dir: 'withdraw', capturedId: id }, 'raid-familia', { fase: 'retirada', id, name: raidFamName(id) },
+                (depot) => Array.isArray(depot.pokes) && !depot.pokes.some(p => String(p?.id) === id));
+            if (raidRun !== r) return { ok: false, motivo: 'cancelada' };
+            if (!res.ok) return { ok: false, turno: true, motivo: `retirada de ${raidFamName(id)} falhou: ${res.motivo || 'sem motivo'}` };
+            raidFam.ids.push(id); raidSave();
+            await raidWait(RAID_MOVE_GAP_MS);
+        }
+        r.fase = 'montando o time com os Pokémon da família'; raidNotify();
+        await raidFreshPokes();
+        list = raidPokes().list;
+        for (const p of raidTeamOf(list)) {
+            if (p.starter || ids.includes(String(p.id))) continue;   // o inicial não sai do time
+            sendGame({ type: 'poke-store', pokeId: p.id });
+            await raidWait(RAID_MOVE_GAP_MS);
+        }
+        await raidFreshPokes();
+        list = raidPokes().list;
+        let noTime = raidTeamOf(list).length;
+        for (const id of ids) {
+            const p = list.find(x => String(x?.id) === id);
+            if (!p || p.team || noTime >= 6) continue;
+            sendGame({ type: 'poke-withdraw', pokeId: id });
+            noTime++;
+            await raidWait(RAID_MOVE_GAP_MS);
+        }
+        await raidFreshPokes();
+        list = raidPokes().list;
+        const inTeam = ids.filter(id => list.some(p => String(p?.id) === id && p.team));
+        if (!inTeam.length) return { ok: false, motivo: 'os Pokémon da família não entraram no time' };
+        const lider = list.find(p => p.team && p.leader);
+        if (!lider || String(lider.id) !== inTeam[0]) {
+            sendGame({ type: 'poke-summon', pokeId: inTeam[0] });
+            await raidWait(RAID_MOVE_GAP_MS);
+            await raidFreshPokes();
+            list = raidPokes().list;
+        }
+        logEvent('raid-familia', { fase: 'time-montado', time: raidTeamOf(list).map(p => `${p.name} lv${p.level}${p.leader ? ' (líder)' : ''}`), daFamilia: inTeam.length, deFora: ids.length - inTeam.length });
+        return { ok: true };
+    }
+    // Devolve: tira os da família do time, põe o time original (e o líder) de volta e deposita os da família. Precisa estar na cidade.
+    async function raidFamRelease(motivo) {
+        if (!raidFam?.held) return { ok: true };
+        if (raidFamWorking) return { ok: false, motivo: 'devolução em andamento' };
+        raidFamWorking = true;
+        const fam = raidFam;
+        try {
+            const h = normalize(huntSlug || '');
+            if (h && !CITY_SLUGS.includes(h)) { sendGame({ type: 'leave-hunt' }); sendGame({ type: 'set-city', slug: 'cerulean' }); await raidWait(RAID_LEAVE_WAIT_MS); }
+            logEvent('raid-familia', { fase: 'devolvendo', motivo, ids: fam.ids.length });
+            await raidFreshPokes();
+            let list = raidPokes().list;
+            for (const id of fam.ids) {
+                const p = list.find(x => String(x?.id) === id);
+                if (p?.team) { sendGame({ type: 'poke-store', pokeId: id }); await raidWait(RAID_MOVE_GAP_MS); }
+            }
+            await raidFreshPokes();
+            list = raidPokes().list;
+            let noTime = raidTeamOf(list).length;
+            for (const id of fam.team || []) {
+                const p = list.find(x => String(x?.id) === id);
+                if (!p || p.team || noTime >= 6) continue;
+                sendGame({ type: 'poke-withdraw', pokeId: id });
+                noTime++;
+                await raidWait(RAID_MOVE_GAP_MS);
+            }
+            await raidFreshPokes();
+            list = raidPokes().list;
+            const lider = list.find(p => p.team && p.leader);
+            if (fam.leader && list.some(p => String(p?.id) === fam.leader && p.team) && String(lider?.id) !== fam.leader) {
+                sendGame({ type: 'poke-summon', pokeId: fam.leader });
+                await raidWait(RAID_MOVE_GAP_MS);
+                await raidFreshPokes();
+                list = raidPokes().list;
+            }
+            const falhas = [];
+            for (const id of [...fam.ids]) {
+                const p = list.find(x => String(x?.id) === id);
+                if (!p) { fam.ids = fam.ids.filter(x => x !== id); continue; }   // não está mais comigo
+                if (p.team) { falhas.push(`${raidFamName(id)}: ainda no time`); continue; }
+                const res = typeof familyDeposit === 'function' ? await familyDeposit(id, raidFamName(id)) : { ok: false, motivo: 'sem família' };
+                if (res.ok) fam.ids = fam.ids.filter(x => x !== id);
+                else falhas.push(`${raidFamName(id)}: ${res.motivo || 'sem motivo'}`);
+                await raidWait(RAID_MOVE_GAP_MS);
+            }
+            await raidFreshPokes();
+            list = raidPokes().list;
+            logEvent('raid-familia', { fase: 'devolvido', ok: !falhas.length, faltam: fam.ids.length, falhas, time: raidTeamOf(list).map(p => `${p.name} lv${p.level}${p.leader ? ' (líder)' : ''}`) });
+            if (falhas.length || fam.ids.length) {
+                fam.retryAt = Date.now() + RAID_FAM_RETRY_MS;
+                raidSave();
+                if (!fam.avisado && cfg.raidAlerts !== false) {
+                    fam.avisado = true;
+                    const who = playerName();
+                    postWebhook('alert', {
+                        content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: não consegui devolver os Pokémon da Raid para a família — as outras contas esperam`,
+                        username: 'Poke Idle World',
+                        embeds: [{ title: 'Raid: devolução à família falhou', color: 0xed4245, description: (who ? `Conta: ${who}\n` : '') + `${falhas.join('\n') || 'Pokémon ainda com a conta'}\nTento de novo a cada ${raidFmt(RAID_FAM_RETRY_MS)}; ou devolva na mão pela janela Família.` }],
+                    }, { evento: 'raid-familia-devolucao' });
+                }
+                return { ok: false, motivo: falhas.join('; ') || 'Pokémon ainda com a conta' };
+            }
+            raidFam = null; raidFamAvailSince = 0;
+            raidSave();
+            return { ok: true };
+        } catch (err) {
+            if (raidFam) { raidFam.retryAt = Date.now() + RAID_FAM_RETRY_MS; raidSave(); }
+            logEvent('raid-familia', { fase: 'erro', erro: String(err?.message || err) });
+            return { ok: false, motivo: String(err?.message || err) };
+        } finally { raidFamWorking = false; raidNotify(); }
+    }
+    // Vez encerrada fora de uma participação (reentrada que não aconteceu, recarga, Raid fechou): devolve e volta para a hunt.
+    async function raidFamReleaseAndGoBack(motivo) {
+        const from = raidFam?.from || null;
+        const r = await raidFamRelease(motivo);
+        if (!r.ok) return;
+        if (from && !raidRun && !(typeof holdActive === 'function' && holdActive())) logEvent('raid-volta', { para: from, motivo: `vez da família encerrada (${motivo})`, enviado: switchHunt(from, 1, 'raid-volta') });
+    }
+    // Ainda vale segurar os Pokémon? (vai reentrar nesta Raid)
+    function raidFamKeep(now) {
+        if (!raidOn() || !raidActiveNow(now) || raidDoneToday()) return false;
+        const t = raidTried[raidSrv?.key];
+        return Boolean(t && !t.done);
+    }
+    function raidFamStatus(d) {
+        d = d || cfg;
+        if (!raidFamOn(d)) return raidFamList(d).length ? 'desligado' : 'nenhum Pokémon escolhido';
+        if (raidFam?.held) return `com ${raidFam.ids.length} Pokémon da família${raidFam.retryAt ? ` · devolução pendente (tenta em ${raidFmt(raidFam.retryAt - Date.now())})` : ''}`;
+        const pr = raidFamPresence();
+        return `${pr.inFamily} de ${pr.total} no depósito da família${raidDepotAt() ? ` (lido há ${raidFmt(Date.now() - raidDepotAt())})` : ''} · posição ${raidFamPos(d)} na fila${raidFamNote ? ` · ${raidFamNote}` : ''}`;
+    }
+
     function raidOn(d) { return Boolean((d || cfg).raidEnabled); }
     function raidReenterMax(d) {
         const v = (d || cfg).raidReenterMax;
@@ -7611,10 +7845,11 @@
     }
     // v3.64.2 (conta1, 19/11/2026 02:15Z): participação LEMBRADA da carga anterior sem nenhum frame da Raid nesta carga não segura nada —
     // ela segurava a cura ("líder com hp 0", a tela não viaja assim) e o filtro barrava o enter-hunt da tela nova: conta presa na cidade.
-    function raidHolding() { return Boolean(raidRun) && !(raidRun.origem === 'lembrado' && !raidRun.fieldSeen); }
+    function raidHolding() { return (Boolean(raidRun) && !(raidRun.origem === 'lembrado' && !raidRun.fieldSeen)) || Boolean(raidFam?.held); }
     function raidBusy() { return raidHolding(); }
     function raidBusyReason() {
         if (!raidHolding()) return null;
+        if (!raidRun || (raidRun.origem === 'lembrado' && !raidRun.fieldSeen)) return raidFamWorking ? 'Raid: devolvendo os Pokémon da família' : 'Raid: com os Pokémon da família';
         if (raidRun.fase === 'dentro') {
             const p = raidPct(raidRun.hud?.hpLeft, raidRun.hud?.hpMax);
             return `Raid do ${raidRun.hud?.bossName || raidSrv?.bossName || 'Darkrai'} em andamento${p != null ? ` (${p}% de vida)` : ''}`;
@@ -7650,7 +7885,7 @@
             const tried = {};
             for (const k of keys) tried[k] = raidTried[k];
             const run = raidRun && !raidRun.ended ? { key: raidRun.key, from: raidRun.from, origem: raidRun.origem, at: raidRun.at, enteredAt: raidRun.enteredAt || 0 } : null;
-            localStorage.setItem(RAID_KEY, JSON.stringify({ run, tried, doneDay: raidDoneDay, savedAt: Date.now() }));
+            localStorage.setItem(RAID_KEY, JSON.stringify({ run, tried, doneDay: raidDoneDay, fam: raidFam?.held ? raidFam : null, savedAt: Date.now() }));
         } catch { /* sem espaço: vale só nesta carga */ }
     }
     // Carga nova (⟳ do PokeGrid, recarga automática): o dia esgotado, as tentativas por Raid e a participação em andamento voltam.
@@ -7659,6 +7894,10 @@
         try { rec = JSON.parse(localStorage.getItem(RAID_KEY) || 'null'); } catch { rec = null; }
         if (!rec || typeof rec !== 'object') return;
         if (typeof rec.doneDay === 'string') raidDoneDay = rec.doneDay;
+        if (rec.fam && typeof rec.fam === 'object' && rec.fam.held) {   // v3.65.0: a vez com os Pokémon da família continua (ou devolve)
+            raidFam = { held: true, ids: (rec.fam.ids || []).map(String), team: (rec.fam.team || []).map(String), leader: rec.fam.leader ? String(rec.fam.leader) : null, from: rec.fam.from ? String(rec.fam.from) : null, at: Number(rec.fam.at) || Date.now(), retryAt: 0, avisado: false };
+            logEvent('raid-familia', { fase: 'lembrada', ids: raidFam.ids.length, time: raidFam.team.length, from: raidFam.from });
+        }
         if (rec.tried && typeof rec.tried === 'object') {
             for (const [k, v] of Object.entries(rec.tried)) {
                 if (!v || typeof v !== 'object') continue;
@@ -7729,6 +7968,8 @@
     function raidTick() {
         const now = Date.now();
         if (raidRun) { raidRunTick(now); return; }
+        // v3.65.0: com os Pokémon da família e sem reentrada pela frente, devolve (e volta para a hunt)
+        if (raidFam?.held && !raidFamWorking && !raidFamKeep(now) && (!raidFam.retryAt || raidFam.retryAt <= now)) { raidFamReleaseAndGoBack('vez encerrada'); return; }
         if (!raidOn()) { raidSetWait(null); return; }
         const s = raidSrv;
         if ((!s || now - s.at > RAID_STATE_STALE_MS) && now - raidAskedAt > RAID_STATE_ASK_GAP_MS) raidAskState(s ? 'estado velho' : 'estado nunca lido');
@@ -7738,6 +7979,11 @@
         if (t.done) { raidSetWait(null); return; }
         if (t.retryAt > now || t.nextAt > now) return;
         if (now - (s.activeSince || s.at) < RAID_ENTER_DELAY_MS) return;
+        if (raidFamOn()) {   // v3.65.0: só na vez desta conta (os Pokémon da família no depósito e a posição na fila)
+            const espera = raidFamTurn(now);
+            if (espera !== raidFamNote) { raidFamNote = espera; raidNotify(); }
+            if (espera) { raidSetWait(null); return; }
+        }
         const bloqueio = raidBlockedReason();
         if (bloqueio) { raidSetWait(bloqueio); return; }
         raidSetWait(null);
@@ -7788,6 +8034,11 @@
             await raidWait(RAID_HEAL_WAIT_MS);
             if (raidRun !== r) return;
             if (typeof holdActive === 'function' && holdActive()) { raidAbort('espera na cidade ligada', true); return; }
+            if (raidFamOn() || raidFam?.held) {   // v3.65.0: pega os Pokémon da família e monta o time
+                const eq = await raidFamEquip(r);
+                if (raidRun !== r) return;
+                if (!eq.ok) { raidAbort(`time da família: ${eq.motivo}`, Boolean(eq.turno), Boolean(eq.turno)); return; }
+            }
             r.fase = 'entrando'; raidNotify();
             const tela = typeof nudgeClientToHunt === 'function' ? Boolean(nudgeClientToHunt(RAID_SLUG)) : false;
             logEvent('raid-entrada', { fase: 'tela', tela });
@@ -7800,15 +8051,15 @@
         } catch (err) { if (raidRun === r) raidAbort(String(err?.message || err)); }
     }
     // Entrada que não aconteceu: registra, avisa (sem `quiet`), tenta de novo em 5 min (até 3x por Raid) e devolve a conta à hunt.
-    function raidAbort(porque, quiet) {
+    function raidAbort(porque, quiet, semFalha) {
         const r = raidRun;
         if (!r) return;
         raidRun = null; raidEndedAt = Date.now(); raidBlockedAfterEnd = 0;
         const t = raidTriedFor(r.key);
         if (t.entries > 0) t.entries--;   // não chegou a entrar: não gasta uma das reentradas
-        t.fails++;
-        t.retryAt = Date.now() + RAID_REFUSED_RETRY_MS;
-        if (t.fails >= RAID_MAX_FAILS) t.done = `${t.fails} entradas falharam nesta Raid`;
+        if (semFalha) { t.retryAt = Date.now() + 60 * 1000; raidFamAvailSince = 0; }   // v3.65.0: outra conta pegou os Pokémon antes: espera a vez
+        else { t.fails++; t.retryAt = Date.now() + RAID_REFUSED_RETRY_MS; }
+        if (!semFalha && t.fails >= RAID_MAX_FAILS) t.done = `${t.fails} entradas falharam nesta Raid`;
         raidSave();
         logEvent('raid-entrada', { fase: 'falhou', porque, origem: r.origem, from: r.from, hunt: huntSlug || null, falhas: t.fails, desisti: Boolean(t.done), barrados: r.blocked || 0 });
         if (!quiet && cfg.raidAlerts !== false) {
@@ -7819,7 +8070,8 @@
                 embeds: [{ title: 'Raid Mundial: entrada falhou', color: 0xed4245, description: (who ? `Conta: ${who}\n` : '') + `${porque}.${t.done ? ' Desisti desta Raid.' : ` Tento de novo em ${raidFmt(RAID_REFUSED_RETRY_MS)}.`}${r.from ? ` Voltando para ${r.from}.` : ' A parada na cidade decide a volta.'}` }],
             }, { evento: 'raid-entrada-falhou', porque });
         }
-        if (r.from && !(typeof holdActive === 'function' && holdActive())) {
+        if (raidFam?.held) { if (!raidFam.from) raidFam.from = r.from; setTimeout(() => { if (!raidRun) raidFamReleaseAndGoBack('entrada falhou'); }, RAID_LEAVE_WAIT_MS); }   // v3.65.0: devolve à família antes de voltar
+        else if (r.from && !(typeof holdActive === 'function' && holdActive())) {
             setTimeout(() => { if (!raidRun) logEvent('raid-volta', { para: r.from, motivo: 'entrada falhou', enviado: switchHunt(r.from, 1, 'raid-volta') }); }, RAID_LEAVE_WAIT_MS);
         }
         raidNotify();
@@ -8006,6 +8258,11 @@
             }
             if (!t.done) t.done = `participação encerrada (${RAID_REASON_LABEL[reason] || reason || 'fim'})`;   // sem reentrada: não entra de novo nesta Raid
             raidSave();
+            if (raidFam?.held) {   // v3.65.0: a vez acabou: devolve os Pokémon à família (a próxima conta da fila espera por eles)
+                if (!raidFam.from) raidFam.from = r.from;
+                const rel = await raidFamRelease(`fim da participação (${reason || 'fim'})`);
+                if (!rel.ok) { logEvent('raid-volta', { para: null, motivo: `devolução à família pendente: ${rel.motivo}` }); return; }   // o tique tenta de novo e volta
+            }
             const para = r.from;
             if (!para) { logEvent('raid-volta', { para: null, motivo: 'sem hunt de volta (a parada na cidade decide)' }); return; }
             if (typeof holdActive === 'function' && holdActive()) { logEvent('raid-volta', { para, motivo: 'espera na cidade ligada: fica' }); return; }
@@ -8058,6 +8315,7 @@
         else if (!raidActiveNow(now)) extra = 'menos de 2 min de Raid: não entra';
         else if (t?.retryAt > now) extra = `tenta de novo em ${raidFmt(t.retryAt - now)}`;
         else if (t?.nextAt > now) extra = `reentra em ${raidFmt(t.nextAt - now)}`;
+        else if (raidFamOn(d) && raidFamNote) extra = raidFamNote;   // v3.65.0: fila da família
         else if (raidWaitNote) extra = `esperando: ${raidWaitNote}`;
         else extra = 'entrando no próximo tique';
         return `${base} · ${extra}${t?.entries ? ` · ${t.entries} ${t.entries === 1 ? 'entrada' : 'entradas'}` : ''}`;
@@ -10779,6 +11037,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
 #pg-dn-panel .dn-item .t.exc{color:var(--dn-danger-t);background:color-mix(in srgb,var(--dn-danger) 18%,var(--dn-bg-0))}
 #pg-dn-panel .dn-item .t.novo{color:var(--dn-shiny);background:color-mix(in srgb,var(--dn-shiny) 14%,var(--dn-bg-0))}
 #pg-dn-panel .dn-bagtools{display:flex;gap:6px;align-items:center}
+#pg-dn-panel .dn-famlist{max-height:240px;overflow:auto}
 #pg-dn-panel .dn-bagtools .dn-input{flex:1;min-width:0}
 #pg-dn-panel .dn-bagtools .dn-select{width:120px;flex:none}
 #pg-dn-panel .dn-chips{display:flex;gap:4px;flex-wrap:wrap;align-items:center}
@@ -11361,6 +11620,16 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         </div>
                         <div class="dn-status col"><div id="pg-dn-raid-status"></div><div id="pg-dn-raid-last" class="dn-hint"></div></div>
                     </div>
+                    <div class="dn-section">
+                        <h3>👪 Fazer a Raid com Pokémon da família (uma conta por vez)</h3>
+                        <label class="dn-toggle"><input id="pg-dn-raidfam" type="checkbox"><span class="sw"></span>Pegar os Pokémon escolhidos no depósito da família, montar o time, fazer a Raid e devolver <span class="dn-hint">(o time desta conta volta no fim)</span></label>
+                        <div class="dn-inline">Posição desta conta na fila <input id="pg-dn-raidfam-pos" class="dn-input dn-input--sm" type="number" min="1" max="8" step="1" placeholder="1"> <span class="dn-hint">(1 = pega primeiro; use 1, 2, 3, 4 nas contas)</span></div>
+                        <p class="dn-help">Só uma conta pode estar com os Pokémon de cada vez: o próprio depósito da família é a fila. Quando os escolhidos estão lá, a conta de posição 1 pega na hora, a 2 depois de 1,5 min, a 3 depois de 3 min… (quem já fez a Raid hoje não pega). A conta da vez sai da hunt, cura, tira os Pokémon da família, guarda o próprio time no box (o inicial fica), põe os da família no time (o 1º escolhido vira o líder) e entra. No fim (tempo acabou, reentradas esgotadas, Raid fechou) tira os da família do time, devolve o time original e o líder, deposita os da família de volta e volta para a hunt — aí é a vez da próxima. Cada vez gasta 2 movimentos da família por Pokémon. Escolha os mesmos Pokémon em todas as contas (os ids são da família; Exportar/Importar copia).</p>
+                        <div class="dn-status"><span id="pg-dn-raidfam-status"></span><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm r" id="pg-dn-raidfam-read" title="Pede o depósito da família ao jogo (family-get).">📋 Ler família</button></div>
+                        <div id="pg-dn-raidfam-sel" class="dn-items"></div>
+                        <div class="dn-bagtools"><input id="pg-dn-raidfam-search" class="dn-input" type="search" placeholder="buscar Pokémon da família…" spellcheck="false" aria-label="Buscar Pokémon da família"></div>
+                        <div id="pg-dn-raidfam-list" class="dn-items dn-famlist"></div>
+                    </div>
                 </section>
                 <section class="dn-pane" data-pane="boss" hidden>
                     <div class="dn-section">
@@ -11563,6 +11832,9 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 raidEnabled: $('#pg-dn-raid').checked,
                 raidReenterMax: $('#pg-dn-raid-reenter').value.trim() === '' ? RAID_REENTER_DEFAULT : Math.max(0, Math.min(RAID_REENTER_MAX, parseInt($('#pg-dn-raid-reenter').value, 10) || 0)),
                 raidAlerts: $('#pg-dn-raid-alerts').checked,
+                raidFamilyEnabled: $('#pg-dn-raidfam').checked,
+                raidFamilyPokes: (raidFamDraft || raidFamList(cfg)).map(x => Object.assign({}, x)),
+                raidQueuePos: Math.max(1, Math.min(8, parseInt($('#pg-dn-raidfam-pos').value, 10) || 1)),
                 bossResumeEnabled: $('#pg-dn-boss').checked,
                 bossResumeOnLoss: $('#pg-dn-boss-loss').checked,
                 bossAlerts: $('#pg-dn-boss-alerts').checked,
@@ -12039,11 +12311,57 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             if (d.invJennyEnabled && !invJenny && !invJennyFailedAt && !invJennyWorking) invJennyRead('painel');   // lista as ofertas para o menu
         }
         onInvChange = () => { if (!panel.hidden) renderInv(); };
+        // ---- Raid com a família (v3.65.0): escolha dos Pokémon do depósito ----
+        let raidFamDraft = null;   // rascunho da escolha (null = a do cfg)
+        const raidFamCur = () => raidFamDraft || raidFamList(cfg);
+        const raidFamLabel = (p) => `${p.shiny ? '✨ ' : ''}${escHtml(p.name || '?')} <span class="hint">Nv.${fmtNum(Number(p.level) || 0)}${p.iv != null ? ` · IV ${p.iv}` : ''}${p.q != null ? ` · Q ${Number(p.q).toFixed(2)}` : ''}</span>`;
+        function renderRaidFam() {
+            const d = current();
+            $('#pg-dn-raidfam-status').textContent = `Família: ${raidFamStatus(d)}`;
+            const sel = raidFamCur();
+            const box = $('#pg-dn-raidfam-sel');
+            box.innerHTML = sel.length ? sel.map((p, i) => `<div class="dn-item"><span class="nm">${i === 0 ? '⚔' : i + 1}</span><span class="nm">${raidFamLabel(p)}</span><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm pg-dn-raidfam-del" data-id="${escHtml(p.id)}" title="Tirar da Raid">✕</button></div>`).join('')
+                : '<div class="dn-items-empty">Nenhum Pokémon escolhido. Clique em "Ler família" e marque até 6 na lista abaixo (o 1º vira o líder).</div>';
+            for (const b of box.querySelectorAll('.pg-dn-raidfam-del')) b.onclick = () => {
+                raidFamDraft = raidFamCur().filter(x => String(x.id) !== b.dataset.id);
+                dirty = true; renderDirty(); renderLive(); renderRaidFam();
+            };
+            const busca = normalize($('#pg-dn-raidfam-search').value || '');
+            const ids = new Set(sel.map(x => String(x.id)));
+            const dep = familyDepotPokes().filter(p => p && p.id && (!busca || normalize(p.name || '').includes(busca)))
+                .sort((a, b) => (Number(b.level) || 0) - (Number(a.level) || 0));
+            const list = $('#pg-dn-raidfam-list');
+            if (!familyDepotAt()) { list.innerHTML = '<div class="dn-items-empty">Depósito da família ainda não lido.</div>'; return; }
+            list.innerHTML = dep.slice(0, 120).map(p => `<label class="dn-item"><input type="checkbox" class="pg-dn-raidfam-chk" data-id="${escHtml(p.id)}"${ids.has(String(p.id)) ? ' checked' : ''}><span class="nm">${raidFamLabel({ name: p.name, level: p.level, iv: p.ivTotal, q: p.quality, shiny: p.shiny })}</span><span></span></label>`).join('')
+                + (dep.length > 120 ? `<div class="dn-items-empty">+${dep.length - 120} — use a busca.</div>` : '') + (!dep.length ? '<div class="dn-items-empty">Nada com essa busca.</div>' : '');
+            for (const c of list.querySelectorAll('.pg-dn-raidfam-chk')) c.addEventListener('change', () => {
+                const cur = raidFamCur().map(x => Object.assign({}, x));
+                const id = c.dataset.id;
+                if (c.checked) {
+                    if (cur.length >= 6) { c.checked = false; flash('⚠ No máximo 6 Pokémon (e o inicial, se houver, ocupa uma vaga no time).', 'warn', 6000); return; }
+                    const p = familyDepotPokes().find(x => String(x?.id) === id);
+                    if (p && !cur.some(x => String(x.id) === id)) cur.push({ id: String(p.id), name: p.name, level: Number(p.level) || 0, iv: p.ivTotal ?? null, q: p.quality ?? null, shiny: Boolean(p.shiny) });
+                } else {
+                    const i = cur.findIndex(x => String(x.id) === id);
+                    if (i >= 0) cur.splice(i, 1);
+                }
+                raidFamDraft = cur;
+                renderRaidFam();
+            });
+        }
+        $('#pg-dn-raidfam-search').addEventListener('input', renderRaidFam);
+        $('#pg-dn-raidfam-search').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); } });
+        $('#pg-dn-raidfam-read').onclick = () => {
+            const ok = sendGame({ type: 'family-get' });
+            flash(ok ? '👪 Lendo o depósito da família…' : '⚠ Socket do jogo fechado: recarregue o painel.', ok ? 'info' : 'warn', 5000);
+            setTimeout(renderRaidFam, 1500); setTimeout(renderRaidFam, 4000);
+        };
         // ---- Raid Mundial (v3.64.0) ----
         function renderRaid() {
             const d = current();
             $('#pg-dn-raid-status').textContent = `Raid${raidOn(d) ? '' : ' (desligada)'}: ${raidStatus(d)}`;
             $('#pg-dn-raid-last').textContent = raidLastLine();
+            renderRaidFam();
         }
         onRaidChange = () => { if (!panel.hidden) renderRaid(); };
         setInterval(() => { if (!panel.hidden && loadUi().tab === 'raid') renderRaid(); }, 5000);   // contagens (estadia, fim da Raid)
@@ -12683,6 +13001,9 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-raid').checked = Boolean(cfg.raidEnabled);
             $('#pg-dn-raid-reenter').value = String(raidReenterMax(cfg));
             $('#pg-dn-raid-alerts').checked = cfg.raidAlerts !== false;
+            $('#pg-dn-raidfam').checked = Boolean(cfg.raidFamilyEnabled);
+            $('#pg-dn-raidfam-pos').value = String(raidFamPos(cfg));
+            raidFamDraft = null;
             $('#pg-dn-boss').checked = cfg.bossResumeEnabled !== false;
             $('#pg-dn-boss-loss').checked = Boolean(cfg.bossResumeOnLoss);
             $('#pg-dn-boss-alerts').checked = cfg.bossAlerts !== false;
@@ -12739,7 +13060,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
 
         // qualquer edição marca "não salvo" e recalcula resumos e badges
         const onEdit = (e) => {
-            if (e.target.closest('#pg-dn-import-box, #pg-dn-route-import-box, #pg-dn-route-share-box, #pg-dn-route-name-box') || e.target.id === 'pg-dn-route-sel' || e.target.id === 'pg-dn-sell-search' || e.target.id === 'pg-dn-sell-order' || e.target.id === 'pg-dn-boss-key' || e.target.id === 'pg-dn-boss-count') return;
+            if (e.target.closest('#pg-dn-import-box, #pg-dn-route-import-box, #pg-dn-route-share-box, #pg-dn-route-name-box') || e.target.id === 'pg-dn-route-sel' || e.target.id === 'pg-dn-sell-search' || e.target.id === 'pg-dn-raidfam-search' || e.target.id === 'pg-dn-sell-order' || e.target.id === 'pg-dn-boss-key' || e.target.id === 'pg-dn-boss-count') return;
             if (!e.target.matches('input, select, textarea')) return;
             dirty = true;
             renderDirty();

@@ -368,6 +368,16 @@ setTimeout(() => {
             $('#pg-dn-save').click();
             log('apos delta: fetch=' + fetchCalls.map(c => c.split(' ')[0]).join(',') + ' | enviados=' + ws.sent.slice(1).map(x => JSON.parse(x).type + (JSON.parse(x).capturedId ? ':' + JSON.parse(x).capturedId : '')).join(','));
             recv({ type: 'family', family: { name: 'Fam', movesUsed: 3, movesCap: 50, frozen: false, members: [] }, depot: { items: [], pokes: [{ id: 'cuid-bagon-1', name: 'Bagon', level: 5 }] } });
+            // v3.65.0: aba Raid → escolher Pokémon do depósito da família, salvar e conferir no cfg
+            panel.querySelector('.dn-tab[data-tab=raid]').click();
+            $('#pg-dn-raidfam-search').value = 'bag'; fire($('#pg-dn-raidfam-search'), 'input');
+            const famChk = $('#pg-dn-raidfam-list').querySelector('.pg-dn-raidfam-chk[data-id="cuid-bagon-1"]');
+            if (!famChk) errors.push('raid família: Bagon não apareceu na lista');
+            else { famChk.checked = true; fire(famChk, 'change'); $('#pg-dn-raidfam').checked = true; fire($('#pg-dn-raidfam'), 'change'); $('#pg-dn-raidfam-pos').value = '2'; fire($('#pg-dn-raidfam-pos'), 'input'); $('#pg-dn-save').click();
+                const cfgR = JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg'));
+                log('raid família: ' + JSON.stringify(cfgR.raidFamilyPokes) + ' pos=' + cfgR.raidQueuePos + ' | sel=' + $('#pg-dn-raidfam-sel').textContent.trim().slice(0, 60) + ' | status=' + $('#pg-dn-raidfam-status').textContent);
+                if (!cfgR.raidFamilyEnabled || !(cfgR.raidFamilyPokes || []).some(x => x.id === 'cuid-bagon-1') || cfgR.raidQueuePos !== 2) errors.push('raid família: escolha não foi salva'); }
+
             // v3.30.0: frame `guild` (formato do bundle), `guild-dirty` e um `guild-action` enviado pela tela passam sem erro e entram no log
             recv({ type: 'guild', guild: { id: 'g1', name: 'Guilda', tag: 'GLD', tier: 1, points: 12, members: 3, slots: 5, maxSlots: 11, nextSlot: { points: 50, gold: 100000 }, goldDonated: 2500, bonusPct: 1.5, online: 2 },
                 me: { rank: 2, isPresident: false, canInvite: false, gold: 123456, donatedToday: 0, donateCap: 50000, buff: null },

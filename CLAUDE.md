@@ -562,6 +562,17 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   só a invasão = `invRunActive()`. `raidIsSlug` entra nas mesmas exclusões do `invIsRaid` (lastRealHunt, retomada, espera, profissão).
   `raid-loot` (itens + buff) e `raid-achievement` viram aviso. Teste: `node test/raid.test.js` (`loadRaidModule`: `// ---- Raid Mundial`
   até `// ---- Invasão Rocket`; timers com prazo, `state.drain(ms)`; `state.env` liga os bloqueios; `init.lastRealHunt`; `init.dom`).
+  v3.65.0 (pedido do usuário em 19/11/2026: "sequencial, 1 conta de cada vez da família, usando os Pokémon da família; quando acabar
+  devolve e a próxima faz"): `cfg.raidFamilyEnabled`/`raidFamilyPokes [{ id, name, level, iv, q }]` (até 6, o 1º = líder; o inicial não
+  sai do time)/`raidQueuePos` (1..8). Fila SEM config compartilhada: o depósito da família é a trava (escolhidos fora do depósito = outra
+  conta está com eles, espera); com eles de volta, a posição N espera (N−1) × 90 s (`raidFamTurn`). `raidFamEquip` na entrada (depois da
+  cura): guarda o time original (ids + líder) em `raidFam` (RAID_KEY), `family-action withdraw` (vai para o BOX), `poke-store` do time
+  (menos inicial), `poke-withdraw` dos escolhidos, `poke-summon` do 1º; outra conta pegou antes = `raidAbort(..., quiet, semFalha)` e
+  devolve o que tirou. `raidFamRelease` no fim (sem reentrada), na entrada que falhou e no tique (vez encerrada): time original e líder
+  de volta, `familyDeposit` dos escolhidos (só do box), devolução que falha avisa 1x e tenta a cada 2 min. Com `raidFam.held`,
+  `raidHolding()` segura tudo (via `invBusy`) e `raidKeepsPoke(id)` tira time original e escolhidos da venda e do guardar; os
+  escolhidos nunca viram comida do breeding. Helpers fora do módulo: `pokesSnapshot()`, `familyDepotPokes()`. Casos 11–12 do
+  `test/raid.test.js` (`init.game = { pokes, family }`, `init.famFail`); seleção no painel no `test/ui.smoke.js`.
 - Ginásios (v3.45.0, aba própria 🏟 Ginásio (`TABS` id `ginasio`), `cfg.gymEnabled`/`gymBonus`/`gymRedo`/`gymAlerts`; módulo `// ---- Ginásio` antes do
   Auto Boss; protocolo CONFIRMADO no log em 21/10/2026 na conta3, `docs/mensagens-do-jogo.md` → "Ginásio"): 18 ginásios (8 Kanto + 10
   Johto), tudo por REST — `GET /api/game/gyms` (`details[].owned/cooldownMs/bonus.state/npcTeam`, `badges/total`, `badgePerk` = +1% XP

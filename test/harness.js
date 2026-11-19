@@ -1617,7 +1617,7 @@ function loadRaidModule(cfg, init) {
     let apiRef = null;
     const CITY = ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'];
     const ctx = {
-        cfg: Object.assign({ raidEnabled: true, raidReenterMax: 3, raidAlerts: true }, cfg || {}),
+        cfg: Object.assign({ raidEnabled: true, raidReenterMax: 3, raidAlerts: true, raidFamilyEnabled: false, raidFamilyPokes: [], raidQueuePos: 1 }, cfg || {}),
         normalize: (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim(),
         logEvent: (k, d) => state.logs.push([k, d]),
         postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', title: p.embeds?.[0]?.title || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
@@ -1653,10 +1653,30 @@ function loadRaidModule(cfg, init) {
         healBusy: () => Boolean(state.env.heal),
         idleTarget: () => (init.lastRealHunt ? { slug: init.lastRealHunt } : { motivo: 'não sei de que hunt veio' }),
         tripInHunt: () => { const h = apiRef?.hunt(); return Boolean(h) && !CITY.includes(h); },
+        // v3.65.0: jogo falso de box/time/família (`init.game = { pokes:[{ id, name, level, team, slot, leader, starter }], family:[{ id, name, level }] }`)
+        pokesSnapshot: () => ({ list: game.pokes, seq: game.seq }),
+        familyDepotPokes: () => game.family,
+        familyDepotAt: () => game.famAt,
+        familyAction: (payload, evento, dados, check) => { state.famActions.push(payload); const id = String(payload.capturedId); const i = game.family.findIndex(p => String(p.id) === id); if (payload.dir === 'withdraw' && i >= 0 && !(init.famFail || []).includes(id)) { const p = game.family.splice(i, 1)[0]; game.pokes.push(Object.assign({}, p, { team: false, leader: false, slot: null })); } game.famAt = clock.now; const ok = check({ pokes: game.family }); state.logs.push([evento, Object.assign({}, dados, { ok })]); return Promise.resolve(ok ? { ok: true } : { ok: false, motivo: 'o jogo respondeu, mas o movimento não apareceu no depósito' }); },
+        familyDeposit: (id) => { state.famActions.push({ dir: 'deposit', capturedId: id }); const i = game.pokes.findIndex(p => String(p.id) === String(id) && !p.team); if (i < 0) return Promise.resolve({ ok: false, motivo: 'não está no box' }); game.family.push(game.pokes.splice(i, 1)[0]); game.famAt = clock.now; return Promise.resolve({ ok: true }); },
+    };
+    const game = Object.assign({ pokes: [], family: [], seq: 1, famAt: 0 }, JSON.parse(JSON.stringify(init.game || {})));
+    state.game = game; state.famActions = [];
+    const renumber = () => { game.pokes.filter(p => p.team).sort((a, b) => (a.slot ?? 99) - (b.slot ?? 99)).forEach((p, i) => { p.slot = i; }); if (!game.pokes.some(p => p.team && p.leader)) { const f = game.pokes.find(p => p.team && p.slot === 0); if (f) f.leader = true; } };
+    const baseSend = ctx.sendGame;
+    ctx.sendGame = (obj) => {
+        const t = obj && obj.type;
+        if (t === 'pokes-get') { game.seq++; }
+        else if (t === 'family-get') { game.famAt = clock.now; }
+        else if (t === 'poke-store') { const p = game.pokes.find(x => String(x.id) === String(obj.pokeId)); if (p && p.team && !p.starter) { p.team = false; p.leader = false; p.slot = null; renumber(); } }
+        else if (t === 'poke-withdraw') { const p = game.pokes.find(x => String(x.id) === String(obj.pokeId)); if (p && !p.team && game.pokes.filter(x => x.team).length < 6) { p.team = true; p.slot = 99; renumber(); } }
+        else if (t === 'poke-summon') { const p = game.pokes.find(x => String(x.id) === String(obj.pokeId)); if (p && p.team) { for (const x of game.pokes) x.leader = false; p.leader = true; } }
+        return baseSend(obj);
     };
     const names = Object.keys(ctx);
     const factory = new Function(...names, 'tripRunningRef', mod.replace(/typeof tripRunning !== 'undefined' && tripRunning/g, 'tripRunningRef()') + `
         return {
+            fam: () => raidFam, famStatus: raidFamStatus, keepsPoke: raidKeepsPoke, holding: raidHolding,
             tick: raidTick, onMessage: raidOnMessage, onField: raidOnField, onHuntChange: raidOnHuntChange, onSetCity: raidOnSetCity, onSocket: raidOnSocket,
             load: raidLoad, busy: raidBusy, busyReason: raidBusyReason, isSlug: raidIsSlug, status: raidStatus, lastLine: raidLastLine, now: raidNow,
             blockedReason: raidBlockedReason, outgoingBlocked: raidOutgoingBlocked, huntFailed: raidHuntFailed, reenterMax: raidReenterMax,
