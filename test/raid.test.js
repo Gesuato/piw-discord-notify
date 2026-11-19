@@ -61,27 +61,44 @@ async function enter(t, extra) {
         console.log('ok 1 - entrada, fim por tempo, volta e dia esgotado');
     }
 
-    // 2. Time caiu → cura e reentra até o limite; depois volta para a hunt
+    // 2. (v3.66.0) Time caiu → cura e reentra em poucos segundos enquanto houver tempo de arena (sem limite de vezes, sem aviso a cada queda);
+    //    acabou o tempo → volta. Sem o tempo de arena no HUD, vale o número do painel.
     {
         const t = loadRaidModule({ raidReenterMax: 1 }, { huntSlug: 'rhyhorn' });
         const { api, state, clock } = t;
-        await enter(t);
-        api.onMessage({ type: 'raid-end', reason: 'wipe', damage: 1000, hpLeft: 9e8, hpMax: 1e9, stayedMs: 2 * MIN });
-        await state.drain(10e3);
-        assert(!api.run(), 'participação 1 acabou');
-        assert.strictEqual(state.switches.length, 0, 'não voltou para a hunt: vai reentrar');
-        assert(logsOf(state, 'raid-volta').some(l => l.reentra), 'log de reentrada');
-        assert(types(state).filter(x => x === 'joy-heal').length >= 2, 'curou depois da queda');
-        await state.drain(api.RAID_REENTER_DELAY_MS); api.tick(); await state.drain(10e3);
-        api.onField(hud(clock));
-        assert(api.run() && api.run().fase === 'dentro', 'reentrou');
-        assert.strictEqual(api.tried()[Object.keys(api.tried())[0]].entries, 2);
-        api.onMessage({ type: 'raid-end', reason: 'wipe', damage: 900, hpLeft: 9e8, hpMax: 1e9, stayedMs: MIN });
-        await state.drain(10e3);
-        assert.deepStrictEqual(state.switches.map(s => s.slug), ['rhyhorn'], 'limite de reentradas: volta para a hunt de origem (não para a Raid)');
-        await state.drain(api.RAID_TICK_MS); api.tick(); await state.drain(10e3);
-        assert(!api.run(), 'não entra mais nesta Raid');
-        console.log('ok 2 - reentrada depois da queda até o limite');
+        await enter(t);   // HUD: estadia acaba em 30 min
+        for (let k = 1; k <= 4; k++) {
+            const t0 = clock.now;
+            api.onMessage({ type: 'raid-end', reason: 'wipe', damage: 1000 * k, hpLeft: 9e8, hpMax: 1e9, stayedMs: k * MIN });
+            for (let s = 0; s < 40 && !(api.run() && api.run().fase === 'dentro' && !api.run().ended); s++) await state.drain(500);
+            assert(api.run() && api.run().fase === 'dentro', `queda ${k}: reentrou`);
+            assert(clock.now - t0 <= 8000, `queda ${k}: reentrou em ${Math.round((clock.now - t0) / 1000)} s`);
+            api.onField(hud(clock));
+        }
+        assert.strictEqual(state.switches.length, 0, 'nunca voltou para a hunt no meio');
+        assert.strictEqual(state.hooks.filter(h => h.meta?.evento === 'raid-fim').length, 0, 'sem aviso a cada queda');
+        api.onMessage({ type: 'raid-end', reason: 'time', damage: 9000, hpLeft: 9e8, hpMax: 1e9, stayedMs: 5 * MIN });
+        await state.drain(15e3);
+        assert.deepStrictEqual(state.switches.map(s => s.slug), ['rhyhorn'], 'tempo acabou: volta');
+        assert.strictEqual(state.hooks.filter(h => h.meta?.evento === 'raid-fim').length, 1, 'um aviso no fim');
+        // estadia quase no fim: não reentra
+        const t2 = loadRaidModule({}, { huntSlug: 'rhyhorn' });
+        await enter(t2);
+        t2.api.onField({ type: 'field', raid: { hpLeft: 1, hpMax: 2, endsAt: t2.clock.now + 10e3 } });
+        t2.api.onMessage({ type: 'raid-end', reason: 'wipe', damage: 1, hpLeft: 1, hpMax: 2 });
+        await t2.state.drain(15e3);
+        assert.deepStrictEqual(t2.state.switches.map(s => s.slug), ['rhyhorn'], 'menos de 15 s de estadia: volta');
+        // sem o tempo no HUD: vale o número do painel (1 reentrada)
+        const t3 = loadRaidModule({ raidReenterMax: 1 }, { huntSlug: 'rhyhorn' });
+        t3.api.onMessage(openState(t3.clock)); await t3.state.drain(t3.api.RAID_ENTER_DELAY_MS); t3.api.tick(); await t3.state.drain(10e3);
+        t3.api.onField({ type: 'field' });
+        t3.api.onMessage({ type: 'raid-end', reason: 'wipe', damage: 1, hpLeft: 1, hpMax: 2 });
+        await t3.state.drain(10e3); t3.api.onField({ type: 'field' });
+        assert(t3.api.run() && t3.state.switches.length === 0, 'sem tempo conhecido: 1ª queda reentra');
+        t3.api.onMessage({ type: 'raid-end', reason: 'wipe', damage: 1, hpLeft: 1, hpMax: 2 });
+        await t3.state.drain(15e3);
+        assert.deepStrictEqual(t3.state.switches.map(s => s.slug), ['rhyhorn'], 'sem tempo conhecido: limite do painel');
+        console.log('ok 2 - reentrada rápida enquanto houver tempo de arena');
     }
 
     // 3. Recusa do jogo → aviso, volta, tenta em 5 min; 3 falhas = desiste desta Raid

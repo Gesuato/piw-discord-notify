@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.65.3
+// @version      3.66.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.65.3';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.66.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -7549,7 +7549,16 @@
     const RAID_BLOCK_LOG_MAX = 5;
     const RAID_REFUSED_RETRY_MS = 5 * 60 * 1000;  // recusa/entrada que falhou: tenta de novo em 5 min...
     const RAID_MAX_FAILS = 3;                     // ...no máximo 3 vezes por Raid
-    const RAID_REENTER_DELAY_MS = 30 * 1000;      // time caiu: cura e reentra 30 s depois
+    // v3.66.0 (19/11/2026, pedido do usuário: "reduzir o tempo de ficar morto e reentrar o máximo possível"): o limite da Raid é de TEMPO
+    // (5 min de arena por dia, CONFIRMADO: CabralJ `stayedMs` 300 065, motivo `time`) e o relógio NÃO para fora da arena (conta3: o
+    // `raid.endsAt` do HUD seguiu o mesmo depois de sair e voltar; o dano fica salvo). Então reentra enquanto houver tempo, sem limite de
+    // vezes, e o mais rápido possível: 1 s depois do `raid-end`, uma cura só, reentrada 1,5 s depois (sem esperar o tique de 30 s).
+    const RAID_REENTER_DELAY_MS = 1500;           // time caiu: cura e reentra logo
+    const RAID_END_WAIT_REENTER_MS = 1000;        // com reentrada pela frente não espera a janela de resultado (o script a fecha sozinho)
+    const RAID_HEAL_FAST_MS = 1500;               // cura da reentrada (a da entrada normal espera RAID_HEAL_WAIT_MS)
+    const RAID_HEALED_FRESH_MS = 15 * 1000;       // curou há menos que isto: a entrada não cura de novo
+    const RAID_STAY_MIN_LEFT_MS = 15 * 1000;      // menos que isto de estadia: não vale reentrar
+    const RAID_REENTER_SAFETY = 40;               // teto de segurança de entradas por Raid com o tempo de arena conhecido
     const RAID_REENTER_DEFAULT = 3;
     const RAID_REENTER_MAX = 20;
     const RAID_MODAL_POLL_MS = 500;
@@ -7577,6 +7586,7 @@
     let raidFieldsLogged = {};
     let raidAnnounceLoggedAt = 0;
     let raidStateLoggedKey = null;
+    let raidHealedAt = 0;       // v3.66.0: última cura mandada pela Raid
     let onRaidChange = null;    // painel (aba Raid)
 
     // ---- Raid com os Pokémon da família (v3.65.0): uma conta por vez ----
@@ -7875,7 +7885,7 @@
     function raidN(v) { return Math.max(0, Number(v) || 0); }
     function raidTriedFor(key) {
         const k = String(key || 'raid');
-        if (!raidTried[k]) raidTried[k] = { entries: 0, fails: 0, retryAt: 0, nextAt: 0, from: null, done: null };
+        if (!raidTried[k]) raidTried[k] = { entries: 0, fails: 0, retryAt: 0, nextAt: 0, from: null, done: null, stayEndsAt: 0 };
         return raidTried[k];
     }
     // Raid aberta agora com tempo para valer a entrada.
@@ -7943,7 +7953,7 @@
         if (rec.tried && typeof rec.tried === 'object') {
             for (const [k, v] of Object.entries(rec.tried)) {
                 if (!v || typeof v !== 'object') continue;
-                raidTried[k] = { entries: raidN(v.entries), fails: raidN(v.fails), retryAt: raidN(v.retryAt), nextAt: raidN(v.nextAt), from: v.from ? String(v.from) : null, done: v.done ? String(v.done) : null };
+                raidTried[k] = { stayEndsAt: raidN(v.stayEndsAt), entries: raidN(v.entries), fails: raidN(v.fails), retryAt: raidN(v.retryAt), nextAt: raidN(v.nextAt), from: v.from ? String(v.from) : null, done: v.done ? String(v.done) : null };
             }
         }
         const run = rec.run;
@@ -8072,8 +8082,11 @@
                 await raidWait(RAID_LEAVE_WAIT_MS);
             }
             if (raidRun !== r) return;
-            sendGame({ type: 'joy-heal' });   // grátis; líder em hp 0 = a tela recusa viajar para a Raid
-            await raidWait(RAID_HEAL_WAIT_MS);
+            if (Date.now() - raidHealedAt > RAID_HEALED_FRESH_MS) {   // v3.66.0: a volta da queda já curou
+                sendGame({ type: 'joy-heal' });   // grátis; líder em hp 0 = a tela recusa viajar para a Raid
+                raidHealedAt = Date.now();
+                await raidWait(RAID_HEAL_WAIT_MS);
+            }
             if (raidRun !== r) return;
             if (typeof holdActive === 'function' && holdActive()) { raidAbort('espera na cidade ligada', true); return; }
             if (raidFamOn() || raidFam?.held) {   // v3.65.0: pega os Pokémon da família e monta o time
@@ -8149,6 +8162,7 @@
         if (x && typeof x === 'object') {
             raidLogFields('field', m);
             r.hud = { bossName: x.bossName ? String(x.bossName) : (r.hud?.bossName || null), bossLevel: Number(x.bossLevel) || r.hud?.bossLevel || null, hpLeft: raidN(x.hpLeft), hpMax: raidN(x.hpMax), endsAt: Number(x.endsAt) || 0, raidEndsAt: Number(x.raidEndsAt) || 0, asleepUntil: Number(x.asleepUntil) || 0 };
+            if (r.hud.endsAt) { const tt = raidTriedFor(r.key); if (tt.stayEndsAt !== r.hud.endsAt) { tt.stayEndsAt = r.hud.endsAt; raidSave(); } }   // v3.66.0: fim da SUA estadia (não para fora da arena)
         }
         if (first) { logEvent('raid-dentro', { hud: r.hud, origem: r.origem }); raidNotify(); }
     }
@@ -8206,7 +8220,8 @@
         if (res.reason === 'defeated' || res.reason === 'ended') t.done = RAID_REASON_LABEL[res.reason];
         raidSave();
         logEvent('raid-fim', { motivo: res.reason, dano: res.damage, danoTotal: res.totalDamage, rank: res.rank, participantes: res.participants, tempoS: Math.round(res.stayedMs / 1000), vida: raidPct(res.hpLeft, res.hpMax), origem: res.origem, from: res.from, hunt: huntSlug || null, entradas: t.entries });
-        if (cfg.raidAlerts !== false) raidAlertEnd(res);
+        const vaiReentrar = Boolean(r && !r.ended && raidCanReenter(r, res.reason));   // v3.66.0: queda com tempo de arena sobrando = sem aviso
+        if (cfg.raidAlerts !== false && !vaiReentrar) raidAlertEnd(res);
         raidCloseResultModal(res);
         if (r && !r.ended) { r.result = res; raidReturnFlow(r, res.reason); }
         raidNotify();
@@ -8276,27 +8291,33 @@
         if (!RAID_REENTER_REASONS.includes(reason)) return false;
         const t = raidTriedFor(r.key);
         if (t.done || raidDoneToday()) return false;
-        if (t.entries > raidReenterMax()) return false;   // 1ª entrada + N reentradas
+        if (raidReenterMax() === 0) return false;   // 0 = entra uma vez só
         if (typeof holdActive === 'function' && holdActive()) return false;
-        return raidOn() && raidActiveNow();
+        if (!raidOn() || !raidActiveNow()) return false;
+        // v3.66.0: com o fim da estadia conhecido (HUD), reentra enquanto houver tempo; sem ele, o número do painel vale
+        if (t.stayEndsAt) return Date.now() < t.stayEndsAt - RAID_STAY_MIN_LEFT_MS && t.entries < RAID_REENTER_SAFETY;
+        return t.entries <= raidReenterMax();   // 1ª entrada + N reentradas
     }
     // Fim da participação: espera a janela de resultado, garante a conta na cidade, cura e reentra ou volta para a hunt de origem.
     async function raidReturnFlow(r, reason) {
         r.ended = true; r.fase = 'voltando'; raidSave(); raidNotify();
+        const rapido = raidCanReenter(r, reason);   // v3.66.0: vai reentrar = caminho curto
         try {
-            await raidWait(RAID_END_WAIT_MS);
+            await raidWait(rapido ? RAID_END_WAIT_REENTER_MS : RAID_END_WAIT_MS);
             if (raidRun !== r) return;
             const h = normalize(huntSlug || '');
-            if (h && !CITY_SLUGS.includes(h)) { sendGame({ type: 'leave-hunt' }); sendGame({ type: 'set-city', slug: 'cerulean' }); await raidWait(RAID_LEAVE_WAIT_MS); }
+            if (h && !CITY_SLUGS.includes(h)) { sendGame({ type: 'leave-hunt' }); sendGame({ type: 'set-city', slug: 'cerulean' }); await raidWait(rapido ? 600 : RAID_LEAVE_WAIT_MS); }
             if (raidRun !== r) return;
             sendGame({ type: 'joy-heal' });   // grátis; o Darkrai derruba o time
-            await raidWait(RAID_HEAL_WAIT_MS);
+            raidHealedAt = Date.now();
+            await raidWait(rapido ? RAID_HEAL_FAST_MS : RAID_HEAL_WAIT_MS);
             if (raidRun !== r) return;
             const t = raidTriedFor(r.key);
             if (raidCanReenter(r, reason)) {
                 t.nextAt = Date.now() + RAID_REENTER_DELAY_MS;
-                logEvent('raid-volta', { reentra: true, em: raidFmt(RAID_REENTER_DELAY_MS), entradas: t.entries, max: raidReenterMax(), motivo: reason });
-                return;   // o tique entra de novo (a conta espera curada na cidade)
+                logEvent('raid-volta', { reentra: true, em: raidFmt(RAID_REENTER_DELAY_MS), entradas: t.entries, estadiaRestante: t.stayEndsAt ? raidFmt(t.stayEndsAt - Date.now()) : null, motivo: reason });
+                setTimeout(() => { if (!raidRun) raidTick(); }, RAID_REENTER_DELAY_MS + 50);   // v3.66.0: não espera o tique de 30 s
+                return;
             }
             if (!t.done) t.done = `participação encerrada (${RAID_REASON_LABEL[reason] || reason || 'fim'})`;   // sem reentrada: não entra de novo nesta Raid
             raidSave();
@@ -11653,9 +11674,9 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                     <div class="dn-section">
                         <h3>🌑 Raid Mundial: Darkrai em Cerulean</h3>
                         <label class="dn-toggle"><input id="pg-dn-raid" type="checkbox"><span class="sw"></span>Entrar na Raid sozinho enquanto ela estiver aberta <span class="dn-hint">(batalha cooperativa, até 30 jogadores por instância; o tempo na arena é limitado por dia)</span></label>
-                        <div class="dn-inline">Reentrar até <input id="pg-dn-raid-reenter" class="dn-input dn-input--sm" type="number" min="0" max="20" step="1" placeholder="3"> vezes por Raid <span class="dn-hint">(quando o time cai ou o servidor reinicia; 0 = entra uma vez só)</span></div>
+                        <div class="dn-inline">Reentrar até <input id="pg-dn-raid-reenter" class="dn-input dn-input--sm" type="number" min="0" max="20" step="1" placeholder="3"> vezes se o jogo não disser o tempo de arena <span class="dn-hint">(com o tempo conhecido — 5 min por dia — reentra enquanto sobrar tempo, sem limite; 0 = nunca reentra)</span></div>
                         <label class="dn-toggle"><input id="pg-dn-raid-alerts" type="checkbox"><span class="sw"></span>Avisar no canal de Alertas <span class="dn-hint">(dano, posição e tempo de cada participação; recompensa; conquista; entrada que falhou)</span></label>
-                        <p class="dn-help">Quem abre e fecha a Raid é a equipe do jogo (o anúncio diz o horário); o script segue o aviso do servidor. Quando ela abre, sai da hunt, cura na Joy, entra pela mesma mensagem do botão RAID da cidade e fica lá enquanto o jogo deixar. Quando a participação acaba, fecha a janela de resultado, cura e: se o time caiu (ou o servidor reiniciou) entra de novo, até o limite acima; senão volta para a hunt de onde saiu. "Seu tempo na arena acabou" vale para o dia todo: só tenta de novo amanhã. Boss derrotado ou Raid encerrada: não entra mais nela. A recompensa chega depois, quando a Raid termina para todos, e vai para o aviso. Enquanto dura, viagem à cidade, parada na cidade, recarga, rotas, troca de líder e a Invasão Rocket esperam. Entrada feita na mão pelo botão RAID da tela também é acompanhada e volta.</p>
+                        <p class="dn-help">Quem abre e fecha a Raid é a equipe do jogo (o anúncio diz o horário); o script segue o aviso do servidor. Quando ela abre, sai da hunt, cura na Joy, entra pela mesma mensagem do botão RAID da cidade e fica lá enquanto o jogo deixar. O tempo de arena é de 5 min por dia e corre mesmo fora dela: se o time cai (ou o servidor reinicia), o script cura na Joy e entra de novo em ~3 s, enquanto sobrar tempo; o dano fica salvo. Quando o tempo acaba, fecha a janela de resultado e volta para a hunt de onde saiu. "Seu tempo na arena acabou" vale para o dia todo: só tenta de novo amanhã. Boss derrotado ou Raid encerrada: não entra mais nela. A recompensa chega depois, quando a Raid termina para todos, e vai para o aviso. Enquanto dura, viagem à cidade, parada na cidade, recarga, rotas, troca de líder e a Invasão Rocket esperam. Entrada feita na mão pelo botão RAID da tela também é acompanhada e volta.</p>
                         <div class="dn-actions">
                             <button type="button" class="dn-btn dn-btn--sm" id="pg-dn-raid-now" title="Com a Raid aberta: entra agora (ignora o limite de reentradas e o dia esgotado; o jogo decide).">🌑 Entrar agora</button>
                             <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-raid-read" title="Pergunta ao jogo se há Raid aberta.">⟳ Ler estado</button>

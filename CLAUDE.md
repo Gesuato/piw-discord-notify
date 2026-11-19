@@ -562,6 +562,14 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   só a invasão = `invRunActive()`. `raidIsSlug` entra nas mesmas exclusões do `invIsRaid` (lastRealHunt, retomada, espera, profissão).
   `raid-loot` (itens + buff) e `raid-achievement` viram aviso. Teste: `node test/raid.test.js` (`loadRaidModule`: `// ---- Raid Mundial`
   até `// ---- Invasão Rocket`; timers com prazo, `state.drain(ms)`; `state.env` liga os bloqueios; `init.lastRealHunt`; `init.dom`).
+  v3.66.0 (19/11/2026): tempo de arena CONFIRMADO = 5 min por dia (CabralJ `raid-end { reason:"time", stayedMs:300065 }`) e o relógio
+  NÃO para fora da arena (`field.raid.endsAt` = fim da estadia, igual depois de sair e voltar; `raid.damage` salvo). O usuário escolheu
+  "focar só no líder" (família desligada nos painéis) e o mínimo de tempo morto: `raidCanReenter` reentra enquanto `t.stayEndsAt` (do
+  HUD, persistido) − 15 s, sem limite de vezes (teto de segurança 40); sem o tempo no HUD vale `raidReenterMax` (0 = nunca). Queda →
+  1 s, `set-city`, `joy-heal` (1,5 s), reentrada 1,5 s depois por `setTimeout(raidTick)` (sem esperar o tique) e a entrada não cura de
+  novo (`raidHealedAt`); ~5 s fora da arena. Aviso `raid-fim` só no fim de verdade. Formatos CONFIRMADOS: `raid-end { reason, bossName,
+  bossLevel, look, portrait, damage, totalDamage, rank, participants, hpLeft, hpMax, stayedMs, top[{ name, damage }] }`; `field.raid {
+  hpLeft, hpMax, endsAt, raidEndsAt, players, instance, damage, asleepUntil, bossName, bossLevel, look, portrait }`.
   v3.65.0 (pedido do usuário em 19/11/2026: "sequencial, 1 conta de cada vez da família, usando os Pokémon da família; quando acabar
   devolve e a próxima faz"): `cfg.raidFamilyEnabled`/`raidFamilyPokes [{ id, name, level, iv, q }]` (até 5; v3.65.2: o LÍDER DA CONTA fica no time e segue líder, pedido do usuário; o inicial não
   sai do time)/`raidQueuePos` (1..8). Fila SEM config compartilhada: o depósito da família é a trava (escolhidos fora do depósito = outra
