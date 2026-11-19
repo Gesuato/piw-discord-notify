@@ -76,6 +76,12 @@ async function enter(t, extra) {
             api.onField(hud(clock));
         }
         assert.strictEqual(state.switches.length, 0, 'nunca voltou para a hunt no meio');
+        // v3.66.3: entre a queda e a reentrada a Raid segura a conta (a Daily Kill sozinha / rotas esperam)
+        api.onMessage({ type: 'raid-end', reason: 'wipe', damage: 1, hpLeft: 9e8, hpMax: 1e9 });
+        let segurou = true;
+        for (let s = 0; s < 20; s++) { await state.drain(250); if (!api.run() && !api.holding()) segurou = false; if (api.run() && api.run().fase === 'dentro' && !api.run().ended) break; }
+        assert(segurou, 'sem intervalo solto entre a queda e a reentrada');
+        api.onField(hud(clock));
         assert.strictEqual(state.hooks.filter(h => h.meta?.evento === 'raid-fim').length, 0, 'sem aviso a cada queda');
         api.onMessage({ type: 'raid-end', reason: 'time', damage: 9000, hpLeft: 9e8, hpMax: 1e9, stayedMs: 5 * MIN });
         await state.drain(15e3);

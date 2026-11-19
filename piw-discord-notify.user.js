@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.66.2
+// @version      3.66.3
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.66.2';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.66.3';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -7584,6 +7584,11 @@
     let raidAnnounceLoggedAt = 0;
     let raidStateLoggedKey = null;
     let raidHealedAt = 0;       // v3.66.0: última cura mandada pela Raid
+    // v3.66.3 (outro PC, 19/11/2026: "o time morreu e em seguida o treinador foi fazer o daily ao invés de tentar a raid de novo"): entre o
+    // fim da participação e a reentrada a Raid não segurava a conta e a Daily Kill sozinha (ou outra rota) a levava. Reentrada agendada
+    // segura tudo até entrar (ou até RAID_REENTER_HOLD_MS, se algo impedir a entrada).
+    let raidReenterHoldUntil = 0;
+    const RAID_REENTER_HOLD_MS = 45 * 1000;
     let onRaidChange = null;    // painel (aba Raid)
 
     // ---- Raid com os Pokémon da família (v3.65.0): uma conta por vez ----
@@ -7889,10 +7894,11 @@
     }
     // v3.64.2 (conta1, 19/11/2026 02:15Z): participação LEMBRADA da carga anterior sem nenhum frame da Raid nesta carga não segura nada —
     // ela segurava a cura ("líder com hp 0", a tela não viaja assim) e o filtro barrava o enter-hunt da tela nova: conta presa na cidade.
-    function raidHolding() { return (Boolean(raidRun) && !(raidRun.origem === 'lembrado' && !raidRun.fieldSeen)) || Boolean(raidFam?.held); }
+    function raidHolding() { return (Boolean(raidRun) && !(raidRun.origem === 'lembrado' && !raidRun.fieldSeen)) || Boolean(raidFam?.held) || Date.now() < raidReenterHoldUntil; }
     function raidBusy() { return raidHolding(); }
     function raidBusyReason() {
         if (!raidHolding()) return null;
+        if (!raidRun && Date.now() < raidReenterHoldUntil && !raidFam?.held) return 'Raid: voltando para a arena depois da queda';
         if (!raidRun || (raidRun.origem === 'lembrado' && !raidRun.fieldSeen)) return raidFamWorking ? 'Raid: devolvendo os Pokémon da família' : 'Raid: com os Pokémon da família';
         if (raidRun.fase === 'dentro') {
             const p = raidPct(raidRun.hud?.hpLeft, raidRun.hud?.hpMax);
@@ -8057,6 +8063,7 @@
         const from = t.from || raidFromSlug();
         t.from = from;
         t.entries++;
+        raidReenterHoldUntil = 0;
         raidRun = { key, from, origem, at: Date.now(), fase: 'saindo da hunt', entered: false, enteredAt: 0, sentAt: 0, fieldSeen: false, lastFieldAt: 0, hud: null, ended: false, result: null };
         const r = raidRun;
         raidSave(); raidNotify();
@@ -8307,6 +8314,7 @@
             const t = raidTriedFor(r.key);
             if (raidCanReenter(r, reason)) {
                 t.nextAt = Date.now() + RAID_REENTER_DELAY_MS;
+                raidReenterHoldUntil = Date.now() + RAID_REENTER_HOLD_MS;   // v3.66.3: a Daily/rotas não levam a conta no intervalo
                 logEvent('raid-volta', { reentra: true, em: raidFmt(RAID_REENTER_DELAY_MS), entradas: t.entries, estadiaRestante: t.stayEndsAt ? raidFmt(t.stayEndsAt - Date.now()) : null, motivo: reason });
                 setTimeout(() => { if (!raidRun) raidTick(); }, RAID_REENTER_DELAY_MS + 50);   // v3.66.0: não espera o tique de 30 s
                 return;
