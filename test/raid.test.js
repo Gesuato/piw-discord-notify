@@ -250,7 +250,7 @@ async function enter(t, extra) {
         const g = state.game;
         const team = () => g.pokes.filter(p => p.team).map(p => p.id + (p.leader ? '*' : '')).sort().join(',');
         assert(api.run() && api.run().fase === 'dentro', `entrou (${api.run() && api.run().fase})`);
-        assert.strictEqual(team(), 'S,X*,Y', 'time = inicial + os da família, o 1º escolhido de líder');
+        assert.strictEqual(team(), 'A*,S,X,Y', 'time = líder da conta + inicial + os da família');
         assert.strictEqual(g.family.map(p => p.id).join(','), 'Z', 'os escolhidos saíram da família');
         assert(api.keepsPoke('A') && api.keepsPoke('X') && !api.keepsPoke('Z'), 'time original e os da família protegidos');
         assert(api.holding(), 'segura viagem/rotas');
@@ -294,8 +294,8 @@ async function enter(t, extra) {
 
     // 13. (CabralJ, 19/11/2026 03:08Z) time de 1 Pokémon e time cheio: nunca deixa o time vazio; só os da família na Raid e o original volta
     for (const caso of [
-        { nome: 'time de 1', pokes: [{ id: 'R', name: 'Rhyperior', level: 720, team: true, slot: 0, leader: true }], depois: 'X*,Y,Z', volta: 'R*' },
-        { nome: 'time cheio', pokes: ['A', 'B', 'C', 'D', 'E', 'F'].map((id, i) => ({ id, name: id, level: 100, team: true, slot: i, leader: i === 0 })), depois: 'X*,Y,Z', volta: 'A*,B,C,D,E,F' },
+        { nome: 'time de 1', pokes: [{ id: 'R', name: 'Rhyperior', level: 720, team: true, slot: 0, leader: true }], depois: 'R*,X,Y,Z', volta: 'R*' },
+        { nome: 'time cheio', pokes: ['A', 'B', 'C', 'D', 'E', 'F'].map((id, i) => ({ id, name: id, level: 100, team: true, slot: i, leader: i === 0 })), depois: 'A*,X,Y,Z', volta: 'A*,B,C,D,E,F' },
     ]) {
         const game = { pokes: caso.pokes, family: [{ id: 'X', name: 'Golem', level: 644 }, { id: 'Y', name: 'Victreebel', level: 604 }, { id: 'Z', name: 'Magmar', level: 301 }] };
         const sel = ['X', 'Y', 'Z'].map(id => ({ id, name: id, level: 1 }));
@@ -306,7 +306,7 @@ async function enter(t, extra) {
         await state.drain(40e3);
         api.onField(hud(clock));
         const team = () => state.game.pokes.filter(p => p.team).map(p => p.id + (p.leader ? '*' : '')).sort().join(',');
-        assert.strictEqual(team(), caso.depois, `${caso.nome}: só os da família no time`);
+        assert.strictEqual(team(), caso.depois, `${caso.nome}: líder da conta + os da família`);
         assert.strictEqual(state.gameErrors.length, 0, `${caso.nome}: sem "manter ao menos 1 Pokémon" (${state.gameErrors})`);
         api.onMessage({ type: 'raid-end', reason: 'time', damage: 1, hpLeft: 1, hpMax: 2, stayedMs: 1 });
         await state.drain(60e3);

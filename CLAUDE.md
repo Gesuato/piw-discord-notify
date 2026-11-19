@@ -563,11 +563,11 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `raid-loot` (itens + buff) e `raid-achievement` viram aviso. Teste: `node test/raid.test.js` (`loadRaidModule`: `// ---- Raid Mundial`
   até `// ---- Invasão Rocket`; timers com prazo, `state.drain(ms)`; `state.env` liga os bloqueios; `init.lastRealHunt`; `init.dom`).
   v3.65.0 (pedido do usuário em 19/11/2026: "sequencial, 1 conta de cada vez da família, usando os Pokémon da família; quando acabar
-  devolve e a próxima faz"): `cfg.raidFamilyEnabled`/`raidFamilyPokes [{ id, name, level, iv, q }]` (até 6, o 1º = líder; o inicial não
+  devolve e a próxima faz"): `cfg.raidFamilyEnabled`/`raidFamilyPokes [{ id, name, level, iv, q }]` (até 5; v3.65.2: o LÍDER DA CONTA fica no time e segue líder, pedido do usuário; o inicial não
   sai do time)/`raidQueuePos` (1..8). Fila SEM config compartilhada: o depósito da família é a trava (escolhidos fora do depósito = outra
   conta está com eles, espera); com eles de volta, a posição N espera (N−1) × 90 s (`raidFamTurn`). `raidFamEquip` na entrada (depois da
-  cura): guarda o time original (ids + líder) em `raidFam` (RAID_KEY), `family-action withdraw` (vai para o BOX), `poke-store` do time
-  (menos inicial), `poke-withdraw` dos escolhidos, `poke-summon` do 1º; outra conta pegou antes = `raidAbort(..., quiet, semFalha)` e
+  cura): guarda o time original (ids + líder) em `raidFam` (RAID_KEY), `family-action withdraw` (vai para o BOX), `poke-withdraw` dos escolhidos ANTES de
+  `poke-store` do resto do time (v3.65.1: o jogo recusa time vazio, "manter ao menos 1 Pokémon"; `raidSwapTeam`), `poke-summon` do líder da conta; outra conta pegou antes = `raidAbort(..., quiet, semFalha)` e
   devolve o que tirou. `raidFamRelease` no fim (sem reentrada), na entrada que falhou e no tique (vez encerrada): time original e líder
   de volta, `familyDeposit` dos escolhidos (só do box), devolução que falha avisa 1x e tenta a cada 2 min. Com `raidFam.held`,
   `raidHolding()` segura tudo (via `invBusy`) e `raidKeepsPoke(id)` tira time original e escolhidos da venda e do guardar; os

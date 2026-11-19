@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.65.1
+// @version      3.65.2
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.65.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.65.2';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -110,7 +110,7 @@
         raidReenterMax: 3,      // ...reentradas por Raid quando o time cai ou o servidor reinicia (0 = entra uma vez só)
         raidAlerts: true,       // ...avisa no canal de Alertas (fim da participação com dano e posição, recompensa, conquista, entrada que falhou)
         raidFamilyEnabled: false, // v3.65.0 ...fazer a Raid com Pokémon do depósito da família, uma conta por vez (pega, equipa, devolve)
-        raidFamilyPokes: [],    // ...os escolhidos [{ id, name, level, iv, q }] (o 1º vira o líder; máx. 6, o inicial ocupa uma vaga)
+        raidFamilyPokes: [],    // ...os escolhidos [{ id, name, level, iv, q }] (o líder da conta continua líder; cabem 5, menos o inicial)
         raidQueuePos: 1,        // ...posição desta conta na fila (1 = pega primeiro quando os Pokémon voltam ao depósito)
         bossResumeEnabled: true, // v3.43.0 Auto Boss do jogo: retomar quando parar sem terminar (erro, saiu da arena, reconexão)
         bossResumeOnLoss: false, // ...também depois de derrota (cura na Joy antes; cada derrota perde 1 token)
@@ -7681,7 +7681,7 @@
         if (falta > 0) return `fila: posição ${raidFamPos()}, pega os Pokémon em ${raidFmt(falta)} se nenhuma conta pegar antes`;
         return null;
     }
-    // Pega os Pokémon escolhidos na família e monta o time com eles (o 1º escolhido vira o líder).
+    // Pega os Pokémon escolhidos na família e monta o time com eles (v3.65.2: o líder da conta continua no time e como líder).
     async function raidFamEquip(r) {
         const ids = raidFamIds();
         r.fase = 'pegando os Pokémon da família'; raidNotify();
@@ -7713,14 +7713,18 @@
         // v3.65.1 (CabralJ, 19/11/2026 03:08Z): guardar o time ANTES dava "Você precisa manter ao menos 1 Pokémon na equipe" (time de 1)
         // e o original ficava no time. Agora os da família entram primeiro (com o time cheio, sai um original para abrir a vaga) e só
         // depois saem os originais que sobraram.
-        await raidSwapTeam(list, ids, (p) => !p.starter && !ids.includes(String(p.id)));
+        // v3.65.2 (pedido do usuário em 19/11/2026): o líder da PRÓPRIA conta fica no time e continua líder; os da família ocupam as
+        // outras vagas (até 5, menos o inicial).
+        const meuLider = raidFam.leader;
+        await raidSwapTeam(list, ids, (p) => !p.starter && !ids.includes(String(p.id)) && String(p.id) !== meuLider);
         await raidFreshPokes();
         list = raidPokes().list;
         const inTeam = ids.filter(id => list.some(p => String(p?.id) === id && p.team));
         if (!inTeam.length) return { ok: false, motivo: 'os Pokémon da família não entraram no time' };
         const lider = list.find(p => p.team && p.leader);
-        if (!lider || String(lider.id) !== inTeam[0]) {
-            sendGame({ type: 'poke-summon', pokeId: inTeam[0] });
+        const quer = meuLider && list.some(p => String(p?.id) === meuLider && p.team) ? meuLider : inTeam[0];
+        if (!lider || String(lider.id) !== quer) {
+            sendGame({ type: 'poke-summon', pokeId: quer });
             await raidWait(RAID_MOVE_GAP_MS);
             await raidFreshPokes();
             list = raidPokes().list;
@@ -11626,7 +11630,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <h3>👪 Fazer a Raid com Pokémon da família (uma conta por vez)</h3>
                         <label class="dn-toggle"><input id="pg-dn-raidfam" type="checkbox"><span class="sw"></span>Pegar os Pokémon escolhidos no depósito da família, montar o time, fazer a Raid e devolver <span class="dn-hint">(o time desta conta volta no fim)</span></label>
                         <div class="dn-inline">Posição desta conta na fila <input id="pg-dn-raidfam-pos" class="dn-input dn-input--sm" type="number" min="1" max="8" step="1" placeholder="1"> <span class="dn-hint">(1 = pega primeiro; use 1, 2, 3, 4 nas contas)</span></div>
-                        <p class="dn-help">Só uma conta pode estar com os Pokémon de cada vez: o próprio depósito da família é a fila. Quando os escolhidos estão lá, a conta de posição 1 pega na hora, a 2 depois de 1,5 min, a 3 depois de 3 min… (quem já fez a Raid hoje não pega). A conta da vez sai da hunt, cura, tira os Pokémon da família, guarda o próprio time no box (o inicial fica), põe os da família no time (o 1º escolhido vira o líder) e entra. No fim (tempo acabou, reentradas esgotadas, Raid fechou) tira os da família do time, devolve o time original e o líder, deposita os da família de volta e volta para a hunt — aí é a vez da próxima. Cada vez gasta 2 movimentos da família por Pokémon. Escolha os mesmos Pokémon em todas as contas (os ids são da família; Exportar/Importar copia).</p>
+                        <p class="dn-help">Só uma conta pode estar com os Pokémon de cada vez: o próprio depósito da família é a fila. Quando os escolhidos estão lá, a conta de posição 1 pega na hora, a 2 depois de 1,5 min, a 3 depois de 3 min… (quem já fez a Raid hoje não pega). A conta da vez sai da hunt, cura, tira os Pokémon da família, guarda o próprio time no box (o inicial fica), põe os da família no time e entra. O líder da conta continua no time e como líder; os da família ficam nas outras vagas (cabem 5, menos o inicial). No fim (tempo acabou, reentradas esgotadas, Raid fechou) tira os da família do time, devolve o time original e o líder, deposita os da família de volta e volta para a hunt — aí é a vez da próxima. Cada vez gasta 2 movimentos da família por Pokémon. Escolha os mesmos Pokémon em todas as contas (os ids são da família; Exportar/Importar copia).</p>
                         <div class="dn-status"><span id="pg-dn-raidfam-status"></span><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm r" id="pg-dn-raidfam-read" title="Pede o depósito da família ao jogo (family-get).">📋 Ler família</button></div>
                         <div id="pg-dn-raidfam-sel" class="dn-items"></div>
                         <div class="dn-bagtools"><input id="pg-dn-raidfam-search" class="dn-input" type="search" placeholder="buscar Pokémon da família…" spellcheck="false" aria-label="Buscar Pokémon da família"></div>
@@ -12322,8 +12326,8 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-raidfam-status').textContent = `Família: ${raidFamStatus(d)}`;
             const sel = raidFamCur();
             const box = $('#pg-dn-raidfam-sel');
-            box.innerHTML = sel.length ? sel.map((p, i) => `<div class="dn-item"><span class="nm">${i === 0 ? '⚔' : i + 1}</span><span class="nm">${raidFamLabel(p)}</span><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm pg-dn-raidfam-del" data-id="${escHtml(p.id)}" title="Tirar da Raid">✕</button></div>`).join('')
-                : '<div class="dn-items-empty">Nenhum Pokémon escolhido. Clique em "Ler família" e marque até 6 na lista abaixo (o 1º vira o líder).</div>';
+            box.innerHTML = sel.length ? sel.map((p, i) => `<div class="dn-item"><span class="nm">${i + 1}</span><span class="nm">${raidFamLabel(p)}</span><button type="button" class="dn-btn dn-btn--ghost dn-btn--sm pg-dn-raidfam-del" data-id="${escHtml(p.id)}" title="Tirar da Raid">✕</button></div>`).join('')
+                : '<div class="dn-items-empty">Nenhum Pokémon escolhido. Clique em "Ler família" e marque até 5 na lista abaixo (o líder da conta continua líder).</div>';
             for (const b of box.querySelectorAll('.pg-dn-raidfam-del')) b.onclick = () => {
                 raidFamDraft = raidFamCur().filter(x => String(x.id) !== b.dataset.id);
                 dirty = true; renderDirty(); renderLive(); renderRaidFam();
@@ -12340,7 +12344,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 const cur = raidFamCur().map(x => Object.assign({}, x));
                 const id = c.dataset.id;
                 if (c.checked) {
-                    if (cur.length >= 6) { c.checked = false; flash('⚠ No máximo 6 Pokémon (e o inicial, se houver, ocupa uma vaga no time).', 'warn', 6000); return; }
+                    if (cur.length >= 5) { c.checked = false; flash('⚠ No máximo 5 Pokémon: o líder da conta fica no time (e o inicial, se houver, ocupa outra vaga).', 'warn', 6000); return; }
                     const p = familyDepotPokes().find(x => String(x?.id) === id);
                     if (p && !cur.some(x => String(x.id) === id)) cur.push({ id: String(p.id), name: p.name, level: Number(p.level) || 0, iv: p.ivTotal ?? null, q: p.quality ?? null, shiny: Boolean(p.shiny) });
                 } else {
