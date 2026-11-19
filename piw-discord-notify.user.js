@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.66.0
+// @version      3.66.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.66.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.66.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -107,7 +107,6 @@
         invJennyOffer: '',      // ...chave da oferta escolhida (lida da janela da Jenny: ball, token, outfit, medal...)
         invJennyKeep: 0,        // ...Plans que ficam guardados (nunca troca abaixo disto)
         raidEnabled: false,     // v3.64.0 Raid Mundial (Darkrai em Cerulean): entrar sozinho enquanto a Raid estiver aberta e voltar para a hunt
-        raidReenterMax: 3,      // ...reentradas por Raid quando o time cai ou o servidor reinicia (0 = entra uma vez só)
         raidAlerts: true,       // ...avisa no canal de Alertas (fim da participação com dano e posição, recompensa, conquista, entrada que falhou)
         raidFamilyEnabled: false, // v3.65.0 ...fazer a Raid com Pokémon do depósito da família, uma conta por vez (pega, equipa, devolve)
         raidFamilyPokes: [],    // ...os escolhidos [{ id, name, level, iv, q }] (o líder da conta continua líder; cabem 5, menos o inicial)
@@ -181,6 +180,7 @@
             cfg.tripEveryMin = Math.max(1, Number(cfg.sellEveryMin) || 10);
             cfg.tripEveryMaxMin = Math.max(0, Number(cfg.sellEveryMaxMin) || 15);
         }
+        delete cfg.raidReenterMax;   // v3.66.1: a Raid sempre reentra enquanto houver tempo de arena (opção removida a pedido do usuário)
         delete cfg.sellEveryMin; delete cfg.sellEveryMaxMin; delete cfg.pokeSellEveryMin; delete cfg.pokeSellEveryMaxMin;
         // Venda de Pokémon (v3.11.x): duas faixas (pokeSellTier/pokeSellIvLow/pokeSellIvHigh) viram um limite por raridade.
         if (!cfg.pokeSellLimits || typeof cfg.pokeSellLimits !== 'object' || Array.isArray(cfg.pokeSellLimits)) cfg.pokeSellLimits = {};
@@ -7526,7 +7526,7 @@
     // para sobreviver à recarga), sai da hunt (tela → cidade; `set-city` nós mesmos se ela não for), `joy-heal` (grátis; líder caído = a tela
     // não viaja), `hunt-resume` sintético para a TELA mandar o único enter-hunt (sem a hunt em 5 s mandamos nós). Enter-hunt repetido da
     // tela é barrado no socket (`raidOutgoingBlocked`, lição da invasão v3.51.1). `raid-end` → log, aviso, fecha a janela, `set-city`,
-    // `joy-heal` e: reentra (time caiu, servidor reiniciou ou saída sem frame) até `raidReenterMax` vezes por Raid, ou volta com
+    // `joy-heal` e: reentra (time caiu, servidor reiniciou ou saída sem frame) enquanto houver tempo de arena (v3.66.0; sem o tempo no HUD, até 5 vezes), ou volta com
     // `switchHunt(from, 1, 'raid-volta')`. `time` marca o dia (Brasília) como feito; `defeated`/`ended` encerram esta Raid.
     // Enquanto entra/está dentro/volta, `invBusy()` também responde por ela (todas as rotas, viagem, recarga, parada na cidade, troca de
     // líder e cura já esperam pela invasão), e `raidIsSlug(slug)` tira a Raid de `lastRealHunt`, da retomada da recarga e da espera.
@@ -7559,8 +7559,7 @@
     const RAID_HEALED_FRESH_MS = 15 * 1000;       // curou há menos que isto: a entrada não cura de novo
     const RAID_STAY_MIN_LEFT_MS = 15 * 1000;      // menos que isto de estadia: não vale reentrar
     const RAID_REENTER_SAFETY = 40;               // teto de segurança de entradas por Raid com o tempo de arena conhecido
-    const RAID_REENTER_DEFAULT = 3;
-    const RAID_REENTER_MAX = 20;
+    const RAID_REENTER_FALLBACK = 5;              // v3.66.1: sem o fim da estadia no HUD (não deveria acontecer), no máximo 5 reentradas
     const RAID_MODAL_POLL_MS = 500;
     const RAID_MODAL_WAIT_MS = 20 * 1000;
     const RAID_MODAL_HOLD_MS = 3000;
@@ -7858,11 +7857,7 @@
     }
 
     function raidOn(d) { return Boolean((d || cfg).raidEnabled); }
-    function raidReenterMax(d) {
-        const v = (d || cfg).raidReenterMax;
-        if (v === '' || v == null) return RAID_REENTER_DEFAULT;
-        return Math.max(0, Math.min(RAID_REENTER_MAX, Math.floor(Number(v)) || 0));
-    }
+    function raidReenterMax() { return RAID_REENTER_FALLBACK; }   // v3.66.1: não é mais opção do painel
     function raidIsSlug(slug) { return normalize(slug || '') === RAID_SLUG; }
     function raidNotify() { if (onRaidChange) { try { onRaidChange(); } catch { /* painel fechado */ } } }
     function raidWait(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -8291,10 +8286,9 @@
         if (!RAID_REENTER_REASONS.includes(reason)) return false;
         const t = raidTriedFor(r.key);
         if (t.done || raidDoneToday()) return false;
-        if (raidReenterMax() === 0) return false;   // 0 = entra uma vez só
         if (typeof holdActive === 'function' && holdActive()) return false;
         if (!raidOn() || !raidActiveNow()) return false;
-        // v3.66.0: com o fim da estadia conhecido (HUD), reentra enquanto houver tempo; sem ele, o número do painel vale
+        // v3.66.0: com o fim da estadia conhecido (HUD), reentra enquanto houver tempo; sem ele, no máximo RAID_REENTER_FALLBACK vezes
         if (t.stayEndsAt) return Date.now() < t.stayEndsAt - RAID_STAY_MIN_LEFT_MS && t.entries < RAID_REENTER_SAFETY;
         return t.entries <= raidReenterMax();   // 1ª entrada + N reentradas
     }
@@ -11263,7 +11257,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             `Farm: ${d.farmEnabled && farmList(d).length ? `${farmList(d).filter(farmEntryDone).length}/${farmList(d).length} itens` : 'desligado'}`,
             `Ginásios: ${d.gymEnabled ? ['insígnias', d.gymBonus !== false ? 'bônus' : '', d.gymRedo !== false ? 'refaz a cada 48 h' : ''].filter(Boolean).join(' + ') : 'desligados'}`,
             `Invasão: ${d.invEnabled ? `entra${invHours(d).length ? ` às ${invHours(d).map(h => `${h}h`).join(', ')}` : ' em toda janela'}${invKeepEnergy(d) ? `, reserva ${invKeepEnergy(d)}` : ''}` : 'desligada'}${d.invJennyEnabled ? ` + Jenny (${invJennyOffer(d) || 'sem oferta'})` : ''}`,
-            `Raid: ${raidOn(d) ? `entra no Darkrai${raidReenterMax(d) ? ` (reentra até ${raidReenterMax(d)}x)` : ' (uma vez por Raid)'}` : 'desligada'}`,
+            `Raid: ${raidOn(d) ? `entra no Darkrai e reentra enquanto houver tempo de arena${d.raidFamilyEnabled ? ' (com a família)' : ''}` : 'desligada'}`,
             `Boss: ${bossOn(d) ? `retoma o Auto Boss${d.bossResumeOnLoss ? ' (até após derrota)' : ''}` : 'retomada desligada'}${d.bossRepeat !== false ? ' + repete até acabar as fichas' : ''}${d.bossReturnHunt !== false ? ' + volta para a hunt' : ''}${bossActive() ? ' · rodando' : ''}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
             holdActive() ? '⏸ esperando na cidade (botão do painel)' : '',
@@ -11674,7 +11668,6 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                     <div class="dn-section">
                         <h3>🌑 Raid Mundial: Darkrai em Cerulean</h3>
                         <label class="dn-toggle"><input id="pg-dn-raid" type="checkbox"><span class="sw"></span>Entrar na Raid sozinho enquanto ela estiver aberta <span class="dn-hint">(batalha cooperativa, até 30 jogadores por instância; o tempo na arena é limitado por dia)</span></label>
-                        <div class="dn-inline">Reentrar até <input id="pg-dn-raid-reenter" class="dn-input dn-input--sm" type="number" min="0" max="20" step="1" placeholder="3"> vezes se o jogo não disser o tempo de arena <span class="dn-hint">(com o tempo conhecido — 5 min por dia — reentra enquanto sobrar tempo, sem limite; 0 = nunca reentra)</span></div>
                         <label class="dn-toggle"><input id="pg-dn-raid-alerts" type="checkbox"><span class="sw"></span>Avisar no canal de Alertas <span class="dn-hint">(dano, posição e tempo de cada participação; recompensa; conquista; entrada que falhou)</span></label>
                         <p class="dn-help">Quem abre e fecha a Raid é a equipe do jogo (o anúncio diz o horário); o script segue o aviso do servidor. Quando ela abre, sai da hunt, cura na Joy, entra pela mesma mensagem do botão RAID da cidade e fica lá enquanto o jogo deixar. O tempo de arena é de 5 min por dia e corre mesmo fora dela: se o time cai (ou o servidor reinicia), o script cura na Joy e entra de novo em ~3 s, enquanto sobrar tempo; o dano fica salvo. Quando o tempo acaba, fecha a janela de resultado e volta para a hunt de onde saiu. "Seu tempo na arena acabou" vale para o dia todo: só tenta de novo amanhã. Boss derrotado ou Raid encerrada: não entra mais nela. A recompensa chega depois, quando a Raid termina para todos, e vai para o aviso. Enquanto dura, viagem à cidade, parada na cidade, recarga, rotas, troca de líder e a Invasão Rocket esperam. Entrada feita na mão pelo botão RAID da tela também é acompanhada e volta.</p>
                         <div class="dn-actions">
@@ -11893,7 +11886,6 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 invJennyOffer: $('#pg-dn-inv-jenny-offer').value,
                 invJennyKeep: Math.max(0, parseInt($('#pg-dn-inv-jenny-keep').value, 10) || 0),
                 raidEnabled: $('#pg-dn-raid').checked,
-                raidReenterMax: $('#pg-dn-raid-reenter').value.trim() === '' ? RAID_REENTER_DEFAULT : Math.max(0, Math.min(RAID_REENTER_MAX, parseInt($('#pg-dn-raid-reenter').value, 10) || 0)),
                 raidAlerts: $('#pg-dn-raid-alerts').checked,
                 raidFamilyEnabled: $('#pg-dn-raidfam').checked,
                 raidFamilyPokes: (raidFamDraft || raidFamList(cfg)).map(x => Object.assign({}, x)),
@@ -13062,7 +13054,6 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             renderInvOffers(cfg.invJennyOffer || '');
             $('#pg-dn-inv-jenny-keep').value = invJennyKeep(cfg) || '';
             $('#pg-dn-raid').checked = Boolean(cfg.raidEnabled);
-            $('#pg-dn-raid-reenter').value = String(raidReenterMax(cfg));
             $('#pg-dn-raid-alerts').checked = cfg.raidAlerts !== false;
             $('#pg-dn-raidfam').checked = Boolean(cfg.raidFamilyEnabled);
             $('#pg-dn-raidfam-pos').value = String(raidFamPos(cfg));

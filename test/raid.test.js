@@ -64,7 +64,7 @@ async function enter(t, extra) {
     // 2. (v3.66.0) Time caiu → cura e reentra em poucos segundos enquanto houver tempo de arena (sem limite de vezes, sem aviso a cada queda);
     //    acabou o tempo → volta. Sem o tempo de arena no HUD, vale o número do painel.
     {
-        const t = loadRaidModule({ raidReenterMax: 1 }, { huntSlug: 'rhyhorn' });
+        const t = loadRaidModule({}, { huntSlug: 'rhyhorn' });
         const { api, state, clock } = t;
         await enter(t);   // HUD: estadia acaba em 30 min
         for (let k = 1; k <= 4; k++) {
@@ -88,16 +88,21 @@ async function enter(t, extra) {
         t2.api.onMessage({ type: 'raid-end', reason: 'wipe', damage: 1, hpLeft: 1, hpMax: 2 });
         await t2.state.drain(15e3);
         assert.deepStrictEqual(t2.state.switches.map(s => s.slug), ['rhyhorn'], 'menos de 15 s de estadia: volta');
-        // sem o tempo no HUD: vale o número do painel (1 reentrada)
-        const t3 = loadRaidModule({ raidReenterMax: 1 }, { huntSlug: 'rhyhorn' });
+        // sem o tempo no HUD (não deveria acontecer): no máximo 5 reentradas
+        const t3 = loadRaidModule({}, { huntSlug: 'rhyhorn' });
         t3.api.onMessage(openState(t3.clock)); await t3.state.drain(t3.api.RAID_ENTER_DELAY_MS); t3.api.tick(); await t3.state.drain(10e3);
         t3.api.onField({ type: 'field' });
         t3.api.onMessage({ type: 'raid-end', reason: 'wipe', damage: 1, hpLeft: 1, hpMax: 2 });
         await t3.state.drain(10e3); t3.api.onField({ type: 'field' });
         assert(t3.api.run() && t3.state.switches.length === 0, 'sem tempo conhecido: 1ª queda reentra');
+        for (let k = 2; k <= 5; k++) {   // sem tempo conhecido: até 5 reentradas (proteção interna)
+            t3.api.onMessage({ type: 'raid-end', reason: 'wipe', damage: 1, hpLeft: 1, hpMax: 2 });
+            await t3.state.drain(10e3); t3.api.onField({ type: 'field' });
+        }
+        assert(t3.api.run() && t3.state.switches.length === 0, 'sem tempo conhecido: reentrou 5 vezes');
         t3.api.onMessage({ type: 'raid-end', reason: 'wipe', damage: 1, hpLeft: 1, hpMax: 2 });
         await t3.state.drain(15e3);
-        assert.deepStrictEqual(t3.state.switches.map(s => s.slug), ['rhyhorn'], 'sem tempo conhecido: limite do painel');
+        assert.deepStrictEqual(t3.state.switches.map(s => s.slug), ['rhyhorn'], 'sem tempo conhecido: depois de 5 reentradas volta');
         console.log('ok 2 - reentrada rápida enquanto houver tempo de arena');
     }
 
@@ -192,9 +197,9 @@ async function enter(t, extra) {
 
     // 8. Recarga no meio: lembrada; a conta nasceu na cidade → volta (ou reentra) em vez de ficar parada
     {
-        const t = loadRaidModule({ raidReenterMax: 0 }, { huntSlug: 'rhyhorn' });
+        const t = loadRaidModule({}, { huntSlug: 'rhyhorn' });
         await enter(t);
-        const t2 = loadRaidModule({ raidReenterMax: 0 }, { huntSlug: null, store: t.state.store, now: t.clock.now + 30e3 });
+        const t2 = loadRaidModule({}, { huntSlug: null, store: t.state.store, now: t.clock.now + 30e3 });
         t2.api.load();
         assert(t2.api.run() && t2.api.run().origem === 'lembrado', 'participação lembrada');
         await t2.state.drain(20e3); t2.api.tick(); await t2.state.drain(10e3);
@@ -257,7 +262,7 @@ async function enter(t, extra) {
             family: [{ id: 'X', name: 'Mewtwo', level: 900 }, { id: 'Y', name: 'Lugia', level: 880 }, { id: 'Z', name: 'Rattata', level: 2 }],
         };
         const sel = [{ id: 'X', name: 'Mewtwo', level: 900 }, { id: 'Y', name: 'Lugia', level: 880 }];
-        const t = loadRaidModule({ raidFamilyEnabled: true, raidFamilyPokes: sel, raidReenterMax: 0 }, { huntSlug: 'banette', game });
+        const t = loadRaidModule({ raidFamilyEnabled: true, raidFamilyPokes: sel }, { huntSlug: 'banette', game });
         const { api, state, clock } = t;
         api.onMessage(openState(clock));
         api.tick(); await state.drain(api.RAID_ENTER_DELAY_MS); api.tick();   // 1ª leitura do depósito
@@ -316,7 +321,7 @@ async function enter(t, extra) {
     ]) {
         const game = { pokes: caso.pokes, family: [{ id: 'X', name: 'Golem', level: 644 }, { id: 'Y', name: 'Victreebel', level: 604 }, { id: 'Z', name: 'Magmar', level: 301 }] };
         const sel = ['X', 'Y', 'Z'].map(id => ({ id, name: id, level: 1 }));
-        const t = loadRaidModule({ raidFamilyEnabled: true, raidFamilyPokes: sel, raidReenterMax: 0 }, { huntSlug: 'ancient_pinsir', game });
+        const t = loadRaidModule({ raidFamilyEnabled: true, raidFamilyPokes: sel }, { huntSlug: 'ancient_pinsir', game });
         const { api, state, clock } = t;
         api.onMessage(openState(clock));
         api.tick(); await state.drain(api.RAID_ENTER_DELAY_MS); api.tick(); await state.drain(1000); api.tick();
@@ -344,7 +349,7 @@ async function enter(t, extra) {
             family: [{ id: 'X', name: 'Exeggutor', level: 469 }, { id: 'Y', name: 'Victreebel', level: 604 }, { id: 'Z', name: 'Magneton', level: 334 }],
         };
         const sel = [{ id: 'Z', name: 'Magneton', level: 334 }, { id: 'X', name: 'Exeggutor', level: 469 }, { id: 'Y', name: 'Victreebel', level: 604 }];
-        const t = loadRaidModule({ raidFamilyEnabled: true, raidFamilyPokes: sel, raidReenterMax: 0 }, { huntSlug: 'banette', game });
+        const t = loadRaidModule({ raidFamilyEnabled: true, raidFamilyPokes: sel }, { huntSlug: 'banette', game });
         const { api, state, clock } = t;
         api.onMessage(openState(clock));
         api.tick(); await state.drain(api.RAID_ENTER_DELAY_MS); api.tick(); await state.drain(1000); api.tick();

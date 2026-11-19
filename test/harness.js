@@ -1617,7 +1617,7 @@ function loadRaidModule(cfg, init) {
     let apiRef = null;
     const CITY = ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'];
     const ctx = {
-        cfg: Object.assign({ raidEnabled: true, raidReenterMax: 3, raidAlerts: true, raidFamilyEnabled: false, raidFamilyPokes: [], raidQueuePos: 1 }, cfg || {}),
+        cfg: Object.assign({ raidEnabled: true, raidAlerts: true, raidFamilyEnabled: false, raidFamilyPokes: [], raidQueuePos: 1 }, cfg || {}),
         normalize: (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim(),
         logEvent: (k, d) => state.logs.push([k, d]),
         postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', title: p.embeds?.[0]?.title || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },

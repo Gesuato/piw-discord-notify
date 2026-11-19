@@ -548,7 +548,7 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   manda `joy-heal` + `switchHunt(slug, 1, 'boss-volta')` 5 s depois para `from` (hunt de onde o Iniciar do painel saiu) ou `idleTarget()`;
   "Esperar na cidade" recusa. Logs `auto-boss-bloco`, `auto-boss-volta`; o aviso do fim diz "em N blocos". Caso 14 do teste (harness:
   `bossRepeat`/`bossReturnHunt` desligados por padrão, `init.idleSlug`, `state.switches`).
-- Raid Mundial (v3.64.0, aba própria 🌑 Raid (`TABS` id `raid`), `cfg.raidEnabled`/`raidReenterMax` (padrão 3)/`raidAlerts`; módulo
+- Raid Mundial (v3.64.0, aba própria 🌑 Raid (`TABS` id `raid`), `cfg.raidEnabled`/`raidAlerts` (v3.66.1: `raidReenterMax` REMOVIDO a pedido do usuário — sempre reentra); módulo
   `// ---- Raid Mundial` antes da Invasão Rocket; anúncio e bundle de 18/11/2026, `docs/mensagens-do-jogo.md` → "Raid Mundial"; `raid-state` CONFIRMADO no log em 19/11/2026 02:10Z (`id`,
   `startedAt`, `endsAt` 24 h depois, `participants`); os outros formatos ainda NÃO vistos no log — `raid-campos` registra as chaves): Darkrai em Cerulean, aberta/fechada pela administração (o script segue SÓ o
   `raid-state`, resposta ao `raid-state-get`). A Raid é a hunt de slug fixo `raid_cerulean` (botão RAID da cidade = só viaja + `enter-hunt`).
@@ -565,7 +565,7 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   v3.66.0 (19/11/2026): tempo de arena CONFIRMADO = 5 min por dia (CabralJ `raid-end { reason:"time", stayedMs:300065 }`) e o relógio
   NÃO para fora da arena (`field.raid.endsAt` = fim da estadia, igual depois de sair e voltar; `raid.damage` salvo). O usuário escolheu
   "focar só no líder" (família desligada nos painéis) e o mínimo de tempo morto: `raidCanReenter` reentra enquanto `t.stayEndsAt` (do
-  HUD, persistido) − 15 s, sem limite de vezes (teto de segurança 40); sem o tempo no HUD vale `raidReenterMax` (0 = nunca). Queda →
+  HUD, persistido) − 15 s, sem limite de vezes (teto de segurança 40); sem o tempo no HUD, no máximo 5 (`RAID_REENTER_FALLBACK`, fixo). Queda →
   1 s, `set-city`, `joy-heal` (1,5 s), reentrada 1,5 s depois por `setTimeout(raidTick)` (sem esperar o tique) e a entrada não cura de
   novo (`raidHealedAt`); ~5 s fora da arena. Aviso `raid-fim` só no fim de verdade. Formatos CONFIRMADOS: `raid-end { reason, bossName,
   bossLevel, look, portrait, damage, totalDamage, rank, participants, hpLeft, hpMax, stayedMs, top[{ name, damage }] }`; `field.raid {
