@@ -316,5 +316,31 @@ async function enter(t, extra) {
     }
     console.log('ok 13 - troca de time sem deixar o time vazio');
 
+    // 14. (v3.65.3) ordem: líder da conta primeiro, depois do maior nível para o menor; na devolução, a ordem original do time
+    {
+        const game = {
+            pokes: [
+                { id: 'L', name: 'Tyranitar', level: 882, team: true, slot: 0, leader: true },
+                { id: 'B', name: 'Golem', level: 100, team: true, slot: 1, leader: false },
+                { id: 'C', name: 'Magmar', level: 300, team: true, slot: 2, leader: false },
+            ],
+            family: [{ id: 'X', name: 'Exeggutor', level: 469 }, { id: 'Y', name: 'Victreebel', level: 604 }, { id: 'Z', name: 'Magneton', level: 334 }],
+        };
+        const sel = [{ id: 'Z', name: 'Magneton', level: 334 }, { id: 'X', name: 'Exeggutor', level: 469 }, { id: 'Y', name: 'Victreebel', level: 604 }];
+        const t = loadRaidModule({ raidFamilyEnabled: true, raidFamilyPokes: sel, raidReenterMax: 0 }, { huntSlug: 'banette', game });
+        const { api, state, clock } = t;
+        api.onMessage(openState(clock));
+        api.tick(); await state.drain(api.RAID_ENTER_DELAY_MS); api.tick(); await state.drain(1000); api.tick();
+        await state.drain(60e3);
+        api.onField(hud(clock));
+        const ordem = () => state.game.pokes.filter(p => p.team).sort((a, b) => a.slot - b.slot).map(p => p.id + (p.leader ? '*' : '')).join(',');
+        assert.strictEqual(ordem(), 'L*,Y,X,Z', 'líder, depois Victreebel 604, Exeggutor 469, Magneton 334');
+        api.onMessage({ type: 'raid-end', reason: 'time', damage: 1, hpLeft: 1, hpMax: 2, stayedMs: 1 });
+        await state.drain(90e3);
+        assert.strictEqual(ordem(), 'L*,B,C', 'ordem original de volta');
+        assert.strictEqual(state.gameErrors.length, 0, String(state.gameErrors));
+        console.log('ok 14 - ordem do time por nível');
+    }
+
     console.log('raid.test: tudo ok');
 })().catch(e => { console.error(e); process.exit(1); });

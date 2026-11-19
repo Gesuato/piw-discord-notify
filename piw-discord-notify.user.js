@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.65.2
+// @version      3.65.3
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.65.2';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.65.3';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -7647,6 +7647,39 @@
             await raidWait(RAID_MOVE_GAP_MS);
         }
     }
+    // v3.65.3 (pedido do usuário em 19/11/2026): "depois do líder da própria conta, os outros ordenados por nível; quanto maior, mais perto
+    // do líder". O jogo não tem mensagem de reordenar (bundle: só poke-store/poke-withdraw/poke-summon) e quem entra no time vai para a
+    // última vaga: guarda no box todos menos o líder e o inicial (o jogo não deixa o inicial sair) e devolve na ordem pedida. `ordem` =
+    // ids na ordem desejada (null = por nível, do maior); quem não está nela vai depois, por nível. O líder nunca sai (segue líder).
+    async function raidOrderTeam(ordem, motivo) {
+        await raidFreshPokes();
+        let list = raidPokes().list;
+        const time = raidTeamOf(list);
+        if (time.length <= 1) return true;
+        const fixos = new Set(time.filter(p => p.leader || p.starter).map(p => String(p.id)));
+        const nivel = (p) => Number(p.level) || 0;
+        const ids = time.map(p => String(p.id));
+        const naOrdem = Array.isArray(ordem) ? ordem.map(String).filter(id => ids.includes(id) && !fixos.has(id)) : [];
+        const resto = time.filter(p => !fixos.has(String(p.id)) && !naOrdem.includes(String(p.id))).sort((a, b) => nivel(b) - nivel(a)).map(p => String(p.id));
+        const alvo = [...ids.filter(id => fixos.has(id)), ...naOrdem, ...resto];
+        if (alvo.join() === ids.join()) { logEvent('raid-familia', { fase: 'ordem', motivo, jaEstava: true }); return true; }
+        for (const p of time) {
+            if (fixos.has(String(p.id))) continue;
+            sendGame({ type: 'poke-store', pokeId: p.id });
+            await raidWait(RAID_MOVE_GAP_MS);
+        }
+        for (const id of alvo) {
+            if (fixos.has(id)) continue;
+            sendGame({ type: 'poke-withdraw', pokeId: id });
+            await raidWait(RAID_MOVE_GAP_MS);
+        }
+        await raidFreshPokes();
+        list = raidPokes().list;
+        const depois = raidTeamOf(list);
+        const ok = depois.map(p => String(p.id)).join() === alvo.join();
+        logEvent('raid-familia', { fase: 'ordem', motivo, ok, time: depois.map(p => `${p.name} lv${p.level}${p.leader ? ' (líder)' : ''}`) });
+        return ok;
+    }
     async function raidFreshPokes() {
         const s0 = raidPokes().seq;
         sendGame({ type: 'pokes-get' });
@@ -7729,6 +7762,8 @@
             await raidFreshPokes();
             list = raidPokes().list;
         }
+        await raidOrderTeam(null, 'Raid');   // v3.65.3: depois do líder, do maior nível para o menor
+        list = raidPokes().list;
         logEvent('raid-familia', { fase: 'time-montado', time: raidTeamOf(list).map(p => `${p.name} lv${p.level}${p.leader ? ' (líder)' : ''}`), daFamilia: inTeam.length, deFora: ids.length - inTeam.length });
         return { ok: true };
     }
@@ -7746,6 +7781,7 @@
             let list = raidPokes().list;
             await raidSwapTeam(list, fam.team || [], (p) => fam.ids.includes(String(p.id)));   // v3.65.1: o time original entra antes de os da família saírem
             await raidFreshPokes();
+            await raidOrderTeam(fam.team || [], 'devolução');   // v3.65.3: a ordem original do time volta também
             list = raidPokes().list;
             const lider = list.find(p => p.team && p.leader);
             if (fam.leader && list.some(p => String(p?.id) === fam.leader && p.team) && String(lider?.id) !== fam.leader) {
