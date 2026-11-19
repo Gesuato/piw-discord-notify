@@ -88,21 +88,18 @@ async function enter(t, extra) {
         t2.api.onMessage({ type: 'raid-end', reason: 'wipe', damage: 1, hpLeft: 1, hpMax: 2 });
         await t2.state.drain(15e3);
         assert.deepStrictEqual(t2.state.switches.map(s => s.slug), ['rhyhorn'], 'menos de 15 s de estadia: volta');
-        // sem o tempo no HUD (não deveria acontecer): no máximo 5 reentradas
+        // sem o tempo no HUD: reentra sempre (sem limite); quem encerra é o jogo ("time")
         const t3 = loadRaidModule({}, { huntSlug: 'rhyhorn' });
         t3.api.onMessage(openState(t3.clock)); await t3.state.drain(t3.api.RAID_ENTER_DELAY_MS); t3.api.tick(); await t3.state.drain(10e3);
         t3.api.onField({ type: 'field' });
-        t3.api.onMessage({ type: 'raid-end', reason: 'wipe', damage: 1, hpLeft: 1, hpMax: 2 });
-        await t3.state.drain(10e3); t3.api.onField({ type: 'field' });
-        assert(t3.api.run() && t3.state.switches.length === 0, 'sem tempo conhecido: 1ª queda reentra');
-        for (let k = 2; k <= 5; k++) {   // sem tempo conhecido: até 5 reentradas (proteção interna)
+        for (let k = 1; k <= 12; k++) {
             t3.api.onMessage({ type: 'raid-end', reason: 'wipe', damage: 1, hpLeft: 1, hpMax: 2 });
             await t3.state.drain(10e3); t3.api.onField({ type: 'field' });
         }
-        assert(t3.api.run() && t3.state.switches.length === 0, 'sem tempo conhecido: reentrou 5 vezes');
-        t3.api.onMessage({ type: 'raid-end', reason: 'wipe', damage: 1, hpLeft: 1, hpMax: 2 });
+        assert(t3.api.run() && t3.state.switches.length === 0, 'sem tempo conhecido: reentrou 12 vezes, sem limite');
+        t3.api.onMessage({ type: 'raid-end', reason: 'time', damage: 1, hpLeft: 1, hpMax: 2 });
         await t3.state.drain(15e3);
-        assert.deepStrictEqual(t3.state.switches.map(s => s.slug), ['rhyhorn'], 'sem tempo conhecido: depois de 5 reentradas volta');
+        assert.deepStrictEqual(t3.state.switches.map(s => s.slug), ['rhyhorn'], 'o jogo disse "tempo acabou": volta');
         console.log('ok 2 - reentrada rápida enquanto houver tempo de arena');
     }
 

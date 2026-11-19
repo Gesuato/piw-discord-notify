@@ -565,7 +565,7 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   v3.66.0 (19/11/2026): tempo de arena CONFIRMADO = 5 min por dia (CabralJ `raid-end { reason:"time", stayedMs:300065 }`) e o relógio
   NÃO para fora da arena (`field.raid.endsAt` = fim da estadia, igual depois de sair e voltar; `raid.damage` salvo). O usuário escolheu
   "focar só no líder" (família desligada nos painéis) e o mínimo de tempo morto: `raidCanReenter` reentra enquanto `t.stayEndsAt` (do
-  HUD, persistido) − 15 s, sem limite de vezes (teto de segurança 40); sem o tempo no HUD, no máximo 5 (`RAID_REENTER_FALLBACK`, fixo). Queda →
+  HUD, persistido) − 15 s, sem limite de vezes; sem o tempo no HUD reentra sempre (v3.66.2: NENHUM limite de reentradas, pedido do usuário; quem encerra é o jogo). Queda →
   1 s, `set-city`, `joy-heal` (1,5 s), reentrada 1,5 s depois por `setTimeout(raidTick)` (sem esperar o tique) e a entrada não cura de
   novo (`raidHealedAt`); ~5 s fora da arena. Aviso `raid-fim` só no fim de verdade. Formatos CONFIRMADOS: `raid-end { reason, bossName,
   bossLevel, look, portrait, damage, totalDamage, rank, participants, hpLeft, hpMax, stayedMs, top[{ name, damage }] }`; `field.raid {

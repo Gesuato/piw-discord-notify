@@ -1679,7 +1679,7 @@ function loadRaidModule(cfg, init) {
             fam: () => raidFam, famStatus: raidFamStatus, keepsPoke: raidKeepsPoke, holding: raidHolding,
             tick: raidTick, onMessage: raidOnMessage, onField: raidOnField, onHuntChange: raidOnHuntChange, onSetCity: raidOnSetCity, onSocket: raidOnSocket,
             load: raidLoad, busy: raidBusy, busyReason: raidBusyReason, isSlug: raidIsSlug, status: raidStatus, lastLine: raidLastLine, now: raidNow,
-            blockedReason: raidBlockedReason, outgoingBlocked: raidOutgoingBlocked, huntFailed: raidHuntFailed, reenterMax: raidReenterMax,
+            blockedReason: raidBlockedReason, outgoingBlocked: raidOutgoingBlocked, huntFailed: raidHuntFailed,
             run: () => raidRun, srv: () => raidSrv, tried: () => raidTried, last: () => raidLast, loot: () => raidLootLast, doneDay: () => raidDoneDay, day: raidDay,
             hunt: () => huntSlug, setHunt: (s) => { huntSlug = s; raidOnHuntChange(s); }, leaveHunt: () => { huntSlug = null; },
             RAID_SLUG, RAID_TICK_MS, RAID_ENTER_DELAY_MS, RAID_CONFIRM_MS, RAID_GONE_MS, RAID_REENTER_DELAY_MS, RAID_REFUSED_RETRY_MS, RAID_MAX_FAILS, RAID_KEY, RAID_BLOCK_AFTER_MS,

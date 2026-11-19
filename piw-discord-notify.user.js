@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.66.1
+// @version      3.66.2
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.66.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.66.2';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -7526,7 +7526,7 @@
     // para sobreviver à recarga), sai da hunt (tela → cidade; `set-city` nós mesmos se ela não for), `joy-heal` (grátis; líder caído = a tela
     // não viaja), `hunt-resume` sintético para a TELA mandar o único enter-hunt (sem a hunt em 5 s mandamos nós). Enter-hunt repetido da
     // tela é barrado no socket (`raidOutgoingBlocked`, lição da invasão v3.51.1). `raid-end` → log, aviso, fecha a janela, `set-city`,
-    // `joy-heal` e: reentra (time caiu, servidor reiniciou ou saída sem frame) enquanto houver tempo de arena (v3.66.0; sem o tempo no HUD, até 5 vezes), ou volta com
+    // `joy-heal` e: reentra (time caiu, servidor reiniciou ou saída sem frame) enquanto houver tempo de arena (v3.66.0; sem limite de vezes), ou volta com
     // `switchHunt(from, 1, 'raid-volta')`. `time` marca o dia (Brasília) como feito; `defeated`/`ended` encerram esta Raid.
     // Enquanto entra/está dentro/volta, `invBusy()` também responde por ela (todas as rotas, viagem, recarga, parada na cidade, troca de
     // líder e cura já esperam pela invasão), e `raidIsSlug(slug)` tira a Raid de `lastRealHunt`, da retomada da recarga e da espera.
@@ -7558,8 +7558,6 @@
     const RAID_HEAL_FAST_MS = 1500;               // cura da reentrada (a da entrada normal espera RAID_HEAL_WAIT_MS)
     const RAID_HEALED_FRESH_MS = 15 * 1000;       // curou há menos que isto: a entrada não cura de novo
     const RAID_STAY_MIN_LEFT_MS = 15 * 1000;      // menos que isto de estadia: não vale reentrar
-    const RAID_REENTER_SAFETY = 40;               // teto de segurança de entradas por Raid com o tempo de arena conhecido
-    const RAID_REENTER_FALLBACK = 5;              // v3.66.1: sem o fim da estadia no HUD (não deveria acontecer), no máximo 5 reentradas
     const RAID_MODAL_POLL_MS = 500;
     const RAID_MODAL_WAIT_MS = 20 * 1000;
     const RAID_MODAL_HOLD_MS = 3000;
@@ -7857,7 +7855,6 @@
     }
 
     function raidOn(d) { return Boolean((d || cfg).raidEnabled); }
-    function raidReenterMax() { return RAID_REENTER_FALLBACK; }   // v3.66.1: não é mais opção do painel
     function raidIsSlug(slug) { return normalize(slug || '') === RAID_SLUG; }
     function raidNotify() { if (onRaidChange) { try { onRaidChange(); } catch { /* painel fechado */ } } }
     function raidWait(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -8288,9 +8285,10 @@
         if (t.done || raidDoneToday()) return false;
         if (typeof holdActive === 'function' && holdActive()) return false;
         if (!raidOn() || !raidActiveNow()) return false;
-        // v3.66.0: com o fim da estadia conhecido (HUD), reentra enquanto houver tempo; sem ele, no máximo RAID_REENTER_FALLBACK vezes
-        if (t.stayEndsAt) return Date.now() < t.stayEndsAt - RAID_STAY_MIN_LEFT_MS && t.entries < RAID_REENTER_SAFETY;
-        return t.entries <= raidReenterMax();   // 1ª entrada + N reentradas
+        // v3.66.2 (pedido do usuário): SEM limite de reentradas. Com o fim da estadia conhecido (HUD), reentra enquanto houver tempo;
+        // sem ele, reentra sempre — quem encerra é o jogo (`raid-end { reason:'time' }` marca o dia, recusa = espera 5 min).
+        if (t.stayEndsAt) return Date.now() < t.stayEndsAt - RAID_STAY_MIN_LEFT_MS;
+        return true;
     }
     // Fim da participação: espera a janela de resultado, garante a conta na cidade, cura e reentra ou volta para a hunt de origem.
     async function raidReturnFlow(r, reason) {
