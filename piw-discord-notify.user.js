@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.66.3
+// @version      3.66.4
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.66.3';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.66.4';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -8339,19 +8339,22 @@
         const who = playerName();
         const conta = who ? `**${who}**` : 'Sua conta';
         const vida = raidPct(r.hpLeft, r.hpMax);
-        const parte = r.hpMax > 0 ? r.damage / r.hpMax * 100 : 0;
+        // v3.66.4: `damage` = só a ÚLTIMA entrada; `totalDamage` = o dia inteiro, somando as entradas (CONFIRMADO na conta4, 19/11/2026
+        // 03:37–03:41Z: 236 969 → 662 252 → 1 031 598 → 1 446 075 em 4 entradas). O aviso mostra o total.
+        const total = r.totalDamage || r.damage;
+        const parte = r.hpMax > 0 ? total / r.hpMax * 100 : 0;
+        const entradas = raidTried[raidSrv?.key]?.entries || 0;
         postWebhook('alert', {
-            content: `🌑 ${conta}: Raid do ${r.bossName} — **${fmtNum(Math.round(r.damage))}** de dano${r.rank ? ` (#${fmtNum(r.rank)} de ${fmtNum(r.participants)})` : ''}`,
+            content: `🌑 ${conta}: Raid do ${r.bossName} — **${fmtNum(Math.round(total))}** de dano no dia${entradas > 1 ? ` (${entradas} entradas)` : ''}${r.rank ? ` (#${fmtNum(r.rank)} de ${fmtNum(r.participants)})` : ''}`,
             username: 'Poke Idle World',
             embeds: [{
                 title: `Raid Mundial: ${RAID_REASON_LABEL[r.reason] || r.reason || 'fim da participação'}`,
                 color: r.reason === 'defeated' ? 0x57f287 : r.reason === 'wipe' ? 0xed4245 : 0x9b59b6,
-                description: (who ? `Conta: ${who}\n` : '') + `Dano: ${fmtNum(Math.round(r.damage))} (${parte < 0.01 ? '< 0,01' : parte.toFixed(2).replace('.', ',')}% da vida)` +
+                description: (who ? `Conta: ${who}\n` : '') + `Dano no dia: ${fmtNum(Math.round(total))} (${parte < 0.01 ? '< 0,01' : parte.toFixed(2).replace('.', ',')}% da vida)${total !== r.damage ? ` · última entrada ${fmtNum(Math.round(r.damage))}` : ''}${entradas > 1 ? ` · ${entradas} entradas` : ''}` +
                     `${r.rank ? ` · #${fmtNum(r.rank)} de ${fmtNum(r.participants)} treinadores` : ''}\nTempo na arena: ${raidFmt(r.stayedMs)}${vida != null ? ` · vida restante do boss ${vida}%` : ''}` +
-                    `${r.totalDamage ? `\nDano total na Raid: ${fmtNum(Math.round(r.totalDamage))}` : ''}` +
                     `${r.reason === 'defeated' ? '\n⏳ A recompensa chega quando os outros jogadores terminarem.' : r.reason === 'ended' ? '\nSem recompensa nesta Raid.' : ''}`,
             }],
-        }, { evento: 'raid-fim', motivo: r.reason, dano: r.damage });
+        }, { evento: 'raid-fim', motivo: r.reason, dano: total, ultimaEntrada: r.damage });
     }
     // Status para o painel.
     function raidStatus(d) {
@@ -8367,7 +8370,7 @@
         }
         const s = raidSrv;
         if (!s) return 'estado da Raid ainda não lido (o jogo avisa quando abrir)';
-        if (!s.active) return `nenhuma Raid aberta agora${raidLast ? ` · última: ${RAID_REASON_LABEL[raidLast.reason] || raidLast.reason || 'fim'}, ${fmtNum(Math.round(raidLast.damage))} de dano` : ''}`;
+        if (!s.active) return `nenhuma Raid aberta agora${raidLast ? ` · última: ${RAID_REASON_LABEL[raidLast.reason] || raidLast.reason || 'fim'}, ${fmtNum(Math.round(raidLast.totalDamage || raidLast.damage))} de dano no dia` : ''}`;
         const p = raidPct(s.hpLeft, s.hpMax);
         const base = `Raid aberta: ${s.bossName}${s.bossLevel ? ` Lv ${s.bossLevel}` : ''}${p != null ? `, ${p}% de vida` : ''}${s.endsAt ? `, termina ${raidQuando(s.endsAt)} (${raidFmt(s.endsAt - now)})` : ''}${s.participants != null ? `, ${s.participants} jogadores` : ''}`;
         const t = raidTried[s.key];
@@ -8385,7 +8388,7 @@
     }
     function raidLastLine() {
         const parts = [];
-        if (raidLast) parts.push(`Última participação (${raidHora(raidLast.at)}): ${RAID_REASON_LABEL[raidLast.reason] || raidLast.reason || 'fim'} · ${fmtNum(Math.round(raidLast.damage))} de dano${raidLast.rank ? ` · #${raidLast.rank} de ${raidLast.participants}` : ''} · ${raidFmt(raidLast.stayedMs)} na arena`);
+        if (raidLast) parts.push(`Última participação (${raidHora(raidLast.at)}): ${RAID_REASON_LABEL[raidLast.reason] || raidLast.reason || 'fim'} · ${fmtNum(Math.round(raidLast.totalDamage || raidLast.damage))} de dano no dia${raidLast.rank ? ` · #${raidLast.rank} de ${raidLast.participants}` : ''} · ${raidFmt(raidLast.stayedMs)} na arena`);
         if (raidLootLast) parts.push(`Recompensa (${raidHora(raidLootLast.at)}): ${raidLootLast.items.map(i => `${fmtNum(i.qty)}× ${i.name}`).join(', ') || 'sem itens'}${raidLootLast.buff ? ` + ${raidLootLast.buff.pct}% XP por ${raidLootLast.buff.hours} h` : ''}`);
         return parts.join(' · ') || 'Nenhuma participação vista nesta carga.';
     }

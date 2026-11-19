@@ -41,7 +41,7 @@ async function enter(t, extra) {
         // a tela reenvia o enter-hunt: barrado
         assert.strictEqual(api.telaEnter(), false, 'reenvio da tela barrado');
         assert.strictEqual(state.blocked.length, 1);
-        api.onMessage({ type: 'raid-end', reason: 'time', bossName: 'Darkrai', damage: 1234567, totalDamage: 5e8, hpLeft: 5e8, hpMax: 1e9, rank: 7, participants: 25, stayedMs: 30 * MIN });
+        api.onMessage({ type: 'raid-end', reason: 'time', bossName: 'Darkrai', damage: 1234567, totalDamage: 1234567, hpLeft: 5e8, hpMax: 1e9, rank: 7, participants: 25, stayedMs: 30 * MIN });
         await state.drain(15e3);
         assert.deepStrictEqual(state.switches, [{ slug: 'rhyhorn', tentativa: 1, origem: 'raid-volta' }], 'voltou para a hunt de origem');
         assert(!api.run(), 'participação encerrada');
@@ -83,10 +83,12 @@ async function enter(t, extra) {
         assert(segurou, 'sem intervalo solto entre a queda e a reentrada');
         api.onField(hud(clock));
         assert.strictEqual(state.hooks.filter(h => h.meta?.evento === 'raid-fim').length, 0, 'sem aviso a cada queda');
-        api.onMessage({ type: 'raid-end', reason: 'time', damage: 9000, hpLeft: 9e8, hpMax: 1e9, stayedMs: 5 * MIN });
+        api.onMessage({ type: 'raid-end', reason: 'time', damage: 2000, totalDamage: 19000, hpLeft: 9e8, hpMax: 1e9, stayedMs: 5 * MIN });
         await state.drain(15e3);
         assert.deepStrictEqual(state.switches.map(s => s.slug), ['rhyhorn'], 'tempo acabou: volta');
         assert.strictEqual(state.hooks.filter(h => h.meta?.evento === 'raid-fim').length, 1, 'um aviso no fim');
+        const fim = state.hooks.find(h => h.meta?.evento === 'raid-fim');
+        assert(fim.content.includes('**19.000** de dano no dia') && fim.desc.includes('última entrada 2.000'), fim.content + ' | ' + fim.desc);
         // estadia quase no fim: não reentra
         const t2 = loadRaidModule({}, { huntSlug: 'rhyhorn' });
         await enter(t2);

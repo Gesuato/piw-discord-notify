@@ -568,7 +568,9 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   HUD, persistido) − 15 s, sem limite de vezes; sem o tempo no HUD reentra sempre (v3.66.2: NENHUM limite de reentradas, pedido do usuário; quem encerra é o jogo). Queda →
   1 s, `set-city`, `joy-heal` (1,5 s), reentrada 1,5 s depois por `setTimeout(raidTick)` (sem esperar o tique) e a entrada não cura de
   novo (`raidHealedAt`); ~5 s fora da arena. Aviso `raid-fim` só no fim de verdade. v3.66.3 (outro PC: time caiu e a Daily Kill sozinha levou a conta em vez da reentrada): `raidReenterHoldUntil` (45 s)
-  faz `raidHolding()` segurar a conta entre o fim da participação e a reentrada (antes ficava solta ~1,5 s; antes da v3.66.0, 30–60 s). Formatos CONFIRMADOS: `raid-end { reason, bossName,
+  faz `raidHolding()` segurar a conta entre o fim da participação e a reentrada (antes ficava solta ~1,5 s; antes da v3.66.0, 30–60 s). v3.66.4: `raid-end.damage` = só a última entrada, `totalDamage` = o dia
+  inteiro somando as entradas (CONFIRMADO na conta4 em 19/11/2026: 4 entradas, 3 quedas, 1.446.075 no total, 4–5 s fora da arena
+  por queda); o aviso mostra o total. Formatos CONFIRMADOS: `raid-end { reason, bossName,
   bossLevel, look, portrait, damage, totalDamage, rank, participants, hpLeft, hpMax, stayedMs, top[{ name, damage }] }`; `field.raid {
   hpLeft, hpMax, endsAt, raidEndsAt, players, instance, damage, asleepUntil, bossName, bossLevel, look, portrait }`.
   v3.65.0 (pedido do usuário em 19/11/2026: "sequencial, 1 conta de cada vez da família, usando os Pokémon da família; quando acabar
