@@ -485,7 +485,8 @@ Cerulean; até 30 jogadores por instância. Quem abre e fecha é a administraç�
 `stayMs` = tempo máximo por jogador), não um relógio fixo.
 
 - Estado: a tela manda `raid-state-get` ao montar (componente `dN`); servidor → `raid-state { active, endsAt, bossName, bossLevel, hpLeft,
-  hpMax, portrait, ... }`. O botão RAID (`.raid-cta`) só aparece numa cidade, com `active` e `endsAt` no futuro.
+  hpMax, portrait, ... }` (CONFIRMADO no log em 19/11/2026 02:10Z: `{ active, id, bossName, bossLevel, look, portrait, startedAt, endsAt, hpMax, hpLeft,
+  participants }`; a 1ª Raid: 24 h, Lv 25, 350 M de vida, 63 jogadores na abertura). O botão RAID (`.raid-cta`) só aparece numa cidade, com `active` e `endsAt` no futuro.
 - Entrar: o clique (`i8`) recusa com o líder em hp 0 e só viaja para o mapa `raid_cerulean` (`RAID_SLUG`, desenho de `cerulean_novo`); o
   componente da hunt manda `enter-hunt { slug:'raid_cerulean' }`. Recusa: `raid-refused { message }` (a tela mostra em aviso "Raid").
 - Lá dentro: `field-init { raid }` e `field` com `raid { bossName, bossLevel, hpLeft, hpMax, endsAt (fim da estadia do jogador), raidEndsAt,

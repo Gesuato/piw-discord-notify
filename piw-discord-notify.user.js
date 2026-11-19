@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.64.0
+// @version      3.64.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.64.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.64.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -7498,7 +7498,8 @@
     // Protocolo em docs/mensagens-do-jogo.md → "Raid Mundial". Formatos ainda NÃO vistos no log: `raid-campos` registra as chaves do 1º
     // frame de cada tipo.
     //   - Estado: a tela manda `raid-state-get` ao montar; o servidor responde (e avisa a todos) `raid-state { active, endsAt, bossName,
-    //     bossLevel, hpLeft, hpMax, portrait, ... }`. Quem abre e fecha a Raid é a administração (painel admin: duração em minutos), não um
+    //     bossLevel, hpLeft, hpMax, portrait, ... }` (CONFIRMADO no log em 19/11/2026 02:10Z, 4 contas: também `id`, `look`, `startedAt`,
+    //     `participants`; a 1ª Raid abriu às 23:10 BRT com 24 h de duração, Darkrai Lv 25, 350 M de vida). Quem abre e fecha a Raid é a administração (painel admin: duração em minutos), não um
     //     relógio fixo — por isso o script segue SÓ o `raid-state`.
     //   - Entrar = o botão RAID da cidade (só aparece numa cidade, com `active` e `endsAt` no futuro; recusa viajar com o líder caído): a
     //     tela viaja para o mapa `raid_cerulean` e o componente da hunt manda `enter-hunt { slug:'raid_cerulean' }` — a Raid é uma hunt de
@@ -7586,6 +7587,12 @@
         return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`;
     }
     function raidHora(ts) { return new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }); }
+    // v3.64.1: a 1ª Raid (19/11/2026 02:10Z) dura 24 h — só a hora ("21:10") parecia que acabava já; outro dia leva a data.
+    function raidQuando(ts) {
+        const d = new Date(ts), hoje = new Date();
+        if (d.toDateString() === hoje.toDateString()) return raidHora(ts);
+        return `${d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })} ${raidHora(ts)}`;
+    }
     function raidDay(ts) { return new Date((ts ?? Date.now()) - RAID_BRT_OFFSET_MS).toISOString().slice(0, 10); }
     function raidDoneToday() { return raidDoneDay === raidDay(); }
     function raidPct(left, max) { const m = Number(max) || 0; return m > 0 ? Math.max(0, Math.min(100, Math.round((Number(left) || 0) / m * 100))) : null; }
@@ -7871,7 +7878,7 @@
         const marca = `${key}:${active}`;
         if (raidStateLoggedKey !== marca) {
             raidStateLoggedKey = marca;
-            logEvent('raid-estado', { ativa: active, raid: key, boss: raidSrv.bossName, nivel: raidSrv.bossLevel, vida: raidPct(raidSrv.hpLeft, raidSrv.hpMax), acabaAs: endsAt ? raidHora(endsAt) : null, diaFeito: raidDoneToday() });
+            logEvent('raid-estado', { ativa: active, raid: key, boss: raidSrv.bossName, nivel: raidSrv.bossLevel, vida: raidPct(raidSrv.hpLeft, raidSrv.hpMax), acabaAs: endsAt ? raidQuando(endsAt) : null, participantes: raidSrv.participants, diaFeito: raidDoneToday() });
         }
         raidNotify();
     }
@@ -8038,7 +8045,7 @@
         if (!s) return 'estado da Raid ainda não lido (o jogo avisa quando abrir)';
         if (!s.active) return `nenhuma Raid aberta agora${raidLast ? ` · última: ${RAID_REASON_LABEL[raidLast.reason] || raidLast.reason || 'fim'}, ${fmtNum(Math.round(raidLast.damage))} de dano` : ''}`;
         const p = raidPct(s.hpLeft, s.hpMax);
-        const base = `Raid aberta: ${s.bossName}${s.bossLevel ? ` Lv ${s.bossLevel}` : ''}${p != null ? `, ${p}% de vida` : ''}${s.endsAt ? `, termina às ${raidHora(s.endsAt)} (${raidFmt(s.endsAt - now)})` : ''}`;
+        const base = `Raid aberta: ${s.bossName}${s.bossLevel ? ` Lv ${s.bossLevel}` : ''}${p != null ? `, ${p}% de vida` : ''}${s.endsAt ? `, termina ${raidQuando(s.endsAt)} (${raidFmt(s.endsAt - now)})` : ''}${s.participants != null ? `, ${s.participants} jogadores` : ''}`;
         const t = raidTried[s.key];
         let extra = '';
         if (raidDoneToday()) extra = 'tempo na arena de hoje esgotado (volta amanhã)';

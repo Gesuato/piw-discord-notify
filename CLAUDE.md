@@ -549,8 +549,8 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   "Esperar na cidade" recusa. Logs `auto-boss-bloco`, `auto-boss-volta`; o aviso do fim diz "em N blocos". Caso 14 do teste (harness:
   `bossRepeat`/`bossReturnHunt` desligados por padrão, `init.idleSlug`, `state.switches`).
 - Raid Mundial (v3.64.0, aba própria 🌑 Raid (`TABS` id `raid`), `cfg.raidEnabled`/`raidReenterMax` (padrão 3)/`raidAlerts`; módulo
-  `// ---- Raid Mundial` antes da Invasão Rocket; anúncio e bundle de 18/11/2026, `docs/mensagens-do-jogo.md` → "Raid Mundial"; formatos
-  ainda NÃO vistos no log — `raid-campos` registra as chaves): Darkrai em Cerulean, aberta/fechada pela administração (o script segue SÓ o
+  `// ---- Raid Mundial` antes da Invasão Rocket; anúncio e bundle de 18/11/2026, `docs/mensagens-do-jogo.md` → "Raid Mundial"; `raid-state` CONFIRMADO no log em 19/11/2026 02:10Z (`id`,
+  `startedAt`, `endsAt` 24 h depois, `participants`); os outros formatos ainda NÃO vistos no log — `raid-campos` registra as chaves): Darkrai em Cerulean, aberta/fechada pela administração (o script segue SÓ o
   `raid-state`, resposta ao `raid-state-get`). A Raid é a hunt de slug fixo `raid_cerulean` (botão RAID da cidade = só viaja + `enter-hunt`).
   `raidTick` (30 s): aberta há 20 s com > 2 min pela frente, dia não esgotado, `raidBlockedReason()` nulo (inclui `invRunActive()`) →
   `raidEnterFlow` (leave-hunt + `nudgeClientToCity`, `joy-heal`, `hunt-resume` sintético para a TELA mandar o único enter-hunt; sem a hunt em
