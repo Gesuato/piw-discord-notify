@@ -1661,14 +1661,14 @@ function loadRaidModule(cfg, init) {
         familyDeposit: (id) => { state.famActions.push({ dir: 'deposit', capturedId: id }); const i = game.pokes.findIndex(p => String(p.id) === String(id) && !p.team); if (i < 0) return Promise.resolve({ ok: false, motivo: 'não está no box' }); game.family.push(game.pokes.splice(i, 1)[0]); game.famAt = clock.now; return Promise.resolve({ ok: true }); },
     };
     const game = Object.assign({ pokes: [], family: [], seq: 1, famAt: 0 }, JSON.parse(JSON.stringify(init.game || {})));
-    state.game = game; state.famActions = [];
+    state.game = game; state.famActions = []; state.gameErrors = [];
     const renumber = () => { game.pokes.filter(p => p.team).sort((a, b) => (a.slot ?? 99) - (b.slot ?? 99)).forEach((p, i) => { p.slot = i; }); if (!game.pokes.some(p => p.team && p.leader)) { const f = game.pokes.find(p => p.team && p.slot === 0); if (f) f.leader = true; } };
     const baseSend = ctx.sendGame;
     ctx.sendGame = (obj) => {
         const t = obj && obj.type;
         if (t === 'pokes-get') { game.seq++; }
         else if (t === 'family-get') { game.famAt = clock.now; }
-        else if (t === 'poke-store') { const p = game.pokes.find(x => String(x.id) === String(obj.pokeId)); if (p && p.team && !p.starter) { p.team = false; p.leader = false; p.slot = null; renumber(); } }
+        else if (t === 'poke-store') { const p = game.pokes.find(x => String(x.id) === String(obj.pokeId)); if (p && p.team && !p.starter && game.pokes.filter(x => x.team).length <= 1) { state.gameErrors.push('Você precisa manter ao menos 1 Pokémon na equipe.'); } else if (p && p.team && !p.starter) { p.team = false; p.leader = false; p.slot = null; renumber(); } }
         else if (t === 'poke-withdraw') { const p = game.pokes.find(x => String(x.id) === String(obj.pokeId)); if (p && !p.team && game.pokes.filter(x => x.team).length < 6) { p.team = true; p.slot = 99; renumber(); } }
         else if (t === 'poke-summon') { const p = game.pokes.find(x => String(x.id) === String(obj.pokeId)); if (p && p.team) { for (const x of game.pokes) x.leader = false; p.leader = true; } }
         return baseSend(obj);

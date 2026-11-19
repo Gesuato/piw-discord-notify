@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.65.0
+// @version      3.65.1
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.65.0';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.65.1';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -7621,6 +7621,32 @@
     function raidTeamOf(list) { return list.filter(p => p && p.team).sort((a, b) => (Number(a.slot) || 0) - (Number(b.slot) || 0)); }
     function raidDepotPokes() { return typeof familyDepotPokes === 'function' ? familyDepotPokes() : []; }
     function raidDepotAt() { return typeof familyDepotAt === 'function' ? familyDepotAt() : 0; }
+    // Põe `entram` (em ordem) no time e tira quem `sai(p)` diz, sem nunca deixar o time vazio: com o time cheio, sai um antes de cada
+    // entrada; o resto sai no fim. Movimentos locais (o servidor manda um frame `pokes` por movimento; quem confere é o chamador).
+    async function raidSwapTeam(list, entram, sai) {
+        const time = raidTeamOf(list).map(p => Object.assign({}, p));
+        const saindo = time.filter(p => sai(p));
+        for (const id of entram) {
+            const p = list.find(x => String(x?.id) === String(id));
+            if (!p || time.some(x => String(x.id) === String(id))) continue;
+            if (time.length >= 6) {
+                const out = saindo.shift();
+                if (!out) break;
+                sendGame({ type: 'poke-store', pokeId: out.id });
+                time.splice(time.findIndex(x => x.id === out.id), 1);
+                await raidWait(RAID_MOVE_GAP_MS);
+            }
+            sendGame({ type: 'poke-withdraw', pokeId: p.id });
+            time.push(p);
+            await raidWait(RAID_MOVE_GAP_MS);
+        }
+        for (const out of saindo) {
+            if (!time.some(x => x.id === out.id) || time.length <= 1) continue;
+            sendGame({ type: 'poke-store', pokeId: out.id });
+            time.splice(time.findIndex(x => x.id === out.id), 1);
+            await raidWait(RAID_MOVE_GAP_MS);
+        }
+    }
     async function raidFreshPokes() {
         const s0 = raidPokes().seq;
         sendGame({ type: 'pokes-get' });
@@ -7684,21 +7710,10 @@
         r.fase = 'montando o time com os Pokémon da família'; raidNotify();
         await raidFreshPokes();
         list = raidPokes().list;
-        for (const p of raidTeamOf(list)) {
-            if (p.starter || ids.includes(String(p.id))) continue;   // o inicial não sai do time
-            sendGame({ type: 'poke-store', pokeId: p.id });
-            await raidWait(RAID_MOVE_GAP_MS);
-        }
-        await raidFreshPokes();
-        list = raidPokes().list;
-        let noTime = raidTeamOf(list).length;
-        for (const id of ids) {
-            const p = list.find(x => String(x?.id) === id);
-            if (!p || p.team || noTime >= 6) continue;
-            sendGame({ type: 'poke-withdraw', pokeId: id });
-            noTime++;
-            await raidWait(RAID_MOVE_GAP_MS);
-        }
+        // v3.65.1 (CabralJ, 19/11/2026 03:08Z): guardar o time ANTES dava "Você precisa manter ao menos 1 Pokémon na equipe" (time de 1)
+        // e o original ficava no time. Agora os da família entram primeiro (com o time cheio, sai um original para abrir a vaga) e só
+        // depois saem os originais que sobraram.
+        await raidSwapTeam(list, ids, (p) => !p.starter && !ids.includes(String(p.id)));
         await raidFreshPokes();
         list = raidPokes().list;
         const inTeam = ids.filter(id => list.some(p => String(p?.id) === id && p.team));
@@ -7725,20 +7740,7 @@
             logEvent('raid-familia', { fase: 'devolvendo', motivo, ids: fam.ids.length });
             await raidFreshPokes();
             let list = raidPokes().list;
-            for (const id of fam.ids) {
-                const p = list.find(x => String(x?.id) === id);
-                if (p?.team) { sendGame({ type: 'poke-store', pokeId: id }); await raidWait(RAID_MOVE_GAP_MS); }
-            }
-            await raidFreshPokes();
-            list = raidPokes().list;
-            let noTime = raidTeamOf(list).length;
-            for (const id of fam.team || []) {
-                const p = list.find(x => String(x?.id) === id);
-                if (!p || p.team || noTime >= 6) continue;
-                sendGame({ type: 'poke-withdraw', pokeId: id });
-                noTime++;
-                await raidWait(RAID_MOVE_GAP_MS);
-            }
+            await raidSwapTeam(list, fam.team || [], (p) => fam.ids.includes(String(p.id)));   // v3.65.1: o time original entra antes de os da família saírem
             await raidFreshPokes();
             list = raidPokes().list;
             const lider = list.find(p => p.team && p.leader);
@@ -8565,7 +8567,7 @@
         const at = Number(rec.at) || Date.now();
         invRun = {
             from: rec.from ? String(rec.from) : null, origem: 'lembrado', at, loadedAt: Date.now(), windowStart: Number(rec.windowStart) || invWindowStart(at),
-            endsAt: Number(rec.endsAt) || invWindowAt(at).endsAt, fase: 'dentro', entered: true, enteredAt: Number(rec.enteredAt) || at, sentAt: at, fieldSeen: false, lastFieldAt: 0,
+            endsAt: Number(rec.endsAt) || invWindowAt(at).endsAt, fase: 'dentro', entered: true, enteredAt: Number(rec.enteredAt) || at, sentAt: 0, fieldSeen: false, lastFieldAt: 0,
             wave: Math.max(0, Number(rec.wave) || 0), kills: Math.max(0, Number(rec.kills) || 0), ended: false, result: null,
         };
         invTried[invRun.windowStart] = 'entrou';
@@ -8738,7 +8740,7 @@
             invRun = { from: invFromSlug(), origem: 'tela', at: now, windowStart: w.startedAt, endsAt: w.endsAt, fase: 'dentro', entered: true, enteredAt: now, sentAt: now, fieldSeen: false, refusedAt: 0, lastFieldAt: now, wave: 0, kills: 0, ended: false, result: null };
             invTried[w.startedAt] = 'entrou (tela)';
             logEvent('invasao-entrada', { fase: 'tela', from: invRun.from, janela: `${invHourOf(w.startedAt)}h`, acabaEm: invFmt(w.endsAt - now) });
-        } else if (!invRun.entered || invRun.fase !== 'dentro') {
+        } else if (!invRun.entered || invRun.fase !== 'dentro' || !invRun.sentAt) {   // v3.65.1: lembrada (sentAt 0) marca o envio da tela nova
             invRun.entered = true; invRun.enteredAt = now; invRun.sentAt = invRun.sentAt || now; invRun.lastFieldAt = now; invRun.fase = 'dentro';
             logEvent('invasao-entrada', { fase: 'dentro', origem: invRun.origem, segundos: Math.round((now - invRun.at) / 1000), from: invRun.from });
             if (invJennyOn()) invJennyAt = 0;   // a rodada vai render Plans: relê a Jenny depois
