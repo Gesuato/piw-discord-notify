@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.64.1
+// @version      3.64.2
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.64.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.64.2';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -7609,9 +7609,12 @@
         if (!s || !s.active) return false;
         return !s.endsAt || s.endsAt - now > RAID_MIN_LEFT_MS;
     }
-    function raidBusy() { return Boolean(raidRun); }
+    // v3.64.2 (conta1, 19/11/2026 02:15Z): participação LEMBRADA da carga anterior sem nenhum frame da Raid nesta carga não segura nada —
+    // ela segurava a cura ("líder com hp 0", a tela não viaja assim) e o filtro barrava o enter-hunt da tela nova: conta presa na cidade.
+    function raidHolding() { return Boolean(raidRun) && !(raidRun.origem === 'lembrado' && !raidRun.fieldSeen); }
+    function raidBusy() { return raidHolding(); }
     function raidBusyReason() {
-        if (!raidRun) return null;
+        if (!raidHolding()) return null;
         if (raidRun.fase === 'dentro') {
             const p = raidPct(raidRun.hud?.hpLeft, raidRun.hud?.hpMax);
             return `Raid do ${raidRun.hud?.bossName || raidSrv?.bossName || 'Darkrai'} em andamento${p != null ? ` (${p}% de vida)` : ''}`;
@@ -7625,7 +7628,8 @@
         const now = Date.now();
         const r = raidRun;
         let motivo = null;
-        if (r && !r.ended && r.sentAt) motivo = r.fieldSeen ? 'participação em andamento' : 'enter-hunt já mandado, esperando o 1º frame';
+        if (r && r.origem === 'lembrado' && !r.fieldSeen) motivo = null;   // v3.64.2: a tela nova manda o próprio enter-hunt
+        else if (r && !r.ended && r.sentAt) motivo = r.fieldSeen ? 'participação em andamento' : 'enter-hunt já mandado, esperando o 1º frame';
         else if (r && r.ended) motivo = 'participação encerrada, voltando';
         else if (!r && raidEndedAt && now - raidEndedAt < RAID_BLOCK_AFTER_MS) motivo = `a participação acabou há menos de ${Math.round(RAID_BLOCK_AFTER_MS / 1000)} s`;
         if (!motivo) return false;
@@ -7668,7 +7672,7 @@
         const at = Number(run.at) || Date.now();
         raidRun = {
             key: String(run.key || 'raid'), from: run.from ? String(run.from) : null, origem: 'lembrado', at, loadedAt: Date.now(), fase: 'dentro', entered: true,
-            enteredAt: Number(run.enteredAt) || at, sentAt: at, fieldSeen: false, lastFieldAt: 0, hud: null, ended: false, result: null,
+            enteredAt: Number(run.enteredAt) || at, sentAt: 0, fieldSeen: false, lastFieldAt: 0, hud: null, ended: false, result: null,
         };
         logEvent('raid-lembrada', { from: raidRun.from, idadeMin: Math.round(idade / 60000), raid: raidRun.key });
         raidNotify();
@@ -7833,7 +7837,7 @@
             raidRun = { key, from: raidFromSlug(), origem: 'tela', at: now, fase: 'dentro', entered: true, enteredAt: now, sentAt: now, fieldSeen: false, lastFieldAt: now, hud: null, ended: false, result: null };
             t.from = t.from || raidRun.from;
             logEvent('raid-entrada', { fase: 'tela', from: raidRun.from, entrada: t.entries, raid: key });
-        } else if (!raidRun.entered || raidRun.fase !== 'dentro') {
+        } else if (!raidRun.entered || raidRun.fase !== 'dentro' || !raidRun.sentAt) {   // v3.64.2: lembrada (sentAt 0) também marca o envio da tela nova
             raidRun.entered = true; raidRun.enteredAt = now; raidRun.sentAt = raidRun.sentAt || now; raidRun.lastFieldAt = now; raidRun.fase = 'dentro';
             logEvent('raid-entrada', { fase: 'dentro', origem: raidRun.origem, segundos: Math.round((now - raidRun.at) / 1000), from: raidRun.from });
         }

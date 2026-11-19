@@ -206,5 +206,28 @@ async function enter(t, extra) {
         console.log('ok 9 - entrada sem frame e janela de resultado');
     }
 
+    // 10. (conta1, 19/11/2026 02:15Z) recarga com a participação lembrada: não segura a cura nem barra o enter-hunt da tela nova
+    {
+        const t = loadRaidModule({ raidEnabled: false }, { huntSlug: 'banette', lastRealHunt: 'banette' });
+        t.api.onMessage(openState(t.clock));
+        t.api.telaEnter(); t.api.onField(hud(t.clock));
+        const t2 = loadRaidModule({ raidEnabled: false }, { huntSlug: null, lastRealHunt: 'banette', store: t.state.store, now: t.clock.now + 60e3 });
+        t2.api.load();
+        assert(t2.api.run() && t2.api.run().origem === 'lembrado', 'lembrada');
+        assert(!t2.api.busy() && !t2.api.busyReason(), 'lembrada sem frame não segura cura/rotas');
+        assert.strictEqual(t2.api.telaEnter(), true, 'enter-hunt da tela nova passa');
+        assert.strictEqual(t2.state.blocked.length, 0);
+        t2.api.onField(hud(t2.clock));
+        assert(t2.api.busy(), 'com frame da Raid volta a segurar');
+        assert.strictEqual(t2.api.telaEnter(), false, 'reenvio depois do frame é barrado');
+        // sem a tela entrar: 15 s depois volta para a hunt (curando antes)
+        const t3 = loadRaidModule({ raidEnabled: false }, { huntSlug: null, lastRealHunt: 'banette', store: t.state.store, now: t.clock.now + 60e3 });
+        t3.api.load();
+        await t3.state.drain(20e3); t3.api.tick(); await t3.state.drain(10e3);
+        assert(t3.state.sent.some(m => m.type === 'joy-heal'), 'curou');
+        assert.deepStrictEqual(t3.state.switches.map(s => s.slug), ['banette'], 'voltou para banette');
+        console.log('ok 10 - recarga com participação lembrada');
+    }
+
     console.log('raid.test: tudo ok');
 })().catch(e => { console.error(e); process.exit(1); });
