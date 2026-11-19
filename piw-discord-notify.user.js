@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.63.1
+// @version      3.64.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.63.1';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.64.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -106,6 +106,9 @@
         invJennyEnabled: false, // ...trocar Rocket Plans na Officer Jenny (Shopping) na viagem à cidade
         invJennyOffer: '',      // ...chave da oferta escolhida (lida da janela da Jenny: ball, token, outfit, medal...)
         invJennyKeep: 0,        // ...Plans que ficam guardados (nunca troca abaixo disto)
+        raidEnabled: false,     // v3.64.0 Raid Mundial (Darkrai em Cerulean): entrar sozinho enquanto a Raid estiver aberta e voltar para a hunt
+        raidReenterMax: 3,      // ...reentradas por Raid quando o time cai ou o servidor reinicia (0 = entra uma vez só)
+        raidAlerts: true,       // ...avisa no canal de Alertas (fim da participação com dano e posição, recompensa, conquista, entrada que falhou)
         bossResumeEnabled: true, // v3.43.0 Auto Boss do jogo: retomar quando parar sem terminar (erro, saiu da arena, reconexão)
         bossResumeOnLoss: false, // ...também depois de derrota (cura na Joy antes; cada derrota perde 1 token)
         bossAlerts: true,       // ...avisar no canal de Alertas (retomada, desistência, fim)
@@ -761,7 +764,7 @@
         origem = origem || 'rota';
         if (typeof holdActive === 'function' && holdActive()) { holdBlocked(slug, origem); return false; }   // v3.44.0: espera na cidade pelo botão do painel: nada entra em hunt
         if (huntSwitch?.timer) clearTimeout(huntSwitch.timer);
-        if (origem !== 'recarga' && origem !== 'viagem' && origem !== 'cura' && origem !== 'cidade' && origem !== 'invasao' && origem !== 'invasao-volta') sendGame({ type: 'leave-hunt' }); // recarga/viagem/cura/cidade: a conta já está na cidade
+        if (origem !== 'recarga' && origem !== 'viagem' && origem !== 'cura' && origem !== 'cidade' && origem !== 'invasao' && origem !== 'invasao-volta' && origem !== 'raid-volta') sendGame({ type: 'leave-hunt' }); // recarga/viagem/cura/cidade: a conta já está na cidade
         huntSwitch = { slug, at: 0, tries: tentativa, timer: null, origem };
         huntSwitch.timer = setTimeout(() => {
             if (!huntSwitch || huntSwitch.slug !== slug) return;
@@ -801,6 +804,7 @@
             cura: { verbo: 'voltar para a', quando: 'depois da cura na Nurse Joy', titulo: `Cura: volta para ${slug} não confirmou`, dica: 'A conta está curada na cidade: entre na hunt na mão (se o time caiu de novo na entrada, a hunt pode estar forte demais).' },
             cidade: { verbo: 'voltar para a', quando: 'conta parada na cidade', titulo: `Parada na cidade: volta para ${slug} não confirmou`, dica: 'Tento de novo depois de outro período parado (no máximo 3x em 1 h); ou entre na hunt na mão.' },
             'invasao-volta': { verbo: 'voltar para a', quando: 'depois da Invasão Rocket', titulo: `Invasão Rocket: volta para ${slug} não confirmou`, dica: 'A conta deve estar em Cerulean: entre na hunt na mão (a parada na cidade também tenta).' },
+            'raid-volta': { verbo: 'voltar para a', quando: 'depois da Raid Mundial', titulo: `Raid: volta para ${slug} não confirmou`, dica: 'A conta deve estar em Cerulean: entre na hunt na mão (a parada na cidade também tenta).' },
             viagem: { verbo: 'voltar para a', quando: 'depois da viagem à cidade', titulo: `Viagem: volta para ${slug} não confirmou`, dica: 'A conta deve estar na cidade: entre na hunt na mão.' },
         }[origem] || { verbo: 'entrar na', quando: origem, titulo: `Entrada em ${slug} não confirmou`, dica: 'Entre na hunt na mão.' };
         postWebhook(origem === 'rota' ? 'level' : 'alert', {
@@ -819,6 +823,7 @@
         if (origem === 'guild') guildHuntFailed(slug);
         if (origem === 'farm') farmHuntFailed(slug);
         if (origem === 'invasao-volta') invHuntFailed(slug, origem);
+        if (origem === 'raid-volta') raidHuntFailed(slug);   // v3.64.0
     }
 
     function handlePokeXp(message) {
@@ -1678,6 +1683,7 @@
         if (novo === huntSlug) return;
         huntSlug = novo;
         noteHuntChange(novo);
+        raidOnHuntChange(novo);   // v3.64.0: a hunt virou a Raid Mundial (antes das rotas, como a invasão)
         invOnHuntChange(novo);    // v3.50.0: a hunt virou a Invasão Rocket (nossa entrada confirmando ou botão INVASÃO da tela) — ANTES das rotas, para `invBusy()` já segurar a reentrada delas
         catchOnHuntChange(novo);
         guildOnHuntChange(novo);
@@ -1693,7 +1699,7 @@
         try { m = JSON.parse(data); } catch { return; }
         if (m?.type === 'enter-hunt') setHunt(m.slug);
         else if (m?.type === 'leave-hunt') { healOnLeave(); setHunt(null); }
-        else if (m?.type === 'set-city') { tripOnSetCity(); bossOnSetCity(); healOnSetCity(); pokesOnSetCity(); holdOnSetCity(); invOnSetCity(); armResume(RESUME_AFTER_CITY_MS); } // SPA na cidade: viagem chegou / hora de voltar pra hunt
+        else if (m?.type === 'set-city') { tripOnSetCity(); bossOnSetCity(); healOnSetCity(); pokesOnSetCity(); holdOnSetCity(); invOnSetCity(); raidOnSetCity(); armResume(RESUME_AFTER_CITY_MS); } // SPA na cidade: viagem chegou / hora de voltar pra hunt
         else if (m?.type === 'auto-boss-start' || m?.type === 'auto-boss-stop') bossOnOutgoing(m);   // v3.43.0: intenção do Auto Boss (pela tela ou pela retomada)
         // v3.29.2: todo `family-action` enviado (pela tela OU pelo script) entra no log com os campos, para confirmar o formato da
         // retirada (`dir:'withdraw'`) que o breeding usa — a janela "Família" do jogo passa por aqui também.
@@ -2769,7 +2775,7 @@
     // Chamado por setHunt() a cada troca de hunt.
     function noteHuntChange(novo) {
         const slug = novo ? normalize(novo) : null;
-        if (!slug || CITY_SLUGS.includes(slug) || (typeof bossIsArena === 'function' && bossIsArena(slug)) || (typeof invIsRaid === 'function' && invIsRaid(slug))) return;   // v3.43.0: a arena do boss não é hunt de volta; v3.50.0: nem a invasão
+        if (!slug || CITY_SLUGS.includes(slug) || (typeof bossIsArena === 'function' && bossIsArena(slug)) || (typeof invIsRaid === 'function' && invIsRaid(slug) || typeof raidIsSlug === 'function' && raidIsSlug(slug))) return;   // v3.43.0: a arena do boss não é hunt de volta; v3.50.0: nem a invasão
         if (lastRealHunt && lastRealHunt !== slug) prevHuntSlug = lastRealHunt;
         if (lastRealHunt !== slug) dailyKillsHere = 0;
         lastRealHunt = slug;
@@ -6488,7 +6494,7 @@
                 if (st !== 'esgotada') {
                     if (profTarget) { profTarget = null; profNotify(); }
                     const alvo = catchTargetSlug();
-                    if (!profFrom && atual && atual !== alvo && !CITY_SLUGS.includes(atual) && !(typeof bossIsArena === 'function' && bossIsArena(atual)) && !(typeof invIsRaid === 'function' && invIsRaid(atual))) { profFrom = atual; profSaveFrom(); }
+                    if (!profFrom && atual && atual !== alvo && !CITY_SLUGS.includes(atual) && !(typeof bossIsArena === 'function' && bossIsArena(atual)) && !(typeof invIsRaid === 'function' && invIsRaid(atual) || typeof raidIsSlug === 'function' && raidIsSlug(atual))) { profFrom = atual; profSaveFrom(); }
                     profSetWait(st === 'alvo' ? `espécies pela rota de captura (alvo ${alvo})` : 'espécies pela rota de captura (carregando Pokédex e mapa)');
                     return;
                 }
@@ -6508,7 +6514,7 @@
             profNotify();
         }
         if (atual === alvo.hunt.slug) return;
-        if (!profFrom && atual && !CITY_SLUGS.includes(atual) && !(typeof bossIsArena === 'function' && bossIsArena(atual)) && !(typeof invIsRaid === 'function' && invIsRaid(atual))) { profFrom = atual; profSaveFrom(); }
+        if (!profFrom && atual && !CITY_SLUGS.includes(atual) && !(typeof bossIsArena === 'function' && bossIsArena(atual)) && !(typeof invIsRaid === 'function' && invIsRaid(atual) || typeof raidIsSlug === 'function' && raidIsSlug(atual))) { profFrom = atual; profSaveFrom(); }
         switchHunt(alvo.hunt.slug, 1, 'profissao');
     }
 
@@ -7157,7 +7163,7 @@
     // passagem), a hunt de volta. Na cidade por vontade do jogador: null (a parada na cidade decide depois).
     function resumeSlugNow() {
         const h = huntSlug ? normalize(huntSlug) : null;
-        if (h && !CITY_SLUGS.includes(h) && !(typeof bossIsArena === 'function' && bossIsArena(h)) && !(typeof invIsRaid === 'function' && invIsRaid(h))) return h;   // v3.43.0: a arena do Auto Boss não se reentra (o servidor segue a sessão); v3.50.0: nem a invasão
+        if (h && !CITY_SLUGS.includes(h) && !(typeof bossIsArena === 'function' && bossIsArena(h)) && !(typeof invIsRaid === 'function' && invIsRaid(h) || typeof raidIsSlug === 'function' && raidIsSlug(h))) return h;   // v3.43.0: a arena do Auto Boss não se reentra (o servidor segue a sessão); v3.50.0: nem a invasão
         const voltando = tripRunning || (typeof healBusy === 'function' && healBusy()) || (typeof idleRunning !== 'undefined' && idleRunning);
         const ult = typeof lastRealHunt === 'string' && lastRealHunt ? normalize(lastRealHunt) : null;
         return voltando && ult && !CITY_SLUGS.includes(ult) ? ult : null;
@@ -7485,6 +7491,586 @@
         }
     }
 
+    // ---- Raid Mundial (v3.64.0): entrar na Raid do Darkrai em Cerulean enquanto ela estiver aberta, voltar para a hunt e avisar ----
+    // Anúncio do jogo de 18/11/2026 ("RAID MUNDIAL — A INVASÃO DE DARKRAI", início às 20h de Brasília, até 30 jogadores por instância,
+    // batalha cooperativa, loot exclusivo, bônus para o servidor) + bundle do mesmo dia (módulo de constantes `187440`: `RAID_SLUG`
+    // "raid_cerulean", `RAID_BOSS { key:'darkrai', level:1000, hpMult:1e6 }`; componente `dN` da tela; janela "Resultado da Raid" `ej`).
+    // Protocolo em docs/mensagens-do-jogo.md → "Raid Mundial". Formatos ainda NÃO vistos no log: `raid-campos` registra as chaves do 1º
+    // frame de cada tipo.
+    //   - Estado: a tela manda `raid-state-get` ao montar; o servidor responde (e avisa a todos) `raid-state { active, endsAt, bossName,
+    //     bossLevel, hpLeft, hpMax, portrait, ... }`. Quem abre e fecha a Raid é a administração (painel admin: duração em minutos), não um
+    //     relógio fixo — por isso o script segue SÓ o `raid-state`.
+    //   - Entrar = o botão RAID da cidade (só aparece numa cidade, com `active` e `endsAt` no futuro; recusa viajar com o líder caído): a
+    //     tela viaja para o mapa `raid_cerulean` e o componente da hunt manda `enter-hunt { slug:'raid_cerulean' }` — a Raid é uma hunt de
+    //     slug fixo, como a Invasão Rocket. Recusa = `raid-refused { message }` (ex.: instância cheia, tempo do dia acabou).
+    //   - Lá dentro: frames `field` normais com `raid { bossName, bossLevel, hpLeft, hpMax, endsAt (fim da SUA estadia), raidEndsAt,
+    //     asleepUntil, portrait }`. A participação acaba com `raid-end { reason, bossName, damage, totalDamage, hpLeft, hpMax, rank,
+    //     participants, stayedMs, top[{ name, damage }] }`; motivos da tela: `time` ("Seu tempo na arena acabou. Volte amanhã!"), `wipe`
+    //     (todo o time caiu), `left`, `defeated` (o servidor venceu; a recompensa é calculada quando os outros terminam), `ended` (encerrada
+    //     sem derrotar = sem recompensa), `restart` (servidor reiniciou, dano salvo). A janela de resultado (`.rdw-window`) tem só o
+    //     "Continuar" (`button.rdw-ok`), que é o `onClose` — nada vai ao servidor; o script a fecha, como a da invasão.
+    //   - Recompensa: `raid-loot { boss, look, items[{ itemId, item, qty, rare }] | item/itemId/qty, buff{ pct, hours } }` (buff "A Derrota
+    //     do Pesadelo": +pct% de XP do treinador e do Pokémon por N h). Conquista: `raid-achievement { wins, outfit, lookType, colors }`
+    //     (10 vitórias = outfit). Fala da Oficial: `raid-announce { text }`.
+    // Fluxo: `raidTick` (30 s) → Raid ativa com mais de 2 min pela frente, 20 s depois de vista aberta, tempo do dia não esgotado, nada em
+    // andamento (viagem/cura/boss/invasão/espera/humano/troca) → `raidEnterFlow`: guarda a hunt de volta (registro em localStorage[RAID_KEY]
+    // para sobreviver à recarga), sai da hunt (tela → cidade; `set-city` nós mesmos se ela não for), `joy-heal` (grátis; líder caído = a tela
+    // não viaja), `hunt-resume` sintético para a TELA mandar o único enter-hunt (sem a hunt em 5 s mandamos nós). Enter-hunt repetido da
+    // tela é barrado no socket (`raidOutgoingBlocked`, lição da invasão v3.51.1). `raid-end` → log, aviso, fecha a janela, `set-city`,
+    // `joy-heal` e: reentra (time caiu, servidor reiniciou ou saída sem frame) até `raidReenterMax` vezes por Raid, ou volta com
+    // `switchHunt(from, 1, 'raid-volta')`. `time` marca o dia (Brasília) como feito; `defeated`/`ended` encerram esta Raid.
+    // Enquanto entra/está dentro/volta, `invBusy()` também responde por ela (todas as rotas, viagem, recarga, parada na cidade, troca de
+    // líder e cura já esperam pela invasão), e `raidIsSlug(slug)` tira a Raid de `lastRealHunt`, da retomada da recarga e da espera.
+
+    const RAID_SLUG = 'raid_cerulean';            // `RAID_SLUG` do bundle
+    const RAID_TICK_MS = 30 * 1000;
+    const RAID_STATE_STALE_MS = 10 * 60 * 1000;   // estado sem leitura há 10 min: pede de novo
+    const RAID_STATE_ASK_GAP_MS = 60 * 1000;
+    const RAID_ENTER_DELAY_MS = 20 * 1000;        // entra 20 s depois de ver a Raid aberta (anúncio, primeira leva de jogadores)
+    const RAID_MIN_LEFT_MS = 2 * 60 * 1000;       // não entra com menos de 2 min de Raid pela frente
+    const RAID_CITY_WAIT_MS = 10 * 1000;          // a tela não viajou depois do teleporte sintético: `set-city` nós mesmos
+    const RAID_LEAVE_WAIT_MS = 1500;
+    const RAID_HEAL_WAIT_MS = 2500;
+    const RAID_TELA_WAIT_MS = 5000;               // a TELA viaja para a Raid e manda o enter-hunt; sem a hunt em 5 s mandamos nós
+    const RAID_CONFIRM_MS = 60 * 1000;            // enter-hunt mandado e nenhum frame da Raid em 60 s = entrada falhou
+    const RAID_ENTER_TIMEOUT_MS = 3 * 60 * 1000;
+    const RAID_GONE_MS = 60 * 1000;               // fora da hunt da Raid há 1 min sem `raid-end` = participação acabou
+    const RAID_END_WAIT_MS = 4000;                // `raid-end` → espera a janela de resultado antes de sair/voltar
+    const RAID_BLOCK_AFTER_MS = 20 * 1000;        // depois do fim, enter-hunt raid_cerulean da tela é barrado por 20 s
+    const RAID_BLOCK_LOG_MAX = 5;
+    const RAID_REFUSED_RETRY_MS = 5 * 60 * 1000;  // recusa/entrada que falhou: tenta de novo em 5 min...
+    const RAID_MAX_FAILS = 3;                     // ...no máximo 3 vezes por Raid
+    const RAID_REENTER_DELAY_MS = 30 * 1000;      // time caiu: cura e reentra 30 s depois
+    const RAID_REENTER_DEFAULT = 3;
+    const RAID_REENTER_MAX = 20;
+    const RAID_MODAL_POLL_MS = 500;
+    const RAID_MODAL_WAIT_MS = 20 * 1000;
+    const RAID_MODAL_HOLD_MS = 3000;
+    const RAID_BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
+    const RAID_KEY = 'pgDiscordNotifyRaid';
+    const RAID_RUN_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+    const RAID_REASON_LABEL = { silencio: 'saiu sem raid-end', time: 'seu tempo na arena acabou (volte amanhã)', wipe: 'todo o time caiu', left: 'saiu da Raid', defeated: 'o Darkrai foi DERROTADO', ended: 'a Raid foi encerrada', restart: 'o servidor reiniciou (dano salvo)' };
+    const RAID_REENTER_REASONS = ['wipe', 'restart', 'silencio'];
+
+    let raidSrv = null;         // último `raid-state`: { key, active, endsAt, bossName, bossLevel, hpLeft, hpMax, at, activeSince }
+    let raidAskedAt = 0;
+    let raidRun = null;         // participação: { key, from, origem, at, fase, entered, enteredAt, sentAt, fieldSeen, lastFieldAt, hud, ended, result }
+    let raidTried = {};         // chave da Raid -> { entries, fails, retryAt, nextAt, from, done }
+    let raidDoneDay = '';       // dia (Brasília) em que o tempo na arena acabou ("Volte amanhã")
+    let raidLast = null;        // último `raid-end` normalizado
+    let raidLootLast = null;    // última recompensa
+    let raidEndedAt = 0;
+    let raidBlockedAfterEnd = 0;
+    let raidModalTimer = null;
+    let raidWaitNote = null;
+    let raidWaitLoggedAt = 0;
+    let raidCityWaiter = null;
+    let raidFieldsLogged = {};
+    let raidAnnounceLoggedAt = 0;
+    let raidStateLoggedKey = null;
+    let onRaidChange = null;    // painel (aba Raid)
+
+    function raidOn(d) { return Boolean((d || cfg).raidEnabled); }
+    function raidReenterMax(d) {
+        const v = (d || cfg).raidReenterMax;
+        if (v === '' || v == null) return RAID_REENTER_DEFAULT;
+        return Math.max(0, Math.min(RAID_REENTER_MAX, Math.floor(Number(v)) || 0));
+    }
+    function raidIsSlug(slug) { return normalize(slug || '') === RAID_SLUG; }
+    function raidNotify() { if (onRaidChange) { try { onRaidChange(); } catch { /* painel fechado */ } } }
+    function raidWait(ms) { return new Promise(r => setTimeout(r, ms)); }
+    function raidFmt(ms) {
+        const s = Math.max(0, Math.round(ms / 1000));
+        if (s < 60) return `${s} s`;
+        const m = Math.floor(s / 60);
+        return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`;
+    }
+    function raidHora(ts) { return new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }); }
+    function raidDay(ts) { return new Date((ts ?? Date.now()) - RAID_BRT_OFFSET_MS).toISOString().slice(0, 10); }
+    function raidDoneToday() { return raidDoneDay === raidDay(); }
+    function raidPct(left, max) { const m = Number(max) || 0; return m > 0 ? Math.max(0, Math.min(100, Math.round((Number(left) || 0) / m * 100))) : null; }
+    function raidN(v) { return Math.max(0, Number(v) || 0); }
+    function raidTriedFor(key) {
+        const k = String(key || 'raid');
+        if (!raidTried[k]) raidTried[k] = { entries: 0, fails: 0, retryAt: 0, nextAt: 0, from: null, done: null };
+        return raidTried[k];
+    }
+    // Raid aberta agora com tempo para valer a entrada.
+    function raidActiveNow(now) {
+        now = now ?? Date.now();
+        const s = raidSrv;
+        if (!s || !s.active) return false;
+        return !s.endsAt || s.endsAt - now > RAID_MIN_LEFT_MS;
+    }
+    function raidBusy() { return Boolean(raidRun); }
+    function raidBusyReason() {
+        if (!raidRun) return null;
+        if (raidRun.fase === 'dentro') {
+            const p = raidPct(raidRun.hud?.hpLeft, raidRun.hud?.hpMax);
+            return `Raid do ${raidRun.hud?.bossName || raidSrv?.bossName || 'Darkrai'} em andamento${p != null ? ` (${p}% de vida)` : ''}`;
+        }
+        return `Raid: ${raidRun.fase}`;
+    }
+    // Único enter-hunt por participação, garantido no socket (mesma lição da invasão v3.51.1: a tela reenvia o enter-hunt sozinha com o
+    // servidor lento). `true` = o envio NÃO vai ao servidor (nem ao `setHunt`). O nosso enter-hunt e o da tela antes do `sentAt` passam.
+    function raidOutgoingBlocked(m) {
+        if (!m || m.type !== 'enter-hunt' || !raidIsSlug(m.slug)) return false;
+        const now = Date.now();
+        const r = raidRun;
+        let motivo = null;
+        if (r && !r.ended && r.sentAt) motivo = r.fieldSeen ? 'participação em andamento' : 'enter-hunt já mandado, esperando o 1º frame';
+        else if (r && r.ended) motivo = 'participação encerrada, voltando';
+        else if (!r && raidEndedAt && now - raidEndedAt < RAID_BLOCK_AFTER_MS) motivo = `a participação acabou há menos de ${Math.round(RAID_BLOCK_AFTER_MS / 1000)} s`;
+        if (!motivo) return false;
+        const n = r ? (r.blocked = (r.blocked || 0) + 1) : ++raidBlockedAfterEnd;
+        if (n <= RAID_BLOCK_LOG_MAX) logEvent('raid-enter-hunt-barrado', { motivo, fase: r?.fase || null, frame: Boolean(r?.fieldSeen), n });
+        return true;
+    }
+    function raidLogFields(tipo, m) {
+        if (raidFieldsLogged[tipo]) return;
+        raidFieldsLogged[tipo] = true;
+        const sub = {};
+        for (const k of ['raid', 'buff', 'top', 'items']) if (m && m[k] && typeof m[k] === 'object') sub[k] = Array.isArray(m[k]) ? (m[k][0] && typeof m[k][0] === 'object' ? Object.keys(m[k][0]) : m[k].length) : Object.keys(m[k]);
+        logEvent('raid-campos', { tipo, chaves: Object.keys(m || {}).filter(k => k !== 'type'), sub, exemplo: tipo === 'field' ? (m?.raid || null) : m });
+    }
+    function raidSave() {
+        try {
+            const keys = Object.keys(raidTried).slice(-3);
+            const tried = {};
+            for (const k of keys) tried[k] = raidTried[k];
+            const run = raidRun && !raidRun.ended ? { key: raidRun.key, from: raidRun.from, origem: raidRun.origem, at: raidRun.at, enteredAt: raidRun.enteredAt || 0 } : null;
+            localStorage.setItem(RAID_KEY, JSON.stringify({ run, tried, doneDay: raidDoneDay, savedAt: Date.now() }));
+        } catch { /* sem espaço: vale só nesta carga */ }
+    }
+    // Carga nova (⟳ do PokeGrid, recarga automática): o dia esgotado, as tentativas por Raid e a participação em andamento voltam.
+    function raidLoad() {
+        let rec = null;
+        try { rec = JSON.parse(localStorage.getItem(RAID_KEY) || 'null'); } catch { rec = null; }
+        if (!rec || typeof rec !== 'object') return;
+        if (typeof rec.doneDay === 'string') raidDoneDay = rec.doneDay;
+        if (rec.tried && typeof rec.tried === 'object') {
+            for (const [k, v] of Object.entries(rec.tried)) {
+                if (!v || typeof v !== 'object') continue;
+                raidTried[k] = { entries: raidN(v.entries), fails: raidN(v.fails), retryAt: raidN(v.retryAt), nextAt: raidN(v.nextAt), from: v.from ? String(v.from) : null, done: v.done ? String(v.done) : null };
+            }
+        }
+        const run = rec.run;
+        if (!run || typeof run !== 'object') return;
+        const idade = Date.now() - (Number(run.at) || 0);
+        if (idade < 0 || idade > RAID_RUN_MAX_AGE_MS) { raidSave(); return; }
+        const at = Number(run.at) || Date.now();
+        raidRun = {
+            key: String(run.key || 'raid'), from: run.from ? String(run.from) : null, origem: 'lembrado', at, loadedAt: Date.now(), fase: 'dentro', entered: true,
+            enteredAt: Number(run.enteredAt) || at, sentAt: at, fieldSeen: false, lastFieldAt: 0, hud: null, ended: false, result: null,
+        };
+        logEvent('raid-lembrada', { from: raidRun.from, idadeMin: Math.round(idade / 60000), raid: raidRun.key });
+        raidNotify();
+    }
+    function raidAskState(motivo) {
+        raidAskedAt = Date.now();
+        const ok = sendGame({ type: 'raid-state-get' });
+        logEvent('raid-estado-pedido', { motivo, enviado: ok });
+        return ok;
+    }
+    function raidOnSocket() { if (raidOn() || raidRun) raidAskState('socket'); }
+    function raidOnSetCity() { if (raidCityWaiter) raidCityWaiter(true); }
+    function raidWaitCity(ms) {
+        return new Promise(resolve => {
+            let done = false;
+            const fim = (ok) => { if (!done) { done = true; if (raidCityWaiter === fim) raidCityWaiter = null; resolve(ok); } };
+            raidCityWaiter = fim;
+            setTimeout(() => fim(false), ms);
+        });
+    }
+    // Hunt para onde voltar: a hunt atual (fora de cidade/arena/invasão/Raid) ou o destino da parada na cidade.
+    function raidFromSlug() {
+        const h = normalize(huntSlug || '');
+        if (h && !CITY_SLUGS.includes(h) && !raidIsSlug(h) && !(typeof invIsRaid === 'function' && invIsRaid(h) || typeof raidIsSlug === 'function' && raidIsSlug(h)) && !(typeof bossIsArena === 'function' && bossIsArena(h))) return h;
+        const t = typeof idleTarget === 'function' ? idleTarget() : null;   // clã > rota > última hunt > hunt padrão
+        return t?.slug || null;
+    }
+    // O que impede a entrada agora (null = pode entrar). Mesma lista da invasão, com a própria invasão no lugar da Raid.
+    function raidBlockedReason() {
+        if (typeof holdReason === 'function' && holdReason()) return holdReason();
+        if (typeof humanPending === 'function' && humanPending()) return 'verificação humana pendente';
+        if (typeof bossBusyReason === 'function' && bossBusyReason()) return bossBusyReason();
+        if (typeof invRunActive === 'function' && invRunActive()) return 'Invasão Rocket em andamento';
+        if (typeof tripRunning !== 'undefined' && tripRunning) return 'viagem à cidade em andamento';
+        if (typeof healBusy === 'function' && healBusy()) return 'cura na Nurse Joy em andamento';
+        if (typeof idleRunning !== 'undefined' && idleRunning) return 'volta da cidade parada em andamento';
+        if (typeof huntSwitch !== 'undefined' && huntSwitch) return `troca para ${huntSwitch.slug} em andamento`;
+        if (typeof swapPending !== 'undefined' && swapPending) return 'troca de líder em andamento';
+        if (typeof sellRunning !== 'undefined' && sellRunning) return 'venda em andamento';
+        if (typeof resumeHunt !== 'undefined' && resumeHunt) return 'volta da recarga pendente';
+        if (typeof dailyAutoBusy !== 'undefined' && dailyAutoBusy) return 'Daily Kill sozinha decidindo';
+        if (typeof awaitingDetails !== 'undefined' && awaitingDetails.length) return 'captura aguardando detalhes';
+        return null;
+    }
+    function raidSetWait(motivo) {
+        if (motivo !== raidWaitNote) { raidWaitNote = motivo; raidNotify(); }
+        if (!motivo) return;
+        if (Date.now() - raidWaitLoggedAt < 60 * 1000) return;
+        raidWaitLoggedAt = Date.now();
+        logEvent('raid-espera', { motivo });
+    }
+
+    // Tique (30 s): fora de participação, decide se entra; dentro, vigia o fim.
+    function raidTick() {
+        const now = Date.now();
+        if (raidRun) { raidRunTick(now); return; }
+        if (!raidOn()) { raidSetWait(null); return; }
+        const s = raidSrv;
+        if ((!s || now - s.at > RAID_STATE_STALE_MS) && now - raidAskedAt > RAID_STATE_ASK_GAP_MS) raidAskState(s ? 'estado velho' : 'estado nunca lido');
+        if (!raidActiveNow(now)) { raidSetWait(null); return; }
+        if (raidDoneToday()) { raidSetWait(null); return; }
+        const t = raidTriedFor(s.key);
+        if (t.done) { raidSetWait(null); return; }
+        if (t.retryAt > now || t.nextAt > now) return;
+        if (now - (s.activeSince || s.at) < RAID_ENTER_DELAY_MS) return;
+        const bloqueio = raidBlockedReason();
+        if (bloqueio) { raidSetWait(bloqueio); return; }
+        raidSetWait(null);
+        raidEnterFlow('tique');
+    }
+    function raidRunTick(now) {
+        const r = raidRun;
+        if (r.ended) return;   // voltando
+        const dentro = raidIsSlug(huntSlug);
+        if (r.fase === 'dentro') {
+            if (!r.fieldSeen && r.origem !== 'lembrado' && now - (r.enteredAt || r.at) > RAID_CONFIRM_MS) { raidAbort(`nenhum frame da Raid chegou em ${Math.round(RAID_CONFIRM_MS / 1000)} s depois do enter-hunt`); return; }
+            if (dentro && now - (r.lastFieldAt || now) < RAID_GONE_MS) return;   // frames chegando
+            if (r.origem === 'lembrado' && !dentro && !r.lastFieldAt && now - (r.loadedAt || r.at) > 15 * 1000) { raidFinishSilent(r, 'recarga no meio da Raid (a conta nasceu na cidade)'); return; }
+            const base = r.lastFieldAt || (r.origem === 'lembrado' ? r.loadedAt : 0) || r.enteredAt || r.at;
+            if (raidSrv && raidSrv.active === false && raidSrv.at > r.at && now - base > RAID_GONE_MS / 2) { raidFinishSilent(r, 'a Raid fechou sem raid-end'); return; }
+            if (!dentro && now - base > RAID_GONE_MS) { raidFinishSilent(r, 'fora da hunt da Raid há 1 min sem raid-end'); return; }
+            if (dentro && now - base > RAID_GONE_MS * 3) { raidFinishSilent(r, 'sem frame da Raid há 3 min'); return; }
+            return;
+        }
+        if (r.sentAt && now - r.sentAt > RAID_CONFIRM_MS) { raidAbort(`nenhum frame da Raid chegou em ${Math.round(RAID_CONFIRM_MS / 1000)} s depois do enter-hunt`); return; }
+        if (now - r.at > RAID_ENTER_TIMEOUT_MS) raidAbort('a entrada não confirmou em 3 min');
+    }
+
+    async function raidEnterFlow(origem) {
+        const key = raidSrv?.key || 'raid';
+        const t = raidTriedFor(key);
+        const from = t.from || raidFromSlug();
+        t.from = from;
+        t.entries++;
+        raidRun = { key, from, origem, at: Date.now(), fase: 'saindo da hunt', entered: false, enteredAt: 0, sentAt: 0, fieldSeen: false, lastFieldAt: 0, hud: null, ended: false, result: null };
+        const r = raidRun;
+        raidSave(); raidNotify();
+        logEvent('raid-entrada', { fase: 'inicio', origem, from, hunt: huntSlug || null, entrada: t.entries, raid: key, boss: raidSrv?.bossName || null, vida: raidPct(raidSrv?.hpLeft, raidSrv?.hpMax), acabaEm: raidSrv?.endsAt ? raidFmt(raidSrv.endsAt - Date.now()) : null });
+        try {
+            const h = normalize(huntSlug || '');
+            const emHunt = typeof tripInHunt === 'function' ? tripInHunt() : Boolean(h) && !CITY_SLUGS.includes(h);
+            if (emHunt) {
+                sendGame({ type: 'leave-hunt' });
+                const tela = typeof nudgeClientToCity === 'function' ? nudgeClientToCity() : false;
+                const chegou = await raidWaitCity(RAID_CITY_WAIT_MS);
+                if (raidRun !== r) return;
+                if (!chegou) sendGame({ type: 'set-city', slug: 'cerulean' });
+                logEvent('raid-entrada', { fase: 'cidade', pelaTela: chegou, tela });
+                await raidWait(RAID_LEAVE_WAIT_MS);
+            }
+            if (raidRun !== r) return;
+            sendGame({ type: 'joy-heal' });   // grátis; líder em hp 0 = a tela recusa viajar para a Raid
+            await raidWait(RAID_HEAL_WAIT_MS);
+            if (raidRun !== r) return;
+            if (typeof holdActive === 'function' && holdActive()) { raidAbort('espera na cidade ligada', true); return; }
+            r.fase = 'entrando'; raidNotify();
+            const tela = typeof nudgeClientToHunt === 'function' ? Boolean(nudgeClientToHunt(RAID_SLUG)) : false;
+            logEvent('raid-entrada', { fase: 'tela', tela });
+            if (tela) { await raidWait(RAID_TELA_WAIT_MS); if (raidRun !== r) return; }
+            if (raidIsSlug(huntSlug)) { r.sentAt = r.sentAt || Date.now(); logEvent('raid-entrada', { fase: 'enter-hunt', pelaTela: true }); return; }
+            const ok = sendGame({ type: 'enter-hunt', slug: RAID_SLUG });
+            r.sentAt = Date.now();
+            logEvent('raid-entrada', { fase: 'enter-hunt', pelaTela: false, enviado: ok });
+            if (!ok && raidRun === r) raidAbort('não consegui mandar o enter-hunt (socket fechado?)');
+        } catch (err) { if (raidRun === r) raidAbort(String(err?.message || err)); }
+    }
+    // Entrada que não aconteceu: registra, avisa (sem `quiet`), tenta de novo em 5 min (até 3x por Raid) e devolve a conta à hunt.
+    function raidAbort(porque, quiet) {
+        const r = raidRun;
+        if (!r) return;
+        raidRun = null; raidEndedAt = Date.now(); raidBlockedAfterEnd = 0;
+        const t = raidTriedFor(r.key);
+        if (t.entries > 0) t.entries--;   // não chegou a entrar: não gasta uma das reentradas
+        t.fails++;
+        t.retryAt = Date.now() + RAID_REFUSED_RETRY_MS;
+        if (t.fails >= RAID_MAX_FAILS) t.done = `${t.fails} entradas falharam nesta Raid`;
+        raidSave();
+        logEvent('raid-entrada', { fase: 'falhou', porque, origem: r.origem, from: r.from, hunt: huntSlug || null, falhas: t.fails, desisti: Boolean(t.done), barrados: r.blocked || 0 });
+        if (!quiet && cfg.raidAlerts !== false) {
+            const who = playerName();
+            postWebhook('alert', {
+                content: `⚠️ ${who ? `**${who}**` : 'Sua conta'}: não entrei na Raid do Darkrai — ${porque}`,
+                username: 'Poke Idle World',
+                embeds: [{ title: 'Raid Mundial: entrada falhou', color: 0xed4245, description: (who ? `Conta: ${who}\n` : '') + `${porque}.${t.done ? ' Desisti desta Raid.' : ` Tento de novo em ${raidFmt(RAID_REFUSED_RETRY_MS)}.`}${r.from ? ` Voltando para ${r.from}.` : ' A parada na cidade decide a volta.'}` }],
+            }, { evento: 'raid-entrada-falhou', porque });
+        }
+        if (r.from && !(typeof holdActive === 'function' && holdActive())) {
+            setTimeout(() => { if (!raidRun) logEvent('raid-volta', { para: r.from, motivo: 'entrada falhou', enviado: switchHunt(r.from, 1, 'raid-volta') }); }, RAID_LEAVE_WAIT_MS);
+        }
+        raidNotify();
+    }
+    // `confirmHuntSwitch` sem frame para a volta: só registra (a parada na cidade tenta depois).
+    function raidHuntFailed(slug) { logEvent('raid-volta', { para: slug, fase: 'falhou', motivo: 'a parada na cidade tenta depois' }); }
+    // `setHunt`: a hunt virou a Raid (nossa entrada confirmando, ou o jogador clicou RAID na tela).
+    function raidOnHuntChange(novo) {
+        if (!raidIsSlug(novo)) return;
+        const now = Date.now();
+        if (!raidRun) {
+            const key = raidSrv?.key || 'raid';
+            const t = raidTriedFor(key);
+            t.entries++;
+            raidRun = { key, from: raidFromSlug(), origem: 'tela', at: now, fase: 'dentro', entered: true, enteredAt: now, sentAt: now, fieldSeen: false, lastFieldAt: now, hud: null, ended: false, result: null };
+            t.from = t.from || raidRun.from;
+            logEvent('raid-entrada', { fase: 'tela', from: raidRun.from, entrada: t.entries, raid: key });
+        } else if (!raidRun.entered || raidRun.fase !== 'dentro') {
+            raidRun.entered = true; raidRun.enteredAt = now; raidRun.sentAt = raidRun.sentAt || now; raidRun.lastFieldAt = now; raidRun.fase = 'dentro';
+            logEvent('raid-entrada', { fase: 'dentro', origem: raidRun.origem, segundos: Math.round((now - raidRun.at) / 1000), from: raidRun.from });
+        }
+        raidSave(); raidNotify();
+    }
+    // `field`/`field-init` da Raid: HUD do boss e da estadia (`raid { hpLeft, hpMax, endsAt, raidEndsAt, ... }`).
+    function raidOnField(m) {
+        if (!raidRun || raidRun.ended || !raidIsSlug(huntSlug)) return;
+        const r = raidRun;
+        r.lastFieldAt = Date.now();
+        const first = !r.fieldSeen;
+        r.fieldSeen = true;
+        if (r.fase !== 'dentro') { r.fase = 'dentro'; r.entered = true; r.enteredAt = r.enteredAt || Date.now(); }
+        const x = m?.raid;
+        if (x && typeof x === 'object') {
+            raidLogFields('field', m);
+            r.hud = { bossName: x.bossName ? String(x.bossName) : (r.hud?.bossName || null), bossLevel: Number(x.bossLevel) || r.hud?.bossLevel || null, hpLeft: raidN(x.hpLeft), hpMax: raidN(x.hpMax), endsAt: Number(x.endsAt) || 0, raidEndsAt: Number(x.raidEndsAt) || 0, asleepUntil: Number(x.asleepUntil) || 0 };
+        }
+        if (first) { logEvent('raid-dentro', { hud: r.hud, origem: r.origem }); raidNotify(); }
+    }
+    // Frames `raid-*` do servidor.
+    function raidOnMessage(m) {
+        const t = String(m.type || '');
+        raidLogFields(t, m);
+        if (t === 'raid-state') { raidOnState(m); return; }
+        if (t === 'raid-end') { raidOnEnd(m); return; }
+        if (t === 'raid-refused') { raidOnRefused(String(m.message || '')); return; }
+        if (t === 'raid-loot') { raidOnLoot(m); return; }
+        if (t === 'raid-achievement') { raidOnAchievement(m); return; }
+        if (t === 'raid-announce') {
+            if (Date.now() - raidAnnounceLoggedAt > 10 * 60 * 1000) { raidAnnounceLoggedAt = Date.now(); logEvent('raid-anuncio', { texto: String(m.text || '').slice(0, 200) }); }
+        }
+    }
+    function raidOnState(m) {
+        const now = Date.now();
+        const active = Boolean(m.active);
+        const endsAt = Number(m.endsAt) || 0;
+        const key = String(m.id ?? m.raidId ?? m.startedAt ?? (endsAt ? Math.round(endsAt / 60000) : (raidSrv?.key || 'raid')));
+        const antes = raidSrv;
+        const activeSince = active ? (antes?.active && antes.key === key ? antes.activeSince : now) : 0;
+        raidSrv = { key, active, endsAt, bossName: m.bossName ? String(m.bossName) : (antes?.bossName || 'Darkrai'), bossLevel: Number(m.bossLevel) || antes?.bossLevel || null, hpLeft: raidN(m.hpLeft), hpMax: raidN(m.hpMax), participants: m.participants != null ? raidN(m.participants) : null, at: now, activeSince };
+        const marca = `${key}:${active}`;
+        if (raidStateLoggedKey !== marca) {
+            raidStateLoggedKey = marca;
+            logEvent('raid-estado', { ativa: active, raid: key, boss: raidSrv.bossName, nivel: raidSrv.bossLevel, vida: raidPct(raidSrv.hpLeft, raidSrv.hpMax), acabaAs: endsAt ? raidHora(endsAt) : null, diaFeito: raidDoneToday() });
+        }
+        raidNotify();
+    }
+    function raidOnRefused(message) {
+        const r = raidRun;
+        const hoje = /amanh[ãa]|tempo na arena|tempo de hoje/i.test(message || '');
+        if (hoje) { raidDoneDay = raidDay(); raidSave(); }
+        logEvent('raid-recusada', { mensagem: message, fase: r?.fase || null, origem: r?.origem || null, jaDentro: Boolean(r?.fieldSeen), diaFeito: hoje, hunt: huntSlug || null });
+        if (r && !r.ended && !r.fieldSeen) {
+            if (typeof huntSwitch !== 'undefined' && huntSwitch && huntSwitch.slug === RAID_SLUG) { clearTimeout(huntSwitch.timer); huntSwitch = null; }
+            raidAbort(`o jogo recusou (${message || 'sem motivo'})`, hoje);   // tempo do dia esgotado: sem alerta de falha (o status diz)
+        }
+        raidNotify();
+    }
+    function raidOnEnd(m) {
+        const r = raidRun;
+        const res = {
+            at: Date.now(), reason: m.reason ? String(m.reason) : null, bossName: m.bossName ? String(m.bossName) : (raidSrv?.bossName || 'Darkrai'),
+            damage: raidN(m.damage), totalDamage: raidN(m.totalDamage), hpLeft: raidN(m.hpLeft), hpMax: raidN(m.hpMax), rank: raidN(m.rank),
+            participants: raidN(m.participants), stayedMs: raidN(m.stayedMs), top: Array.isArray(m.top) ? m.top.slice(0, 3).map(x => ({ name: String(x?.name || '?'), damage: raidN(x?.damage) })) : [],
+            from: r?.from || null, origem: r?.origem || 'sem participação acompanhada',
+        };
+        raidLast = res;
+        const key = r?.key || raidSrv?.key || 'raid';
+        const t = raidTriedFor(key);
+        if (res.reason === 'time') raidDoneDay = raidDay();
+        if (res.reason === 'defeated' || res.reason === 'ended') t.done = RAID_REASON_LABEL[res.reason];
+        raidSave();
+        logEvent('raid-fim', { motivo: res.reason, dano: res.damage, danoTotal: res.totalDamage, rank: res.rank, participantes: res.participants, tempoS: Math.round(res.stayedMs / 1000), vida: raidPct(res.hpLeft, res.hpMax), origem: res.origem, from: res.from, hunt: huntSlug || null, entradas: t.entries });
+        if (cfg.raidAlerts !== false) raidAlertEnd(res);
+        raidCloseResultModal(res);
+        if (r && !r.ended) { r.result = res; raidReturnFlow(r, res.reason); }
+        raidNotify();
+    }
+    function raidOnLoot(m) {
+        const items = Array.isArray(m.items) ? m.items : (m.item ? [{ itemId: m.itemId ?? 0, item: m.item, qty: m.qty ?? 1, rare: true }] : []);
+        const res = { at: Date.now(), boss: m.boss ? String(m.boss) : 'Darkrai', items: items.map(i => ({ id: Number(i?.itemId) || 0, name: String(i?.item || i?.name || '?'), qty: raidN(i?.qty) || 1, rare: Boolean(i?.rare) })), buff: m.buff && typeof m.buff === 'object' ? { pct: Number(m.buff.pct) || 0, hours: Number(m.buff.hours) || 0 } : null };
+        raidLootLast = res;
+        logEvent('raid-loot', { boss: res.boss, itens: res.items, buff: res.buff });
+        if (cfg.raidAlerts !== false && (res.items.length || res.buff)) {
+            const who = playerName();
+            const lista = res.items.map(i => `${i.rare ? '✨ ' : ''}${fmtNum(i.qty)}× ${i.name}`).join('\n');
+            postWebhook('alert', {
+                content: `🎁 ${who ? `**${who}**` : 'Sua conta'}: recompensa da Raid do ${res.boss}${res.items.length ? ` — ${res.items.map(i => `${fmtNum(i.qty)}× ${i.name}`).join(', ')}` : ''}`,
+                username: 'Poke Idle World',
+                embeds: [{ title: `Raid Mundial: ${res.boss} derrotado!`, color: 0x9b59b6, description: (who ? `Conta: ${who}\n` : '') + (lista || 'Sem itens') + (res.buff ? `\n🌑 A Derrota do Pesadelo: +${res.buff.pct}% de XP do treinador e do Pokémon por ${res.buff.hours} h` : '') }],
+            }, { evento: 'raid-loot', itens: res.items.length });
+        }
+        raidNotify();
+    }
+    function raidOnAchievement(m) {
+        logEvent('raid-conquista', { vitorias: m.wins ?? null, outfit: m.outfit ?? null, lookType: m.lookType ?? null });
+        if (cfg.raidAlerts !== false && m.outfit) {
+            const who = playerName();
+            postWebhook('alert', {
+                content: `🏆 ${who ? `**${who}**` : 'Sua conta'}: ${m.wins ?? 10} vitórias contra o Darkrai — outfit **${m.outfit}** (já está vestindo)`,
+                username: 'Poke Idle World',
+            }, { evento: 'raid-conquista' });
+        }
+    }
+    // Janela "Resultado da Raid" (`ej` do bundle): o "Continuar" (`button.rdw-ok`) é só o `onClose`; fechamos para não cobrir a tela.
+    function raidCloseResultModal(res) {
+        if (typeof document === 'undefined' || !document || typeof document.querySelector !== 'function') return;
+        if (raidModalTimer) { clearTimeout(raidModalTimer); raidModalTimer = null; }
+        const t0 = Date.now();
+        let seenAt = 0, como = null;
+        const win = () => { try { return document.querySelector('.rdw-window'); } catch { return null; } };
+        const fim = (dados) => { raidModalTimer = null; logEvent('raid-resultado', Object.assign({ depoisDeS: Math.round((Date.now() - t0) / 1000), motivo: res?.reason || null }, dados)); };
+        const step = () => {
+            raidModalTimer = null;
+            const w = win(), now = Date.now();
+            if (como) { fim({ fechada: !w, como }); return; }
+            if (!w) {
+                if (seenAt) { fim({ fechada: true, como: 'fechada por fora (jogador ou tela)' }); return; }
+                if (now - t0 > RAID_MODAL_WAIT_MS) { fim({ fechada: false, porque: 'a janela de resultado não apareceu' }); return; }
+            } else {
+                if (!seenAt) seenAt = now;
+                if (now - seenAt >= RAID_MODAL_HOLD_MS) {
+                    try {
+                        const btn = w.querySelector('button.rdw-ok');
+                        if (btn) { btn.click(); como = 'botão Continuar'; }
+                        else if (typeof window !== 'undefined' && typeof KeyboardEvent === 'function') { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); como = 'Esc'; }
+                        else { fim({ fechada: false, porque: 'janela sem o botão Continuar' }); return; }
+                    } catch (err) { fim({ fechada: false, porque: String(err?.message || err) }); return; }
+                }
+            }
+            raidModalTimer = setTimeout(step, RAID_MODAL_POLL_MS);
+        };
+        step();
+    }
+    function raidFinishSilent(r, motivo) {
+        logEvent('raid-fim', { motivo, semFrame: true, origem: r.origem, from: r.from, hunt: huntSlug || null });
+        raidReturnFlow(r, 'silencio');
+    }
+    // Pode entrar de novo nesta Raid depois deste fim?
+    function raidCanReenter(r, reason) {
+        if (!RAID_REENTER_REASONS.includes(reason)) return false;
+        const t = raidTriedFor(r.key);
+        if (t.done || raidDoneToday()) return false;
+        if (t.entries > raidReenterMax()) return false;   // 1ª entrada + N reentradas
+        if (typeof holdActive === 'function' && holdActive()) return false;
+        return raidOn() && raidActiveNow();
+    }
+    // Fim da participação: espera a janela de resultado, garante a conta na cidade, cura e reentra ou volta para a hunt de origem.
+    async function raidReturnFlow(r, reason) {
+        r.ended = true; r.fase = 'voltando'; raidSave(); raidNotify();
+        try {
+            await raidWait(RAID_END_WAIT_MS);
+            if (raidRun !== r) return;
+            const h = normalize(huntSlug || '');
+            if (h && !CITY_SLUGS.includes(h)) { sendGame({ type: 'leave-hunt' }); sendGame({ type: 'set-city', slug: 'cerulean' }); await raidWait(RAID_LEAVE_WAIT_MS); }
+            if (raidRun !== r) return;
+            sendGame({ type: 'joy-heal' });   // grátis; o Darkrai derruba o time
+            await raidWait(RAID_HEAL_WAIT_MS);
+            if (raidRun !== r) return;
+            const t = raidTriedFor(r.key);
+            if (raidCanReenter(r, reason)) {
+                t.nextAt = Date.now() + RAID_REENTER_DELAY_MS;
+                logEvent('raid-volta', { reentra: true, em: raidFmt(RAID_REENTER_DELAY_MS), entradas: t.entries, max: raidReenterMax(), motivo: reason });
+                return;   // o tique entra de novo (a conta espera curada na cidade)
+            }
+            if (!t.done) t.done = `participação encerrada (${RAID_REASON_LABEL[reason] || reason || 'fim'})`;   // sem reentrada: não entra de novo nesta Raid
+            raidSave();
+            const para = r.from;
+            if (!para) { logEvent('raid-volta', { para: null, motivo: 'sem hunt de volta (a parada na cidade decide)' }); return; }
+            if (typeof holdActive === 'function' && holdActive()) { logEvent('raid-volta', { para, motivo: 'espera na cidade ligada: fica' }); return; }
+            const ok = switchHunt(para, 1, 'raid-volta');
+            logEvent('raid-volta', { para, enviado: ok, motivo: reason || 'fim' });
+        } finally {
+            if (raidRun === r) { raidRun = null; raidSave(); raidEndedAt = Date.now(); raidBlockedAfterEnd = 0; raidNotify(); }
+        }
+    }
+    function raidAlertEnd(r) {
+        const who = playerName();
+        const conta = who ? `**${who}**` : 'Sua conta';
+        const vida = raidPct(r.hpLeft, r.hpMax);
+        const parte = r.hpMax > 0 ? r.damage / r.hpMax * 100 : 0;
+        postWebhook('alert', {
+            content: `🌑 ${conta}: Raid do ${r.bossName} — **${fmtNum(Math.round(r.damage))}** de dano${r.rank ? ` (#${fmtNum(r.rank)} de ${fmtNum(r.participants)})` : ''}`,
+            username: 'Poke Idle World',
+            embeds: [{
+                title: `Raid Mundial: ${RAID_REASON_LABEL[r.reason] || r.reason || 'fim da participação'}`,
+                color: r.reason === 'defeated' ? 0x57f287 : r.reason === 'wipe' ? 0xed4245 : 0x9b59b6,
+                description: (who ? `Conta: ${who}\n` : '') + `Dano: ${fmtNum(Math.round(r.damage))} (${parte < 0.01 ? '< 0,01' : parte.toFixed(2).replace('.', ',')}% da vida)` +
+                    `${r.rank ? ` · #${fmtNum(r.rank)} de ${fmtNum(r.participants)} treinadores` : ''}\nTempo na arena: ${raidFmt(r.stayedMs)}${vida != null ? ` · vida restante do boss ${vida}%` : ''}` +
+                    `${r.totalDamage ? `\nDano total na Raid: ${fmtNum(Math.round(r.totalDamage))}` : ''}` +
+                    `${r.reason === 'defeated' ? '\n⏳ A recompensa chega quando os outros jogadores terminarem.' : r.reason === 'ended' ? '\nSem recompensa nesta Raid.' : ''}`,
+            }],
+        }, { evento: 'raid-fim', motivo: r.reason, dano: r.damage });
+    }
+    // Status para o painel.
+    function raidStatus(d) {
+        d = d || cfg;
+        const now = Date.now();
+        const r = raidRun;
+        if (r) {
+            if (r.fase === 'dentro') {
+                const p = raidPct(r.hud?.hpLeft, r.hud?.hpMax);
+                return `na Raid${p != null ? `: ${r.hud?.bossName || 'Darkrai'} com ${p}% de vida` : ''}${r.hud?.endsAt > now ? `, sua estadia acaba em ${raidFmt(r.hud.endsAt - now)}` : ''}`;
+            }
+            return r.fase;
+        }
+        const s = raidSrv;
+        if (!s) return 'estado da Raid ainda não lido (o jogo avisa quando abrir)';
+        if (!s.active) return `nenhuma Raid aberta agora${raidLast ? ` · última: ${RAID_REASON_LABEL[raidLast.reason] || raidLast.reason || 'fim'}, ${fmtNum(Math.round(raidLast.damage))} de dano` : ''}`;
+        const p = raidPct(s.hpLeft, s.hpMax);
+        const base = `Raid aberta: ${s.bossName}${s.bossLevel ? ` Lv ${s.bossLevel}` : ''}${p != null ? `, ${p}% de vida` : ''}${s.endsAt ? `, termina às ${raidHora(s.endsAt)} (${raidFmt(s.endsAt - now)})` : ''}`;
+        const t = raidTried[s.key];
+        let extra = '';
+        if (raidDoneToday()) extra = 'tempo na arena de hoje esgotado (volta amanhã)';
+        else if (t?.done) extra = `encerrada para esta conta: ${t.done}`;
+        else if (!raidOn(d)) extra = 'entrada automática desligada';
+        else if (!raidActiveNow(now)) extra = 'menos de 2 min de Raid: não entra';
+        else if (t?.retryAt > now) extra = `tenta de novo em ${raidFmt(t.retryAt - now)}`;
+        else if (t?.nextAt > now) extra = `reentra em ${raidFmt(t.nextAt - now)}`;
+        else if (raidWaitNote) extra = `esperando: ${raidWaitNote}`;
+        else extra = 'entrando no próximo tique';
+        return `${base} · ${extra}${t?.entries ? ` · ${t.entries} ${t.entries === 1 ? 'entrada' : 'entradas'}` : ''}`;
+    }
+    function raidLastLine() {
+        const parts = [];
+        if (raidLast) parts.push(`Última participação (${raidHora(raidLast.at)}): ${RAID_REASON_LABEL[raidLast.reason] || raidLast.reason || 'fim'} · ${fmtNum(Math.round(raidLast.damage))} de dano${raidLast.rank ? ` · #${raidLast.rank} de ${raidLast.participants}` : ''} · ${raidFmt(raidLast.stayedMs)} na arena`);
+        if (raidLootLast) parts.push(`Recompensa (${raidHora(raidLootLast.at)}): ${raidLootLast.items.map(i => `${fmtNum(i.qty)}× ${i.name}`).join(', ') || 'sem itens'}${raidLootLast.buff ? ` + ${raidLootLast.buff.pct}% XP por ${raidLootLast.buff.hours} h` : ''}`);
+        return parts.join(' · ') || 'Nenhuma participação vista nesta carga.';
+    }
+    // Botão "Entrar agora": Raid aberta → entra já (ignora o limite de reentradas e o dia esgotado; o servidor decide).
+    function raidNow() {
+        if (raidRun) return { ok: false, msg: `Já há uma participação em andamento (${raidRun.fase}).` };
+        if (!raidSrv) { raidAskState('botão'); return { ok: false, msg: 'Estado da Raid ainda não lido: pedi ao jogo, tente de novo em alguns segundos.' }; }
+        if (!raidSrv.active) return { ok: false, msg: 'Nenhuma Raid aberta agora.' };
+        if (raidSrv.endsAt && raidSrv.endsAt <= Date.now()) return { ok: false, msg: 'A Raid já terminou.' };
+        const bloqueio = raidBlockedReason();
+        if (bloqueio) return { ok: false, msg: `Não dá agora: ${bloqueio}.` };
+        const t = raidTriedFor(raidSrv.key);
+        t.retryAt = 0; t.nextAt = 0;
+        raidEnterFlow('botão');
+        return { ok: true, msg: `Entrando na Raid do ${raidSrv.bossName}…` };
+    }
+
     // ---- Invasão Rocket (v3.50.0): entrar na invasão de Cerulean a cada janela, voltar para a hunt e trocar os Rocket Plans com a Officer Jenny ----
     // Patch notes de 27/10/2026 (colado pelo usuário) + bundle do mesmo dia (módulo de constantes `tD` no chunk compartilhado; HUD do jogo
     // `hh`/`hp`/`hu`/`hx`/`tW`/`ii`; janela `lK` da Officer Jenny). Protocolo em docs/mensagens-do-jogo.md → "Invasão Rocket".
@@ -7656,9 +8242,12 @@
         for (const s of INV_KANTO_STEPS) if (Math.abs(t - s) < Math.abs(t - best)) best = s;
         return best === 150 ? 'Outland' : `Kanto ${best}`;
     }
-    function invBusy() { return Boolean(invRun); }
+    // v3.64.0: `invBusy()`/`invBusyReason()` respondem também pela Raid Mundial (mesmas esperas: rotas, viagem, recarga, parada na
+    // cidade, troca de líder, cura). Quem precisa só da invasão usa `invRunActive()`.
+    function invRunActive() { return Boolean(invRun); }
+    function invBusy() { return Boolean(invRun) || (typeof raidBusy === 'function' && raidBusy()); }
     function invBusyReason() {
-        if (!invRun) return null;
+        if (!invRun) return typeof raidBusyReason === 'function' ? raidBusyReason() : null;
         if (invRun.fase === 'dentro') return `Invasão Rocket em andamento (wave ${invRun.wave || '?'}, ${invRun.kills || 0} Rockets)`;
         return `Invasão Rocket: ${invRun.fase}`;
     }
@@ -7733,7 +8322,7 @@
     // Hunt para onde voltar depois da rodada: a hunt atual (fora de cidade/arena/invasão) ou o destino da parada na cidade.
     function invFromSlug() {
         const h = normalize(huntSlug || '');
-        if (h && !CITY_SLUGS.includes(h) && !invIsRaid(h) && !(typeof bossIsArena === 'function' && bossIsArena(h))) return h;
+        if (h && !CITY_SLUGS.includes(h) && !invIsRaid(h) && !(typeof raidIsSlug === 'function' && raidIsSlug(h)) && !(typeof bossIsArena === 'function' && bossIsArena(h))) return h;
         const t = typeof idleTarget === 'function' ? idleTarget() : null;   // clã > rota > última hunt > hunt padrão
         return t?.slug || null;
     }
@@ -7742,6 +8331,7 @@
         if (typeof holdReason === 'function' && holdReason()) return holdReason();
         if (typeof humanPending === 'function' && humanPending()) return 'verificação humana pendente';
         if (typeof bossBusyReason === 'function' && bossBusyReason()) return bossBusyReason();
+        if (typeof raidBusyReason === 'function' && raidBusyReason()) return raidBusyReason();   // v3.64.0
         if (typeof tripRunning !== 'undefined' && tripRunning) return 'viagem à cidade em andamento';
         if (typeof healBusy === 'function' && healBusy()) return 'cura na Nurse Joy em andamento';
         if (typeof idleRunning !== 'undefined' && idleRunning) return 'volta da cidade parada em andamento';
@@ -9789,9 +10379,11 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             if (message.type === 'field') healOnField(message);
             if (message.type === 'field') invOnField(message);   // v3.50.0: wave da Invasão Rocket
             if (message.type === 'field-init' && message.slug && !huntSlug) setHunt(message.slug); // script carregou depois do enter-hunt
+            raidOnField(message);   // v3.64.0: HUD do Darkrai e da estadia na Raid
             idleOnAlive();
             return;
         }
+        if (typeof message.type === 'string' && message.type.startsWith('raid-')) { raidOnMessage(message); return; }   // v3.64.0: Raid Mundial (estado, fim, recompensa, recusa)
         if (typeof message.type === 'string' && message.type.startsWith('invasion-')) { invOnMessage(message); return; }   // v3.50.0: Invasão Rocket (janela, energia, recusa, fim)
         if (message.type === 'auto-boss') { bossOnFrame(message); return; }   // v3.43.0: Auto Boss do jogo (estado/encerramento)
         if (message.type === 'gym-global') { gymOnGlobal(message); return; }   // v3.45.0: anúncio global do ginásio (só log)
@@ -9874,7 +10466,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
     function holdNotify() { if (onHoldChange) { try { onHoldChange(); } catch { /* painel fechado */ } } }
     function holdActive() { return Boolean(holdRun); }
     function holdReason() { return holdRun ? 'esperando na cidade (botão do painel)' : null; }
-    function holdIsHunt(slug) { const h = normalize(slug || ''); return Boolean(h) && !CITY_SLUGS.includes(h) && !(typeof bossIsArena === 'function' && bossIsArena(h)) && !(typeof invIsRaid === 'function' && invIsRaid(h)); }
+    function holdIsHunt(slug) { const h = normalize(slug || ''); return Boolean(h) && !CITY_SLUGS.includes(h) && !(typeof bossIsArena === 'function' && bossIsArena(h)) && !(typeof invIsRaid === 'function' && invIsRaid(h) || typeof raidIsSlug === 'function' && raidIsSlug(h)); }
     const holdHora = (at) => new Date(at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
     function holdSave() {
         try { if (holdRun) localStorage.setItem(HOLD_KEY, JSON.stringify(holdRun)); else localStorage.removeItem(HOLD_KEY); }
@@ -10004,6 +10596,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         setTimeout(requestSupplies, SUPPLY_AFTER_SOCKET_MS);
         setTimeout(() => sellRequestBag(), SUPPLY_AFTER_SOCKET_MS + 500);   // v3.55.0: mochila para a lista de venda (com a venda ligada)
         setTimeout(bossOnSocket, BOSS_AFTER_SOCKET_MS);   // v3.43.0: Auto Boss pedido? pergunta ao servidor se ainda roda
+        setTimeout(raidOnSocket, 4500);  // v3.64.0: estado da Raid Mundial (só com a Raid ligada ou participação em andamento)
         setTimeout(invOnSocket, 4000);   // v3.50.0: Energia Vermelha (só com a invasão ligada ou rodada em andamento)
         requestPokes(POKES_AFTER_SOCKET_MS);
         armResume(RESUME_AFTER_SOCKET_MS);
@@ -10031,7 +10624,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         trackSocket(this);
         lastSocket = this;
         // v3.51.1: a invasão barra o enter-hunt duplicado da tela (um só por rodada); barrado = não vai ao servidor nem ao handleOutgoing
-        try { if (typeof data === 'string' && data[0] === '{' && typeof invOutgoingBlocked === 'function' && invOutgoingBlocked(JSON.parse(data))) return; } catch (err) { console.warn(TAG, 'Erro ao filtrar envio:', err); }
+        try { if (typeof data === 'string' && data[0] === '{' && ((typeof invOutgoingBlocked === 'function' && invOutgoingBlocked(JSON.parse(data))) || (typeof raidOutgoingBlocked === 'function' && raidOutgoingBlocked(JSON.parse(data))))) return; } catch (err) { console.warn(TAG, 'Erro ao filtrar envio:', err); }
         try { handleOutgoing(data); } catch (err) { console.warn(TAG, 'Erro ao ler envio:', err); }
         return nativeSend.call(this, data);
     };
@@ -10239,6 +10832,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
         { id: 'farm', icon: '🎒', label: 'Farm' },
         { id: 'ginasio', icon: '🏟', label: 'Ginásio' },
         { id: 'invasao', icon: '🚀', label: 'Invasão' },
+        { id: 'raid', icon: '🌑', label: 'Raid' },          // v3.64.0: Raid Mundial do Darkrai
         { id: 'boss', icon: '👹', label: 'Boss' },          // v3.60.0: Auto Boss em aba própria (antes na Treino)
         { id: 'sistema', icon: '⚙', label: 'Sistema' },
     ];
@@ -10307,6 +10901,11 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
                 if (d.invAlerts !== false && !temAlertas) return 'warn';
                 return 'on';
             }
+            case 'raid': {
+                if (!raidOn(d)) return 'off';
+                if (d.raidAlerts !== false && !temAlertas) return 'warn';
+                return 'on';
+            }
             case 'boss': {
                 if (!bossOn(d)) return bossBusy() ? 'warn' : 'off';
                 if (d.bossAlerts !== false && !temAlertas) return 'warn';
@@ -10331,6 +10930,7 @@ Em ${new Date().toLocaleString('pt-BR')}`, color: erro ? 0xed4245 : 0xfee75c }],
             `Farm: ${d.farmEnabled && farmList(d).length ? `${farmList(d).filter(farmEntryDone).length}/${farmList(d).length} itens` : 'desligado'}`,
             `Ginásios: ${d.gymEnabled ? ['insígnias', d.gymBonus !== false ? 'bônus' : '', d.gymRedo !== false ? 'refaz a cada 48 h' : ''].filter(Boolean).join(' + ') : 'desligados'}`,
             `Invasão: ${d.invEnabled ? `entra${invHours(d).length ? ` às ${invHours(d).map(h => `${h}h`).join(', ')}` : ' em toda janela'}${invKeepEnergy(d) ? `, reserva ${invKeepEnergy(d)}` : ''}` : 'desligada'}${d.invJennyEnabled ? ` + Jenny (${invJennyOffer(d) || 'sem oferta'})` : ''}`,
+            `Raid: ${raidOn(d) ? `entra no Darkrai${raidReenterMax(d) ? ` (reentra até ${raidReenterMax(d)}x)` : ' (uma vez por Raid)'}` : 'desligada'}`,
             `Boss: ${bossOn(d) ? `retoma o Auto Boss${d.bossResumeOnLoss ? ' (até após derrota)' : ''}` : 'retomada desligada'}${d.bossRepeat !== false ? ' + repete até acabar as fichas' : ''}${d.bossReturnHunt !== false ? ' + volta para a hunt' : ''}${bossActive() ? ' · rodando' : ''}`,
             `Recarga: ${d.reloadEnabled ? `${d.reloadEveryMin}${d.reloadEveryMaxMin > d.reloadEveryMin ? `–${d.reloadEveryMaxMin}` : ''} min` : 'desligada'}`,
             holdActive() ? '⏸ esperando na cidade (botão do painel)' : '',
@@ -10737,6 +11337,20 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <div class="dn-status"><span>👮</span><span id="pg-dn-inv-jenny-status"></span></div>
                     </div>
                 </section>
+                <section class="dn-pane" data-pane="raid" hidden>
+                    <div class="dn-section">
+                        <h3>🌑 Raid Mundial: Darkrai em Cerulean</h3>
+                        <label class="dn-toggle"><input id="pg-dn-raid" type="checkbox"><span class="sw"></span>Entrar na Raid sozinho enquanto ela estiver aberta <span class="dn-hint">(batalha cooperativa, até 30 jogadores por instância; o tempo na arena é limitado por dia)</span></label>
+                        <div class="dn-inline">Reentrar até <input id="pg-dn-raid-reenter" class="dn-input dn-input--sm" type="number" min="0" max="20" step="1" placeholder="3"> vezes por Raid <span class="dn-hint">(quando o time cai ou o servidor reinicia; 0 = entra uma vez só)</span></div>
+                        <label class="dn-toggle"><input id="pg-dn-raid-alerts" type="checkbox"><span class="sw"></span>Avisar no canal de Alertas <span class="dn-hint">(dano, posição e tempo de cada participação; recompensa; conquista; entrada que falhou)</span></label>
+                        <p class="dn-help">Quem abre e fecha a Raid é a equipe do jogo (o anúncio diz o horário); o script segue o aviso do servidor. Quando ela abre, sai da hunt, cura na Joy, entra pela mesma mensagem do botão RAID da cidade e fica lá enquanto o jogo deixar. Quando a participação acaba, fecha a janela de resultado, cura e: se o time caiu (ou o servidor reiniciou) entra de novo, até o limite acima; senão volta para a hunt de onde saiu. "Seu tempo na arena acabou" vale para o dia todo: só tenta de novo amanhã. Boss derrotado ou Raid encerrada: não entra mais nela. A recompensa chega depois, quando a Raid termina para todos, e vai para o aviso. Enquanto dura, viagem à cidade, parada na cidade, recarga, rotas, troca de líder e a Invasão Rocket esperam. Entrada feita na mão pelo botão RAID da tela também é acompanhada e volta.</p>
+                        <div class="dn-actions">
+                            <button type="button" class="dn-btn dn-btn--sm" id="pg-dn-raid-now" title="Com a Raid aberta: entra agora (ignora o limite de reentradas e o dia esgotado; o jogo decide).">🌑 Entrar agora</button>
+                            <button type="button" class="dn-btn dn-btn--ghost dn-btn--sm" id="pg-dn-raid-read" title="Pergunta ao jogo se há Raid aberta.">⟳ Ler estado</button>
+                        </div>
+                        <div class="dn-status col"><div id="pg-dn-raid-status"></div><div id="pg-dn-raid-last" class="dn-hint"></div></div>
+                    </div>
+                </section>
                 <section class="dn-pane" data-pane="boss" hidden>
                     <div class="dn-section">
                         <h3>👹 Iniciar o Auto Boss</h3>
@@ -10935,6 +11549,9 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                 invJennyEnabled: $('#pg-dn-inv-jenny').checked,
                 invJennyOffer: $('#pg-dn-inv-jenny-offer').value,
                 invJennyKeep: Math.max(0, parseInt($('#pg-dn-inv-jenny-keep').value, 10) || 0),
+                raidEnabled: $('#pg-dn-raid').checked,
+                raidReenterMax: $('#pg-dn-raid-reenter').value.trim() === '' ? RAID_REENTER_DEFAULT : Math.max(0, Math.min(RAID_REENTER_MAX, parseInt($('#pg-dn-raid-reenter').value, 10) || 0)),
+                raidAlerts: $('#pg-dn-raid-alerts').checked,
                 bossResumeEnabled: $('#pg-dn-boss').checked,
                 bossResumeOnLoss: $('#pg-dn-boss-loss').checked,
                 bossAlerts: $('#pg-dn-boss-alerts').checked,
@@ -11411,6 +12028,24 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             if (d.invJennyEnabled && !invJenny && !invJennyFailedAt && !invJennyWorking) invJennyRead('painel');   // lista as ofertas para o menu
         }
         onInvChange = () => { if (!panel.hidden) renderInv(); };
+        // ---- Raid Mundial (v3.64.0) ----
+        function renderRaid() {
+            const d = current();
+            $('#pg-dn-raid-status').textContent = `Raid${raidOn(d) ? '' : ' (desligada)'}: ${raidStatus(d)}`;
+            $('#pg-dn-raid-last').textContent = raidLastLine();
+        }
+        onRaidChange = () => { if (!panel.hidden) renderRaid(); };
+        setInterval(() => { if (!panel.hidden && loadUi().tab === 'raid') renderRaid(); }, 5000);   // contagens (estadia, fim da Raid)
+        $('#pg-dn-raid-now').onclick = () => {
+            const r = raidNow();
+            flash(`${r.ok ? '✔' : '⚠'} ${r.msg}`, r.ok ? 'ok' : 'warn', 15000);
+            renderRaid();
+        };
+        $('#pg-dn-raid-read').onclick = () => {
+            const ok = raidAskState('botão');
+            flash(ok ? '🌑 Perguntei ao jogo se há Raid aberta…' : '⚠ Socket do jogo fechado: recarregue o painel.', ok ? 'info' : 'warn', 6000);
+            setTimeout(renderRaid, 1500);
+        };
         // ---- Breeding (v3.29.0) ----
         const breedEsc = (v) => String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
         function breedBoxOptions() {
@@ -11946,7 +12581,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
 
         // ---- preencher e redesenhar tudo ----
         function renderLive() {
-            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderMarket(); renderHold(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderEvolve(); renderSlot(); renderBoss(); renderInv(); renderBreed(); renderGuild(); renderFarm(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
+            renderChannels(); renderQuality(); renderBalls(); renderSupply(); renderHeal(); renderIdle(); renderMarket(); renderHold(); renderSellCount(); renderPokeSell(); renderRoute(); renderDaily(); renderGift(); renderEvolve(); renderSlot(); renderBoss(); renderInv(); renderRaid(); renderBreed(); renderGuild(); renderFarm(); renderCatch(); renderClan(); renderDeposit(); renderTrip(); renderState();
         }
         function fill() {
             $('#pg-dn-hook').value = cfg.webhookUrl;
@@ -12034,6 +12669,9 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-inv-jenny').checked = Boolean(cfg.invJennyEnabled);
             renderInvOffers(cfg.invJennyOffer || '');
             $('#pg-dn-inv-jenny-keep').value = invJennyKeep(cfg) || '';
+            $('#pg-dn-raid').checked = Boolean(cfg.raidEnabled);
+            $('#pg-dn-raid-reenter').value = String(raidReenterMax(cfg));
+            $('#pg-dn-raid-alerts').checked = cfg.raidAlerts !== false;
             $('#pg-dn-boss').checked = cfg.bossResumeEnabled !== false;
             $('#pg-dn-boss-loss').checked = Boolean(cfg.bossResumeOnLoss);
             $('#pg-dn-boss-alerts').checked = cfg.bossAlerts !== false;
@@ -12463,6 +13101,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
     holdLoad();   // v3.44.0: espera na cidade ligada na carga anterior continua (antes de loadResume: a volta da recarga respeita)
     loadResume(); // antes do painel e dos timers: restaura o que a carga anterior guardou
     bossLoad();   // v3.43.0: Auto Boss pedido na carga anterior (o frame do auto-boss-get decide se ainda roda)
+    raidLoad();   // v3.64.0: Raid Mundial (dia esgotado, tentativas, participação em andamento na carga anterior)
     invLoad();    // v3.50.0: rodada da Invasão Rocket em andamento na carga anterior (hunt de volta e progresso)
     if (cfg.reloadEnabled) scheduleReload();
     buildUI();
@@ -12485,6 +13124,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
     setTimeout(humanSniff, 15000);  // v3.40.0: lê o prazo da verificação humana uma vez (REST) para confirmar o formato no log
     setInterval(humanWatchTick, HUMAN_WATCH_MS);   // v3.40.0: janela "Confirme que você é humano" / widget do Turnstile aberto
     setInterval(bossTick, BOSS_TICK_MS);   // v3.43.0: sessão do Auto Boss muda sem frame há 10 min: pergunta ao servidor
+    setInterval(raidTick, RAID_TICK_MS);   // v3.64.0: Raid Mundial (entrada enquanto aberta, fim da participação)
     setInterval(invTick, INV_TICK_MS);   // v3.50.0: Invasão Rocket (entrada por janela, fim da rodada, Officer Jenny)
     if (cfg.breedEnabled) setTimeout(() => breedTick(true), 9000);   // 1ª leitura da incubadora logo após a carga
     if (cfg.slotEnabled) setTimeout(() => slotTick(true), 8000);   // 1ª leitura da slot machine logo após a carga

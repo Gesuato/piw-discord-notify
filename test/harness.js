@@ -1562,7 +1562,7 @@ function loadSellModule(cfg, init) {
         withoutPokeGridSellGuard: (fn) => fn(),
         tripCity: () => init.city || 'cerulean',
         normalize,
-        noteHuntChange: noop, invOnHuntChange: noop, catchOnHuntChange: noop, guildOnHuntChange: noop, farmOnHuntChange: noop, idleOnHuntChange: noop, holdOnHuntChange: noop, healOnLeave: noop,
+        noteHuntChange: noop, invOnHuntChange: noop, raidOnHuntChange: noop, catchOnHuntChange: noop, guildOnHuntChange: noop, farmOnHuntChange: noop, idleOnHuntChange: noop, holdOnHuntChange: noop, healOnLeave: noop,
         setTimeout: (fn, ms) => { fn(); return 1; },
         console,
     };
@@ -1576,4 +1576,103 @@ function loadSellModule(cfg, init) {
     return { api, state, cfg, clock };
 }
 
-module.exports = { loadSellModule, loadMarketModule, loadProfModule, loadInvasionModule, loadGymModule, loadHoldModule, loadBossModule, loadHumanModule, loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };
+// Extrai o módulo "Raid Mundial" (v3.64.0). Timers com prazo absoluto: `state.drain(ms)` avança o relógio disparando, em ordem, todo
+// timer que vence dentro de `ms` (inclusive os criados no caminho). `sendGame` com enter-hunt chama `setHunt` (como o handleOutgoing) com
+// `init.autoHunt !== false`; `nudgeClientToHunt` faz a tela mandar o enter-hunt pelo filtro do socket (`raidOutgoingBlocked`), e
+// `nudgeClientToCity` faz a tela mandar `set-city` (com `init.telaCity !== false`). `state.env` liga os bloqueios (hold, human, boss, inv,
+// tripRunning, heal). `init.dom` = `document` falso da janela de resultado. `init.lastRealHunt` alimenta o `idleTarget` falso.
+const RD_START = '    // ---- Raid Mundial';
+const RD_END = '    // ---- Invasão Rocket';
+
+function loadRaidModule(cfg, init) {
+    init = init || {};
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const a = src.indexOf(RD_START), b = src.indexOf(RD_END);
+    if (a < 0 || b < 0 || b < a) throw new Error('marcadores do módulo da Raid não encontrados no script');
+    const mod = src.slice(a, b);
+    const clock = { now: init.now || Date.UTC(2026, 10, 18, 23, 0, 0) };   // 20:00 de Brasília
+    const store = Object.assign({}, init.store || {});
+    const state = { logs: [], hooks: [], timers: [], sent: [], switches: [], blocked: [], huntNudges: [], cityNudges: 0, store, clock, env: { tripRunning: false, hold: false, human: false, boss: null, heal: false, inv: false } };
+    let nextId = 1;
+    const tick = () => new Promise(r => setImmediate(r));
+    state.flush = async () => { for (let i = 0; i < 4; i++) await tick(); };
+    state.drain = async (ms) => {
+        const end = clock.now + ms;
+        await state.flush();
+        for (let guard = 0; guard < 500; guard++) {
+            const due = state.timers.filter(t => t.at <= end).sort((x, y) => x.at - y.at || x.id - y.id)[0];
+            if (!due) break;
+            state.timers = state.timers.filter(t => t !== due);
+            if (due.at > clock.now) clock.now = due.at;
+            await due.fn();
+            await state.flush();
+        }
+        clock.now = end;
+        await state.flush();
+    };
+    const FakeDate = class extends Date {
+        constructor(...args) { super(...(args.length ? args : [clock.now])); }
+        static now() { return clock.now; }
+    };
+    let apiRef = null;
+    const CITY = ['cerulean', 'pewter', 'viridian', 'cassino', 'arena_pvp', 'goldenrod', 'shopping'];
+    const ctx = {
+        cfg: Object.assign({ raidEnabled: true, raidReenterMax: 3, raidAlerts: true }, cfg || {}),
+        normalize: (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim(),
+        logEvent: (k, d) => state.logs.push([k, d]),
+        postWebhook: (k, p, m) => { state.hooks.push({ kind: k, content: p.content || '', title: p.embeds?.[0]?.title || '', desc: p.embeds?.[0]?.description || '', meta: m }); return Promise.resolve(true); },
+        playerName: () => 'Teste',
+        fmtNum: (n) => Number(n).toLocaleString('pt-BR'),
+        sendGame: (obj) => {
+            state.sent.push(obj);
+            if (apiRef && obj) {
+                if (obj.type === 'enter-hunt' && init.autoHunt !== false) apiRef.setHunt(obj.slug);
+                if (obj.type === 'leave-hunt') apiRef.leaveHunt();
+                if (obj.type === 'set-city') apiRef.onSetCity();
+            }
+            return init.socket !== false;
+        },
+        switchHunt: (slug, tentativa, origem) => { state.switches.push({ slug, tentativa, origem }); if (apiRef) apiRef.setHunt(slug); return true; },
+        nudgeClientToHunt: (slug) => { state.huntNudges.push(slug); if (init.tela === false) return false; if (init.autoHunt !== false && apiRef) apiRef.telaEnter(); return true; },
+        nudgeClientToCity: () => { state.cityNudges++; if (init.telaCity !== false && apiRef) state.timers.push({ id: nextId++, at: clock.now + 1000, fn: () => { state.sent.push({ type: 'set-city', slug: 'cerulean', pelaTela: true }); apiRef.onSetCity(); } }); return true; },
+        huntSlug: init.huntSlug || null,
+        huntSwitch: null,
+        CITY_SLUGS: CITY,
+        localStorage: { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); }, removeItem: (k) => { delete store[k]; } },
+        setTimeout: (fn, ms) => { const id = nextId++; state.timers.push({ fn, at: clock.now + (Number(ms) || 0), id }); return id; },
+        clearTimeout: (id) => { state.timers = state.timers.filter(t => t.id !== id); },
+        Date: FakeDate,
+        document: init.dom,
+        holdReason: () => (state.env.hold ? 'esperando na cidade pelo botão do painel' : null),
+        holdActive: () => Boolean(state.env.hold),
+        humanPending: () => Boolean(state.env.human),
+        bossBusyReason: () => state.env.boss,
+        bossIsArena: (slug) => /_boss$/.test(String(slug || '')),
+        invIsRaid: (slug) => String(slug || '') === 'rocket_cerulean',
+        invRunActive: () => Boolean(state.env.inv),
+        healBusy: () => Boolean(state.env.heal),
+        idleTarget: () => (init.lastRealHunt ? { slug: init.lastRealHunt } : { motivo: 'não sei de que hunt veio' }),
+        tripInHunt: () => { const h = apiRef?.hunt(); return Boolean(h) && !CITY.includes(h); },
+    };
+    const names = Object.keys(ctx);
+    const factory = new Function(...names, 'tripRunningRef', mod.replace(/typeof tripRunning !== 'undefined' && tripRunning/g, 'tripRunningRef()') + `
+        return {
+            tick: raidTick, onMessage: raidOnMessage, onField: raidOnField, onHuntChange: raidOnHuntChange, onSetCity: raidOnSetCity, onSocket: raidOnSocket,
+            load: raidLoad, busy: raidBusy, busyReason: raidBusyReason, isSlug: raidIsSlug, status: raidStatus, lastLine: raidLastLine, now: raidNow,
+            blockedReason: raidBlockedReason, outgoingBlocked: raidOutgoingBlocked, huntFailed: raidHuntFailed, reenterMax: raidReenterMax,
+            run: () => raidRun, srv: () => raidSrv, tried: () => raidTried, last: () => raidLast, loot: () => raidLootLast, doneDay: () => raidDoneDay, day: raidDay,
+            hunt: () => huntSlug, setHunt: (s) => { huntSlug = s; raidOnHuntChange(s); }, leaveHunt: () => { huntSlug = null; },
+            RAID_SLUG, RAID_TICK_MS, RAID_ENTER_DELAY_MS, RAID_CONFIRM_MS, RAID_GONE_MS, RAID_REENTER_DELAY_MS, RAID_REFUSED_RETRY_MS, RAID_MAX_FAILS, RAID_KEY, RAID_BLOCK_AFTER_MS,
+        };`);
+    const api = factory(...names.map(k => ctx[k]), () => state.env.tripRunning);
+    apiRef = api;
+    // a TELA manda `enter-hunt raid_cerulean` (botão RAID ou hunt-resume): passa pelo filtro do socket como no script
+    api.telaEnter = () => {
+        const m = { type: 'enter-hunt', slug: 'raid_cerulean', pelaTela: true };
+        if (api.outgoingBlocked(m)) { state.blocked.push(m); return false; }
+        state.sent.push(m); api.setHunt(m.slug); return true;
+    };
+    return { api, state, clock, cfg: ctx.cfg };
+}
+
+module.exports = { loadRaidModule, loadSellModule, loadMarketModule, loadProfModule, loadInvasionModule, loadGymModule, loadHoldModule, loadBossModule, loadHumanModule, loadFarmModule, loadGuildModule, loadBreedModule, loadSlotModule, loadEvolveModule, loadDetailsModule, loadGiftModule, loadIdleModule, loadHealModule, loadSupplyModule, loadDepositModule, loadClanModule, loadLevelModule, loadReloadModule, loadDailyModule, loadCatchModule, loadPokeSellModule, loadBallsModule, loadTripModule, team, assert };

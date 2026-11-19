@@ -548,6 +548,20 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   manda `joy-heal` + `switchHunt(slug, 1, 'boss-volta')` 5 s depois para `from` (hunt de onde o Iniciar do painel saiu) ou `idleTarget()`;
   "Esperar na cidade" recusa. Logs `auto-boss-bloco`, `auto-boss-volta`; o aviso do fim diz "em N blocos". Caso 14 do teste (harness:
   `bossRepeat`/`bossReturnHunt` desligados por padrão, `init.idleSlug`, `state.switches`).
+- Raid Mundial (v3.64.0, aba própria 🌑 Raid (`TABS` id `raid`), `cfg.raidEnabled`/`raidReenterMax` (padrão 3)/`raidAlerts`; módulo
+  `// ---- Raid Mundial` antes da Invasão Rocket; anúncio e bundle de 18/11/2026, `docs/mensagens-do-jogo.md` → "Raid Mundial"; formatos
+  ainda NÃO vistos no log — `raid-campos` registra as chaves): Darkrai em Cerulean, aberta/fechada pela administração (o script segue SÓ o
+  `raid-state`, resposta ao `raid-state-get`). A Raid é a hunt de slug fixo `raid_cerulean` (botão RAID da cidade = só viaja + `enter-hunt`).
+  `raidTick` (30 s): aberta há 20 s com > 2 min pela frente, dia não esgotado, `raidBlockedReason()` nulo (inclui `invRunActive()`) →
+  `raidEnterFlow` (leave-hunt + `nudgeClientToCity`, `joy-heal`, `hunt-resume` sintético para a TELA mandar o único enter-hunt; sem a hunt em
+  5 s manda ele). `raidOutgoingBlocked` (no interceptador do `send`, junto do `invOutgoingBlocked`) barra o enter-hunt repetido. `raid-end`
+  → log `raid-fim`, aviso, fecha `.rdw-window`, cura e reentra (`wipe`/`restart`/saída sem frame, até `raidReenterMax` por Raid) ou volta
+  com `switchHunt(from, 1, 'raid-volta')`; `time` ("Volte amanhã") marca o dia de Brasília (`raidDoneDay`), `defeated`/`ended` encerram a
+  Raid; recusa = 5 min, 3 falhas desiste. Estado em `localStorage.pgDiscordNotifyRaid` (dia, tentativas, participação; fora do cfg).
+  `invBusy()`/`invBusyReason()` respondem TAMBÉM pela Raid (todas as rotas, viagem, recarga, cura, troca de líder já esperam a invasão);
+  só a invasão = `invRunActive()`. `raidIsSlug` entra nas mesmas exclusões do `invIsRaid` (lastRealHunt, retomada, espera, profissão).
+  `raid-loot` (itens + buff) e `raid-achievement` viram aviso. Teste: `node test/raid.test.js` (`loadRaidModule`: `// ---- Raid Mundial`
+  até `// ---- Invasão Rocket`; timers com prazo, `state.drain(ms)`; `state.env` liga os bloqueios; `init.lastRealHunt`; `init.dom`).
 - Ginásios (v3.45.0, aba própria 🏟 Ginásio (`TABS` id `ginasio`), `cfg.gymEnabled`/`gymBonus`/`gymRedo`/`gymAlerts`; módulo `// ---- Ginásio` antes do
   Auto Boss; protocolo CONFIRMADO no log em 21/10/2026 na conta3, `docs/mensagens-do-jogo.md` → "Ginásio"): 18 ginásios (8 Kanto + 10
   Johto), tudo por REST — `GET /api/game/gyms` (`details[].owned/cooldownMs/bonus.state/npcTeam`, `badges/total`, `badgePerk` = +1% XP

@@ -478,6 +478,29 @@ chunk compartilhado (módulo `tD`: `ROCKET_SLUG:"rocket_cerulean"`, `INVASION_EV
   `invasao-entrada { fase }`, `invasao-wave`, `invasao-abate`, `invasao-recusada`, `invasao-fim`, `invasao-volta`, `invasao-lembrada`,
   `jenny-campos`, `jenny`, `jenny-cidade`, `jenny-troca`, `jenny-erro`. Teste: `node test/invasion.test.js`.
 
+### Raid Mundial — Darkrai (bundle em 18/11/2026, anúncio do mesmo dia; formatos ainda NÃO vistos no log — `raid-campos`)
+
+Evento cooperativo: o Darkrai (`RAID_BOSS { key:'darkrai', pokeId:10491, level:1000, hpMult:1e6, quality:1.7, ivTotal:150 }`) invade
+Cerulean; até 30 jogadores por instância. Quem abre e fecha é a administração (`/api/admin/raid { action:'start'|'stop', minutes, level }`,
+`stayMs` = tempo máximo por jogador), não um relógio fixo.
+
+- Estado: a tela manda `raid-state-get` ao montar (componente `dN`); servidor → `raid-state { active, endsAt, bossName, bossLevel, hpLeft,
+  hpMax, portrait, ... }`. O botão RAID (`.raid-cta`) só aparece numa cidade, com `active` e `endsAt` no futuro.
+- Entrar: o clique (`i8`) recusa com o líder em hp 0 e só viaja para o mapa `raid_cerulean` (`RAID_SLUG`, desenho de `cerulean_novo`); o
+  componente da hunt manda `enter-hunt { slug:'raid_cerulean' }`. Recusa: `raid-refused { message }` (a tela mostra em aviso "Raid").
+- Lá dentro: `field-init { raid }` e `field` com `raid { bossName, bossLevel, hpLeft, hpMax, endsAt (fim da estadia do jogador), raidEndsAt,
+  asleepUntil, portrait }`; `bossCasts[]` (Dread Sphere, Endless Nightmare, Great Shadow Punch, Dark Void), `peers[]`, `peerHits[]`.
+- Fim da participação: `raid-end { reason, bossName, damage, totalDamage, hpLeft, hpMax, rank, participants, stayedMs, top[{ name, damage }] }`
+  → janela "Resultado da Raid" (`.rdw-window`, botão `button.rdw-ok` "Continuar" = só `onClose`). Motivos (`eh`): `time` "Seu tempo na arena
+  acabou. Volte amanhã!", `wipe` "Todo o seu time caiu diante do Darkrai!", `left` "Você saiu da Raid.", `defeated` "O Darkrai foi DERROTADO!
+  O servidor inteiro venceu a Raid." (recompensa calculada quando os outros terminarem), `ended` "A Raid foi encerrada." (sem recompensa),
+  `restart` "O servidor reiniciou. Seu dano foi salvo.".
+- Recompensa (depois, em janela própria): `raid-loot { boss, look, items[{ itemId, item, qty, rare }] | item, itemId, qty, buff{ pct, hours } }`;
+  buff `raidwin` "A Derrota do Pesadelo" = +pct% de XP do treinador e do Pokémon por N h (ícone `nightmare_gem.png`).
+- `raid-achievement { wins, outfit, lookType, colors }` (10 vitórias = outfit, já vestida); `raid-announce { text }` (fala com `{nome}`).
+- Script (v3.64.0, aba 🌑 Raid): `raidTick` entra sozinho, `raidOutgoingBlocked` barra o enter-hunt repetido da tela, reentra após `wipe`/
+  `restart` até `raidReenterMax`, `time` marca o dia, volta com `switchHunt(from, 1, 'raid-volta')`.
+
 ### Mercado Global (bundle em 03/11/2026; formatos ainda NÃO vistos no log — `mercado-campos` registra as chaves)
 
 Janela "Mercado Global" (`window.market`), só para VIP (`vipGate`); o jogo deixa usar durante a hunt (usuário, 03/11/2026). Tudo por REST
