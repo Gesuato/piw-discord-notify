@@ -158,6 +158,23 @@ setTimeout(() => {
         $('#pg-dn-test').click(); log('testar2=' + $('#pg-dn-msg').textContent);
         $('#pg-dn-import').click(); $('#pg-dn-import-text').value = JSON.stringify({ webhookUrl: 'https://discord.com/api/webhooks/2/y', watchList: ['bagon'] }); $('#pg-dn-import-apply').click();
         log('import msg=' + $('#pg-dn-msg').textContent.slice(0, 160) + ' lista=' + $('#pg-dn-list').value + ' importBoxHidden=' + $('#pg-dn-import-box').hidden);
+        // Configs guardadas (v3.67.0): o import guardou a anterior; guardar com nome, carregar e voltar
+        {
+            const snaps = () => JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfgSnaps') || '[]');
+            const hookNow = () => JSON.parse(window.localStorage.getItem('pgDiscordNotifyCfg')).webhookUrl;
+            const autoOk = snaps().some(s => s.auto && /antes de importar/.test(s.name) && s.cfg.webhookUrl === 'https://discord.com/api/webhooks/1/x');
+            $('#pg-dn-snap-name').value = 'bagon'; $('#pg-dn-snap-save').click();
+            const bagon = snaps().find(s => s.name === 'bagon');
+            const antiga = snaps().find(s => s.auto);
+            $('#pg-dn-snap-sel').value = antiga.id; $('#pg-dn-snap-load').click();
+            const voltou = hookNow() === 'https://discord.com/api/webhooks/1/x';
+            $('#pg-dn-snap-sel').value = bagon.id; $('#pg-dn-snap-load').click();
+            const foi = hookNow() === 'https://discord.com/api/webhooks/2/y' && $('#pg-dn-list').value.includes('bagon');
+            $('#pg-dn-snap-sel').value = bagon.id; $('#pg-dn-snap-del').click(); $('#pg-dn-snap-del').click();
+            const excluiu = !snaps().some(s => s.name === 'bagon');
+            log('snaps auto=' + autoOk + ' voltou=' + voltou + ' foi=' + foi + ' excluiu=' + excluiu + ' total=' + snaps().length + ' msg=' + $('#pg-dn-msg').textContent.slice(0, 60));
+            if (!(autoOk && voltou && foi && excluiu)) throw new Error('Configs guardadas falharam');
+        }
         $('#pg-dn-import').click(); $('#pg-dn-import-paste').click();
         d.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); log('fechouEsc=' + panel.hidden + ' ui=' + window.localStorage.getItem('pgDiscordNotifyUi'));
         btn.click(); log('reabriu aba=' + panel.querySelector('.dn-tab[aria-selected=true]').dataset.tab);
@@ -418,7 +435,7 @@ setTimeout(() => {
             if (acoes3.length !== 2) errors.push('guild: depois de "já doou o máximo" não devia doar de novo no mesmo dia, veio ' + JSON.stringify(acoes3));
             const logG = JSON.parse(window.localStorage.getItem('pgDiscordNotifyLog') || '[]').filter(e => e.kind === 'guild-doacao').pop();
             if (!(logG && logG.data.ok === false && /máximo/.test(logG.data.erro))) errors.push('guild: log guild-doacao com o erro do jogo não gravado: ' + JSON.stringify(logG));
-            if (!/Small Stone/.test($('#pg-dn-guild-status').textContent) || !/Tributo/.test($('#pg-dn-guild-status').textContent)) errors.push('guild: status da aba não mostra o tributo');
+            if (!/Small Stone/.test($('#pg-dn-guild-status').textContent) || !/Tributo/.test($('#pg-dn-guild-status').textContent)) errors.push('guild: status da aba não mostra o tributo');
             // v3.50.0: aba Invasão: liga, horas, reserva e Jenny; salva; frames invasion-* chegam (janela, energia, fim sem rodada) e o status reflete
             panel.querySelector('.dn-tab[data-tab=invasao]').click();
             $('#pg-dn-inv').checked = true; fire($('#pg-dn-inv'), 'change');

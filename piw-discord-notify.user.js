@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PIW Discord Capture Notify
 // @namespace    piw-discord-notify
-// @version      3.66.4
+// @version      3.67.0
 // @author       Gesuato
 // @description  Notifica um webhook do Discord quando você captura um Pokémon (todos, uma lista ou shinys) no Poke Idle World. Feito para o injetor de scripts do PokeGrid.
 // @match        https://poke.idleworld.online/play
@@ -12,7 +12,7 @@
     'use strict';
 
     const TAG = '[PIW-DiscordNotify]';
-    const VERSION = '3.66.4';        // manter igual ao @version do cabeçalho
+    const VERSION = '3.67.0';        // manter igual ao @version do cabeçalho
     const LS_KEY = 'pgDiscordNotifyCfg';
 
     // ---- Configuração (persistida no localStorage do painel) --------
@@ -11755,6 +11755,13 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
                         <label class="dn-toggle"><input id="pg-dn-debug" type="checkbox"><span class="sw"></span>Debug no console</label>
                         <div class="dn-status"><span class="k">v${VERSION}</span><span class="r" id="pg-dn-socket"></span></div>
                     </div>
+                    <div class="dn-section" id="pg-dn-snap-box">
+                        <h3>Configs guardadas</h3>
+                        <p class="dn-help">Guarde a config inteira (com os canais) para voltar a ela depois. Importar ou carregar outra guarda a de agora sozinho, como "antes de …" (as 5 últimas). Fica só neste painel.</p>
+                        <div class="dn-inline"><input id="pg-dn-snap-name" class="dn-input" type="text" maxlength="40" placeholder="Nome (ex.: farm de raid)"><button type="button" class="dn-btn" id="pg-dn-snap-save" title="Guarda a config atual com este nome (mesmo nome = substitui).">💾 Guardar atual</button></div>
+                        <div class="dn-inline"><select id="pg-dn-snap-sel" class="dn-select"></select><button type="button" class="dn-btn dn-btn--primary" id="pg-dn-snap-load" title="Troca a config inteira por esta. A atual é guardada antes.">↩ Carregar</button><button type="button" class="dn-btn" id="pg-dn-snap-del">🗑 Excluir</button></div>
+                        <p class="dn-help" id="pg-dn-snap-status"></p>
+                    </div>
                 </section>
             </div>
             <div class="dn-foot">
@@ -13118,12 +13125,13 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             $('#pg-dn-import-box').hidden = true;
             $('#pg-dn-route-import-box').hidden = true;
             $('#pg-dn-route-share-box').hidden = true;
+            renderSnaps();
             renderLive();
         }
 
         // qualquer edição marca "não salvo" e recalcula resumos e badges
         const onEdit = (e) => {
-            if (e.target.closest('#pg-dn-import-box, #pg-dn-route-import-box, #pg-dn-route-share-box, #pg-dn-route-name-box') || e.target.id === 'pg-dn-route-sel' || e.target.id === 'pg-dn-sell-search' || e.target.id === 'pg-dn-raidfam-search' || e.target.id === 'pg-dn-sell-order' || e.target.id === 'pg-dn-boss-key' || e.target.id === 'pg-dn-boss-count') return;
+            if (e.target.closest('#pg-dn-import-box, #pg-dn-route-import-box, #pg-dn-route-share-box, #pg-dn-route-name-box, #pg-dn-snap-box') || e.target.id === 'pg-dn-route-sel' || e.target.id === 'pg-dn-sell-search' || e.target.id === 'pg-dn-raidfam-search' || e.target.id === 'pg-dn-sell-order' || e.target.id === 'pg-dn-boss-key' || e.target.id === 'pg-dn-boss-count') return;
             if (!e.target.matches('input, select, textarea')) return;
             dirty = true;
             renderDirty();
@@ -13164,6 +13172,7 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             // atalhos de edição num campo do painel são do campo: não deixa o jogo vê-los (o navegador cola/copia normalmente)
             if ((e.ctrlKey || e.metaKey) && ['v', 'c', 'x', 'a'].includes(String(e.key).toLowerCase()) && e.target.matches('input, textarea')) { e.stopPropagation(); return; }
             if (e.key === 'Escape') { e.stopPropagation(); togglePanel(false); return; }
+            if (e.key === 'Enter' && e.target.id === 'pg-dn-snap-name') { e.preventDefault(); $('#pg-dn-snap-save').click(); return; }
             if (e.key === 'Enter' && e.target.matches('input:not([type=checkbox])') && e.target.id !== 'pg-dn-sell-search') { e.preventDefault(); $('#pg-dn-save').click(); }
         });
 
@@ -13446,21 +13455,11 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             const desconhecidas = Object.keys(data).filter(k => !k.startsWith('_') && !(k in DEFAULTS) && !['sellProfiles', 'routes', 'routeName'].includes(k));
             for (const k of Object.keys(data)) if (k.startsWith('_')) delete data[k];
             const keepHooks = $('#pg-dn-import-keephooks').checked;
-            const mine = { webhookUrl: cfg.webhookUrl, webhookShiny: cfg.webhookShiny, webhookAlerts: cfg.webhookAlerts, webhookLevel: cfg.webhookLevel, webhookHuman: cfg.webhookHuman };
-            cfg = migrateCfg(Object.assign({}, DEFAULTS, data));   // v3.55.0: perfis por hunt de um export antigo viram a lista única (migrateCfg)
-            if (keepHooks) Object.assign(cfg, mine);
-            cfg.cfgVersion = 2;
-            saveCfg(cfg);
+            // v3.67.0: a config de agora vai para "Configs guardadas" antes de ser trocada (dá para voltar depois)
+            const backup = snapAdd(`antes de importar${origem.conta ? ` de ${origem.conta}` : ''}`, true);
+            if (!backup) { flash('✖ Não consegui guardar a config atual antes de importar (armazenamento cheio? exclua configs guardadas). Nada foi trocado.', 'error'); return; }
+            applyWholeCfg(data, keepHooks);
             if (dropsVindos.length) { for (const id of dropsVindos) droppedIds.add(id); saveDropped(); }   // drops conhecidos do "Guardar na cidade"
-            for (const k of Object.keys(ballAlerted)) delete ballAlerted[k];
-            for (const k of Object.keys(autoBuyAttempted)) delete autoBuyAttempted[k];
-            for (const k of Object.keys(supplyAttempted)) delete supplyAttempted[k];
-            for (const k of Object.keys(evolveAttempted)) delete evolveAttempted[k];
-            for (const k of Object.keys(evolveFailed)) delete evolveFailed[k];
-            restartTripCycle();
-            scheduleReload();
-            dirty = false;
-            fill();
             const canais = ['webhookUrl', 'webhookShiny', 'webhookAlerts', 'webhookLevel', 'webhookHuman'].filter(k => (cfg[k] || '').trim()).length;
             const resumo = [
                 `${canais} ${canais === 1 ? 'canal' : 'canais'}${keepHooks ? ' (mantidos deste painel)' : ''}`,
@@ -13484,9 +13483,109 @@ ${SUPPLY_KINDS.map(k => `                    <div class="dn-section">
             if (maisNova || desconhecidas.length) {
                 flash(`⚠ Importada, mas a config veio da v${origem.versao || '?'} e este painel roda a v${VERSION}${desconhecidas.length ? `: ${desconhecidas.length} opção(ões) nova(s) (${desconhecidas.slice(0, 4).join(', ')}) ficam guardadas sem aparecer` : ''}. Recarregue este painel (⟳ Atualizar tudo no PokeGrid) para usar tudo. ${resumo}`, 'warn', 0);
             } else {
-                flash(`✔ Config importada${origem.conta ? ` de ${origem.conta}` : ''}${origem.versao ? ` (v${origem.versao})` : ''}: ${resumo}`, 'ok', 20000);
+                flash(`✔ Config importada${origem.conta ? ` de ${origem.conta}` : ''}${origem.versao ? ` (v${origem.versao})` : ''}. A anterior ficou em Configs guardadas ("${backup.name}"). ${resumo}`, 'ok', 20000);
             }
         };
+
+        // Troca a config inteira (Importar e Configs guardadas): mesmos efeitos colaterais do Importar de sempre.
+        function applyWholeCfg(data, keepHooks) {
+            const mine = { webhookUrl: cfg.webhookUrl, webhookShiny: cfg.webhookShiny, webhookAlerts: cfg.webhookAlerts, webhookLevel: cfg.webhookLevel, webhookHuman: cfg.webhookHuman };
+            cfg = migrateCfg(Object.assign({}, DEFAULTS, data));   // v3.55.0: perfis por hunt de um export antigo viram a lista única (migrateCfg)
+            if (keepHooks) Object.assign(cfg, mine);
+            cfg.cfgVersion = 2;
+            saveCfg(cfg);
+            for (const k of Object.keys(ballAlerted)) delete ballAlerted[k];
+            for (const k of Object.keys(autoBuyAttempted)) delete autoBuyAttempted[k];
+            for (const k of Object.keys(supplyAttempted)) delete supplyAttempted[k];
+            for (const k of Object.keys(evolveAttempted)) delete evolveAttempted[k];
+            for (const k of Object.keys(evolveFailed)) delete evolveFailed[k];
+            restartTripCycle();
+            scheduleReload();
+            dirty = false;
+            fill();
+            renderDirty();
+        }
+
+        // ---- Configs guardadas (v3.67.0): pedido do usuário em 24/11/2026 ("importar uma config nova e poder voltar
+        // para a antiga no futuro"). Cópias inteiras do cfg em `localStorage.pgDiscordNotifyCfgSnaps` (FORA do cfg: não
+        // entra no Exportar/Importar; por painel, como o resto). Manuais: até 20, mesmo nome substitui. Automáticas
+        // ("antes de importar…"/"antes de carregar…"), feitas antes de toda troca: só as 5 últimas.
+        var SNAP_KEY = 'pgDiscordNotifyCfgSnaps', SNAP_MAX = 20, SNAP_AUTO_MAX = 5;   // var: fill() pode rodar antes desta linha
+        function snapList() {
+            try { const a = JSON.parse(localStorage.getItem(SNAP_KEY) || '[]'); return Array.isArray(a) ? a.filter(s => s && s.id && s.cfg && typeof s.cfg === 'object') : []; }
+            catch { return []; }
+        }
+        function snapWrite(list) {
+            try { localStorage.setItem(SNAP_KEY, JSON.stringify(list)); return true; }
+            catch (e) { logEvent('config-guardada-erro', { erro: String(e?.message || e), total: list.length }); return false; }
+        }
+        // Com alteração não salva na tela, guarda o rascunho (como o Exportar).
+        function snapCurrent() { return JSON.parse(JSON.stringify(dirty ? Object.assign({}, cfg, readForm().draft) : cfg)); }
+        function snapAdd(name, auto) {
+            const nome = String(name || '').trim().slice(0, 60);
+            let list = snapList().filter(s => auto || s.auto || s.name !== nome);
+            const snap = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: nome, at: Date.now(), versao: VERSION, auto: Boolean(auto), conta: playerName() || null, cfg: snapCurrent() };
+            list.unshift(snap);
+            let a = 0, m = 0;
+            list = list.filter(s => (s.auto ? ++a <= SNAP_AUTO_MAX : ++m <= SNAP_MAX));
+            if (!snapWrite(list)) return null;
+            logEvent('config-guardada', { nome, auto: snap.auto, chaves: Object.keys(snap.cfg).length, total: list.length });
+            renderSnaps(auto ? undefined : snap.id);
+            return snap;
+        }
+        function snapLabel(s) {
+            let quando = '';
+            try { quando = new Date(s.at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch { quando = ''; }
+            return `${s.auto ? '↺ ' : ''}${s.name}${quando ? ` — ${quando}` : ''}`;
+        }
+        function renderSnaps(selId) {
+            const sel = $('#pg-dn-snap-sel');
+            if (!sel) return;
+            const list = snapList(), cur = selId || sel.value;
+            sel.innerHTML = list.length ? list.map(s => `<option value="${s.id}">${escHtml(snapLabel(s))}</option>`).join('') : '<option value="">nenhuma guardada</option>';
+            if (list.some(s => s.id === cur)) sel.value = cur;
+            $('#pg-dn-snap-load').disabled = !list.length;
+            $('#pg-dn-snap-del').disabled = !list.length;
+            const m = list.filter(s => !s.auto).length;
+            $('#pg-dn-snap-status').textContent = list.length ? `${m} ${m === 1 ? 'guardada' : 'guardadas'} por você, ${list.length - m} automática(s) (↺).` : 'Nenhuma config guardada ainda.';
+        }
+        $('#pg-dn-snap-save').onclick = () => {
+            const nome = $('#pg-dn-snap-name').value.trim();
+            if (!nome) { flash('Dê um nome para a config antes de guardar.', 'warn'); $('#pg-dn-snap-name').focus(); return; }
+            const existia = snapList().some(s => !s.auto && s.name === nome);
+            const s = snapAdd(nome, false);
+            if (!s) { flash('✖ Não consegui guardar (armazenamento cheio?). Exclua configs guardadas antigas.', 'error'); return; }
+            $('#pg-dn-snap-name').value = '';
+            flash(`💾 Config "${nome}" ${existia ? 'substituída' : 'guardada'}${dirty ? ' (com as alterações ainda não salvas da tela)' : ''}.`, dirty ? 'warn' : 'ok', 8000);
+        };
+        $('#pg-dn-snap-load').onclick = () => {
+            const s = snapList().find(x => x.id === $('#pg-dn-snap-sel').value);
+            if (!s) { flash('Escolha uma config guardada.', 'warn'); return; }
+            const backup = snapAdd(`antes de carregar "${s.name}"`, true);
+            if (!backup) { flash('✖ Não consegui guardar a config atual antes de trocar (armazenamento cheio?). Nada foi trocado.', 'error'); return; }
+            applyWholeCfg(JSON.parse(JSON.stringify(s.cfg)), false);
+            renderSnaps(s.id);
+            const maisNova = Boolean(s.versao && cmpVersion(s.versao, VERSION) > 0);
+            logEvent('config-carregada', { nome: s.name, auto: Boolean(s.auto), versao: s.versao, versaoAqui: VERSION, backup: backup.name });
+            flash(`✔ Config "${s.name}" carregada. A de antes ficou como "${backup.name}" (↺) na lista.${maisNova ? ` ⚠ Ela foi guardada na v${s.versao} e este painel roda a v${VERSION}: recarregue o painel.` : ''}`, maisNova ? 'warn' : 'ok', 15000);
+        };
+        var snapDelArmed = null;
+        $('#pg-dn-snap-del').onclick = () => {
+            const btnDel = $('#pg-dn-snap-del'), id = $('#pg-dn-snap-sel').value;
+            const s = snapList().find(x => x.id === id);
+            if (!s) return;
+            if (snapDelArmed !== id) {   // confirmação em 2 cliques (window.confirm trava o painel no PokeGrid)
+                snapDelArmed = id; btnDel.textContent = 'Confirmar exclusão';
+                setTimeout(() => { if (snapDelArmed === id) { snapDelArmed = null; btnDel.textContent = '🗑 Excluir'; } }, 4000);
+                return;
+            }
+            snapDelArmed = null; btnDel.textContent = '🗑 Excluir';
+            snapWrite(snapList().filter(x => x.id !== id));
+            logEvent('config-guardada-excluida', { nome: s.name, auto: Boolean(s.auto) });
+            renderSnaps();
+            flash(`🗑 Config "${s.name}" excluída.`, 'info', 5000);
+        };
+        $('#pg-dn-snap-sel').addEventListener('change', () => { snapDelArmed = null; $('#pg-dn-snap-del').textContent = '🗑 Excluir'; });
 
 
         renderState();

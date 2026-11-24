@@ -782,7 +782,12 @@ Estas regras vêm do código-fonte do PokeGrid (`index.html`, funções `injectS
   `config-importada`/`config-import-falhou` no log e avisa quando a config veio de versão mais nova que a do painel
   (painel não recarregado). `test/config.roundtrip.js` exige que o fixture cubra TODA chave do cfg: feature nova com
   campo novo precisa entrar lá. v3.55.0: `sellProfiles` de um export antigo viram a lista única no `migrateCfg` (o import não soma mais: a lista que veio substitui);
-  `test/config.live.js` importa num painel vivo (em hunt, com perfis próprios). Cada PC tem a própria cópia do script no
+  `test/config.live.js` importa num painel vivo (em hunt, com perfis próprios).
+  Configs guardadas (v3.67.0, aba Sistema, pedido do usuário em 24/11/2026: "importar uma config nova e poder voltar para a
+  antiga"): cópias inteiras do cfg em `localStorage.pgDiscordNotifyCfgSnaps` (FORA do cfg, por painel, não entra no Exportar).
+  Manuais até 20 (mesmo nome substitui); antes de todo Importar e todo Carregar, `snapAdd(…, true)` guarda a atual como
+  automática "antes de …" (5 últimas); sem conseguir guardar, NÃO troca. Importar e Carregar usam o mesmo `applyWholeCfg`.
+  Excluir confirma com 2 cliques (nada de `window.confirm`). Coberto no `test/ui.smoke.js`. Cada PC tem a própria cópia do script no
   PokeGrid: "não importou" em outro PC costuma ser painel sem Atualizar/⟳ (a versão aparece no topo do 🔔).
 - Colar com o botão direito (v3.15.1): o webview do PokeGrid não tem menu de contexto e o jogo captura teclas, então
   `pasteInto(el)` (contextmenu em qualquer input de texto/textarea do painel, e o botão "📋 Colar" do Importar) tenta
